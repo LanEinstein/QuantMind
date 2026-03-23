@@ -57,16 +57,23 @@ def extract_deep_json(text: str) -> dict[str, Any] | None:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Strategy 3: find outermost braces
+    # Strategy 3: find matching braces via bracket counting
     first = stripped.find("{")
-    last = stripped.rfind("}")
-    if first != -1 and last > first:
-        try:
-            result = json.loads(stripped[first : last + 1])
-            if isinstance(result, dict):
-                return result
-        except (json.JSONDecodeError, ValueError):
-            pass
+    if first != -1:
+        depth = 0
+        for idx in range(first, len(stripped)):
+            if stripped[idx] == "{":
+                depth += 1
+            elif stripped[idx] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        result = json.loads(stripped[first : idx + 1])
+                        if isinstance(result, dict):
+                            return result
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
 
     log.warning("json_extraction_failed", text_preview=text[:200])
     return None
@@ -156,7 +163,8 @@ def parse_extraction_response(
                         reasoning=str(item.get("reasoning", "")),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                log.warning("hidden_var_parse_failed", error=str(exc))
                 continue
 
     inflection_pts: list[InflectionPoint] = []
@@ -169,7 +177,8 @@ def parse_extraction_response(
                         event=str(item.get("event", "")),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                log.warning("inflection_pt_parse_failed", error=str(exc))
                 continue
 
     extreme_scenarios: list[ExtremeScenario] = []
@@ -183,7 +192,8 @@ def parse_extraction_response(
                         impact=str(item.get("impact", "")),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                log.warning("extreme_scenario_parse_failed", error=str(exc))
                 continue
 
     return {

@@ -58,7 +58,10 @@ class MiroFishSimulator:
         config_path: str | Path = _DEFAULT_CONFIG_PATH,
     ) -> None:
         self._router = router
-        self._config = self._load_config(Path(config_path))
+        self._config_path = Path(config_path)
+        self._config = self._load_config(self._config_path)
+        self._trigger_threshold_value = self._read_threshold(self._config_path)
+        self._cost_params = self._read_cost_params(self._config_path)
         self._log = log
 
     async def run_simulation(
@@ -76,7 +79,7 @@ class MiroFishSimulator:
         config = self._config
 
         # Gate: skip simulation for low-importance events
-        threshold = self._trigger_threshold
+        threshold = self._trigger_threshold_value
         if event.importance_score < threshold:
             self._log.info(
                 "simulation_skipped",
@@ -205,32 +208,38 @@ class MiroFishSimulator:
             self._log.warning("config_load_failed", error=str(exc))
             return SimulationConfig()
 
-    @property
-    def _trigger_threshold(self) -> int:
-        """Load trigger threshold from config file."""
+    @staticmethod
+    def _read_threshold(path: Path) -> int:
+        """Read trigger threshold once at init time."""
         try:
-            with _DEFAULT_CONFIG_PATH.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8") as f:
                 raw: dict[str, Any] = yaml.safe_load(f)
             return int(raw.get("simulation", {}).get("trigger_threshold", 7))
         except Exception:
             return 7
 
+    @staticmethod
+    def _read_cost_params(
+        path: Path,
+    ) -> tuple[float, float, float]:
+        """Read cost estimation params once at init time."""
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                raw: dict[str, Any] = yaml.safe_load(f)
+            cfg = raw.get("cost_estimate", {})
+            return (
+                cfg.get("chars_per_token", 1.5),
+                cfg.get("input_price_per_1k", 0.0021),
+                cfg.get("output_price_per_1k", 0.0084),
+            )
+        except Exception:
+            return (1.5, 0.0021, 0.0084)
+
     def _estimate_cost(
         self, prompts: list[str], responses: list[str]
     ) -> float:
         """Rough cost estimate based on character counts."""
-        try:
-            with _DEFAULT_CONFIG_PATH.open("r", encoding="utf-8") as f:
-                raw: dict[str, Any] = yaml.safe_load(f)
-            cost_cfg = raw.get("cost_estimate", {})
-            chars_per_token = cost_cfg.get("chars_per_token", 1.5)
-            input_price = cost_cfg.get("input_price_per_1k", 0.0021)
-            output_price = cost_cfg.get("output_price_per_1k", 0.0084)
-        except Exception:
-            chars_per_token = 1.5
-            input_price = 0.0021
-            output_price = 0.0084
-
+        chars_per_token, input_price, output_price = self._cost_params
         input_chars = sum(len(p) for p in prompts)
         output_chars = sum(len(r) for r in responses)
         input_tokens = input_chars / chars_per_token

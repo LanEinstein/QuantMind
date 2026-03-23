@@ -199,8 +199,8 @@ async def run_analysis(
     try:
         quote = await services.market_data.get_stock_realtime(stock_code)
         stock_name = getattr(quote, "name", stock_code)
-    except Exception:
-        log.warning("stock_name_lookup_failed", stock_code=stock_code)
+    except Exception as exc:
+        log.warning("stock_name_lookup_failed", stock_code=stock_code, error=str(exc))
 
     trade_date = datetime.now(tz=UTC).strftime("%Y-%m-%d")
 

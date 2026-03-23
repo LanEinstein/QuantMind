@@ -6,7 +6,6 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
 import structlog
 from fastapi import FastAPI, Request
 

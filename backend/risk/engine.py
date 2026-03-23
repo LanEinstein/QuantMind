@@ -208,8 +208,9 @@ class RiskEngine:
         existing = next(
             (p for p in positions if p.code == order.code), None
         )
-        existing_value = existing.market_value if existing else 0.0
-        new_value = existing_value + order.price * order.volume
+        # Use order.price to revalue existing shares for consistent exposure
+        existing_shares = existing.volume if existing else 0
+        new_value = (existing_shares + order.volume) * order.price
         ratio = new_value / account.total_assets
         limit = self._config.position_limits.max_single_stock_pct
 

@@ -304,6 +304,11 @@ class MockBroker(IBroker):
             actual_cost = amount + commission
             delta = order.frozen_amount - actual_cost
             self._cash += delta  # return over-frozen amount
+            if self._cash < -0.01:
+                self._log.error(
+                    "cash_underflow_detected", cash=self._cash, delta=delta
+                )
+                self._cash = 0.0
         else:
             self._apply_sell(order.code, order.volume)
             self._cash += net_amount
@@ -332,6 +337,7 @@ class MockBroker(IBroker):
         """Update position for a sell fill."""
         pos = self._positions.get(code)
         if pos is None:
+            self._log.error("sell_position_missing", code=code, volume=volume)
             return
         pos.volume -= volume
         if pos.volume <= 0:
@@ -357,6 +363,11 @@ class MockBroker(IBroker):
 
     async def get_positions(self) -> tuple[Position, ...]:
         """Get all current positions as frozen models."""
+        async with self._lock:
+            return self._build_positions()
+
+    def _build_positions(self) -> tuple[Position, ...]:
+        """Build position snapshots (must be called under lock)."""
         result: list[Position] = []
         for pos in self._positions.values():
             if pos.volume <= 0:
@@ -379,20 +390,25 @@ class MockBroker(IBroker):
 
     async def get_account(self) -> AccountInfo:
         """Get current account snapshot as a frozen model."""
-        positions = await self.get_positions()
-        market_value = sum(p.market_value for p in positions)
-        total = self._cash + self._frozen_cash + market_value
-        pnl = total - self._initial_capital
-        pnl_pct = pnl / self._initial_capital if self._initial_capital > 0 else 0.0
-        return AccountInfo(
-            total_assets=round(total, 2),
-            available_cash=round(self._cash, 2),
-            frozen_cash=round(self._frozen_cash, 2),
-            market_value=round(market_value, 2),
-            total_pnl=round(pnl, 2),
-            total_pnl_pct=round(pnl_pct, 6),
-            initial_capital=self._initial_capital,
-        )
+        async with self._lock:
+            positions = self._build_positions()
+            market_value = sum(p.market_value for p in positions)
+            total = self._cash + self._frozen_cash + market_value
+            pnl = total - self._initial_capital
+            pnl_pct = (
+                pnl / self._initial_capital
+                if self._initial_capital > 0
+                else 0.0
+            )
+            return AccountInfo(
+                total_assets=round(total, 2),
+                available_cash=round(self._cash, 2),
+                frozen_cash=round(self._frozen_cash, 2),
+                market_value=round(market_value, 2),
+                total_pnl=round(pnl, 2),
+                total_pnl_pct=round(pnl_pct, 6),
+                initial_capital=self._initial_capital,
+            )
 
     async def get_orders(
         self, status: OrderStatus | None = None

@@ -8,6 +8,7 @@ consecutive losses and daily P&L across multiple trade events.
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import structlog
 
@@ -42,6 +43,10 @@ class CircuitBreaker:
             pnl_pct: Trade P&L as pct of portfolio (-0.03 = -3%).
             now: Current time (injectable for testing).
         """
+        if not math.isfinite(pnl_pct):
+            log.error("invalid_pnl_pct", pnl_pct=pnl_pct)
+            return
+
         self._daily_pnl_pct += pnl_pct
 
         if pnl_pct < 0:
@@ -84,10 +89,16 @@ class CircuitBreaker:
         cooldown = dt.timedelta(minutes=self._config.cooldown_minutes)
 
         if elapsed >= cooldown:
-            log.info("circuit_breaker_cooldown_expired")
-            self._halted_at = None
+            self._expire_halt()
             return False
         return True
+
+    def _expire_halt(self) -> None:
+        """Reset all state when cooldown expires."""
+        self._halted_at = None
+        self._daily_pnl_pct = 0.0
+        self._consecutive_losses = 0
+        log.info("circuit_breaker_cooldown_expired")
 
     def reset(self) -> None:
         """Reset all counters. Call at the start of each trading day."""
