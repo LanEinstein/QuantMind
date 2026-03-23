@@ -1,0 +1,207 @@
+"""Tests for MiroFish schemas (TDD RED -> GREEN)."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from backend.mirofish.schemas import (
+    EventDescription,
+    ExtremeScenario,
+    HiddenVariable,
+    InflectionPoint,
+    SentimentSnapshot,
+    SimulationConfig,
+    SimulationResult,
+)
+
+
+class TestEventDescription:
+    def test_create_valid(self) -> None:
+        ev = EventDescription(
+            title="央行宣布降准50个基点",
+            content="中国人民银行今日宣布...",
+            importance_score=9,
+            sectors=("银行", "房地产"),
+            stocks=("601398", "600036"),
+        )
+        assert ev.title == "央行宣布降准50个基点"
+        assert ev.importance_score == 9
+        assert len(ev.sectors) == 2
+
+    def test_frozen(self) -> None:
+        ev = EventDescription(
+            title="test", content="test",
+            importance_score=5, sectors=(), stocks=(),
+        )
+        with pytest.raises(ValidationError):
+            ev.title = "changed"  # type: ignore[misc]
+
+    def test_importance_score_range(self) -> None:
+        with pytest.raises(ValidationError):
+            EventDescription(
+                title="t", content="c",
+                importance_score=11, sectors=(), stocks=(),
+            )
+        with pytest.raises(ValidationError):
+            EventDescription(
+                title="t", content="c",
+                importance_score=-1, sectors=(), stocks=(),
+            )
+
+    def test_empty_sectors_stocks(self) -> None:
+        ev = EventDescription(
+            title="t", content="c",
+            importance_score=5, sectors=(), stocks=(),
+        )
+        assert ev.sectors == ()
+        assert ev.stocks == ()
+
+
+class TestSimulationConfig:
+    def test_defaults(self) -> None:
+        cfg = SimulationConfig()
+        assert cfg.agent_count == 300
+        assert cfg.rounds == 20
+        assert cfg.model == "MiniMax-M2.5"
+
+    def test_agent_count_range(self) -> None:
+        with pytest.raises(ValidationError):
+            SimulationConfig(agent_count=10)
+        with pytest.raises(ValidationError):
+            SimulationConfig(agent_count=2000)
+
+    def test_rounds_range(self) -> None:
+        with pytest.raises(ValidationError):
+            SimulationConfig(rounds=2)
+
+
+class TestSentimentSnapshot:
+    def test_valid(self) -> None:
+        s = SentimentSnapshot(round=1, bullish=0.45, bearish=0.30, neutral=0.25)
+        assert s.round == 1
+        assert s.bullish == 0.45
+
+    def test_sum_approximately_one(self) -> None:
+        # Should pass with small rounding error
+        s = SentimentSnapshot(round=1, bullish=0.34, bearish=0.33, neutral=0.33)
+        assert abs(s.bullish + s.bearish + s.neutral - 1.0) < 0.05
+
+    def test_sum_far_from_one_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SentimentSnapshot(round=1, bullish=0.8, bearish=0.8, neutral=0.8)
+
+    def test_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SentimentSnapshot(round=1, bullish=-0.1, bearish=0.5, neutral=0.6)
+
+    def test_frozen(self) -> None:
+        s = SentimentSnapshot(round=1, bullish=0.5, bearish=0.3, neutral=0.2)
+        with pytest.raises(ValidationError):
+            s.bullish = 0.9  # type: ignore[misc]
+
+
+class TestHiddenVariable:
+    def test_valid(self) -> None:
+        hv = HiddenVariable(
+            variable="外资加速流入概率",
+            probability=0.72,
+            reasoning="降准信号叠加人民币企稳",
+        )
+        assert hv.probability == 0.72
+
+    def test_probability_range(self) -> None:
+        with pytest.raises(ValidationError):
+            HiddenVariable(variable="x", probability=1.5, reasoning="y")
+
+
+class TestInflectionPoint:
+    def test_valid(self) -> None:
+        ip = InflectionPoint(day=3, event="情绪高点")
+        assert ip.day == 3
+
+    def test_day_min(self) -> None:
+        with pytest.raises(ValidationError):
+            InflectionPoint(day=0, event="x")
+
+
+class TestExtremeScenario:
+    def test_valid(self) -> None:
+        es = ExtremeScenario(
+            scenario="超预期利好", probability=0.15, impact="+3-5%"
+        )
+        assert es.probability == 0.15
+
+
+class TestSimulationResult:
+    def test_full_construction(self) -> None:
+        result = SimulationResult(
+            event_summary="央行降准",
+            simulation_config=SimulationConfig(),
+            sentiment_evolution=(
+                SentimentSnapshot(round=1, bullish=0.4, bearish=0.3, neutral=0.3),
+            ),
+            hidden_variables=(
+                HiddenVariable(variable="x", probability=0.5, reasoning="r"),
+            ),
+            key_inflection_points=(
+                InflectionPoint(day=3, event="拐点"),
+            ),
+            extreme_scenarios=(
+                ExtremeScenario(scenario="极端", probability=0.1, impact="+5%"),
+            ),
+            recommended_action="看多",
+            cost_rmb=2.5,
+            duration_seconds=30.0,
+        )
+        assert result.event_summary == "央行降准"
+        assert len(result.sentiment_evolution) == 1
+
+    def test_frozen(self) -> None:
+        result = SimulationResult(
+            event_summary="test",
+            simulation_config=SimulationConfig(),
+            sentiment_evolution=(),
+            hidden_variables=(),
+            key_inflection_points=(),
+            extreme_scenarios=(),
+            recommended_action="test",
+            cost_rmb=0.0,
+            duration_seconds=0.0,
+        )
+        with pytest.raises(ValidationError):
+            result.event_summary = "changed"  # type: ignore[misc]
+
+    def test_model_dump_shape(self) -> None:
+        result = SimulationResult(
+            event_summary="央行降准",
+            simulation_config=SimulationConfig(
+                agent_count=300, rounds=20, model="MiniMax-M2.5"
+            ),
+            sentiment_evolution=(
+                SentimentSnapshot(round=1, bullish=0.45, bearish=0.3, neutral=0.25),
+            ),
+            hidden_variables=(
+                HiddenVariable(variable="v", probability=0.7, reasoning="r"),
+            ),
+            key_inflection_points=(
+                InflectionPoint(day=3, event="e"),
+            ),
+            extreme_scenarios=(
+                ExtremeScenario(scenario="s", probability=0.15, impact="+3%"),
+            ),
+            recommended_action="看多",
+            cost_rmb=2.5,
+            duration_seconds=30.0,
+        )
+        data = result.model_dump()
+        # Blueprint 3.3 shape checks
+        assert "event_summary" in data
+        assert "simulation_config" in data
+        assert data["simulation_config"]["agent_count"] == 300
+        assert "sentiment_evolution" in data
+        assert data["sentiment_evolution"][0]["round"] == 1
+        assert "hidden_variables" in data
+        assert "key_inflection_points" in data
+        assert "extreme_scenarios" in data
+        assert "recommended_action" in data

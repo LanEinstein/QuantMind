@@ -1,0 +1,18 @@
+# Broker configuration
+
+active: mock  # mock / qmt / vnpy
+
+mock:
+  initial_capital: 1000000
+  commission_rate: 0.0003         # 0.03%
+  stamp_tax_rate: 0.001           # 0.1% (sell only)
+  slippage_bps: 2                 # 2 basis points
+  min_commission: 5.0             # Min 5 CNY per trade
+
+qmt:
+  enabled: false
+  # Configure via environment variables
+
+vnpy:
+  enabled: false
+  # Configure via environment variables

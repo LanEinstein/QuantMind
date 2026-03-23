@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+*.csv
+*.parquet
+*.h5
+*.hdf5
+data/raw/
+data/processed/
+
+# Secrets & config
+.env
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

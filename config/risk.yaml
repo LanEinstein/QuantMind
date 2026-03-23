@@ -1,0 +1,18 @@
+# Risk engine parameters (hardcoded enforcement, no LLM dependency)
+
+position_limits:
+  max_single_stock_pct: 0.20      # Max 20% of portfolio in one stock
+  max_sector_pct: 0.40            # Max 40% of portfolio in one sector
+  max_total_positions: 10         # Max concurrent positions
+  price_deviation_limit: 0.05    # Max +-5% deviation from prev_close
+  volume_lot_size: 100           # A-share minimum lot size
+
+stop_loss:
+  single_stock_pct: 0.08          # Stop loss at -8% per stock
+  portfolio_daily_pct: 0.05       # Portfolio daily drawdown limit -5%
+  trailing_stop_pct: 0.10         # Trailing stop at -10% from peak
+
+circuit_breaker:
+  daily_loss_limit_pct: 0.05      # Halt trading after -5% portfolio loss
+  consecutive_loss_count: 3       # Halt after 3 consecutive losing trades
+  cooldown_minutes: 60            # Cooldown period after circuit break

@@ -1,0 +1,100 @@
+"""Frozen Pydantic models for MiroFish simulation I/O.
+
+Schema matches QuantMind Blueprint V3 section 3.3 exactly.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class EventDescription(BaseModel):
+    """Input: a financial event to simulate."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str
+    content: str
+    importance_score: int = Field(ge=0, le=10)
+    sectors: tuple[str, ...] = ()
+    stocks: tuple[str, ...] = ()
+
+
+class SimulationConfig(BaseModel):
+    """Simulation parameters."""
+
+    model_config = ConfigDict(frozen=True)
+
+    agent_count: int = Field(default=300, ge=50, le=1000)
+    rounds: int = Field(default=20, ge=5, le=50)
+    model: str = "MiniMax-M2.5"
+
+
+class SentimentSnapshot(BaseModel):
+    """Sentiment distribution for a single simulation round."""
+
+    model_config = ConfigDict(frozen=True)
+
+    round: int = Field(ge=1)
+    bullish: float = Field(ge=0.0, le=1.0)
+    bearish: float = Field(ge=0.0, le=1.0)
+    neutral: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _check_sum(self) -> SentimentSnapshot:
+        total = self.bullish + self.bearish + self.neutral
+        if abs(total - 1.0) > 0.05:
+            msg = (
+                f"Sentiment values must sum to ~1.0 "
+                f"(got {total:.3f})"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class HiddenVariable(BaseModel):
+    """An emergent hidden variable discovered during simulation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    variable: str
+    probability: float = Field(ge=0.0, le=1.0)
+    reasoning: str
+
+
+class InflectionPoint(BaseModel):
+    """A key inflection point in the simulated timeline."""
+
+    model_config = ConfigDict(frozen=True)
+
+    day: int = Field(ge=1)
+    event: str
+
+
+class ExtremeScenario(BaseModel):
+    """An extreme scenario with probability and impact estimate."""
+
+    model_config = ConfigDict(frozen=True)
+
+    scenario: str
+    probability: float = Field(ge=0.0, le=1.0)
+    impact: str
+
+
+class SimulationResult(BaseModel):
+    """Complete output of a MiroFish simulation run.
+
+    Conforms to Blueprint V3 section 3.3 JSON schema.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    event_summary: str
+    simulation_config: SimulationConfig
+    sentiment_evolution: tuple[SentimentSnapshot, ...]
+    hidden_variables: tuple[HiddenVariable, ...]
+    key_inflection_points: tuple[InflectionPoint, ...]
+    extreme_scenarios: tuple[ExtremeScenario, ...]
+    recommended_action: str
+    cost_rmb: float = Field(ge=0.0)
+    duration_seconds: float = Field(ge=0.0)

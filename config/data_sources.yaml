@@ -1,0 +1,16 @@
+# Data source configuration
+
+market_data:
+  primary: adata
+  fallback: akshare
+  refresh_interval_seconds: 30
+
+history_data:
+  primary: adata
+  fallback: baostock
+  default_period: 1y              # Default lookback period
+
+news:
+  refresh_interval_seconds: 300   # 5 minutes
+  max_articles_per_fetch: 50
+  importance_threshold: 5         # Min score (1-10) to display

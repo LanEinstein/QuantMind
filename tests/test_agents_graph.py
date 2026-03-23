@@ -1,0 +1,197 @@
+"""Tests for LangGraph analysis pipeline (TDD RED -> GREEN)."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pandas as pd
+import pytest
+
+from backend.agents.graph import (
+    build_analysis_graph,
+    run_analysis,
+    should_continue_debate,
+)
+from backend.agents.models import (
+    AnalysisServices,
+    AnalysisState,
+    PipelineConfig,
+    TradingSignal,
+)
+
+
+def _make_completion(content: str) -> MagicMock:
+    choice = MagicMock()
+    choice.message.content = content
+    usage = MagicMock()
+    usage.prompt_tokens = 10
+    usage.completion_tokens = 20
+    resp = MagicMock()
+    resp.choices = [choice]
+    resp.usage = usage
+    return resp
+
+
+def _mock_services(max_rounds: int = 1) -> AnalysisServices:
+    """Create mock services for graph testing."""
+    call_count = 0
+
+    def _route_response(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        agent_name = args[0] if args else "unknown"
+        if agent_name == "fund_manager":
+            return _make_completion(
+                '{"action": "买入", "target_price": 1900.0, '
+                '"confidence": 0.8, "risk_score": 0.3, '
+                '"reasoning": "分析完成"}'
+            )
+        return _make_completion(f"[{agent_name}] 模拟报告")
+
+    router = AsyncMock()
+    router.complete = AsyncMock(side_effect=_route_response)
+
+    market_data = AsyncMock()
+    stock_mock = MagicMock()
+    stock_mock.code = "600519"
+    stock_mock.name = "贵州茅台"
+    stock_mock.price = 1800.0
+    stock_mock.change_pct = 0.28
+    stock_mock.volume = 5e6
+    stock_mock.amount = 9e9
+    market_data.get_stock_realtime = AsyncMock(return_value=stock_mock)
+
+    index_mock = MagicMock()
+    index_mock.name = "上证指数"
+    index_mock.price = 3150.5
+    index_mock.change_pct = 0.85
+    market_data.get_index_realtime = AsyncMock(return_value=[index_mock])
+    market_data.get_capital_flow = AsyncMock(
+        return_value=MagicMock(north_net_inflow=3.2e9)
+    )
+
+    history_data = AsyncMock()
+    history_data.get_financial_data = AsyncMock(
+        return_value=MagicMock(
+            pe_ratio=32.5, pb_ratio=10.2, roe=30.5, eps=45.8,
+            revenue_growth=15.3, report_date="2025-12-31"
+        )
+    )
+    history_data.get_kline = AsyncMock(
+        return_value=pd.DataFrame([
+            {"date": "2026-03-20", "open": 1790, "high": 1810,
+             "low": 1785, "close": 1800, "volume": 5000000, "amount": 9e9},
+        ])
+    )
+
+    news_crawler = AsyncMock()
+    article = MagicMock(title="测试新闻", content="内容", source="eastmoney")
+    news_crawler.fetch_stock_news = AsyncMock(return_value=[article])
+    news_crawler.fetch_latest_news = AsyncMock(return_value=[article])
+
+    return AnalysisServices(
+        llm_router=router,
+        market_data=market_data,
+        history_data=history_data,
+        news_crawler=news_crawler,
+        pipeline_config=PipelineConfig(max_debate_rounds=max_rounds),
+    )
+
+
+class TestShouldContinueDebate:
+    """Tests for debate conditional edge function."""
+
+    def test_start_goes_to_bull(self) -> None:
+        config = PipelineConfig(max_debate_rounds=2)
+        state: AnalysisState = {
+            "stock_code": "600519", "stock_name": "test",
+            "trade_date": "2026-03-22",
+            "news_report": "", "sentiment_report": "",
+            "fundamental_report": "", "technical_report": "",
+            "intelligence_report": "",
+            "debate_state": {
+                "history": "", "bull_history": "", "bear_history": "",
+                "current_response": "", "count": 0,
+            },
+            "risk_assessment": "", "trading_signal": {},
+        }
+        assert should_continue_debate(state, config) == "bull_researcher"
+
+    def test_after_bull_goes_to_bear(self) -> None:
+        config = PipelineConfig(max_debate_rounds=2)
+        state: AnalysisState = {
+            "stock_code": "600519", "stock_name": "test",
+            "trade_date": "2026-03-22",
+            "news_report": "", "sentiment_report": "",
+            "fundamental_report": "", "technical_report": "",
+            "intelligence_report": "",
+            "debate_state": {
+                "history": "", "bull_history": "", "bear_history": "",
+                "current_response": "Bull: arg", "count": 1,
+            },
+            "risk_assessment": "", "trading_signal": {},
+        }
+        assert should_continue_debate(state, config) == "bear_researcher"
+
+    def test_after_max_rounds_goes_to_risk(self) -> None:
+        config = PipelineConfig(max_debate_rounds=2)
+        state: AnalysisState = {
+            "stock_code": "600519", "stock_name": "test",
+            "trade_date": "2026-03-22",
+            "news_report": "", "sentiment_report": "",
+            "fundamental_report": "", "technical_report": "",
+            "intelligence_report": "",
+            "debate_state": {
+                "history": "", "bull_history": "", "bear_history": "",
+                "current_response": "Bear: arg", "count": 4,
+            },
+            "risk_assessment": "", "trading_signal": {},
+        }
+        assert should_continue_debate(state, config) == "risk_officer"
+
+    def test_single_round(self) -> None:
+        config = PipelineConfig(max_debate_rounds=1)
+        state: AnalysisState = {
+            "stock_code": "600519", "stock_name": "test",
+            "trade_date": "2026-03-22",
+            "news_report": "", "sentiment_report": "",
+            "fundamental_report": "", "technical_report": "",
+            "intelligence_report": "",
+            "debate_state": {
+                "history": "", "bull_history": "", "bear_history": "",
+                "current_response": "Bear: arg", "count": 2,
+            },
+            "risk_assessment": "", "trading_signal": {},
+        }
+        assert should_continue_debate(state, config) == "risk_officer"
+
+
+class TestBuildAnalysisGraph:
+    """Tests for graph compilation."""
+
+    def test_compiles(self) -> None:
+        services = _mock_services()
+        graph = build_analysis_graph(services)
+        assert graph is not None
+
+
+class TestRunAnalysis:
+    """Integration test for full pipeline execution."""
+
+    @pytest.mark.asyncio
+    async def test_full_pipeline_single_round(self) -> None:
+        services = _mock_services(max_rounds=1)
+        signal = await run_analysis("600519", services)
+        assert isinstance(signal, TradingSignal)
+        assert signal.action == "买入"
+        assert signal.stock_code == "600519"
+        # 5 analysts + 2 debate (1 round: bull + bear) + 2 decision = 9 calls
+        assert services.llm_router.complete.call_count == 9
+
+    @pytest.mark.asyncio
+    async def test_full_pipeline_two_rounds(self) -> None:
+        services = _mock_services(max_rounds=2)
+        signal = await run_analysis("600519", services)
+        assert isinstance(signal, TradingSignal)
+        # 5 analysts + 4 debate (2 rounds) + 2 decision = 11 calls
+        assert services.llm_router.complete.call_count == 11
