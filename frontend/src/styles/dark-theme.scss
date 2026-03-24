@@ -1,0 +1,68 @@
+// QuantMind Dark Theme — overrides Element Plus defaults
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: $bg-primary;
+  color: $text-primary;
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+html.dark {
+  --el-bg-color: #{$bg-card};
+  --el-bg-color-page: #{$bg-primary};
+  --el-bg-color-overlay: #{$bg-card};
+  --el-text-color-primary: #{$text-primary};
+  --el-text-color-regular: #{$text-secondary};
+  --el-border-color: #{$border-color};
+  --el-border-color-light: #{$border-color};
+  --el-fill-color-blank: #{$bg-card};
+  --el-color-primary: #{$color-accent};
+}
+
+// Card styling
+.el-card {
+  --el-card-bg-color: #{$bg-card};
+  border: 1px solid $border-color;
+  border-radius: $border-radius;
+
+  .el-card__header {
+    border-bottom-color: $border-color;
+    padding: 12px 16px;
+  }
+
+  .el-card__body {
+    padding: 12px 16px;
+  }
+}
+
+// Scrollbar
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+}
+
+// Route transitions
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

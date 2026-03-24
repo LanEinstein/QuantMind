@@ -1,0 +1,44 @@
+// QuantMind Dark Theme Variables (Financial Terminal Style)
+
+// Core colors
+$bg-primary: #1a1a2e;
+$bg-card: #16213e;
+$bg-sidebar: #0f1528;
+$bg-header: #16213e;
+$bg-status-bar: #0d1117;
+
+// Text colors
+$text-primary: #e0e0e0;
+$text-secondary: #a0a0b0;
+$text-muted: #6c6c80;
+
+// Market colors (A-share convention: red=up, green=down)
+$color-up: #ff1744;
+$color-down: #00c853;
+$color-flat: #ffd600;
+
+// Importance score colors
+$color-importance-high: rgba(255, 23, 68, 0.15);
+$color-importance-mid: rgba(255, 214, 0, 0.12);
+$color-importance-low: rgba(128, 128, 128, 0.08);
+
+// Accent
+$color-accent: #448aff;
+$color-accent-light: #82b1ff;
+
+// Borders
+$border-color: #2a2a4a;
+$border-radius: 8px;
+
+// Status indicators
+$status-green: #00c853;
+$status-yellow: #ffd600;
+$status-red: #ff1744;
+
+// Spacing
+$gap-sm: 8px;
+$gap-md: 16px;
+$gap-lg: 24px;
+
+// Status bar
+$status-bar-height: 36px;
