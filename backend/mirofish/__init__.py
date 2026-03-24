@@ -1,6 +1,7 @@
 """MiroFish financial simulation adapter."""
 
 from backend.mirofish.event_filter import extract_key_events
+from backend.mirofish.extractors import HiddenVariableExtractionPipeline
 from backend.mirofish.formatter import format_simulation_context
 from backend.mirofish.schemas import (
     EventDescription,
@@ -17,6 +18,7 @@ __all__ = [
     "EventDescription",
     "ExtremeScenario",
     "HiddenVariable",
+    "HiddenVariableExtractionPipeline",
     "InflectionPoint",
     "MiroFishSimulator",
     "SentimentSnapshot",

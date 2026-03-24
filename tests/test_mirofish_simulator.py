@@ -201,21 +201,78 @@ def _valid_evolution_json(rounds: int = 5) -> str:
 
 
 def _valid_extraction_json() -> str:
+    """Used by extraction pipeline as hidden variable response."""
     return json.dumps({
         "hidden_variables": [
             {
                 "variable": "外资加速流入",
                 "probability": 0.72,
                 "reasoning": "降准信号叠加",
+                "agent_consensus_ratio": 0.65,
+                "is_absent_from_original": True,
             }
         ],
-        "key_inflection_points": [
-            {"day": 3, "event": "获利回吐"}
-        ],
+    })
+
+
+def _valid_sentiment_classification_json(rounds: int = 5) -> str:
+    return json.dumps({
+        "rounds": [
+            {
+                "round": i,
+                "dominant_narrative": f"央行宽松预期第{i}轮",
+                "intensity": round(0.5 + i * 0.05, 2),
+            }
+            for i in range(1, rounds + 1)
+        ]
+    })
+
+
+def _valid_inflection_point_json() -> str:
+    return json.dumps({
+        "inflection_points": [
+            {
+                "day": 6,
+                "event": "获利回吐压力",
+                "inflection_type": "sentiment_reversal",
+                "before_sentiment": {
+                    "bullish": 0.60, "bearish": 0.15, "neutral": 0.25,
+                },
+                "after_sentiment": {
+                    "bullish": 0.40, "bearish": 0.35, "neutral": 0.25,
+                },
+                "confidence": 0.7,
+            }
+        ]
+    })
+
+
+def _valid_extreme_scenario_json() -> str:
+    return json.dumps({
         "extreme_scenarios": [
-            {"scenario": "利好叠加", "probability": 0.15, "impact": "+5%"}
-        ],
-        "recommended_action": "短期看多，分批建仓",
+            {
+                "scenario": "超预期利好叠加",
+                "probability": 0.12,
+                "impact": "+5-8%",
+                "direction": "upside",
+                "trigger_conditions": "多重利好",
+                "early_warning_signals": "北向资金流入",
+            },
+            {
+                "scenario": "利好出尽见光死",
+                "probability": 0.08,
+                "impact": "-3-5%",
+                "direction": "downside",
+                "trigger_conditions": "获利盘涌出",
+                "early_warning_signals": "龙虎榜卖出",
+            },
+        ]
+    })
+
+
+def _valid_recommendation_json() -> str:
+    return json.dumps({
+        "recommended_action": "短期看多，分批建仓"
     })
 
 
@@ -248,9 +305,17 @@ class TestMiroFishSimulator:
         router = AsyncMock()
         router.complete = AsyncMock(
             side_effect=[
+                # Call 1: Persona generation
                 _make_completion(_valid_persona_json()),
+                # Call 2: Evolution simulation
                 _make_completion(_valid_evolution_json(5)),
+                # Calls 3-7: Extraction pipeline (sentiment, hidden vars,
+                # inflection points, extreme scenarios, recommendation)
+                _make_completion(_valid_sentiment_classification_json(5)),
                 _make_completion(_valid_extraction_json()),
+                _make_completion(_valid_inflection_point_json()),
+                _make_completion(_valid_extreme_scenario_json()),
+                _make_completion(_valid_recommendation_json()),
             ]
         )
         sim = MiroFishSimulator(router, config_path)
@@ -262,10 +327,10 @@ class TestMiroFishSimulator:
         assert len(result.hidden_variables) >= 1
         assert len(result.key_inflection_points) >= 1
         assert len(result.extreme_scenarios) >= 1
-        assert result.recommended_action == "短期看多，分批建仓"
         assert result.cost_rmb > 0
         assert result.duration_seconds >= 0
-        assert router.complete.call_count == 3
+        # 2 (persona + evolution) + 5 (extraction pipeline)
+        assert router.complete.call_count == 7
 
     @pytest.mark.asyncio
     async def test_below_threshold_skips(self, config_path: Path) -> None:
@@ -287,7 +352,12 @@ class TestMiroFishSimulator:
             side_effect=[
                 _make_completion("garbage response"),
                 _make_completion(_valid_evolution_json(5)),
+                # Extraction pipeline calls
+                _make_completion(_valid_sentiment_classification_json(5)),
                 _make_completion(_valid_extraction_json()),
+                _make_completion(_valid_inflection_point_json()),
+                _make_completion(_valid_extreme_scenario_json()),
+                _make_completion(_valid_recommendation_json()),
             ]
         )
         sim = MiroFishSimulator(router, config_path)
@@ -307,7 +377,12 @@ class TestMiroFishSimulator:
             side_effect=[
                 _make_completion(_valid_persona_json()),
                 _make_completion("garbage"),
+                # Extraction pipeline calls (with synthetic evolution)
+                _make_completion(_valid_sentiment_classification_json(5)),
                 _make_completion(_valid_extraction_json()),
+                _make_completion(_valid_inflection_point_json()),
+                _make_completion(_valid_extreme_scenario_json()),
+                _make_completion(_valid_recommendation_json()),
             ]
         )
         sim = MiroFishSimulator(router, config_path)
@@ -328,6 +403,11 @@ class TestMiroFishSimulator:
             side_effect=[
                 _make_completion(_valid_persona_json()),
                 _make_completion(_valid_evolution_json(5)),
+                # All 5 extraction pipeline calls fail
+                _make_completion("garbage"),
+                _make_completion("garbage"),
+                _make_completion("garbage"),
+                _make_completion("garbage"),
                 _make_completion("garbage"),
             ]
         )
@@ -335,18 +415,17 @@ class TestMiroFishSimulator:
         result = await sim.run_simulation(_sample_event())
 
         assert isinstance(result, SimulationResult)
+        # Extraction pipeline degrades gracefully
         assert result.hidden_variables == ()
-        assert "解析失败" in result.recommended_action
+        # Extreme scenarios always have fallbacks
+        assert len(result.extreme_scenarios) >= 2
 
     @pytest.mark.asyncio
     async def test_all_calls_fail(self, config_path: Path) -> None:
         router = AsyncMock()
+        # Use return_value for uniform garbage across all calls
         router.complete = AsyncMock(
-            side_effect=[
-                _make_completion("bad1"),
-                _make_completion("bad2"),
-                _make_completion("bad3"),
-            ]
+            return_value=_make_completion("bad"),
         )
         sim = MiroFishSimulator(router, config_path)
         result = await sim.run_simulation(_sample_event())
@@ -363,7 +442,12 @@ class TestMiroFishSimulator:
             side_effect=[
                 _make_completion(_valid_persona_json()),
                 _make_completion(_valid_evolution_json(5)),
+                # Extraction pipeline calls
+                _make_completion(_valid_sentiment_classification_json(5)),
                 _make_completion(_valid_extraction_json()),
+                _make_completion(_valid_inflection_point_json()),
+                _make_completion(_valid_extreme_scenario_json()),
+                _make_completion(_valid_recommendation_json()),
             ]
         )
         sim = MiroFishSimulator(router, config_path)

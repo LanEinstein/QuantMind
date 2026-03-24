@@ -1,7 +1,8 @@
 """MiroFish financial simulation adapter.
 
 Replaces MiroFish's heavyweight pipeline (GraphRAG + Zep + OASIS, 4-8 hours)
-with 3 structured LLM calls through our LLM Router (~30-60 seconds).
+with 2 structured LLM calls for persona/evolution, then delegates extraction
+to the HiddenVariableExtractionPipeline (~30-60 seconds total).
 Full OASIS integration planned for Phase 3 (P3-T01).
 """
 
@@ -15,14 +16,17 @@ import structlog
 import yaml
 
 from backend.agents.base import call_agent
+from backend.mirofish.extractors import HiddenVariableExtractionPipeline
+from backend.mirofish.extractors.schemas import (
+    RawSimulationOutput,
+    SentimentSnapshotRaw,
+)
 from backend.mirofish.prompts import (
     EVOLUTION_SIMULATION_PROMPT,
-    EXTRACTION_PROMPT,
     PERSONA_GENERATION_PROMPT,
 )
 from backend.mirofish.report_parser import (
     parse_evolution_response,
-    parse_extraction_response,
     parse_persona_response,
 )
 from backend.mirofish.schemas import (
@@ -43,12 +47,14 @@ _DEFAULT_CONFIG_PATH = Path("config/mirofish.yaml")
 class MiroFishSimulator:
     """LLM-driven financial event simulation adapter.
 
-    Makes 3 sequential LLM calls via the intelligence_officer agent:
+    Makes 2 sequential LLM calls via the intelligence_officer agent:
     1. Persona generation + initial sentiment
     2. Multi-round sentiment evolution
-    3. Hidden variable extraction + inflection points
 
-    Each call has independent fallback. The simulator never raises;
+    Then delegates extraction to HiddenVariableExtractionPipeline which
+    runs 4 specialized extractors + 1 recommendation generator.
+
+    Each step has independent fallback. The simulator never raises;
     it always returns a valid SimulationResult (potentially degraded).
     """
 
@@ -62,6 +68,7 @@ class MiroFishSimulator:
         self._config = self._load_config(self._config_path)
         self._trigger_threshold_value = self._read_threshold(self._config_path)
         self._cost_params = self._read_cost_params(self._config_path)
+        self._extraction_pipeline = HiddenVariableExtractionPipeline(router)
         self._log = log
 
     async def run_simulation(
@@ -147,51 +154,64 @@ class MiroFishSimulator:
                 initial_sentiment, config.rounds
             )
 
-        # --- Call 3: Extraction ---
-        evolution_text = "\n".join(
-            f"Round {s.round}: 看多{s.bullish:.2f} "
-            f"看空{s.bearish:.2f} 中性{s.neutral:.2f}"
-            for s in evolution
-        )
-        user_content_3 = (
-            f"金融事件: {event_summary}\n"
-            f"事件详情: {event.content[:500]}\n"
-            f"涉及板块: {', '.join(event.sectors)}\n\n"
-            f"情绪演变数据:\n{evolution_text}"
-        )
-        prompts_text.append(user_content_3)
-        raw_3 = await call_agent(
-            self._router,
-            "intelligence_officer",
-            EXTRACTION_PROMPT,
-            user_content_3,
-        )
-        responses_text.append(raw_3)
-
-        extraction = parse_extraction_response(raw_3)
-        if not extraction:
-            self._log.warning("extraction_parse_failed")
-            extraction = {
-                "hidden_variables": (),
-                "key_inflection_points": (),
-                "extreme_scenarios": (),
-                "recommended_action": "仿真结果解析失败，请参考其他分析报告",
-            }
-
-        duration = time.monotonic() - start
-        cost = self._estimate_cost(prompts_text, responses_text)
-
-        return SimulationResult(
+        # --- Extraction pipeline (replaces monolithic call 3) ---
+        raw_sim = RawSimulationOutput(
+            event_title=event.title,
+            event_content=event.content,
+            event_sectors=event.sectors,
+            event_stocks=event.stocks,
             event_summary=event_summary,
-            simulation_config=config,
-            sentiment_evolution=evolution,
-            hidden_variables=extraction["hidden_variables"],
-            key_inflection_points=extraction["key_inflection_points"],
-            extreme_scenarios=extraction["extreme_scenarios"],
-            recommended_action=extraction["recommended_action"],
-            cost_rmb=cost,
-            duration_seconds=round(duration, 2),
+            initial_sentiment=initial_sentiment,
+            sentiment_evolution=tuple(
+                SentimentSnapshotRaw(
+                    round=s.round,
+                    bullish=s.bullish,
+                    bearish=s.bearish,
+                    neutral=s.neutral,
+                )
+                for s in evolution
+            ),
+            agent_count=config.agent_count,
+            rounds=config.rounds,
         )
+
+        try:
+            extraction = await self._extraction_pipeline.extract_all(
+                raw_sim
+            )
+            duration = time.monotonic() - start
+            # Cost includes persona + evolution calls. The extraction
+            # pipeline makes 5 additional calls; estimate their cost
+            # as ~2.5x the average of the first 2 calls (extraction
+            # prompts are similar-sized but there are 5 of them).
+            base_cost = self._estimate_cost(prompts_text, responses_text)
+            pipeline_multiplier = 3.5  # 2 base + 5 pipeline ≈ 3.5x
+            total_cost = round(base_cost * pipeline_multiplier, 4)
+
+            return self._extraction_pipeline.to_simulation_result(
+                extraction,
+                config,
+                cost_rmb=total_cost,
+                duration_seconds=round(duration, 2),
+            )
+        except Exception as exc:
+            self._log.warning(
+                "extraction_pipeline_failed", error=str(exc)
+            )
+            duration = time.monotonic() - start
+            cost = self._estimate_cost(prompts_text, responses_text)
+
+            return SimulationResult(
+                event_summary=event_summary,
+                simulation_config=config,
+                sentiment_evolution=evolution,
+                hidden_variables=(),
+                key_inflection_points=(),
+                extreme_scenarios=(),
+                recommended_action="提取管道执行失败，请参考其他分析报告",
+                cost_rmb=cost,
+                duration_seconds=round(duration, 2),
+            )
 
     def _load_config(self, path: Path) -> SimulationConfig:
         """Load simulation config from YAML."""
