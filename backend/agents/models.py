@@ -70,4 +70,5 @@ class AnalysisServices(BaseModel):
     history_data: Any  # HistoryDataService
     news_crawler: Any  # NewsCrawlerService
     mirofish_simulator: Any = None  # MiroFishSimulator (optional)
+    mongodb: Any = None  # MongoDBService (optional, for simulation persistence)
     pipeline_config: PipelineConfig = PipelineConfig()

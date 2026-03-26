@@ -27,4 +27,13 @@ export async function apiGet<T>(url: string, params?: Record<string, unknown>): 
   return envelope.data
 }
 
+/** Typed POST helper. */
+export async function apiPost<T>(url: string, data?: unknown): Promise<T> {
+  const envelope = (await instance.post(url, data)) as unknown as ApiEnvelope<T>
+  if (envelope.status === 'error') {
+    throw new Error(envelope.error ?? 'Unknown API error')
+  }
+  return envelope.data
+}
+
 export default instance

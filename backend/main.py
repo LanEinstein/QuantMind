@@ -11,6 +11,8 @@ from fastapi import FastAPI, Request
 
 from backend.api.analysis import router as analysis_router
 from backend.api.market import router as market_router
+from backend.api.simulation import router as simulation_router
+from backend.api.trading import router as trading_router
 from backend.llm.router import LLMRouter
 
 log = structlog.get_logger()
@@ -70,6 +72,32 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     log.info("data_layer_initialized")
 
 
+async def _init_trading_layer(application: FastAPI) -> None:
+    """Initialize the trading subsystem: broker registry, approval queue, risk config."""
+    from backend.broker.approval_queue import ApprovalQueue
+    from backend.broker.models import BrokerConfig, load_broker_config, load_risk_config
+    from backend.broker.registry import BrokerRegistry
+
+    try:
+        broker_config = load_broker_config("config/broker.yaml")
+    except Exception as exc:
+        log.warning("broker_config_load_failed", error=str(exc))
+        broker_config = BrokerConfig()
+
+    registry = BrokerRegistry(broker_config)
+    application.state.broker_registry = registry
+    application.state.approval_queue = ApprovalQueue(registry)
+
+    try:
+        risk_config = load_risk_config("config/risk.yaml")
+        application.state.risk_config = risk_config
+    except Exception as exc:
+        log.warning("risk_config_load_failed", error=str(exc))
+        application.state.risk_config = None
+
+    log.info("trading_layer_initialized")
+
+
 async def _shutdown_data_layer(application: FastAPI) -> None:
     """Shut down the data layer services."""
     if hasattr(application.state, "scheduler"):
@@ -96,6 +124,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     await _init_data_layer(application, redis_pool)
 
+    # Trading subsystem
+    await _init_trading_layer(application)
+
     log.info("application_started")
     yield
 
@@ -121,6 +152,8 @@ def get_llm_router(request: Request) -> LLMRouter:
 
 app.include_router(market_router)
 app.include_router(analysis_router)
+app.include_router(simulation_router)
+app.include_router(trading_router)
 
 
 @app.get("/api/health")

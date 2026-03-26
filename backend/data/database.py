@@ -67,6 +67,12 @@ class MongoDBService:
             background=True,
         )
 
+        simulations = self._db["simulations"]
+        await simulations.create_index(
+            [("created_at", DESCENDING)],
+            background=True,
+        )
+
         self._log.info("mongodb_indexes_created")
 
     async def save_market_snapshot(

@@ -93,6 +93,24 @@ async def intelligence_officer_node(
                         "mirofish_simulations_complete",
                         count=len(results),
                     )
+                    # Persist simulation results to MongoDB for browsing
+                    if services.mongodb is not None:
+                        from datetime import datetime, timezone
+
+                        coll = services.mongodb._db["simulations"]
+                        for r, ev in zip(results, events):
+                            doc = {
+                                **r.model_dump(mode="json"),
+                                "event": ev.model_dump(mode="json"),
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            try:
+                                await coll.insert_one(doc)
+                            except Exception as store_exc:
+                                log.warning(
+                                    "simulation_persist_failed",
+                                    error=str(store_exc),
+                                )
         except Exception as exc:
             log.warning("mirofish_pipeline_failed", error=str(exc))
 

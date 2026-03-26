@@ -18,6 +18,30 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AgentDebate.vue'),
     meta: { title: 'Agent辩论', icon: 'ChatDotRound' },
   },
+  {
+    path: '/simulation',
+    name: 'Simulation',
+    component: () => import('@/views/Simulation.vue'),
+    meta: { title: 'MiroFish仿真', icon: 'TrendCharts' },
+  },
+  {
+    path: '/portfolio',
+    name: 'Portfolio',
+    component: () => import('@/views/Portfolio.vue'),
+    meta: { title: '组合管理', icon: 'Briefcase' },
+  },
+  {
+    path: '/performance',
+    name: 'Performance',
+    component: () => import('@/views/Performance.vue'),
+    meta: { title: '绩效报告', icon: 'DataAnalysis' },
+  },
+  {
+    path: '/risk-center',
+    name: 'RiskCenter',
+    component: () => import('@/views/RiskCenter.vue'),
+    meta: { title: '风控中心', icon: 'Shield' },
+  },
 ]
 
 const router = createRouter({

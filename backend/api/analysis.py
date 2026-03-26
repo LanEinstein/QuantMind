@@ -56,6 +56,7 @@ async def analyze_stock(request: Request, body: AnalysisRequest) -> dict[str, An
             market_data=request.app.state.market_data,
             history_data=request.app.state.history_data,
             news_crawler=request.app.state.news_crawler,
+            mongodb=getattr(request.app.state, "mongodb", None),
             pipeline_config=PipelineConfig(
                 max_debate_rounds=body.max_debate_rounds
             ),
