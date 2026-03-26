@@ -49,7 +49,7 @@
           </template>
           <EquityCurve
             :data="store.equityCurve"
-            :benchmark-label="store.getBenchmarkLabel()"
+            :benchmark-label="store.benchmarkLabel"
           />
         </el-card>
       </el-col>
@@ -150,6 +150,7 @@ onMounted(async () => {
 })
 
 async function onFilterChange() {
+  if (store.timeRange === 'custom') return
   await store.fetchData()
 }
 

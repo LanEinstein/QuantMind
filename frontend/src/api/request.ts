@@ -36,4 +36,15 @@ export async function apiPost<T>(url: string, data?: unknown): Promise<T> {
   return envelope.data
 }
 
+/** Download helper for binary responses (bypasses envelope unwrapping). */
+export async function apiDownload(url: string, params?: Record<string, unknown>): Promise<Blob> {
+  const response = await axios.get(url, {
+    baseURL: instance.defaults.baseURL,
+    timeout: instance.defaults.timeout,
+    params,
+    responseType: 'blob',
+  })
+  return response.data as Blob
+}
+
 export default instance

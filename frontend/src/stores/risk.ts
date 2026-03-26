@@ -70,8 +70,10 @@ export const useRiskStore = defineStore('risk', () => {
       riskStatus.value = await riskApi.getStatus()
       return true
     } catch {
-      console.warn('Failed to fetch risk status, using mock data')
-      if (isDev) riskStatus.value = mockRiskStatus()
+      if (isDev) {
+        console.warn('Failed to fetch risk status, using mock data')
+        riskStatus.value = mockRiskStatus()
+      }
       return isDev
     }
   }
@@ -81,8 +83,10 @@ export const useRiskStore = defineStore('risk', () => {
       radarData.value = await riskApi.getRadarData()
       return true
     } catch {
-      console.warn('Failed to fetch radar data, using mock data')
-      if (isDev) radarData.value = mockRadarData()
+      if (isDev) {
+        console.warn('Failed to fetch radar data, using mock data')
+        radarData.value = mockRadarData()
+      }
       return isDev
     }
   }
@@ -92,8 +96,10 @@ export const useRiskStore = defineStore('risk', () => {
       config.value = await riskApi.getConfig()
       return true
     } catch {
-      console.warn('Failed to fetch risk config, using mock data')
-      if (isDev) config.value = mockRiskConfig()
+      if (isDev) {
+        console.warn('Failed to fetch risk config, using mock data')
+        config.value = mockRiskConfig()
+      }
       return isDev
     }
   }
@@ -106,8 +112,10 @@ export const useRiskStore = defineStore('risk', () => {
       })
       return true
     } catch {
-      console.warn('Failed to fetch risk events, using mock data')
-      if (isDev) events.value = mockRiskEvents()
+      if (isDev) {
+        console.warn('Failed to fetch risk events, using mock data')
+        events.value = mockRiskEvents()
+      }
       return isDev
     }
   }
@@ -124,14 +132,24 @@ export const useRiskStore = defineStore('risk', () => {
     status.value = allFailed ? 'error' : 'loaded'
   }
 
-  async function updateConfig(updates: Partial<RiskConfig>) {
-    const updated = await riskApi.updateConfig(updates)
-    config.value = updated
+  async function updateConfig(updates: Partial<RiskConfig>): Promise<void> {
+    const previous = config.value
+    try {
+      config.value = await riskApi.updateConfig(updates)
+    } catch (e) {
+      config.value = previous
+      throw e
+    }
   }
 
-  async function switchAuthMode(mode: AuthorizationMode) {
-    const updated = await riskApi.switchAuthMode(mode)
-    riskStatus.value = updated
+  async function switchAuthMode(mode: AuthorizationMode): Promise<void> {
+    const previous = riskStatus.value
+    try {
+      riskStatus.value = await riskApi.switchAuthMode(mode)
+    } catch (e) {
+      riskStatus.value = previous
+      throw e
+    }
   }
 
   return {

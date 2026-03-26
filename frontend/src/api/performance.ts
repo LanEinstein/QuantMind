@@ -1,6 +1,6 @@
 /** API client for performance analytics endpoints. */
 
-import { apiGet } from './request'
+import { apiGet, apiDownload } from './request'
 import type { PerformanceData } from '@/types/performance'
 
 export const performanceApi = {
@@ -17,6 +17,6 @@ export const performanceApi = {
   },
 
   exportReport(type: 'daily' | 'weekly' | 'monthly'): Promise<Blob> {
-    return apiGet<Blob>(`/api/performance/export/${type}`)
+    return apiDownload(`/api/performance/export/${type}`)
   },
 }

@@ -81,7 +81,7 @@ function getAccuracyClass(value: number): string {
   font-weight: 700;
   margin-left: 4px;
 
-  &.high { color: $color-down; } // green = good in this context
+  &.high { color: $status-green; }
   &.mid { color: $color-flat; }
   &.low { color: $text-muted; }
 }
@@ -99,7 +99,7 @@ function getAccuracyClass(value: number): string {
   border-radius: 2px;
   transition: width 0.6s ease;
 
-  &.high { background: $color-down; } // green
+  &.high { background: $status-green; }
   &.mid { background: $color-flat; }
   &.low { background: $text-muted; }
 }

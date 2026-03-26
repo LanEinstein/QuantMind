@@ -5,6 +5,7 @@ import type {
   RiskStatus,
   RiskConfig,
   RiskEvent,
+  RiskEventLevel,
   RiskRadarData,
   AuthorizationMode,
 } from '@/types/risk'
@@ -27,7 +28,7 @@ export const riskApi = {
   },
 
   getEvents(params: {
-    level?: string
+    level?: RiskEventLevel
     start_date?: string
     end_date?: string
     limit?: number

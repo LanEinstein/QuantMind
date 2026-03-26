@@ -284,7 +284,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { Loading, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRiskStore } from '@/stores/risk'
@@ -293,8 +293,18 @@ import RiskRadar from '@/components/charts/RiskRadar.vue'
 
 const store = useRiskStore()
 
-// Local mutable copy of config for the form
-const editConfig = reactive<RiskConfig>({
+/** Mutable form buffer — intentionally writable (RiskConfig fields are readonly). */
+interface EditableRiskConfig {
+  single_stock_limit: number
+  total_position_limit: number
+  stop_loss_threshold: number
+  circuit_breaker_threshold: number
+  llm_timeout_seconds: number
+  llm_max_consecutive_failures: number
+  price_deviation_limit: number
+}
+
+const defaultConfig: EditableRiskConfig = {
   single_stock_limit: 20,
   total_position_limit: 80,
   stop_loss_threshold: -8,
@@ -302,31 +312,40 @@ const editConfig = reactive<RiskConfig>({
   llm_timeout_seconds: 30,
   llm_max_consecutive_failures: 3,
   price_deviation_limit: 5,
-})
+}
 
-// Sync edit config when store config loads
+// Local mutable copy of config for the form — replaced immutably on sync
+const editConfig = ref<EditableRiskConfig>({ ...defaultConfig })
+
+// Sync edit config when store config loads (immutable replacement)
 watch(
   () => store.config,
   (cfg) => {
     if (cfg) {
-      Object.assign(editConfig, cfg)
+      editConfig.value = { ...cfg }
     }
   },
   { immediate: true },
 )
 
+const STATUS_CLASS_MAP: Record<string, string> = {
+  normal: 'status-normal',
+  warning: 'status-warning',
+  circuit_breaker: 'status-critical',
+}
+
 const statusClass = computed(() => {
   const level = store.riskStatus?.system_status ?? 'normal'
-  return {
-    normal: 'status-normal',
-    warning: 'status-warning',
-    circuit_breaker: 'status-critical',
-  }[level]
+  return STATUS_CLASS_MAP[level] ?? 'status-normal'
 })
 
 onMounted(async () => {
   await store.fetchAll()
 })
+
+function isUserDismissal(e: unknown): boolean {
+  return e === 'cancel' || e === 'close'
+}
 
 async function onSaveConfig(field: keyof RiskConfig) {
   try {
@@ -335,32 +354,39 @@ async function onSaveConfig(field: keyof RiskConfig) {
       '风控参数修改',
       { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
     )
-    await store.updateConfig({ [field]: editConfig[field] })
+    await store.updateConfig({ [field]: editConfig.value[field] })
     ElMessage.success('参数已更新')
     await store.fetchRadarData()
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isUserDismissal(e)) {
       ElMessage.error('更新失败')
     }
   }
 }
 
+const VALID_AUTH_MODES = new Set<AuthorizationMode>(['suggestion', 'semi_auto', 'full_auto'])
+
+const AUTH_MODE_LABELS: Record<string, string> = {
+  suggestion: '建议模式',
+  semi_auto: '半自动模式',
+  full_auto: '全自动模式',
+}
+
 async function onSwitchAuthMode(mode: string) {
-  const labels: Record<string, string> = {
-    suggestion: '建议模式',
-    semi_auto: '半自动模式',
-    full_auto: '全自动模式',
+  if (!VALID_AUTH_MODES.has(mode as AuthorizationMode)) {
+    ElMessage.error(`未知的授权模式: ${mode}`)
+    return
   }
   try {
     await ElMessageBox.confirm(
-      `确认切换授权模式为 "${labels[mode]}"？\n此操作将立即生效。`,
+      `确认切换授权模式为 "${AUTH_MODE_LABELS[mode]}"？\n此操作将立即生效。`,
       '授权模式切换',
       { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
     )
     await store.switchAuthMode(mode as AuthorizationMode)
-    ElMessage.success(`已切换至${labels[mode]}`)
+    ElMessage.success(`已切换至${AUTH_MODE_LABELS[mode]}`)
   } catch (e) {
-    if (e !== 'cancel') {
+    if (!isUserDismissal(e)) {
       ElMessage.error('模式切换失败')
     }
   }
@@ -372,6 +398,7 @@ async function onEventFilterChange() {
 
 function formatTimestamp(ts: string): string {
   const d = new Date(ts)
+  if (isNaN(d.getTime())) return ts
   const pad = (n: number) => n.toString().padStart(2, '0')
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }

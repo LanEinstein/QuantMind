@@ -49,22 +49,14 @@ export const usePerformanceStore = defineStore('performance', () => {
     }
     const now = new Date()
     const end = now.toISOString().slice(0, 10)
-    const startDate = new Date(now)
 
-    switch (timeRange.value) {
-      case 'week':
-        startDate.setDate(startDate.getDate() - 7)
-        break
-      case 'month':
-        startDate.setMonth(startDate.getMonth() - 1)
-        break
-      case 'quarter':
-        startDate.setMonth(startDate.getMonth() - 3)
-        break
-      case 'year':
-        startDate.setFullYear(startDate.getFullYear() - 1)
-        break
+    const offsets: Record<string, () => Date> = {
+      week: () => new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7),
+      month: () => new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()),
+      quarter: () => new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()),
+      year: () => new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()),
     }
+    const startDate = (offsets[timeRange.value] ?? offsets.month)()
     return { start: startDate.toISOString().slice(0, 10), end }
   }
 
@@ -75,9 +67,7 @@ export const usePerformanceStore = defineStore('performance', () => {
     none: '无',
   }
 
-  function getBenchmarkLabel(): string {
-    return benchmarkLabels[benchmark.value]
-  }
+  const benchmarkLabel = computed((): string => benchmarkLabels[benchmark.value])
 
   async function fetchData() {
     status.value = 'loading'
@@ -91,8 +81,8 @@ export const usePerformanceStore = defineStore('performance', () => {
       })
       status.value = 'loaded'
     } catch {
-      console.warn('Failed to fetch performance data, using mock data')
       if (isDev) {
+        console.warn('Failed to fetch performance data, using mock data')
         data.value = mockPerformanceData()
         status.value = 'loaded'
       } else {
@@ -113,7 +103,7 @@ export const usePerformanceStore = defineStore('performance', () => {
     drawdownCurve,
     modelContributions,
     getDateRange,
-    getBenchmarkLabel,
+    benchmarkLabel,
     fetchData,
   }
 })

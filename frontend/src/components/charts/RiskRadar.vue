@@ -50,8 +50,8 @@ const chartOption = computed(() => {
   ]
 
   const currentValues = axes.map((a) => {
-    // Normalized to 0-100 scale based on limit
-    return Math.round((a.current / a.limit) * 100)
+    // Normalized to 0-100 scale based on limit (guard against zero limit)
+    return a.limit !== 0 ? Math.round((a.current / a.limit) * 100) : 0
   })
 
   const limitValues = axes.map(() => 100)
