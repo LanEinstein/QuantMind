@@ -42,6 +42,11 @@ Thumbs.db
 # Frontend
 node_modules/
 frontend/dist/
+frontend/test-results/
+
+# Test / build artifacts
+.coverage
+*.tsbuildinfo
 
 # Claude
 .claude/

@@ -11,9 +11,11 @@ from fastapi import FastAPI, Request
 
 from backend.api.analysis import router as analysis_router
 from backend.api.market import router as market_router
+from backend.api.settings import router as settings_router
 from backend.api.simulation import router as simulation_router
 from backend.api.trading import router as trading_router
 from backend.llm.router import LLMRouter
+from backend.services.config_service import ConfigService
 
 log = structlog.get_logger()
 
@@ -121,6 +123,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     application.state.redis = redis_pool
     application.state.llm_router = router
+    application.state.config_service = ConfigService(redis_client=redis_pool)
 
     await _init_data_layer(application, redis_pool)
 
@@ -154,6 +157,7 @@ app.include_router(market_router)
 app.include_router(analysis_router)
 app.include_router(simulation_router)
 app.include_router(trading_router)
+app.include_router(settings_router)
 
 
 @app.get("/api/health")

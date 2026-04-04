@@ -42,6 +42,38 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RiskCenter.vue'),
     meta: { title: '风控中心', icon: 'Shield' },
   },
+  {
+    path: '/settings',
+    component: () => import('@/views/settings/SettingsLayout.vue'),
+    meta: { title: '系统设置', icon: 'Setting' },
+    redirect: '/settings/llm-router',
+    children: [
+      {
+        path: 'llm-router',
+        name: 'SettingsLLMRouter',
+        component: () => import('@/views/settings/LLMRouter.vue'),
+        meta: { title: 'LLM路由配置' },
+      },
+      {
+        path: 'data-sources',
+        name: 'SettingsDataSources',
+        component: () => import('@/views/settings/DataSources.vue'),
+        meta: { title: '数据源' },
+      },
+      {
+        path: 'mirofish',
+        name: 'SettingsMiroFish',
+        component: () => import('@/views/settings/MiroFishConfig.vue'),
+        meta: { title: 'MiroFish配置' },
+      },
+      {
+        path: 'cost-dashboard',
+        name: 'SettingsCostDashboard',
+        component: () => import('@/views/settings/CostDashboard.vue'),
+        meta: { title: '成本统计' },
+      },
+    ],
+  },
 ]
 
 const router = createRouter({
