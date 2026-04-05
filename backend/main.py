@@ -11,9 +11,12 @@ from fastapi import FastAPI, Request
 
 from backend.api.analysis import router as analysis_router
 from backend.api.market import router as market_router
+from backend.api.performance import router as performance_router
+from backend.api.risk import router as risk_router
 from backend.api.settings import router as settings_router
 from backend.api.simulation import router as simulation_router
 from backend.api.trading import router as trading_router
+from backend.api.websocket import router as websocket_router
 from backend.llm.router import LLMRouter
 from backend.services.config_service import ConfigService
 
@@ -130,10 +133,23 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # Trading subsystem
     await _init_trading_layer(application)
 
+    # WebSocket Redis subscriber (bridges Redis pub/sub → WebSocket clients)
+    import asyncio
+
+    from backend.api.websocket import _subscribe_and_forward
+
+    ws_subscriber_task = asyncio.create_task(_subscribe_and_forward(redis_pool))
+
     log.info("application_started")
     yield
 
     # -- Shutdown --
+    ws_subscriber_task.cancel()
+    try:
+        await ws_subscriber_task
+    except asyncio.CancelledError:
+        pass
+
     await _shutdown_data_layer(application)
     await router.close()
     await redis_pool.aclose()
@@ -158,6 +174,9 @@ app.include_router(analysis_router)
 app.include_router(simulation_router)
 app.include_router(trading_router)
 app.include_router(settings_router)
+app.include_router(risk_router)
+app.include_router(performance_router)
+app.include_router(websocket_router)
 
 
 @app.get("/api/health")
