@@ -31,10 +31,33 @@ from backend.mirofish.schemas import (
     ExtremeScenario,
     HiddenVariable,
     InflectionPoint,
+    InflectionTypeLiteral,
+    MomentumDirection,
+    ScenarioDirection,
     SentimentSnapshot,
     SimulationConfig,
     SimulationResult,
 )
+
+_VALID_INFLECTION_TYPES: frozenset[str] = frozenset(
+    {"sentiment_reversal", "narrative_convergence", "cascade_trigger", "exhaustion"}
+)
+_VALID_SCENARIO_DIRECTIONS: frozenset[str] = frozenset({"upside", "downside"})
+_VALID_MOMENTUM_DIRECTIONS: frozenset[str] = frozenset(
+    {"bullish_to_bearish", "bearish_to_bullish"}
+)
+
+
+def _normalize_inflection_type(value: str) -> InflectionTypeLiteral:
+    return value if value in _VALID_INFLECTION_TYPES else ""  # type: ignore[return-value]
+
+
+def _normalize_scenario_direction(value: str) -> ScenarioDirection:
+    return value if value in _VALID_SCENARIO_DIRECTIONS else ""  # type: ignore[return-value]
+
+
+def _normalize_momentum_direction(value: str) -> MomentumDirection:
+    return value if value in _VALID_MOMENTUM_DIRECTIONS else ""  # type: ignore[return-value]
 
 if TYPE_CHECKING:
     from backend.llm.router import LLMRouter
@@ -157,10 +180,11 @@ class HiddenVariableExtractionPipeline:
         cost_rmb: float,
         duration_seconds: float,
     ) -> SimulationResult:
-        """Map ExtractionResult to SimulationResult for backward compat.
+        """Map ExtractionResult to SimulationResult preserving all enriched fields.
 
-        Converts enriched types back to base schema types so existing
-        formatter and downstream consumers continue to work.
+        All enriched data is carried through directly — no stringification.
+        Pydantic defaults on SimulationResult ensure legacy MongoDB documents
+        (missing new fields) continue to deserialize without migration.
 
         Args:
             extraction: Full extraction pipeline output.
@@ -177,6 +201,8 @@ class HiddenVariableExtractionPipeline:
                 bullish=r.bullish,
                 bearish=r.bearish,
                 neutral=r.neutral,
+                dominant_narrative=r.dominant_narrative,
+                intensity=r.intensity,
             )
             for r in extraction.sentiment_rounds
         )
@@ -185,11 +211,9 @@ class HiddenVariableExtractionPipeline:
             HiddenVariable(
                 variable=hv.variable,
                 probability=hv.probability,
-                reasoning=(
-                    f"{hv.reasoning} "
-                    f"[consensus={hv.agent_consensus_ratio:.0%}] "
-                    f"[{hv.disclaimer}]"
-                ),
+                reasoning=hv.reasoning,
+                agent_consensus_ratio=hv.agent_consensus_ratio,
+                is_absent_from_original=hv.is_absent_from_original,
             )
             for hv in extraction.hidden_variables
         )
@@ -197,36 +221,26 @@ class HiddenVariableExtractionPipeline:
         inflection_points = tuple(
             InflectionPoint(
                 day=ip.day,
-                event=(
-                    f"[{ip.inflection_type}] {ip.event} "
-                    f"(confidence={ip.confidence:.0%})"
-                ),
+                event=ip.event,
+                inflection_type=_normalize_inflection_type(ip.inflection_type),
+                before_sentiment=ip.before_sentiment,
+                after_sentiment=ip.after_sentiment,
+                confidence=ip.confidence,
             )
             for ip in extraction.inflection_points
         )
 
         extreme_scenarios = tuple(
             ExtremeScenario(
-                scenario=(
-                    f"[{es.direction}] {es.scenario}"
-                    if es.direction
-                    else es.scenario
-                ),
+                scenario=es.scenario,
                 probability=es.probability,
                 impact=es.impact,
+                direction=_normalize_scenario_direction(es.direction),
+                trigger_conditions=es.trigger_conditions,
+                early_warning_signals=es.early_warning_signals,
             )
             for es in extraction.extreme_scenarios
         )
-
-        # Append momentum shift info to recommended_action
-        action_parts = [extraction.recommended_action]
-        if extraction.momentum_shifts:
-            shift_text = "; ".join(
-                f"R{ms.round_number}: {ms.direction} "
-                f"(magnitude={ms.magnitude:.0%})"
-                for ms in extraction.momentum_shifts
-            )
-            action_parts.append(f"[动量转换: {shift_text}]")
 
         return SimulationResult(
             event_summary=extraction.event_summary,
@@ -235,7 +249,8 @@ class HiddenVariableExtractionPipeline:
             hidden_variables=hidden_variables,
             key_inflection_points=inflection_points,
             extreme_scenarios=extreme_scenarios,
-            recommended_action=" ".join(action_parts),
+            momentum_shifts=extraction.momentum_shifts,
+            recommended_action=extraction.recommended_action,
             cost_rmb=cost_rmb,
             duration_seconds=duration_seconds,
         )

@@ -1,19 +1,5 @@
 <template>
   <div class="sentiment-chart">
-    <div class="chart-toolbar">
-      <el-button
-        :icon="isPlaying ? VideoPause : VideoPlay"
-        circle
-        size="small"
-        @click="togglePlayback"
-      />
-      <span class="playback-label">
-        {{ isPlaying ? '播放中...' : '回放动画' }}
-      </span>
-      <span class="round-indicator">
-        R{{ displayedRound }} / {{ totalRounds }}
-      </span>
-    </div>
     <div class="chart-body">
       <v-chart :option="chartOption" autoresize />
     </div>
@@ -21,8 +7,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onUnmounted, watch } from 'vue'
-import { VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import { computed, inject } from 'vue'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import {
@@ -34,6 +19,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import type { SentimentSnapshot, InflectionPoint } from '@/types/simulation'
+import { PLAYBACK_KEY } from '@/composables/usePlayback'
 
 use([
   LineChart,
@@ -49,53 +35,18 @@ const props = defineProps<{
   inflectionPoints: readonly InflectionPoint[]
 }>()
 
-const totalRounds = computed(() => props.sentimentData.length)
-const displayedRound = ref(totalRounds.value)
-const isPlaying = ref(false)
-let playbackTimer: ReturnType<typeof setInterval> | null = null
-
-// Sync displayedRound when data changes and not playing
-watch(totalRounds, (val) => {
-  if (!isPlaying.value) displayedRound.value = val
-})
-
-function togglePlayback() {
-  if (isPlaying.value) {
-    stopPlayback()
-    displayedRound.value = totalRounds.value
-    return
-  }
-  displayedRound.value = 1
-  isPlaying.value = true
-  playbackTimer = setInterval(() => {
-    if (displayedRound.value >= totalRounds.value) {
-      stopPlayback()
-      return
-    }
-    displayedRound.value += 1
-  }, 400)
-}
-
-function stopPlayback() {
-  isPlaying.value = false
-  if (playbackTimer !== null) {
-    clearInterval(playbackTimer)
-    playbackTimer = null
-  }
-}
-
-onUnmounted(() => {
-  if (playbackTimer !== null) clearInterval(playbackTimer)
-})
+// Inject global playback clock; fall back to showing all data
+const playback = inject(PLAYBACK_KEY)
+const currentRound = computed(() => playback?.currentRound.value ?? props.sentimentData.length)
 
 const visibleData = computed(() =>
-  props.sentimentData.slice(0, displayedRound.value),
+  props.sentimentData.slice(0, currentRound.value),
 )
 
 // Map inflection points to round positions for markLine
 const inflectionMarkLines = computed(() => {
   return props.inflectionPoints
-    .filter((ip) => ip.day <= displayedRound.value)
+    .filter((ip) => ip.day <= currentRound.value)
     .map((ip) => ({
       xAxis: `R${ip.day}`,
       label: {
@@ -112,11 +63,37 @@ const inflectionMarkLines = computed(() => {
     }))
 })
 
+// "Now" line at the current round
+const nowMarkLine = computed(() => {
+  if (visibleData.value.length === 0) return []
+  return [{
+    xAxis: `R${currentRound.value}`,
+    lineStyle: { type: 'solid' as const, color: '#448aff', width: 1.5, opacity: 0.8 },
+    label: {
+      formatter: `R${currentRound.value}`,
+      position: 'insideEndBottom' as const,
+      fontSize: 10,
+      color: '#448aff',
+    },
+  }]
+})
+
+// Per-round intensity drives area opacity (0.3–0.9)
+function intensityToOpacity(intensity: number | undefined): number {
+  const i = intensity ?? 0.5
+  return 0.3 + i * 0.6
+}
+
 const chartOption = computed(() => {
   const rounds = visibleData.value.map((s) => `R${s.round}`)
   const bullish = visibleData.value.map((s) => Math.round(s.bullish * 100))
   const bearish = visibleData.value.map((s) => Math.round(s.bearish * 100))
   const neutral = visibleData.value.map((s) => Math.round(s.neutral * 100))
+  // Average intensity for area opacity (simplified: use last snapshot's value)
+  const lastSnap = visibleData.value[visibleData.value.length - 1]
+  const opacity = intensityToOpacity(lastSnap?.intensity)
+
+  const markLineData = [...inflectionMarkLines.value, ...nowMarkLine.value]
 
   return {
     backgroundColor: 'transparent',
@@ -126,14 +103,6 @@ const chartOption = computed(() => {
       backgroundColor: '#16213e',
       borderColor: '#2a2a4a',
       textStyle: { color: '#e0e0e0', fontSize: 11 },
-      formatter: (params: Array<{ seriesName: string; value: number; marker: string }>) => {
-        const header = params[0] ? `<b>${rounds[params[0].value as unknown as number] ?? ''}</b><br/>` : ''
-        const lines = params.map(
-          (p: { marker: string; seriesName: string; value: number }) =>
-            `${p.marker} ${p.seriesName}: ${p.value}%`,
-        )
-        return header + lines.join('<br/>')
-      },
     },
     legend: {
       top: 4,
@@ -158,31 +127,31 @@ const chartOption = computed(() => {
       },
       splitLine: { lineStyle: { color: '#2a2a4a', type: 'dashed' } },
     },
-    animationDuration: 300,
+    animationDuration: 200,
     series: [
       {
         name: '看多',
         type: 'line',
         stack: 'sentiment',
-        areaStyle: { opacity: 0.6 },
-        lineStyle: { color: '#00c853', width: 1.5 },
-        itemStyle: { color: '#00c853' },
+        areaStyle: { opacity },
+        lineStyle: { color: '#ff1744', width: 1.5 },
+        itemStyle: { color: '#ff1744' },
         smooth: true,
         showSymbol: false,
         data: bullish,
         markLine: {
           silent: true,
           symbol: 'none',
-          data: inflectionMarkLines.value,
+          data: markLineData,
         },
       },
       {
         name: '看空',
         type: 'line',
         stack: 'sentiment',
-        areaStyle: { opacity: 0.6 },
-        lineStyle: { color: '#ff1744', width: 1.5 },
-        itemStyle: { color: '#ff1744' },
+        areaStyle: { opacity },
+        lineStyle: { color: '#00c853', width: 1.5 },
+        itemStyle: { color: '#00c853' },
         smooth: true,
         showSymbol: false,
         data: bearish,
@@ -191,9 +160,9 @@ const chartOption = computed(() => {
         name: '中性',
         type: 'line',
         stack: 'sentiment',
-        areaStyle: { opacity: 0.4 },
-        lineStyle: { color: '#616161', width: 1.5 },
-        itemStyle: { color: '#616161' },
+        areaStyle: { opacity: opacity * 0.6 },
+        lineStyle: { color: '#ffd600', width: 1.5 },
+        itemStyle: { color: '#ffd600' },
         smooth: true,
         showSymbol: false,
         data: neutral,
@@ -208,25 +177,6 @@ const chartOption = computed(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-}
-
-.chart-toolbar {
-  display: flex;
-  align-items: center;
-  gap: $gap-sm;
-  padding-bottom: $gap-sm;
-}
-
-.playback-label {
-  font-size: 12px;
-  color: $text-secondary;
-}
-
-.round-indicator {
-  margin-left: auto;
-  font-size: 11px;
-  font-family: monospace;
-  color: $text-muted;
 }
 
 .chart-body {

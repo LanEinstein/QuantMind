@@ -1,0 +1,56 @@
+// Motion design tokens for MiroFish visualization
+// Polanyi principle: rhythm and movement carry tacit meaning
+
+$ease-organic: cubic-bezier(0.22, 1, 0.36, 1);
+$ease-mechanical: linear; // Deliberate metronome feel for the playback cursor
+
+// Pulse: active dots, round indicators
+@keyframes pulse-soft {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.04); opacity: 0.85; }
+}
+
+// Shimmer: hover feedback on probability bars
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+// Single glow: inflection point hit
+@keyframes glow-once {
+  0% { box-shadow: 0 0 0 rgba(255, 214, 0, 0); }
+  50% { box-shadow: 0 0 12px rgba(255, 214, 0, 0.6); }
+  100% { box-shadow: 0 0 0 rgba(255, 214, 0, 0); }
+}
+
+// Focus mode: sidebar and header hairline collapse
+body.focus-mode {
+  .history-sidebar {
+    width: 36px !important;
+    overflow: hidden;
+    transition: width 0.3s $ease-organic;
+
+    .sidebar-search,
+    .sidebar-header,
+    .history-list {
+      opacity: 0;
+      pointer-events: none;
+    }
+  }
+
+  .simulation-header {
+    height: 36px !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+    transition: height 0.3s $ease-organic;
+
+    .event-title,
+    .importance-badge,
+    .meta-item,
+    .meta-timestamp,
+    .header-icon-btn {
+      opacity: 0;
+      pointer-events: none;
+    }
+  }
+}

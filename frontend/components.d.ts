@@ -59,6 +59,7 @@ declare module 'vue' {
     HiddenVariableMatrix: typeof import('./src/components/charts/HiddenVariableMatrix.vue')['default']
     InflectionTimeline: typeof import('./src/components/charts/InflectionTimeline.vue')['default']
     MarketChart: typeof import('./src/components/charts/MarketChart.vue')['default']
+    MiniSentimentDonut: typeof import('./src/components/charts/MiniSentimentDonut.vue')['default']
     ModelContribution: typeof import('./src/components/charts/ModelContribution.vue')['default']
     NewsFeed: typeof import('./src/components/common/NewsFeed.vue')['default']
     OrderList: typeof import('./src/components/trading/OrderList.vue')['default']

@@ -1,13 +1,17 @@
 """Frozen Pydantic models for the hidden variable extraction pipeline.
 
 These schemas extend the base MiroFish schemas with richer intermediate
-types used by the extraction engine. The pipeline maps these rich types
-back to the base SimulationResult for backward compatibility.
+types used by the extraction engine. The pipeline preserves all enriched
+fields through to SimulationResult without lossy stringification.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Re-export MomentumShift from canonical location so extractor code
+# that imports it from here continues to work without changes.
+from backend.mirofish.schemas import MomentumShift as MomentumShift  # noqa: PLC0414
 
 
 class RawSimulationOutput(BaseModel):
@@ -69,17 +73,6 @@ class SentimentRound(BaseModel):
         return self
 
 
-class MomentumShift(BaseModel):
-    """Detected momentum shift between consecutive rounds."""
-
-    model_config = ConfigDict(frozen=True)
-
-    round_number: int = Field(ge=2)
-    direction: str  # "bullish_to_bearish" or "bearish_to_bullish"
-    magnitude: float = Field(ge=0.0, le=1.0)
-    trigger_narrative: str = ""
-
-
 class AgentAction(BaseModel):
     """A simulated agent's expressed action/opinion."""
 
@@ -113,7 +106,8 @@ class EnrichedInflectionPoint(BaseModel):
 
     day: int = Field(ge=1)
     event: str
-    inflection_type: str = ""  # sentiment_reversal, narrative_convergence, cascade_trigger, exhaustion
+    # sentiment_reversal | narrative_convergence | cascade_trigger | exhaustion
+    inflection_type: str = ""
     before_sentiment: dict[str, float] = Field(default_factory=dict)
     after_sentiment: dict[str, float] = Field(default_factory=dict)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)

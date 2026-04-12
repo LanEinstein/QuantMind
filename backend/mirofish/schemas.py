@@ -5,7 +5,19 @@ Schema matches QuantMind Blueprint V3 section 3.3 exactly.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+MomentumDirection = Literal["bullish_to_bearish", "bearish_to_bullish", ""]
+InflectionTypeLiteral = Literal[
+    "sentiment_reversal",
+    "narrative_convergence",
+    "cascade_trigger",
+    "exhaustion",
+    "",
+]
+ScenarioDirection = Literal["upside", "downside", ""]
 
 
 class EventDescription(BaseModel):
@@ -30,6 +42,17 @@ class SimulationConfig(BaseModel):
     model: str = "MiniMax-M2.5"
 
 
+class MomentumShift(BaseModel):
+    """Detected momentum shift between consecutive simulation rounds."""
+
+    model_config = ConfigDict(frozen=True)
+
+    round_number: int = Field(ge=2)
+    direction: MomentumDirection = ""
+    magnitude: float = Field(ge=0.0, le=1.0)
+    trigger_narrative: str = ""
+
+
 class SentimentSnapshot(BaseModel):
     """Sentiment distribution for a single simulation round."""
 
@@ -39,6 +62,8 @@ class SentimentSnapshot(BaseModel):
     bullish: float = Field(ge=0.0, le=1.0)
     bearish: float = Field(ge=0.0, le=1.0)
     neutral: float = Field(ge=0.0, le=1.0)
+    dominant_narrative: str = ""
+    intensity: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _check_sum(self) -> SentimentSnapshot:
@@ -60,6 +85,8 @@ class HiddenVariable(BaseModel):
     variable: str
     probability: float = Field(ge=0.0, le=1.0)
     reasoning: str
+    agent_consensus_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    is_absent_from_original: bool = True
 
 
 class InflectionPoint(BaseModel):
@@ -69,6 +96,10 @@ class InflectionPoint(BaseModel):
 
     day: int = Field(ge=1)
     event: str
+    inflection_type: InflectionTypeLiteral = ""
+    before_sentiment: dict[str, float] = Field(default_factory=dict)
+    after_sentiment: dict[str, float] = Field(default_factory=dict)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class ExtremeScenario(BaseModel):
@@ -79,6 +110,9 @@ class ExtremeScenario(BaseModel):
     scenario: str
     probability: float = Field(ge=0.0, le=1.0)
     impact: str
+    direction: ScenarioDirection = ""
+    trigger_conditions: str = ""
+    early_warning_signals: str = ""
 
 
 class SimulationResult(BaseModel):
@@ -95,6 +129,7 @@ class SimulationResult(BaseModel):
     hidden_variables: tuple[HiddenVariable, ...]
     key_inflection_points: tuple[InflectionPoint, ...]
     extreme_scenarios: tuple[ExtremeScenario, ...]
+    momentum_shifts: tuple[MomentumShift, ...] = ()
     recommended_action: str
     cost_rmb: float = Field(ge=0.0)
     duration_seconds: float = Field(ge=0.0)

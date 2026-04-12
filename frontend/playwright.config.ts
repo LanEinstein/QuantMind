@@ -16,9 +16,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
+    command: 'npx vite --port 5173 --strictPort',
     port: 5173,
     reuseExistingServer: true,
-    timeout: 30_000,
+    timeout: 120_000,
   },
 })

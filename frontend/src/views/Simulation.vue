@@ -33,6 +33,16 @@
         <span v-if="currentSimulation" class="meta-timestamp">
           {{ formatTimestamp(currentSimulation.created_at) }}
         </span>
+        <button
+          class="header-icon-btn"
+          :title="audioEnabled ? '关闭环境音效' : '开启环境音效'"
+          @click="toggleAudio"
+        >{{ audioEnabled ? '🔊' : '🔇' }}</button>
+        <button
+          class="header-icon-btn"
+          :title="focusMode ? '退出焦点模式(F)' : '进入焦点模式(F)'"
+          @click="toggleFocus"
+        >{{ focusMode ? '⊡' : '⊞' }}</button>
       </div>
     </div>
 
@@ -81,6 +91,26 @@
       <!-- Main Content -->
       <div class="simulation-main">
         <template v-if="currentSimulation">
+          <!-- Global Scrubber -->
+          <div class="scrubber-bar">
+            <span class="scrubber-label">R{{ scrubberRound }}</span>
+            <input
+              type="range"
+              class="scrubber-input"
+              aria-label="仿真轮次时间轴"
+              :min="1"
+              :max="totalRounds"
+              v-model.number="scrubberRound"
+              @mousedown="playback.pause()"
+            />
+            <span class="scrubber-total">/ {{ totalRounds }}</span>
+            <button
+              class="scrubber-play-btn"
+              :aria-label="playback.isPlaying.value ? '暂停' : '播放'"
+              @click="playback.toggle()"
+            >{{ playback.isPlaying.value ? '⏸' : '▶' }}</button>
+          </div>
+
           <!-- Zone Top: Sentiment Chart + Hidden Variables -->
           <el-row :gutter="12" class="zone-top">
             <el-col :span="14">
@@ -112,8 +142,8 @@
                   <span class="card-title">关键拐点时间线</span>
                 </template>
                 <InflectionTimeline
-                  :inflection-points="store.inflectionPoints"
-                  :sentiment-data="store.sentimentData"
+                  :inflection-points="store.enrichedInflections"
+                  @seek="onInflectionSeek"
                 />
               </el-card>
             </el-col>
@@ -122,7 +152,12 @@
                 <template #header>
                   <span class="card-title">极端场景分布</span>
                 </template>
-                <ExtremeScenarioPie :scenarios="store.extremeScenarios" />
+                <ExtremeScenarioPie
+                  :upside-scenarios="store.upsideScenarios"
+                  :downside-scenarios="store.downsideScenarios"
+                  :all-scenarios="store.extremeScenarios"
+                  @open-scenario="openScenario"
+                />
               </el-card>
             </el-col>
           </el-row>
@@ -237,11 +272,42 @@
         <el-empty description="选择另一次仿真进行对比" :image-size="100" />
       </div>
     </el-drawer>
+
+    <!-- Extreme Scenario Drawer -->
+    <el-drawer
+      v-model="scenarioDrawerOpen"
+      size="40%"
+      direction="rtl"
+      :title="selectedScenario?.scenario ?? ''"
+    >
+      <template v-if="selectedScenario">
+        <p class="drawer-subtitle">{{ selectedScenario.trigger_conditions }}</p>
+        <div class="drawer-section">
+          <div class="drawer-label">市场影响</div>
+          <p>{{ selectedScenario.impact }}</p>
+        </div>
+        <div class="drawer-section" v-if="selectedScenario.early_warning_signals">
+          <div class="drawer-label">早期预警信号</div>
+          <ul class="warning-signals">
+            <li
+              v-for="(signal, i) in selectedScenario.early_warning_signals.split(/[\n;；]/).filter(Boolean)"
+              :key="i"
+            >{{ signal.trim() }}</li>
+          </ul>
+        </div>
+        <el-tag
+          :type="selectedScenario.direction === 'upside' ? 'danger' : 'success'"
+          class="direction-tag"
+        >
+          {{ selectedScenario.direction === 'upside' ? '↑ 上行风险' : '↓ 下行风险' }}
+        </el-tag>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, provide, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Search,
@@ -258,10 +324,15 @@ import {
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
 import { useSimulationStore } from '@/stores/simulation'
+import { usePlayback, PLAYBACK_KEY } from '@/composables/usePlayback'
+import { useKeyboardShortcuts } from '@/composables/useKeyboardShortcuts'
+import { useFocusMode } from '@/composables/useFocusMode'
+import { useAmbientTicks } from '@/composables/useAmbientTicks'
 import SentimentChart from '@/components/charts/SentimentChart.vue'
 import HiddenVariableMatrix from '@/components/charts/HiddenVariableMatrix.vue'
 import InflectionTimeline from '@/components/charts/InflectionTimeline.vue'
 import ExtremeScenarioPie from '@/components/charts/ExtremeScenarioPie.vue'
+import type { ExtremeScenario } from '@/types/simulation'
 
 const router = useRouter()
 const store = useSimulationStore()
@@ -270,9 +341,58 @@ const currentId = ref('')
 const showReport = ref(false)
 const showCompare = ref(false)
 
+// --- Global playback clock ---
+const totalRounds = computed(() => store.totalRounds)
+const playback = usePlayback(totalRounds, 400)
+provide(PLAYBACK_KEY, playback)
+
+// Scrubber v-model: two-way binding to playback.currentRound
+const scrubberRound = computed({
+  get: () => playback.currentRound.value,
+  set: (v: number) => { playback.seek(v) },
+})
+
+// --- Composables ---
+const { active: focusMode, toggle: toggleFocus } = useFocusMode()
+const { enabled: audioEnabled, toggle: toggleAudio, playTick } = useAmbientTicks()
+
+watch(() => playback.currentRound.value, () => {
+  if (audioEnabled.value) playTick()
+})
+
+useKeyboardShortcuts(playback, {
+  totalRounds,
+  focusToggle: toggleFocus,
+})
+
+// --- Scenario drawer ---
+const scenarioDrawerOpen = ref(false)
+const selectedScenario = ref<ExtremeScenario | null>(null)
+
+function openScenario(scenario: ExtremeScenario): void {
+  selectedScenario.value = scenario
+  scenarioDrawerOpen.value = true
+}
+
+function onInflectionSeek(day: number): void {
+  playback.seek(day)
+}
+
 let searchDebounce: ReturnType<typeof setTimeout> | null = null
 
 const currentSimulation = computed(() => store.currentSimulation)
+
+watch(
+  () => currentSimulation.value?.id,
+  async (newId, oldId) => {
+    if (!newId || newId === oldId) return
+    playback.reset()
+    if (totalRounds.value > 0) {
+      await nextTick()
+      playback.play()
+    }
+  },
+)
 
 const importanceClass = computed(() => {
   const score = store.importanceScore
@@ -322,6 +442,10 @@ onMounted(async () => {
   await Promise.allSettled([store.fetchLatest(), store.fetchHistory()])
   if (store.currentSimulation) {
     currentId.value = store.currentSimulation.id
+  }
+  if (totalRounds.value > 0) {
+    await nextTick()
+    playback.play()
   }
 })
 </script>
@@ -408,6 +532,21 @@ onMounted(async () => {
   font-size: 11px;
   color: $text-muted;
   font-family: monospace;
+}
+
+.header-icon-btn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+
+  &:hover {
+    opacity: 1;
+  }
 }
 
 // --- Body ---
@@ -545,35 +684,106 @@ onMounted(async () => {
   color: $text-primary;
 }
 
-// --- Recommendation ---
+// --- Scrubber ---
+.scrubber-bar {
+  display: flex;
+  align-items: center;
+  gap: $gap-sm;
+  padding: 6px $gap-md;
+  border-bottom: 1px solid $border-color;
+  background: $bg-card;
+  flex-shrink: 0;
+}
+
+.scrubber-input {
+  flex: 1;
+  height: 4px;
+  cursor: pointer;
+  accent-color: $color-accent;
+}
+
+.scrubber-label,
+.scrubber-total {
+  font-size: 11px;
+  font-family: monospace;
+  color: $text-muted;
+  flex-shrink: 0;
+  width: 36px;
+}
+
+.scrubber-play-btn {
+  background: none;
+  border: none;
+  color: $text-secondary;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+
+  &:hover {
+    color: $color-accent;
+  }
+}
+
+// --- Recommendation (demoted to muted footer) ---
 .recommendation-bar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: $gap-sm;
-  padding: 12px $gap-md;
+  padding: 6px $gap-md;
   margin-bottom: $gap-md;
-  background: rgba(68, 138, 255, 0.06);
-  border: 1px solid rgba(68, 138, 255, 0.2);
-  border-radius: $border-radius;
 
   .el-icon {
-    color: $color-accent;
-    font-size: 16px;
-    margin-top: 2px;
+    display: none;
   }
 }
 
 .recommendation-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: $color-accent;
+  font-size: 12px;
+  font-style: italic;
+  color: $text-muted;
   flex-shrink: 0;
 }
 
 .recommendation-text {
-  font-size: 13px;
-  color: $text-secondary;
+  font-size: 12px;
+  font-style: italic;
+  color: $text-muted;
   line-height: 1.5;
+}
+
+// --- Scenario Drawer ---
+.drawer-subtitle {
+  font-size: 13px;
+  color: $text-muted;
+  margin-bottom: $gap-md;
+}
+
+.drawer-section {
+  margin-bottom: $gap-md;
+}
+
+.drawer-label {
+  font-size: 12px;
+  color: $text-muted;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.warning-signals {
+  margin: 0;
+  padding-left: 18px;
+
+  li {
+    font-size: 13px;
+    color: $text-secondary;
+    line-height: 1.8;
+  }
+}
+
+.direction-tag {
+  margin-top: $gap-md;
 }
 
 // --- Actions ---

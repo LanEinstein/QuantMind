@@ -9,10 +9,19 @@ import pytest
 
 from backend.agents.intelligence_officer import intelligence_officer_node
 from backend.agents.models import AnalysisServices, AnalysisState, PipelineConfig
+from backend.mirofish.extractors import HiddenVariableExtractionPipeline
+from backend.mirofish.extractors.schemas import (
+    EnrichedExtremeScenario,
+    EnrichedHiddenVariable,
+    EnrichedInflectionPoint,
+    ExtractionResult,
+    SentimentRound,
+)
 from backend.mirofish.schemas import (
     ExtremeScenario,
     HiddenVariable,
     InflectionPoint,
+    MomentumShift,
     SentimentSnapshot,
     SimulationConfig,
     SimulationResult,
@@ -259,3 +268,169 @@ class TestIntelligenceOfficerWithMiroFish:
         )
         assert "intelligence_report" in result
         assert services.mirofish_simulator.run_simulation.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Direct to_simulation_result() round-trip tests
+# ---------------------------------------------------------------------------
+
+def _make_pipeline() -> HiddenVariableExtractionPipeline:
+    """Create a pipeline with a dummy router (not called in sync tests)."""
+    return HiddenVariableExtractionPipeline(router=MagicMock())
+
+
+def _make_extraction(
+    *,
+    sentiment_rounds: tuple[SentimentRound, ...] = (),
+    momentum_shifts: tuple[MomentumShift, ...] = (),
+    hidden_variables: tuple[EnrichedHiddenVariable, ...] = (),
+    inflection_points: tuple[EnrichedInflectionPoint, ...] = (),
+    extreme_scenarios: tuple[EnrichedExtremeScenario, ...] = (),
+    recommended_action: str = "看多",
+) -> ExtractionResult:
+    return ExtractionResult(
+        event_summary="央行降准",
+        sentiment_rounds=sentiment_rounds,
+        momentum_shifts=momentum_shifts,
+        hidden_variables=hidden_variables,
+        inflection_points=inflection_points,
+        extreme_scenarios=extreme_scenarios,
+        recommended_action=recommended_action,
+    )
+
+
+class TestToSimulationResult:
+    def test_preserves_sentiment_intensity(self) -> None:
+        extraction = _make_extraction(
+            sentiment_rounds=(
+                SentimentRound(
+                    round=1, bullish=0.5, bearish=0.3, neutral=0.2,
+                    dominant_narrative="降准预期", intensity=0.85,
+                ),
+            ),
+        )
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 1.0, 10.0
+        )
+        snap = result.sentiment_evolution[0]
+        assert snap.dominant_narrative == "降准预期"
+        assert snap.intensity == 0.85
+
+    def test_preserves_hidden_variable_consensus(self) -> None:
+        extraction = _make_extraction(
+            hidden_variables=(
+                EnrichedHiddenVariable(
+                    variable="外资净流入",
+                    probability=0.72,
+                    reasoning="北向资金连续净买入",
+                    agent_consensus_ratio=0.68,
+                    is_absent_from_original=True,
+                ),
+            ),
+        )
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 1.0, 10.0
+        )
+        hv = result.hidden_variables[0]
+        assert hv.agent_consensus_ratio == 0.68
+        assert hv.is_absent_from_original is True
+        # reasoning must NOT be contaminated with consensus/disclaimer strings
+        assert "[consensus=" not in hv.reasoning
+        assert "disclaimer" not in hv.reasoning.lower()
+
+    def test_preserves_inflection_type_and_confidence(self) -> None:
+        extraction = _make_extraction(
+            inflection_points=(
+                EnrichedInflectionPoint(
+                    day=5,
+                    event="情绪逆转",
+                    inflection_type="sentiment_reversal",
+                    before_sentiment={"bullish": 0.3, "bearish": 0.5, "neutral": 0.2},
+                    after_sentiment={"bullish": 0.6, "bearish": 0.2, "neutral": 0.2},
+                    confidence=0.9,
+                ),
+            ),
+        )
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 1.0, 10.0
+        )
+        ip = result.key_inflection_points[0]
+        assert ip.inflection_type == "sentiment_reversal"
+        assert ip.before_sentiment["bullish"] == 0.3
+        assert ip.after_sentiment["bullish"] == 0.6
+        assert ip.confidence == 0.9
+        # event must NOT have stringified prefix like [sentiment_reversal]
+        assert ip.event == "情绪逆转"
+
+    def test_preserves_extreme_scenario_direction(self) -> None:
+        extraction = _make_extraction(
+            extreme_scenarios=(
+                EnrichedExtremeScenario(
+                    scenario="超预期利好",
+                    probability=0.1,
+                    impact="+5%",
+                    direction="upside",
+                    trigger_conditions="美联储降息超预期",
+                    early_warning_signals="外资持续流入",
+                ),
+            ),
+        )
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 1.0, 10.0
+        )
+        es = result.extreme_scenarios[0]
+        assert es.direction == "upside"
+        assert es.trigger_conditions == "美联储降息超预期"
+        assert es.early_warning_signals == "外资持续流入"
+        # scenario must NOT be prefixed with [upside]
+        assert es.scenario == "超预期利好"
+
+    def test_emits_momentum_shifts(self) -> None:
+        shift = MomentumShift(
+            round_number=3, direction="bullish_to_bearish", magnitude=0.23,
+            trigger_narrative="获利回吐"
+        )
+        extraction = _make_extraction(momentum_shifts=(shift,))
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 1.0, 10.0
+        )
+        assert len(result.momentum_shifts) == 1
+        assert result.momentum_shifts[0].direction == "bullish_to_bearish"
+        assert result.momentum_shifts[0].magnitude == 0.23
+
+    def test_pydantic_round_trip(self) -> None:
+        shift = MomentumShift(
+            round_number=2, direction="bearish_to_bullish", magnitude=0.15
+        )
+        extraction = _make_extraction(
+            sentiment_rounds=(
+                SentimentRound(
+                    round=1, bullish=0.4, bearish=0.3, neutral=0.3,
+                    dominant_narrative="政策预期", intensity=0.7,
+                ),
+            ),
+            momentum_shifts=(shift,),
+        )
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 2.5, 30.0
+        )
+        # Serialize → deserialize must be lossless
+        data = result.model_dump(mode="json")
+        restored = SimulationResult.model_validate(data)
+        assert restored.sentiment_evolution[0].intensity == 0.7
+        assert restored.momentum_shifts[0].magnitude == 0.15
+
+    def test_no_longer_mutates_recommendation_text(self) -> None:
+        """Verify the old [动量转换: ...] suffix is gone."""
+        shift = MomentumShift(
+            round_number=3, direction="bullish_to_bearish", magnitude=0.23
+        )
+        extraction = _make_extraction(
+            momentum_shifts=(shift,),
+            recommended_action="短期看多",
+        )
+        result = _make_pipeline().to_simulation_result(
+            extraction, SimulationConfig(), 1.0, 10.0
+        )
+        assert result.recommended_action == "短期看多"
+        assert "动量转换" not in result.recommended_action

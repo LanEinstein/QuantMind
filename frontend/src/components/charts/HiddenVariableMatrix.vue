@@ -7,9 +7,16 @@
         :name="idx"
       >
         <template #title>
-          <div class="var-header">
+          <div
+            class="var-header"
+            :class="{ 'var-absent': v.is_absent_from_original }"
+          >
             <span class="var-name" :title="v.variable">{{ v.variable }}</span>
             <div class="bar-container">
+              <div
+                class="bar-fill-consensus"
+                :style="{ width: ((v.agent_consensus_ratio ?? 0) * 100) + '%' }"
+              />
               <div
                 class="bar-fill"
                 :style="{
@@ -47,7 +54,11 @@ const props = defineProps<{
 const expandedVars = ref<number[]>([])
 
 const sortedVariables = computed(() =>
-  [...props.variables].sort((a, b) => b.probability - a.probability),
+  [...props.variables].sort((a, b) => {
+    const diff = b.probability - a.probability
+    if (diff !== 0) return diff
+    return (b.agent_consensus_ratio ?? 0) - (a.agent_consensus_ratio ?? 0)
+  }),
 )
 
 function barColor(probability: number): string {
@@ -94,6 +105,13 @@ function barColor(probability: number): string {
   gap: $gap-sm;
   width: 100%;
   padding-right: 8px;
+  padding-left: 0;
+  border-left: 2px solid transparent;
+  transition: border-color 0.2s ease;
+
+  &.var-absent {
+    border-left: 2px dashed $color-flat;
+  }
 }
 
 .var-name {
@@ -108,16 +126,30 @@ function barColor(probability: number): string {
 
 .bar-container {
   flex: 1;
+  position: relative;
   height: 16px;
   background: rgba(255, 255, 255, 0.06);
   border-radius: 8px;
   overflow: hidden;
 }
 
+.bar-fill-consensus {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(0, 200, 83, 0.3);
+  border-radius: 8px;
+  transition: width 0.6s ease;
+  z-index: 0;
+}
+
 .bar-fill {
+  position: relative;
   height: 100%;
   border-radius: 8px;
   transition: width 0.6s ease;
+  z-index: 1;
 }
 
 .var-pct {

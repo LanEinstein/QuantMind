@@ -12,7 +12,7 @@ from backend.main import app
 
 
 def _sample_sim_doc(oid: str = "aabbccddeeff00112233aabb") -> dict:
-    """Return a sample MongoDB simulation document."""
+    """Return a sample MongoDB simulation document with all enriched fields."""
     from bson import ObjectId
 
     return {
@@ -31,23 +31,92 @@ def _sample_sim_doc(oid: str = "aabbccddeeff00112233aabb") -> dict:
             "model": "MiniMax-M2.5",
         },
         "sentiment_evolution": [
-            {"round": 1, "bullish": 0.45, "bearish": 0.30, "neutral": 0.25},
+            {
+                "round": 1,
+                "bullish": 0.45,
+                "bearish": 0.30,
+                "neutral": 0.25,
+                "dominant_narrative": "降准预期升温",
+                "intensity": 0.75,
+            },
         ],
         "hidden_variables": [
             {
                 "variable": "外资加速流入概率",
                 "probability": 0.72,
-                "reasoning": "test reasoning",
+                "reasoning": "降准叠加汇率企稳",
+                "agent_consensus_ratio": 0.68,
+                "is_absent_from_original": True,
             },
         ],
-        "key_inflection_points": [{"day": 3, "event": "情绪高点"}],
+        "key_inflection_points": [
+            {
+                "day": 3,
+                "event": "情绪高点",
+                "inflection_type": "sentiment_reversal",
+                "before_sentiment": {"bullish": 0.3, "bearish": 0.5, "neutral": 0.2},
+                "after_sentiment": {"bullish": 0.6, "bearish": 0.2, "neutral": 0.2},
+                "confidence": 0.85,
+            },
+        ],
         "extreme_scenarios": [
-            {"scenario": "超预期利好", "probability": 0.15, "impact": "+3%"},
+            {
+                "scenario": "超预期利好",
+                "probability": 0.15,
+                "impact": "+3%",
+                "direction": "upside",
+                "trigger_conditions": "美联储超预期降息",
+                "early_warning_signals": "外资持续流入",
+            },
+        ],
+        "momentum_shifts": [
+            {
+                "round_number": 3,
+                "direction": "bullish_to_bearish",
+                "magnitude": 0.23,
+                "trigger_narrative": "获利回吐",
+            },
         ],
         "recommended_action": "短期看多",
         "cost_rmb": 3.42,
         "duration_seconds": 238.5,
         "created_at": "2026-03-24T09:30:00Z",
+    }
+
+
+def _legacy_sim_doc(oid: str = "aabbccddeeff00112233aacc") -> dict:
+    """Return a legacy MongoDB document missing all enriched fields."""
+    from bson import ObjectId
+
+    return {
+        "_id": ObjectId(oid),
+        "event": {
+            "title": "旧版仿真事件",
+            "content": "旧版内容",
+            "importance_score": 7,
+            "sectors": [],
+            "stocks": [],
+        },
+        "event_summary": "旧版事件摘要",
+        "simulation_config": {
+            "agent_count": 300,
+            "rounds": 20,
+            "model": "MiniMax-M2.5",
+        },
+        "sentiment_evolution": [
+            {"round": 1, "bullish": 0.4, "bearish": 0.3, "neutral": 0.3},
+        ],
+        "hidden_variables": [
+            {"variable": "x", "probability": 0.5, "reasoning": "r"},
+        ],
+        "key_inflection_points": [{"day": 2, "event": "旧拐点"}],
+        "extreme_scenarios": [
+            {"scenario": "旧场景", "probability": 0.1, "impact": "+2%"},
+        ],
+        "recommended_action": "观望",
+        "cost_rmb": 1.5,
+        "duration_seconds": 60.0,
+        "created_at": "2025-01-01T00:00:00Z",
     }
 
 
@@ -215,3 +284,98 @@ class TestCompare:
             "?a=aabbccddeeff00112233aa01&b=aabbccddeeff00112233aa02"
         )
         assert resp.status_code == 404
+
+
+class TestEnrichedFieldsInAPI:
+    @pytest.mark.asyncio
+    async def test_latest_endpoint_returns_enriched_hidden_variables(
+        self, client: AsyncClient, mock_mongodb: MagicMock
+    ) -> None:
+        mock_mongodb.find_one = AsyncMock(return_value=_sample_sim_doc())
+        resp = await client.get("/api/simulation/latest")
+        assert resp.status_code == 200
+        hv = resp.json()["data"]["hidden_variables"][0]
+        assert hv["agent_consensus_ratio"] == 0.68
+        assert hv["is_absent_from_original"] is True
+        # reasoning must be the clean string, no stringified suffixes
+        assert "[consensus=" not in hv["reasoning"]
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_returns_inflection_metadata(
+        self, client: AsyncClient, mock_mongodb: MagicMock
+    ) -> None:
+        mock_mongodb.find_one = AsyncMock(return_value=_sample_sim_doc())
+        resp = await client.get("/api/simulation/aabbccddeeff00112233aabb")
+        assert resp.status_code == 200
+        ip = resp.json()["data"]["key_inflection_points"][0]
+        assert ip["inflection_type"] == "sentiment_reversal"
+        assert ip["confidence"] == 0.85
+        assert ip["before_sentiment"]["bullish"] == 0.3
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_returns_extreme_scenario_direction(
+        self, client: AsyncClient, mock_mongodb: MagicMock
+    ) -> None:
+        mock_mongodb.find_one = AsyncMock(return_value=_sample_sim_doc())
+        resp = await client.get("/api/simulation/aabbccddeeff00112233aabb")
+        assert resp.status_code == 200
+        es = resp.json()["data"]["extreme_scenarios"][0]
+        assert es["direction"] == "upside"
+        assert es["trigger_conditions"] == "美联储超预期降息"
+        assert es["early_warning_signals"] == "外资持续流入"
+
+    @pytest.mark.asyncio
+    async def test_compare_endpoint_returns_enriched_for_both_sims(
+        self, client: AsyncClient, mock_mongodb: MagicMock
+    ) -> None:
+        doc_a = _sample_sim_doc("aabbccddeeff00112233aa01")
+        doc_b = _sample_sim_doc("aabbccddeeff00112233aa02")
+        mock_mongodb.find_one = AsyncMock(side_effect=[doc_a, doc_b])
+        resp = await client.get(
+            "/api/simulation/compare"
+            "?a=aabbccddeeff00112233aa01&b=aabbccddeeff00112233aa02"
+        )
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        for side in ("a", "b"):
+            hv = body[side]["hidden_variables"][0]
+            assert hv["agent_consensus_ratio"] == 0.68
+
+    @pytest.mark.asyncio
+    async def test_history_endpoint_does_not_include_enriched_payload(
+        self, client: AsyncClient, mock_mongodb: MagicMock
+    ) -> None:
+        cursor_mock = AsyncMock()
+        cursor_mock.to_list = AsyncMock(return_value=[_sample_sim_doc()])
+        find_mock = MagicMock()
+        sort_mock = MagicMock()
+        find_mock.sort = MagicMock(return_value=sort_mock)
+        sort_mock.limit = MagicMock(return_value=cursor_mock)
+        mock_mongodb.find = MagicMock(return_value=find_mock)
+
+        resp = await client.get("/api/simulation/history")
+        assert resp.status_code == 200
+        item = resp.json()["data"][0]
+        # History items should NOT contain full enriched payload
+        assert "hidden_variables" not in item
+        assert "key_inflection_points" not in item
+        # But basic history fields must be present
+        assert item["event_title"] == "央行宣布降准50个基点"
+
+    @pytest.mark.asyncio
+    async def test_legacy_doc_without_enriched_fields_deserializes_on_fetch(
+        self, client: AsyncClient, mock_mongodb: MagicMock
+    ) -> None:
+        """Legacy docs (missing enriched fields) must not cause 500 errors."""
+        mock_mongodb.find_one = AsyncMock(return_value=_legacy_sim_doc())
+        resp = await client.get("/api/simulation/aabbccddeeff00112233aacc")
+        # API must return 200, not crash on missing fields
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        # Basic fields from legacy doc must still be present
+        assert data["event_summary"] == "旧版事件摘要"
+        assert data["recommended_action"] == "观望"
+        # Sentiment evolution passes through as-is (no Pydantic enrichment at API layer)
+        snap = data["sentiment_evolution"][0]
+        assert snap["round"] == 1
+        assert snap["bullish"] == 0.4
