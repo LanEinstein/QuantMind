@@ -13,6 +13,8 @@ from backend.llm.fallback import COST_RATES
 if TYPE_CHECKING:
     import redis.asyncio
 
+    from backend.data.database import MongoDBService
+
 log = structlog.get_logger(component="cost_tracker")
 
 # Per-model pricing in RMB per 1K tokens (more granular than COST_RATES)
@@ -208,3 +210,49 @@ def _build_summary(
         by_provider={k: round(v, 4) for k, v in by_provider.items()},
         daily_totals={k: round(v, 4) for k, v in daily_totals.items()},
     )
+
+
+async def flush_to_mongodb(
+    redis_client: redis.asyncio.Redis,
+    mongodb: MongoDBService,
+    days: int = 1,
+) -> int:
+    """Persist cost entries from Redis to MongoDB for durable storage.
+
+    Args:
+        redis_client: Async Redis client.
+        mongodb: MongoDBService instance.
+        days: Number of days to flush (default: today only).
+
+    Returns:
+        Count of entries persisted.
+    """
+    try:
+        summary = await aggregate_costs(redis_client, days=days)
+    except Exception as exc:
+        log.warning("cost_flush_aggregate_failed", error=str(exc))
+        return 0
+
+    count = 0
+    for entry in summary.entries:
+        try:
+            await mongodb.save_cost_entry({
+                "date": entry.date,
+                "agent_name": entry.agent_name,
+                "provider": entry.provider,
+                "prompt_tokens": entry.prompt_tokens,
+                "completion_tokens": entry.completion_tokens,
+                "requests": entry.requests,
+                "cost_rmb": entry.cost_rmb,
+            })
+            count += 1
+        except Exception as exc:
+            log.warning(
+                "cost_flush_entry_failed",
+                date=entry.date,
+                agent=entry.agent_name,
+                error=str(exc),
+            )
+
+    log.info("cost_flush_complete", entries=count)
+    return count

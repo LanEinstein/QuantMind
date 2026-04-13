@@ -10,6 +10,7 @@ import structlog
 from fastapi import FastAPI, Request
 
 from backend.api.analysis import router as analysis_router
+from backend.api.health import router as health_router
 from backend.api.market import router as market_router
 from backend.api.performance import router as performance_router
 from backend.api.risk import router as risk_router
@@ -168,6 +169,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     import redis.asyncio as aioredis
 
     # -- Startup --
+    import time as _time
+
+    from backend.logging_config import configure_logging
+
+    configure_logging(
+        log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO")
+    )
+
+    application.state.app_start_time = _time.time()
+
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     redis_pool = aioredis.from_url(redis_url, decode_responses=True)
 
@@ -230,6 +241,7 @@ app.include_router(settings_router)
 app.include_router(risk_router)
 app.include_router(performance_router)
 app.include_router(watchlist_router)
+app.include_router(health_router)
 app.include_router(websocket_router)
 
 

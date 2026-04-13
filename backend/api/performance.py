@@ -43,12 +43,17 @@ def compute_equity_curve(
     initial_capital: float,
     start: date,
     end: date,
+    benchmark_prices: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build a daily equity curve from trade history.
 
     Walks day-by-day from *start* to *end*, applying realized P&L from
     trades to the running portfolio value. Returns a list of
     {date, portfolio, benchmark} points.
+
+    Args:
+        benchmark_prices: Optional list of {date, close} dicts for real
+            benchmark data. If None, falls back to flat 100.0.
     """
     # Build a date→pnl map from trades
     daily_pnl: dict[str, float] = {}
@@ -59,10 +64,16 @@ def compute_equity_curve(
         key = trade_date.isoformat()
         daily_pnl[key] = daily_pnl.get(key, 0.0) + t.net_amount
 
+    # Build benchmark lookup: date → close price
+    bm_lookup: dict[str, float] = {}
+    if benchmark_prices:
+        for bp in benchmark_prices:
+            bm_lookup[str(bp["date"])] = float(bp["close"])
+
     points: list[dict[str, Any]] = []
     portfolio = initial_capital
-    benchmark = 100.0  # normalized to 100
     current = start
+    last_bm = 0.0  # Forward-fill for missing benchmark days
 
     while current <= end:
         # Skip weekends
@@ -70,12 +81,18 @@ def compute_equity_curve(
             key = current.isoformat()
             pnl = daily_pnl.get(key, 0.0)
             portfolio += pnl
-            # Benchmark: simple flat line (no real benchmark data yet)
+            if bm_lookup:
+                bm_val = bm_lookup.get(key)
+                if bm_val is not None:
+                    last_bm = bm_val
+                benchmark_val = last_bm if last_bm > 0 else 100.0
+            else:
+                benchmark_val = 100.0
             points.append(
                 {
                     "date": key,
                     "portfolio": round(portfolio, 2),
-                    "benchmark": round(benchmark, 2),
+                    "benchmark": round(benchmark_val, 2),
                 }
             )
         current += timedelta(days=1)
@@ -85,6 +102,20 @@ def compute_equity_curve(
         base = points[0]["portfolio"]
         for p in points:
             p["portfolio"] = round(p["portfolio"] / base * 100, 2)
+
+    # Normalize benchmark to start at 100
+    if points and bm_lookup:
+        first_bm = points[0]["benchmark"]
+        if first_bm > 0:
+            for p in points:
+                if p["benchmark"] > 0:
+                    p["benchmark"] = round(p["benchmark"] / first_bm * 100, 2)
+                else:
+                    p["benchmark"] = 100.0
+    elif not bm_lookup:
+        # Flat fallback: all benchmarks stay at 100.0
+        for p in points:
+            p["benchmark"] = 100.0
 
     return points
 
@@ -284,9 +315,26 @@ async def get_performance(
         log.warning("performance_broker_error", error=str(exc))
         _err(f"Failed to read trading data: {exc}", 500)
 
+    # Fetch benchmark data from MongoDB
+    benchmark_prices: list[dict[str, Any]] | None = None
+    mongodb = getattr(request.app.state, "mongodb", None)
+    if mongodb:
+        try:
+            benchmark_code = benchmark or "000300"
+            benchmark_prices = await mongodb.get_index_prices(
+                benchmark_code,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+            )
+            if not benchmark_prices:
+                benchmark_prices = None
+        except Exception as exc:
+            log.debug("benchmark_data_unavailable", error=str(exc))
+
     # Compute analytics
     equity = compute_equity_curve(
-        trades, account.initial_capital, start_date, end_date
+        trades, account.initial_capital, start_date, end_date,
+        benchmark_prices=benchmark_prices,
     )
     drawdown = compute_drawdown_curve(equity)
     metrics = compute_core_metrics(equity, trades)

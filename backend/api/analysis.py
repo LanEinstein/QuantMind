@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.agents.graph import run_analysis
@@ -107,3 +107,25 @@ async def list_signals(
         if "_id" in s:
             s["_id"] = str(s["_id"])
     return _ok(signals)
+
+
+@router.get("/api/analysis/signal-accuracy")
+async def signal_accuracy(
+    request: Request,
+    lookback_days: int = Query(default=30, ge=1, le=365),
+    horizon_days: int = Query(default=5, ge=1, le=30),
+) -> dict[str, Any]:
+    """Evaluate accuracy of past trading signals."""
+    from backend.services.signal_evaluator import SignalEvaluator
+
+    mongodb = getattr(request.app.state, "mongodb", None)
+    history_data = getattr(request.app.state, "history_data", None)
+    if not mongodb or not history_data:
+        _err("Required services not available", 503)
+        return _ok(None)  # unreachable
+
+    evaluator = SignalEvaluator(mongodb=mongodb, history_data=history_data)
+    report = await evaluator.evaluate(
+        lookback_days=lookback_days, horizon_days=horizon_days
+    )
+    return _ok(report)

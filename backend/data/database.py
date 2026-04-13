@@ -80,6 +80,24 @@ class MongoDBService:
             background=True,
         )
 
+        index_prices = self._db["index_prices"]
+        await index_prices.create_index(
+            [("index_code", ASCENDING), ("date", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+
+        cost_tracking = self._db["cost_tracking"]
+        await cost_tracking.create_index(
+            [
+                ("date", DESCENDING),
+                ("agent_name", ASCENDING),
+                ("provider", ASCENDING),
+            ],
+            unique=True,
+            background=True,
+        )
+
         self._log.info("mongodb_indexes_created")
 
     async def save_market_snapshot(
@@ -259,3 +277,73 @@ class MongoDBService:
 
         coll = self._db["trading_signals"]
         return await coll.find_one({"_id": ObjectId(signal_id)})
+
+    # -- Index price persistence --
+
+    async def save_index_prices(
+        self, index_code: str, prices: list[dict[str, Any]]
+    ) -> int:
+        """Bulk upsert index prices to 'index_prices' collection."""
+        if not prices:
+            return 0
+
+        coll = self._db["index_prices"]
+        ops = [
+            UpdateOne(
+                {"index_code": index_code, "date": p["date"]},
+                {"$set": {**p, "index_code": index_code}},
+                upsert=True,
+            )
+            for p in prices
+        ]
+
+        try:
+            result = await coll.bulk_write(ops, ordered=False)
+            return result.upserted_count + getattr(result, "modified_count", 0)
+        except Exception as exc:
+            self._log.warning("save_index_prices_failed", error=str(exc))
+            return 0
+
+    async def get_index_prices(
+        self,
+        index_code: str,
+        start_date: str = "",
+        end_date: str = "",
+    ) -> list[dict[str, Any]]:
+        """Query index prices for a code within a date range, sorted by date ASC."""
+        query: dict[str, Any] = {"index_code": index_code}
+        if start_date or end_date:
+            date_filter: dict[str, str] = {}
+            if start_date:
+                date_filter["$gte"] = start_date
+            if end_date:
+                date_filter["$lte"] = end_date
+            query["date"] = date_filter
+
+        coll = self._db["index_prices"]
+        cursor = coll.find(query).sort("date", ASCENDING)
+        return await cursor.to_list(length=10000)
+
+    # -- Cost tracking persistence --
+
+    async def save_cost_entry(self, entry: dict[str, Any]) -> None:
+        """Upsert daily cost entry to 'cost_tracking' collection."""
+        coll = self._db["cost_tracking"]
+        key = {
+            "date": entry["date"],
+            "agent_name": entry["agent_name"],
+            "provider": entry["provider"],
+        }
+        try:
+            await coll.update_one(key, {"$set": entry}, upsert=True)
+        except Exception as exc:
+            self._log.warning("save_cost_entry_failed", error=str(exc))
+
+    async def get_cost_history(self, days: int = 30) -> list[dict[str, Any]]:
+        """Query cost history from MongoDB."""
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+        coll = self._db["cost_tracking"]
+        cursor = coll.find({"date": {"$gte": cutoff}}).sort("date", DESCENDING)
+        return await cursor.to_list(length=10000)

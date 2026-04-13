@@ -62,6 +62,18 @@ def _fetch_index_akshare(code: str) -> pd.DataFrame:
     )
 
 
+def _fetch_index_history_akshare(
+    code: str, start_date: str, end_date: str
+) -> pd.DataFrame:
+    """Fetch historical index prices from akshare."""
+    import akshare
+
+    return akshare.index_zh_a_hist(
+        symbol=code, period="daily",
+        start_date=start_date, end_date=end_date,
+    )
+
+
 def _fetch_stock_adata(code: str) -> pd.DataFrame:
     """Fetch real-time stock quote from adata."""
     import adata.stock.market as m
@@ -218,6 +230,39 @@ class MarketDataService:
                 for _, row in df.iterrows():
                     results.append(_index_row_to_quote(row))
         return results
+
+    async def get_index_history(
+        self, index_code: str = "000300", days: int = 252
+    ) -> pd.DataFrame:
+        """Fetch historical index prices (default: CSI300, 1 year).
+
+        Returns DataFrame with columns: date, open, high, low, close, volume.
+        """
+        from datetime import timedelta
+
+        end = datetime.now(tz=UTC).strftime("%Y%m%d")
+        start = (datetime.now(tz=UTC) - timedelta(days=days)).strftime("%Y%m%d")
+
+        try:
+            df = await asyncio.to_thread(
+                _fetch_index_history_akshare, index_code, start, end
+            )
+        except Exception as exc:
+            self._log.error("index_history_failed", code=index_code, error=str(exc))
+            return pd.DataFrame()
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        result = pd.DataFrame({
+            "date": df["日期"].astype(str),
+            "open": pd.to_numeric(df.get("开盘", 0), errors="coerce").fillna(0),
+            "high": pd.to_numeric(df.get("最高", 0), errors="coerce").fillna(0),
+            "low": pd.to_numeric(df.get("最低", 0), errors="coerce").fillna(0),
+            "close": pd.to_numeric(df.get("收盘", 0), errors="coerce").fillna(0),
+            "volume": pd.to_numeric(df.get("成交量", 0), errors="coerce").fillna(0),
+        })
+        return result
 
     async def get_stock_realtime(self, code: str) -> StockQuote:
         """Get real-time quote for a single stock."""
