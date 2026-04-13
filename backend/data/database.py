@@ -73,6 +73,13 @@ class MongoDBService:
             background=True,
         )
 
+        signals = self._db["trading_signals"]
+        await signals.create_index(
+            [("stock_code", ASCENDING), ("trade_date", DESCENDING)],
+            unique=True,
+            background=True,
+        )
+
         self._log.info("mongodb_indexes_created")
 
     async def save_market_snapshot(
@@ -201,3 +208,54 @@ class MongoDBService:
         coll = self._db["news_articles"]
         cursor = coll.find(query).sort("publish_time", DESCENDING).limit(limit)
         return await cursor.to_list(length=limit)
+
+    # -- Trading signal persistence --
+
+    async def save_signal(self, signal: dict[str, Any]) -> str:
+        """Save a TradingSignal dict to 'trading_signals' collection.
+
+        Uses upsert on (stock_code, trade_date) to prevent duplicates.
+        Returns the document _id as string.
+        """
+        coll = self._db["trading_signals"]
+        key = {
+            "stock_code": signal["stock_code"],
+            "trade_date": signal["trade_date"],
+        }
+        result = await coll.update_one(key, {"$set": signal}, upsert=True)
+        if result.upserted_id is not None:
+            return str(result.upserted_id)
+        doc = await coll.find_one(key, {"_id": 1})
+        return str(doc["_id"])
+
+    async def query_signals(
+        self, stock_code: str | None = None, days: int = 30
+    ) -> list[dict[str, Any]]:
+        """Query recent trading signals.
+
+        Args:
+            stock_code: Filter by stock code. None = all stocks.
+            days: Lookback window in days.
+
+        Returns:
+            Signals sorted by trade_date DESC, then stock_code ASC.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+        query: dict[str, Any] = {"trade_date": {"$gte": cutoff}}
+        if stock_code:
+            query["stock_code"] = stock_code
+
+        coll = self._db["trading_signals"]
+        cursor = coll.find(query).sort(
+            [("trade_date", DESCENDING), ("stock_code", ASCENDING)]
+        )
+        return await cursor.to_list(length=1000)
+
+    async def get_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:
+        """Retrieve a single signal by MongoDB ObjectId string."""
+        from bson import ObjectId
+
+        coll = self._db["trading_signals"]
+        return await coll.find_one({"_id": ObjectId(signal_id)})

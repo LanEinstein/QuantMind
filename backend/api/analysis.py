@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -72,6 +73,15 @@ async def analyze_stock(request: Request, body: AnalysisRequest) -> dict[str, An
             run_analysis(body.stock_code, services),
             timeout=timeout,
         )
+        # Persist signal to MongoDB
+        signal_dict = signal.model_dump(mode="json")
+        signal_dict["created_at"] = datetime.now(UTC).isoformat()
+        mongodb = getattr(request.app.state, "mongodb", None)
+        if mongodb:
+            try:
+                await mongodb.save_signal(signal_dict)
+            except Exception as persist_exc:
+                log.warning("signal_persist_failed", error=str(persist_exc))
         return _ok(signal.model_dump(mode="json"))
     except TimeoutError:
         _err(f"Analysis timed out after {timeout}s", 504)
@@ -79,3 +89,21 @@ async def analyze_stock(request: Request, body: AnalysisRequest) -> dict[str, An
         log.error("analysis_failed", error=str(exc))
         _err(f"Analysis failed: {exc}", 500)
     return _ok(None)  # unreachable
+
+
+@router.get("/api/analysis/signals")
+async def list_signals(
+    request: Request,
+    stock_code: str | None = None,
+    days: int = 30,
+) -> dict[str, Any]:
+    """List historical trading signals for review."""
+    mongodb = getattr(request.app.state, "mongodb", None)
+    if not mongodb:
+        _err("MongoDB not available", 503)
+        return _ok(None)  # unreachable
+    signals = await mongodb.query_signals(stock_code=stock_code, days=days)
+    for s in signals:
+        if "_id" in s:
+            s["_id"] = str(s["_id"])
+    return _ok(signals)

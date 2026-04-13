@@ -16,6 +16,7 @@ from backend.api.risk import router as risk_router
 from backend.api.settings import router as settings_router
 from backend.api.simulation import router as simulation_router
 from backend.api.trading import router as trading_router
+from backend.api.watchlist import router as watchlist_router
 from backend.api.websocket import router as websocket_router
 from backend.llm.router import LLMRouter
 from backend.services.config_service import ConfigService
@@ -66,6 +67,15 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     )
     await scheduler.start()
 
+    # Watchlist service
+    from backend.data.watchlist import WatchlistService
+
+    watchlist_service = WatchlistService(db)
+    try:
+        await watchlist_service.initialize()
+    except Exception as exc:
+        log.warning("watchlist_init_failed", error=str(exc))
+
     # Store on app state
     application.state.mongo_client = mongo_client
     application.state.mongodb = mongodb_service
@@ -73,6 +83,7 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     application.state.history_data = history_data
     application.state.news_crawler = news_crawler
     application.state.scheduler = scheduler
+    application.state.watchlist = watchlist_service
 
     log.info("data_layer_initialized")
 
@@ -103,8 +114,47 @@ async def _init_trading_layer(application: FastAPI) -> None:
     log.info("trading_layer_initialized")
 
 
+async def _init_analysis_scheduler(application: FastAPI) -> None:
+    """Initialize the daily analysis orchestrator."""
+    from backend.agents.models import AnalysisServices, PipelineConfig
+    from backend.data.analysis_scheduler import AnalysisScheduler
+
+    required = [
+        "llm_router",
+        "market_data",
+        "history_data",
+        "news_crawler",
+        "mongodb",
+        "watchlist",
+    ]
+    for attr in required:
+        if not hasattr(application.state, attr):
+            log.warning("analysis_scheduler_skip", missing=attr)
+            return
+
+    services = AnalysisServices(
+        llm_router=application.state.llm_router,
+        market_data=application.state.market_data,
+        history_data=application.state.history_data,
+        news_crawler=application.state.news_crawler,
+        mongodb=application.state.mongodb,
+        pipeline_config=PipelineConfig(),
+    )
+    analysis_scheduler = AnalysisScheduler(
+        watchlist=application.state.watchlist,
+        services=services,
+        mongodb=application.state.mongodb,
+        redis_client=getattr(application.state, "redis", None),
+    )
+    await analysis_scheduler.start()
+    application.state.analysis_scheduler = analysis_scheduler
+    log.info("analysis_scheduler_initialized")
+
+
 async def _shutdown_data_layer(application: FastAPI) -> None:
     """Shut down the data layer services."""
+    if hasattr(application.state, "analysis_scheduler"):
+        await application.state.analysis_scheduler.stop()
     if hasattr(application.state, "scheduler"):
         await application.state.scheduler.stop()
     if hasattr(application.state, "mongo_client"):
@@ -132,6 +182,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     # Trading subsystem
     await _init_trading_layer(application)
+
+    # Daily analysis orchestrator
+    await _init_analysis_scheduler(application)
 
     # WebSocket Redis subscriber (bridges Redis pub/sub → WebSocket clients)
     import asyncio
@@ -176,6 +229,7 @@ app.include_router(trading_router)
 app.include_router(settings_router)
 app.include_router(risk_router)
 app.include_router(performance_router)
+app.include_router(watchlist_router)
 app.include_router(websocket_router)
 
 
