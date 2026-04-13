@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date as date_type
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +65,14 @@ class SignalEvaluator:
             if not stock_code or not trade_date:
                 continue
 
+            # Skip signals that haven't reached the requested horizon
+            try:
+                signal_date = date_type.fromisoformat(trade_date)
+                if signal_date + timedelta(days=horizon_days) > date_type.today():
+                    continue
+            except ValueError:
+                continue
+
             is_correct = await self._check_signal(
                 stock_code, trade_date, action, horizon_days
             )
@@ -98,8 +107,6 @@ class SignalEvaluator:
 
         Returns True/False for correct/incorrect, None if insufficient data.
         """
-        from datetime import date as date_type
-
         try:
             signal_date = date_type.fromisoformat(trade_date)
             end_date = signal_date + timedelta(days=horizon_days + 5)
