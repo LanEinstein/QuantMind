@@ -48,5 +48,13 @@ frontend/test-results/
 .coverage
 *.tsbuildinfo
 
+# Coverage & auto-generated
+frontend/coverage/
+frontend/components.d.ts
+
+# Logs
+*.log
+logs/
+
 # Claude
 .claude/
