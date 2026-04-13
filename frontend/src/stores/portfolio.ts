@@ -10,8 +10,11 @@ import type {
   TradeItem,
   PendingApproval,
   PortfolioStatus,
+  CircuitBreakerStatus,
+  AuthorizationMode,
 } from '@/types/trading'
 import { tradingApi } from '@/api/trading'
+import { riskApi } from '@/api/risk'
 
 export const usePortfolioStore = defineStore('portfolio', () => {
   // --- State ---
@@ -25,6 +28,8 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   const status = ref<PortfolioStatus>('idle')
   const tradeFilterCode = ref('')
   const tradeFilterDateRange = ref<[string, string] | null>(null)
+  const circuitBreakerStatus = ref<CircuitBreakerStatus | null>(null)
+  const authMode = ref<AuthorizationMode>('suggestion')
 
   const isDev = import.meta.env.DEV
 
@@ -131,6 +136,39 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     }
   }
 
+  async function fetchCircuitBreakerStatus(): Promise<boolean> {
+    try {
+      circuitBreakerStatus.value = await tradingApi.getCircuitBreakerStatus()
+      return true
+    } catch {
+      if (isDev) circuitBreakerStatus.value = { halted: false, daily_pnl_pct: 0, consecutive_losses: 0 }
+      return isDev
+    }
+  }
+
+  async function fetchAuthMode(): Promise<boolean> {
+    try {
+      const status = await riskApi.getStatus()
+      authMode.value = (status.authorization_mode ?? 'suggestion') as AuthorizationMode
+      return true
+    } catch {
+      return isDev
+    }
+  }
+
+  // --- WebSocket-driven updates ---
+  function updatePositionsFromWs(newPositions: PositionItem[]) {
+    positions.value = newPositions
+  }
+
+  function updateCircuitBreaker(cb: CircuitBreakerStatus) {
+    circuitBreakerStatus.value = cb
+  }
+
+  function updateAuthMode(mode: string) {
+    authMode.value = mode as AuthorizationMode
+  }
+
   async function fetchAll() {
     status.value = 'loading'
     const id = activeAccountId.value
@@ -141,6 +179,8 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       fetchOrders(id),
       fetchTrades(id),
       fetchPendingApprovals(id),
+      fetchCircuitBreakerStatus(),
+      fetchAuthMode(),
     ])
     const allFailed = results.every((ok) => !ok)
     status.value = allFailed ? 'error' : 'loaded'
@@ -210,6 +250,8 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     status,
     tradeFilterCode,
     tradeFilterDateRange,
+    circuitBreakerStatus,
+    authMode,
     hasPendingApprovals,
     positionRatio,
     cashRatio,
@@ -220,12 +262,16 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     fetchOrders,
     fetchTrades,
     fetchPendingApprovals,
+    fetchCircuitBreakerStatus,
     fetchAll,
     switchAccount,
     cancelOrder,
     approveOrder,
     rejectOrder,
     exportTradesCSV,
+    updatePositionsFromWs,
+    updateCircuitBreaker,
+    updateAuthMode,
   }
 })
 
