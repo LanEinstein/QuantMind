@@ -63,6 +63,7 @@ declare module 'vue' {
     ModelContribution: typeof import('./src/components/charts/ModelContribution.vue')['default']
     NewsFeed: typeof import('./src/components/common/NewsFeed.vue')['default']
     OrderList: typeof import('./src/components/trading/OrderList.vue')['default']
+    PositionDetailDrawer: typeof import('./src/components/trading/PositionDetailDrawer.vue')['default']
     PositionTable: typeof import('./src/components/trading/PositionTable.vue')['default']
     RiskRadar: typeof import('./src/components/charts/RiskRadar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

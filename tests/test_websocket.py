@@ -11,7 +11,7 @@ from backend.api.websocket import (
     _translate_redis_message,
     manager,
 )
-from backend.data.publisher import CHANNEL_MARKET, CHANNEL_NEWS
+from backend.data.publisher import CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +76,41 @@ class TestTranslateRedisMessage:
     def test_invalid_json(self) -> None:
         messages = _translate_redis_message(CHANNEL_MARKET, "not-json{{{")
         assert messages == []
+
+    def test_portfolio_position_update(self) -> None:
+        payload = {
+            "type": "position_update",
+            "data": {"account_id": "default", "positions": []},
+        }
+        raw = json.dumps(payload)
+        messages = _translate_redis_message(CHANNEL_PORTFOLIO, raw)
+        assert len(messages) == 1
+        parsed = json.loads(messages[0])
+        assert parsed["type"] == "position_update"
+        assert parsed["data"]["account_id"] == "default"
+
+    def test_portfolio_circuit_breaker_update(self) -> None:
+        payload = {
+            "type": "circuit_breaker_update",
+            "data": {"halted": True, "daily_pnl_pct": -0.06},
+        }
+        raw = json.dumps(payload)
+        messages = _translate_redis_message(CHANNEL_PORTFOLIO, raw)
+        assert len(messages) == 1
+        parsed = json.loads(messages[0])
+        assert parsed["type"] == "circuit_breaker_update"
+        assert parsed["data"]["halted"] is True
+
+    def test_portfolio_auth_mode_change(self) -> None:
+        payload = {
+            "type": "auth_mode_change",
+            "data": {"mode": "semi_auto", "system_status": "normal"},
+        }
+        raw = json.dumps(payload)
+        messages = _translate_redis_message(CHANNEL_PORTFOLIO, raw)
+        assert len(messages) == 1
+        parsed = json.loads(messages[0])
+        assert parsed["data"]["mode"] == "semi_auto"
 
     def test_unknown_channel(self) -> None:
         messages = _translate_redis_message(

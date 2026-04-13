@@ -12,6 +12,8 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
+from backend.data.publisher import publish_portfolio_event
+
 log = structlog.get_logger(component="api_risk")
 
 router = APIRouter()
@@ -360,6 +362,13 @@ async def switch_auth_mode(
 
     os.environ["AUTHORIZATION_MODE"] = body.mode
     log.info("auth_mode_switched", mode=body.mode)
+
+    redis_client = getattr(request.app.state, "redis", None)
+    await publish_portfolio_event(
+        redis_client,
+        "auth_mode_change",
+        {"mode": body.mode, "system_status": "normal"},
+    )
 
     record_risk_event(
         "info",

@@ -20,7 +20,7 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from backend.data.publisher import CHANNEL_MARKET, CHANNEL_NEWS
+from backend.data.publisher import CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO
 
 log = structlog.get_logger(component="api_websocket")
 
@@ -84,8 +84,11 @@ async def _subscribe_and_forward(redis_client: Any) -> None:
         return
 
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe(CHANNEL_MARKET, CHANNEL_NEWS)
-    log.info("ws_redis_subscribed", channels=[CHANNEL_MARKET, CHANNEL_NEWS])
+    await pubsub.subscribe(CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO)
+    log.info(
+        "ws_redis_subscribed",
+        channels=[CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO],
+    )
 
     try:
         while True:
@@ -118,7 +121,7 @@ async def _subscribe_and_forward(redis_client: Any) -> None:
     except Exception as exc:
         log.error("ws_redis_subscriber_error", error=str(exc))
     finally:
-        await pubsub.unsubscribe(CHANNEL_MARKET, CHANNEL_NEWS)
+        await pubsub.unsubscribe(CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO)
         await pubsub.aclose()
 
 
@@ -168,6 +171,11 @@ def _translate_redis_message(
                     ensure_ascii=False,
                 )
             )
+
+    elif channel == CHANNEL_PORTFOLIO:
+        # Portfolio channel messages are already in {"type": ..., "data": ...}
+        # format — forward as-is (single message, no list unwrapping).
+        messages.append(json.dumps(data, ensure_ascii=False))
 
     return messages
 

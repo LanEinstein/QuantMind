@@ -85,3 +85,11 @@ export interface PendingApproval {
 }
 
 export type PortfolioStatus = 'idle' | 'loading' | 'loaded' | 'error'
+
+export interface CircuitBreakerStatus {
+  readonly halted: boolean
+  readonly daily_pnl_pct: number
+  readonly consecutive_losses: number
+}
+
+export type AuthorizationMode = 'suggestion' | 'semi_auto' | 'full_auto'

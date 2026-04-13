@@ -2,7 +2,9 @@
 
 import { ref, onUnmounted } from 'vue'
 import type { WsMessage, IndexQuote, NewsArticle } from '@/types/market'
+import type { PositionItem, CircuitBreakerStatus } from '@/types/trading'
 import { useMarketStore } from '@/stores/market'
+import { usePortfolioStore } from '@/stores/portfolio'
 
 const MAX_RECONNECT_DELAY = 30_000
 const BASE_DELAY = 1_000
@@ -58,21 +60,47 @@ export function useWebSocket() {
   }
 
   function handleMessage(msg: WsMessage) {
-    const store = useMarketStore()
+    const marketStore = useMarketStore()
 
     switch (msg.type) {
       case 'index_update':
-        store.updateIndex(msg.data as IndexQuote)
+        marketStore.updateIndex(msg.data as IndexQuote)
         break
       case 'news':
-        store.pushNews(msg.data as NewsArticle)
+        marketStore.pushNews(msg.data as NewsArticle)
         break
       case 'signal':
-        store.latestSignal = msg.data as string
+        marketStore.latestSignal = msg.data as string
         break
       case 'status':
-        Object.assign(store.systemStatus, msg.data)
+        Object.assign(marketStore.systemStatus, msg.data)
         break
+
+      // Portfolio channel messages
+      case 'position_update': {
+        const payload = msg.data as { account_id: string; positions: PositionItem[] }
+        const portfolio = usePortfolioStore()
+        if (payload.account_id === portfolio.activeAccountId) {
+          portfolio.updatePositionsFromWs(payload.positions)
+        }
+        break
+      }
+      case 'circuit_breaker_update': {
+        const portfolio = usePortfolioStore()
+        portfolio.updateCircuitBreaker(msg.data as CircuitBreakerStatus)
+        break
+      }
+      case 'auth_mode_change': {
+        const payload = msg.data as { mode: string }
+        const portfolio = usePortfolioStore()
+        portfolio.updateAuthMode(payload.mode)
+        break
+      }
+      case 'approval_update': {
+        const portfolio = usePortfolioStore()
+        portfolio.fetchPendingApprovals()
+        break
+      }
     }
   }
 

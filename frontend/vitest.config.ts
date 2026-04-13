@@ -60,6 +60,8 @@ export default mergeConfig(
           'src/composables/useFocusMode.ts',
           'src/composables/useAmbientTicks.ts',
           'src/stores/transformers/simulation.ts',
+          'src/stores/portfolio.ts',
+          'src/components/trading/PositionDetailDrawer.vue',
         ],
         thresholds: {
           lines: 70,

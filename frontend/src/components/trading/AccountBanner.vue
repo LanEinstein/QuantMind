@@ -45,8 +45,18 @@
         </div>
       </el-col>
 
+      <!-- Authorization Mode -->
+      <el-col :span="2">
+        <div class="stat-card">
+          <div class="stat-label">授权模式</div>
+          <el-tag :type="authModeTagType" size="small" effect="dark" class="auth-mode-tag">
+            {{ authModeLabel }}
+          </el-tag>
+        </div>
+      </el-col>
+
       <!-- Mini Equity Curve -->
-      <el-col :span="5">
+      <el-col :span="3">
         <div class="stat-card sparkline-card">
           <div class="stat-label">净值曲线 (30日)</div>
           <VChart :option="sparklineOption" autoresize class="sparkline-chart" />
@@ -76,6 +86,23 @@ const store = usePortfolioStore()
 
 const positionRatio = computed(() => store.positionRatio)
 const cashRatio = computed(() => store.cashRatio)
+
+const authModeTagType = computed(() => {
+  switch (store.authMode) {
+    case 'semi_auto': return 'warning'
+    case 'full_auto': return 'danger'
+    default: return 'info'
+  }
+})
+
+const authModeLabel = computed(() => {
+  const labels: Record<string, string> = {
+    suggestion: '建议模式',
+    semi_auto: '半自动',
+    full_auto: '全自动',
+  }
+  return labels[store.authMode] ?? '建议模式'
+})
 
 const pnlClass = computed(() => {
   if (props.account.total_pnl > 0) return 'text-up'
@@ -179,5 +206,9 @@ const sparklineOption = computed(() => ({
 .sparkline-chart {
   width: 100%;
   height: 60px;
+}
+
+.auth-mode-tag {
+  margin-top: 8px;
 }
 </style>

@@ -8,6 +8,7 @@ import type {
   OrderItem,
   TradeItem,
   PendingApproval,
+  CircuitBreakerStatus,
 } from '@/types/trading'
 
 export const tradingApi = {
@@ -52,4 +53,7 @@ export const tradingApi = {
     apiPost<{ success: boolean; id: string }>(
       `/api/trading/reject/${encodeURIComponent(id)}`,
     ),
+
+  getCircuitBreakerStatus: () =>
+    apiGet<CircuitBreakerStatus>('/api/trading/circuit-breaker-status'),
 }

@@ -24,9 +24,20 @@
         </div>
 
         <div class="approval-actions">
-          <el-button type="success" size="small" @click="onApprove(item.id)">
-            批准
-          </el-button>
+          <el-tooltip
+            :disabled="!tradingHalted"
+            content="熔断中，暂停交易"
+            placement="top"
+          >
+            <el-button
+              type="success"
+              size="small"
+              :disabled="tradingHalted"
+              @click="onApprove(item.id)"
+            >
+              批准
+            </el-button>
+          </el-tooltip>
           <el-button type="danger" size="small" @click="onReject(item.id)">
             拒绝
           </el-button>
@@ -42,6 +53,7 @@ import type { PendingApproval } from '@/types/trading'
 
 defineProps<{
   approvals: readonly PendingApproval[]
+  tradingHalted?: boolean
 }>()
 
 const emit = defineEmits<{

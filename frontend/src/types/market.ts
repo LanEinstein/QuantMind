@@ -90,6 +90,15 @@ export interface MarketStats {
 }
 
 export interface WsMessage {
-  type: 'index_update' | 'stock_update' | 'news' | 'signal' | 'status'
+  type:
+    | 'index_update'
+    | 'stock_update'
+    | 'news'
+    | 'signal'
+    | 'status'
+    | 'position_update'
+    | 'circuit_breaker_update'
+    | 'auth_mode_change'
+    | 'approval_update'
   data: unknown
 }

@@ -8,13 +8,17 @@ from httpx import ASGITransport, AsyncClient
 from backend.broker.approval_queue import ApprovalQueue
 from backend.broker.models import (
     BrokerConfig,
+    CircuitBreakerConfig,
     OrderDirection,
     OrderType,
+    PositionLimitsConfig,
     RiskConfig,
+    StopLossConfig,
     ValidationResult,
 )
 from backend.broker.registry import BrokerRegistry
 from backend.main import app
+from backend.risk.circuit_breaker import CircuitBreaker
 
 
 @pytest.fixture()
@@ -33,12 +37,6 @@ def approval_queue(registry: BrokerRegistry) -> ApprovalQueue:
 
 @pytest.fixture()
 def risk_config() -> RiskConfig:
-    from backend.broker.models import (
-        CircuitBreakerConfig,
-        PositionLimitsConfig,
-        StopLossConfig,
-    )
-
     cfg = RiskConfig(
         position_limits=PositionLimitsConfig(),
         stop_loss=StopLossConfig(),
@@ -231,3 +229,42 @@ class TestRejectOrder:
         # Verify removed
         resp2 = await client.get("/api/trading/pending-approvals")
         assert len(resp2.json()["data"]) == 0
+
+
+class TestCircuitBreakerStatus:
+    @pytest.mark.asyncio
+    async def test_returns_default_when_no_breaker(
+        self, client: AsyncClient
+    ) -> None:
+        # Ensure no circuit breaker is set
+        app.state.circuit_breaker = None
+        resp = await client.get("/api/trading/circuit-breaker-status")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["halted"] is False
+        assert data["daily_pnl_pct"] == 0.0
+        assert data["consecutive_losses"] == 0
+
+    @pytest.mark.asyncio
+    async def test_returns_not_halted_initially(
+        self, client: AsyncClient
+    ) -> None:
+        cb = CircuitBreaker(CircuitBreakerConfig())
+        app.state.circuit_breaker = cb
+        resp = await client.get("/api/trading/circuit-breaker-status")
+        data = resp.json()["data"]
+        assert data["halted"] is False
+
+    @pytest.mark.asyncio
+    async def test_returns_halted_after_trigger(
+        self, client: AsyncClient
+    ) -> None:
+        cb = CircuitBreaker(CircuitBreakerConfig(daily_loss_limit_pct=0.05))
+        app.state.circuit_breaker = cb
+        # Trip the breaker with a large loss
+        cb.record_trade_result(-0.06)
+        resp = await client.get("/api/trading/circuit-breaker-status")
+        data = resp.json()["data"]
+        assert data["halted"] is True
+        assert data["daily_pnl_pct"] == pytest.approx(-0.06)
+        assert data["consecutive_losses"] == 1

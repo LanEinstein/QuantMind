@@ -84,3 +84,58 @@ test.describe('Portfolio Page', () => {
     }
   })
 })
+
+test.describe('Portfolio Page — P4-T04 enhancements', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/portfolio')
+    await page.waitForSelector('.account-banner', { timeout: 10_000 })
+  })
+
+  test('auth mode tag is displayed in account banner', async ({ page }) => {
+    const authTag = page.locator('.auth-mode-tag')
+    await expect(authTag).toBeVisible()
+    await expect(authTag).toContainText('建议模式')
+  })
+
+  test('position code click opens detail drawer', async ({ page }) => {
+    const codeLink = page.locator('.code-link').first()
+    if (await codeLink.isVisible()) {
+      await codeLink.click()
+      // Drawer should open with position details
+      await expect(page.locator('.el-drawer')).toBeVisible()
+      await expect(page.locator('.detail-grid')).toBeVisible()
+      await expect(page.locator('text=成本价')).toBeVisible()
+      await expect(page.locator('text=止损距离')).toBeVisible()
+    }
+  })
+
+  test('position detail drawer shows stop-loss gauge', async ({ page }) => {
+    const codeLink = page.locator('.code-link').first()
+    if (await codeLink.isVisible()) {
+      await codeLink.click()
+      await expect(page.locator('.gauge-bar')).toBeVisible()
+      await expect(page.locator('.gauge-fill')).toBeVisible()
+    }
+  })
+
+  test('position detail drawer shows risk status tag', async ({ page }) => {
+    const codeLink = page.locator('.code-link').first()
+    if (await codeLink.isVisible()) {
+      await codeLink.click()
+      await expect(page.locator('text=风控状态')).toBeVisible()
+      const riskTag = page.locator('.el-drawer .el-tag')
+      await expect(riskTag).toBeVisible()
+    }
+  })
+
+  test('account switch changes displayed data', async ({ page }) => {
+    // Check for multiple account tabs (mock provides 2 accounts)
+    const tabs = page.locator('.el-tabs__item')
+    const count = await tabs.count()
+    if (count >= 2) {
+      await tabs.nth(1).click()
+      // After switching, banner should still be visible
+      await expect(page.locator('.account-banner')).toBeVisible()
+    }
+  })
+})

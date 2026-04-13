@@ -9,7 +9,7 @@
     >
       <el-table-column prop="code" label="代码" width="90">
         <template #default="{ row }">
-          <span class="code-link">{{ row.code }}</span>
+          <span class="code-link" @click="emit('select-position', row)">{{ row.code }}</span>
         </template>
       </el-table-column>
       <el-table-column label="名称" width="100">
@@ -85,6 +85,10 @@ import { getStockName } from '@/stores/portfolio'
 defineProps<{
   positions: readonly PositionItem[]
   totalAssets: number
+}>()
+
+const emit = defineEmits<{
+  'select-position': [position: PositionItem]
 }>()
 
 function currentPrice(row: PositionItem): number {
