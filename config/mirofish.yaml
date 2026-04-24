@@ -5,11 +5,11 @@ simulation:
   enabled: true
   agent_count: 300              # Simulated market participants (200-500)
   rounds: 20                    # Simulation rounds (15-30)
-  model: "MiniMax-M2.5"         # LLM driving the simulation
+  model: "kimi-k2.6"            # LLM driving the simulation
   trigger_threshold: 7          # Min importance_score to trigger (0-10)
 
 cost_estimate:
-  # MiniMax M2.5 pricing (RMB per 1K tokens)
+  # Kimi K2.6 pricing (RMB per 1K tokens)
   input_price_per_1k: 0.0021
   output_price_per_1k: 0.0084
   chars_per_token: 1.5          # Approximate for Chinese text

@@ -24,11 +24,11 @@ providers:
   deepseek:
     base_url: "https://api.deepseek.com/v1"
     api_key: "${DEEPSEEK_API_KEY}"
-    default_model: "deepseek-chat"
+    default_model: "deepseek-v4-pro"
   qwen:
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    api_key: "${QWEN_API_KEY}"
-    default_model: "qwen-plus"
+    api_key: "${DASHSCOPE_API_KEY}"
+    default_model: "qwen3.6-plus"
 
 defaults:
   temperature: 0.3
@@ -38,8 +38,8 @@ agents:
   news_crawler:
     name: "新闻爬取员"
     provider: deepseek
-    model: deepseek-chat
-    fallback: { provider: qwen, model: qwen-turbo }
+    model: deepseek-v4-pro
+    fallback: { provider: qwen, model: qwen3.6-plus }
 """
 
 SAMPLE_MIROFISH_YAML = """\
@@ -50,7 +50,7 @@ simulation:
   enabled: true
   agent_count: 300
   rounds: 20
-  model: "MiniMax-M2.5"
+  model: "kimi-k2.6"
   trigger_threshold: 7
 """
 
@@ -89,7 +89,7 @@ class TestConfigServiceRoundtrip:
         """Write to YAML and verify comments are preserved."""
         # Read original
         original = await config_service.read_yaml(llm_config_path)
-        assert original["providers"]["deepseek"]["default_model"] == "deepseek-chat"
+        assert original["providers"]["deepseek"]["default_model"] == "deepseek-v4-pro"
 
         # Update a value
         await config_service.write_yaml(
@@ -102,7 +102,7 @@ class TestConfigServiceRoundtrip:
         assert updated["defaults"]["temperature"] == 0.5
         # Original values preserved
         assert updated["defaults"]["max_tokens"] == 4096
-        assert updated["providers"]["deepseek"]["default_model"] == "deepseek-chat"
+        assert updated["providers"]["deepseek"]["default_model"] == "deepseek-v4-pro"
 
         # Verify comments preserved in raw file
         raw_text = llm_config_path.read_text(encoding="utf-8")
@@ -191,7 +191,7 @@ class TestMiroFishConfigRoundtrip:
         assert result["simulation"]["rounds"] == 30
         # Unchanged fields preserved
         assert result["simulation"]["trigger_threshold"] == 7
-        assert result["simulation"]["model"] == "MiniMax-M2.5"
+        assert result["simulation"]["model"] == "kimi-k2.6"
 
 
 # -- Cost aggregation --
@@ -247,8 +247,8 @@ class TestCostAggregation:
         cost = calculate_cost("deepseek", 1_000_000, 1_000_000)
         assert cost == pytest.approx(0.4, abs=1e-6)
 
-    async def test_cost_calculation_minimax(self) -> None:
-        """Verify MiniMax cost calculation accuracy."""
-        # MiniMax: 2.1 input + 8.4 output per million tokens
-        cost = calculate_cost("minimax", 1_000_000, 1_000_000)
+    async def test_cost_calculation_kimi(self) -> None:
+        """Verify Kimi cost calculation accuracy."""
+        # Kimi: 2.1 input + 8.4 output per million tokens
+        cost = calculate_cost("kimi", 1_000_000, 1_000_000)
         assert cost == pytest.approx(10.5, abs=1e-6)

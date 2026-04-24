@@ -217,7 +217,7 @@ def build_model_contributions(
     model_labels = {
         "deepseek": "DeepSeek",
         "qwen": "Qwen",
-        "minimax": "MiniMax",
+        "kimi": "Kimi",
     }
     contributions: list[dict[str, Any]] = []
 

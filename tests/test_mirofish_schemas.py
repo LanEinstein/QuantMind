@@ -64,7 +64,7 @@ class TestSimulationConfig:
         cfg = SimulationConfig()
         assert cfg.agent_count == 300
         assert cfg.rounds == 20
-        assert cfg.model == "MiniMax-M2.5"
+        assert cfg.model == "kimi-k2.6"
 
     def test_agent_count_range(self) -> None:
         with pytest.raises(ValidationError):
@@ -292,7 +292,7 @@ class TestLegacyDocumentBackwardCompat:
             "simulation_config": {
                 "agent_count": 300,
                 "rounds": 20,
-                "model": "MiniMax-M2.5",
+                "model": "kimi-k2.6",
             },
             "sentiment_evolution": [
                 {"round": 1, "bullish": 0.4, "bearish": 0.3, "neutral": 0.3}
@@ -364,7 +364,7 @@ class TestSimulationResult:
         result = SimulationResult(
             event_summary="央行降准",
             simulation_config=SimulationConfig(
-                agent_count=300, rounds=20, model="MiniMax-M2.5"
+                agent_count=300, rounds=20, model="kimi-k2.6"
             ),
             sentiment_evolution=(
                 SentimentSnapshot(round=1, bullish=0.45, bearish=0.3, neutral=0.25),

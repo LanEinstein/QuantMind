@@ -222,7 +222,7 @@ class MiroFishSimulator:
             return SimulationConfig(
                 agent_count=sim.get("agent_count", 300),
                 rounds=sim.get("rounds", 20),
-                model=sim.get("model", "MiniMax-M2.5"),
+                model=sim.get("model", "kimi-k2.6"),
             )
         except Exception as exc:
             self._log.warning("config_load_failed", error=str(exc))

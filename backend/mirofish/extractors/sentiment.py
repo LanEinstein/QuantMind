@@ -38,7 +38,7 @@ class SentimentEvolutionTracker:
     ) -> tuple[SentimentRound, ...]:
         """Enrich each simulation round with dominant narrative and intensity.
 
-        Uses MiniMax M2.5 to classify sentiment characteristics per round,
+        Uses Kimi K2.6 to classify sentiment characteristics per round,
         then merges with raw bullish/bearish/neutral ratios.
 
         Args:

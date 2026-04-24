@@ -19,10 +19,9 @@ log = structlog.get_logger(component="cost_tracker")
 
 # Per-model pricing in RMB per 1K tokens (more granular than COST_RATES)
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    "deepseek-chat": {"input": 0.0002, "output": 0.0002},
-    "qwen-plus": {"input": 0.001, "output": 0.001},
-    "qwen-turbo": {"input": 0.0003, "output": 0.0006},
-    "MiniMax-M2.5": {"input": 0.0021, "output": 0.0084},
+    "deepseek-v4-pro": {"input": 0.0002, "output": 0.0002},
+    "qwen3.6-plus": {"input": 0.001, "output": 0.001},
+    "kimi-k2.6": {"input": 0.0021, "output": 0.0084},
 }
 
 

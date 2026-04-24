@@ -124,7 +124,7 @@ export const useAgentStore = defineStore('agent', () => {
       round: event.round,
       content: event.content,
       evidence: event.evidence ?? [],
-      model: 'MiniMax' as const,
+      model: 'Kimi' as const,
       timestamp: event.timestamp,
     }
 
@@ -199,7 +199,7 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
             { label: '情绪', model: 'DeepSeek', status: 'positive', detail: '社交媒体讨论度高，机构研报一致看好。市场情绪偏乐观。' },
             { label: '仿真', model: 'MiroFish', status: 'positive', detail: '300 Agent仿真显示78%看多共识，短期上涨概率较高。' },
           ],
-          model: 'MiniMax',
+          model: 'Kimi',
           timestamp: '2026-03-24T10:15:00Z',
         },
         bear: {
@@ -209,10 +209,10 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
             '当前PE 32倍已处于历史高位区间，外资近3个月持续减持，持仓占比下降3个百分点。宏观经济复苏不及预期，消费降级风险犹存。白酒行业库存周期见顶，批价稳定或是控量保价的结果。',
           evidence: [
             { label: '技术面', model: 'Qwen', status: 'mixed', detail: 'MACD顶背离，RSI进入超买区域。但均线系统仍多头排列。' },
-            { label: '情报', model: 'MiniMax', status: 'mixed', detail: '行业库存周期见顶信号明显，经销商反馈动销放缓。' },
+            { label: '情报', model: 'Kimi', status: 'mixed', detail: '行业库存周期见顶信号明显，经销商反馈动销放缓。' },
             { label: '资金面', model: 'DeepSeek', status: 'negative', detail: '北向资金连续5日净卖出茅台，累计减持12亿元。' },
           ],
-          model: 'MiniMax',
+          model: 'Kimi',
           timestamp: '2026-03-24T10:16:30Z',
         },
       },
@@ -227,7 +227,7 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
             { label: '基本面', model: 'Qwen', status: 'positive', detail: 'PEG 1.8倍，考虑增速后估值合理。自由现金流充裕。' },
             { label: '情绪', model: 'DeepSeek', status: 'positive', detail: '机构持仓集中度上升，保险资金加仓明显。' },
           ],
-          model: 'MiniMax',
+          model: 'Kimi',
           timestamp: '2026-03-24T10:18:00Z',
         },
         bear: {
@@ -237,9 +237,9 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
             '即便PEG合理，绝对估值偏高限制了上行空间。反腐政策持续深化对高端白酒的政务消费构成压力。茅台增速已见顶，未来3年复合增速预计降至10%以内。',
           evidence: [
             { label: '技术面', model: 'Qwen', status: 'negative', detail: '周线级别出现放量滞涨，上方套牢盘压力较大。' },
-            { label: '情报', model: 'MiniMax', status: 'mixed', detail: '政务消费比例已降低，但替代效应使商务消费增长放缓。' },
+            { label: '情报', model: 'Kimi', status: 'mixed', detail: '政务消费比例已降低，但替代效应使商务消费增长放缓。' },
           ],
-          model: 'MiniMax',
+          model: 'Kimi',
           timestamp: '2026-03-24T10:19:30Z',
         },
       },
@@ -254,14 +254,14 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
             { label: '基本面', model: 'Qwen', status: 'positive', detail: '直营占比提升至40%，渠道利润率改善趋势确认。' },
             { label: '仿真', model: 'MiroFish', status: 'positive', detail: '中长期仿真（60轮）显示价值回归概率高。' },
           ],
-          model: 'MiniMax',
+          model: 'Kimi',
           timestamp: '2026-03-24T10:21:00Z',
         },
         bear: null,
       },
     ],
     risk_assessment: {
-      model: 'MiniMax',
+      model: 'Kimi',
       checks: [
         { label: '仓位合规', passed: true },
         { label: '止损设置', passed: true },
@@ -274,7 +274,7 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
         '该标的流动性充足，日均成交额超30亿。建议单只仓位不超过15%。当前波动率偏高，需设置严格止损位。',
     },
     decision: {
-      model: 'MiniMax',
+      model: 'Kimi',
       score: 72,
       score_label: '偏多',
       action: '买入',

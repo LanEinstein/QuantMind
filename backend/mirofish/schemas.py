@@ -39,7 +39,7 @@ class SimulationConfig(BaseModel):
 
     agent_count: int = Field(default=300, ge=50, le=1000)
     rounds: int = Field(default=20, ge=5, le=50)
-    model: str = "MiniMax-M2.5"
+    model: str = "kimi-k2.6"
 
 
 class MomentumShift(BaseModel):

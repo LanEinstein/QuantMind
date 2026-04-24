@@ -47,7 +47,7 @@ const tagType = computed((): ElTagType => {
   const types: Record<string, ElTagType> = {
     DeepSeek: 'success',
     Qwen: 'warning',
-    MiniMax: 'primary',
+    Kimi: 'primary',
     MiroFish: 'info',
   }
   return types[props.item.model] ?? 'primary'

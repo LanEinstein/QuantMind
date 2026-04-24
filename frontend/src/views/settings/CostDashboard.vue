@@ -160,7 +160,7 @@ const barChartOption = computed(() => {
   const providerColors: Record<string, string> = {
     deepseek: '#00c853',
     qwen: '#ff9100',
-    minimax: '#448aff',
+    kimi: '#448aff',
   }
 
   const series = Object.entries(providerDays).map(([provider, dayMap]) => ({
@@ -197,7 +197,7 @@ const pieChartOption = computed(() => {
   const providerColors: Record<string, string> = {
     deepseek: '#00c853',
     qwen: '#ff9100',
-    minimax: '#448aff',
+    kimi: '#448aff',
   }
 
   const data = Object.entries(byProvider).map(([name, value]) => ({

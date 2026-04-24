@@ -83,9 +83,9 @@
 
         <el-form-item label="驱动模型" prop="model">
           <el-select v-model="form.model" placeholder="选择模型">
-            <el-option label="MiniMax-M2.5" value="MiniMax-M2.5" />
-            <el-option label="qwen-plus" value="qwen-plus" />
-            <el-option label="deepseek-chat" value="deepseek-chat" />
+            <el-option label="kimi-k2.6" value="kimi-k2.6" />
+            <el-option label="qwen3.6-plus" value="qwen3.6-plus" />
+            <el-option label="deepseek-v4-pro" value="deepseek-v4-pro" />
           </el-select>
         </el-form-item>
 
@@ -139,7 +139,7 @@ const form = reactive({
   trigger_threshold: 7,
   agent_count: 300,
   rounds: 20,
-  model: 'MiniMax-M2.5',
+  model: 'kimi-k2.6',
 })
 
 const rules: FormRules = {
@@ -164,7 +164,7 @@ const estimatedTokens = computed(() => {
 })
 
 const estimatedCost = computed(() => {
-  // MiniMax M2.5 pricing: input 2.1 + output 8.4 per million tokens
+  // Kimi K2.6 pricing: input 2.1 + output 8.4 per million tokens
   // Assume ~60% input, ~40% output
   const inputTokens = estimatedTokens.value * 0.6
   const outputTokens = estimatedTokens.value * 0.4

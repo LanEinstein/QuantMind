@@ -73,7 +73,7 @@ export interface ApiEnvelope<T> {
 export interface SystemStatus {
   deepseek: boolean
   qwen: boolean
-  minimax: boolean
+  kimi: boolean
   adata: boolean
   akshare: boolean
   daily_cost_rmb: number

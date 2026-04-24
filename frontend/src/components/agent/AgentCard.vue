@@ -48,7 +48,7 @@ type ElTagType = 'primary' | 'success' | 'warning' | 'danger' | 'info'
 
 const modelTagType = computed((): ElTagType => {
   const types: Record<string, ElTagType> = {
-    MiniMax: 'primary',
+    Kimi: 'primary',
     DeepSeek: 'success',
     Qwen: 'warning',
   }

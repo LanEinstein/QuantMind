@@ -23,7 +23,7 @@ export const useMarketStore = defineStore('market', () => {
     rising: 0, falling: 0, flat: 0, limit_up: 0, limit_down: 0,
   })
   const systemStatus = ref<SystemStatus>({
-    deepseek: false, qwen: false, minimax: false,
+    deepseek: false, qwen: false, kimi: false,
     adata: false, akshare: false,
     daily_cost_rmb: 0,
     risk_status: 'normal',

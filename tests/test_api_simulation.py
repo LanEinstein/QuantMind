@@ -28,7 +28,7 @@ def _sample_sim_doc(oid: str = "aabbccddeeff00112233aabb") -> dict:
         "simulation_config": {
             "agent_count": 300,
             "rounds": 20,
-            "model": "MiniMax-M2.5",
+            "model": "kimi-k2.6",
         },
         "sentiment_evolution": [
             {
@@ -101,7 +101,7 @@ def _legacy_sim_doc(oid: str = "aabbccddeeff00112233aacc") -> dict:
         "simulation_config": {
             "agent_count": 300,
             "rounds": 20,
-            "model": "MiniMax-M2.5",
+            "model": "kimi-k2.6",
         },
         "sentiment_evolution": [
             {"round": 1, "bullish": 0.4, "bearish": 0.3, "neutral": 0.3},

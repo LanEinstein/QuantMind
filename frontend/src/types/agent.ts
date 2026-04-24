@@ -2,7 +2,7 @@
 
 export type EvidenceStatus = 'positive' | 'mixed' | 'negative'
 
-export type ModelLabel = 'DeepSeek' | 'Qwen' | 'MiniMax' | 'MiroFish'
+export type ModelLabel = 'DeepSeek' | 'Qwen' | 'Kimi' | 'MiroFish'
 
 export type AuthMode = 'suggest' | 'confirm' | 'auto'
 

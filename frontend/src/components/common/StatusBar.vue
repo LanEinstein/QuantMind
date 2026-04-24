@@ -7,8 +7,8 @@
       <span class="status-name">DeepSeek</span>
       <span :class="['status-dot', status.qwen ? 'on' : 'off']" title="Qwen" />
       <span class="status-name">Qwen</span>
-      <span :class="['status-dot', status.minimax ? 'on' : 'off']" title="MiniMax" />
-      <span class="status-name">MiniMax</span>
+      <span :class="['status-dot', status.kimi ? 'on' : 'off']" title="Kimi" />
+      <span class="status-name">Kimi</span>
     </div>
 
     <div class="status-divider" />

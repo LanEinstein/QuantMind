@@ -11,11 +11,11 @@ providers:
   deepseek:
     base_url: "https://api.deepseek.com/v1"
     api_key: "${DEEPSEEK_API_KEY}"
-    default_model: "deepseek-chat"
+    default_model: "deepseek-v4-pro"
   qwen:
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    api_key: "${QWEN_API_KEY}"
-    default_model: "qwen-plus"
+    api_key: "${DASHSCOPE_API_KEY}"
+    default_model: "qwen3.6-plus"
 
 defaults:
   temperature: 0.3
@@ -25,14 +25,14 @@ agents:
   news_crawler:
     name: "News Crawler"
     provider: deepseek
-    model: deepseek-chat
-    fallback: { provider: qwen, model: qwen-turbo }
+    model: deepseek-v4-pro
+    fallback: { provider: qwen, model: qwen3.6-plus }
     frequency: "every_5min"
     task: "Crawl financial news"
   analyst:
     name: "Analyst"
     provider: qwen
-    model: qwen-plus
+    model: qwen3.6-plus
     frequency: "daily"
     task: "Analyze fundamentals"
 """
@@ -50,8 +50,8 @@ def sample_yaml_path(tmp_path: Path) -> Path:
 def mock_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set required API key environment variables."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-deepseek")
-    monkeypatch.setenv("QWEN_API_KEY", "sk-test-qwen")
-    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-dashscope")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test-moonshot")
 
 
 @pytest.fixture()

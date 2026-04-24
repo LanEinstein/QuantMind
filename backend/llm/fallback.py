@@ -37,7 +37,7 @@ class CostRate:
 COST_RATES: dict[str, CostRate] = {
     "deepseek": CostRate(input_rmb_per_million=0.2, output_rmb_per_million=0.2),
     "qwen": CostRate(input_rmb_per_million=1.0, output_rmb_per_million=1.0),
-    "minimax": CostRate(input_rmb_per_million=2.1, output_rmb_per_million=8.4),
+    "kimi": CostRate(input_rmb_per_million=2.1, output_rmb_per_million=8.4),
 }
 
 _TTL_DAYS = 90

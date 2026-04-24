@@ -2,7 +2,7 @@
 
 ## 项目概述
 个人A股量化交易系统，融合TradingAgents-CN多Agent决策 + MiroFish群体智能仿真。
-三模型协同：DeepSeek（高频低成本）+ Qwen（中文金融专家）+ MiniMax M2.5（智能体核心引擎）。
+三模型协同：DeepSeek V4 Pro（高频低成本）+ Qwen 3.6 Plus（中文金融专家）+ Kimi K2.6（智能体核心引擎）。
 
 ## 核心参考项目
 - TradingAgents-CN: https://github.com/hsliuping/TradingAgents-CN
@@ -13,14 +13,17 @@
 - Backend: Python 3.11+ / FastAPI / LangGraph
 - Frontend: Vue 3 + Element Plus + ECharts + TypeScript (基于TradingAgents-CN前端)
 - Database: MongoDB + Redis
-- LLM: DeepSeek API + Qwen (DashScope) + MiniMax M2.5 API
+- LLM: DeepSeek V4 Pro + Qwen 3.6 Plus (DashScope) + Kimi K2.6 (Moonshot)
+- Frontend dev port: **9276** (避开 Open WebUI 占用的 3000)
 - Testing: pytest, >95% coverage for risk engine, >70% for others
 
 ## 编码规范
 - 代码注释和commit message用英文
 - 用户界面文本和文档用中文
 - 所有public function必须有type hints和docstring
-- 配置通过YAML，密钥通过.env，禁止硬编码
+- 配置通过YAML，LLM密钥通过用户 shell 环境变量 (~/.bashrc)，禁止硬编码
+  - `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`
+  - .env 仅存非密配置 (DB URI、模式开关等)
 - LLM调用必须try/except，降级而非崩溃
 - 风控引擎代码禁止依赖任何LLM输出
 

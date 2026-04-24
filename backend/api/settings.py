@@ -20,7 +20,7 @@ _LLM_CONFIG_PATH = Path("config/agent_models.yaml")
 _MIROFISH_CONFIG_PATH = Path("config/mirofish.yaml")
 _DATA_SOURCES_CONFIG_PATH = Path("config/data_sources.yaml")
 
-_VALID_PROVIDERS = {"deepseek", "qwen", "minimax", "claude", "openai"}
+_VALID_PROVIDERS = {"deepseek", "qwen", "kimi", "claude", "openai"}
 _VALID_PERIODS = {"daily", "weekly"}
 
 

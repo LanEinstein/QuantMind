@@ -197,7 +197,7 @@ class TestBuildModelContributions:
         result = build_model_contributions(costs)
         assert len(result) == 3
         labels = {m["model"] for m in result}
-        assert labels == {"deepseek", "qwen", "minimax"}
+        assert labels == {"deepseek", "qwen", "kimi"}
 
     def test_zero_cost_for_missing(self) -> None:
         result = build_model_contributions({})

@@ -71,7 +71,7 @@ class TestLoadRouterConfig:
         fb = config.agents["news_crawler"].fallback
         assert fb is not None
         assert fb.provider == "qwen"
-        assert fb.model == "qwen-turbo"
+        assert fb.model == "qwen3.6-plus"
 
     def test_no_fallback_is_none(self, sample_yaml_path: Path) -> None:
         config = load_router_config(sample_yaml_path)
@@ -285,10 +285,10 @@ class TestTrackUsage:
         assert len(cost_calls) == 1
         assert abs(cost_calls[0].args[2] - 0.2) < 0.001
 
-    async def test_minimax_split_cost(self, mock_redis: AsyncMock) -> None:
-        await track_usage(mock_redis, "test_agent", "minimax", 1_000_000, 1_000_000)
+    async def test_kimi_split_cost(self, mock_redis: AsyncMock) -> None:
+        await track_usage(mock_redis, "test_agent", "kimi", 1_000_000, 1_000_000)
         pipe = mock_redis.pipeline.return_value
-        # MiniMax: 2.1 input + 8.4 output = 10.5 RMB
+        # Kimi: 2.1 input + 8.4 output = 10.5 RMB
         cost_calls = [
             c for c in pipe.hincrbyfloat.call_args_list if c.args[1] == "cost_rmb"
         ]
@@ -380,4 +380,4 @@ class TestRetryableExceptions:
     def test_cost_rates_defined_for_all_providers(self) -> None:
         assert "deepseek" in COST_RATES
         assert "qwen" in COST_RATES
-        assert "minimax" in COST_RATES
+        assert "kimi" in COST_RATES

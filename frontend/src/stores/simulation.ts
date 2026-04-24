@@ -226,7 +226,7 @@ function mockSimulationResult(): SimulationResult {
     simulation_config: {
       agent_count: 300,
       rounds: 20,
-      model: 'MiniMax-M2.5',
+      model: 'kimi-k2.6',
     },
     sentiment_evolution: generateSentimentEvolution(),
     hidden_variables: [

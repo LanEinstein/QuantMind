@@ -71,7 +71,7 @@ Phase 5 is fundamentally different from Phase 4. It transitions from **building 
 | Component | File | Status |
 |-----------|------|--------|
 | 9-agent LangGraph pipeline | `backend/agents/graph.py` | Full |
-| LLM Router (DeepSeek/Qwen/MiniMax) | `backend/llm/router.py` | Full |
+| LLM Router (DeepSeek/Qwen/Kimi) | `backend/llm/router.py` | Full |
 | Risk engine (7-check, stop-loss, circuit breaker) | `backend/risk/` | Full |
 | Mock broker (slippage, commission, T+1) | `backend/broker/mock_broker.py` | Full |
 | Market data service (adata/AKShare) | `backend/data/market_data.py` | Full |
@@ -394,16 +394,20 @@ Execute these in dependency order. Each sub-task follows TDD (write test first, 
 
 After implementing the gaps, set up the runtime environment:
 
-### 3a. Environment Variables (.env)
+### 3a. Environment Variables
 
-Activate real API keys in `.env` (never commit this file):
+LLM API keys live in user shell env (`~/.bashrc`), NOT in `.env`:
 
 ```bash
-# LLM API Keys — get from respective provider dashboards
-DEEPSEEK_API_KEY=sk-xxx          # https://platform.deepseek.com/
-QWEN_API_KEY=sk-xxx              # https://bailian.console.aliyun.com/
-MINIMAX_API_KEY=xxx              # https://www.minimaxi.com/
+# Append to ~/.bashrc (one-time setup)
+export DEEPSEEK_API_KEY=sk-xxx          # https://platform.deepseek.com/
+export DASHSCOPE_API_KEY=sk-xxx         # https://bailian.console.aliyun.com/ (Qwen)
+export MOONSHOT_API_KEY=sk-xxx          # https://platform.moonshot.ai/ (Kimi)
+```
 
+`.env` in project root keeps only non-secret runtime config:
+
+```bash
 # Database
 MONGODB_URI=mongodb://localhost:27017/quantmind
 REDIS_URL=redis://localhost:6379/0
@@ -523,9 +527,9 @@ Each trading day, verify:
 
 After accumulating 2+ weeks of suggest-mode data, set up parallel virtual accounts:
 
-- **Account A**: Default 3-model config (DeepSeek + Qwen + MiniMax)
-- **Account B**: Single-model (all agents use MiniMax M2.5)
-- **Account C**: Single-model (all agents use DeepSeek, cheapest)
+- **Account A**: Default 3-model config (DeepSeek V4 Pro + Qwen 3.6 Plus + Kimi K2.6)
+- **Account B**: Single-model (all agents use Kimi K2.6)
+- **Account C**: Single-model (all agents use DeepSeek V4 Pro, cheapest)
 
 This requires:
 - Multi-account support in MockBroker (already has `BrokerRegistry`)

@@ -283,7 +283,7 @@ def config_path(tmp_path: Path) -> Path:
             "enabled": True,
             "agent_count": 100,
             "rounds": 5,
-            "model": "MiniMax-M2.5",
+            "model": "kimi-k2.6",
             "trigger_threshold": 7,
         },
         "cost_estimate": {

@@ -159,22 +159,22 @@ export const useSettingsStore = defineStore('settings', () => {
 function mockLLMConfig(): LLMConfig {
   return {
     providers: {
-      deepseek: { base_url: 'https://api.deepseek.com/v1', api_key: '***masked***', default_model: 'deepseek-chat' },
-      qwen: { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', api_key: '***masked***', default_model: 'qwen-plus' },
-      minimax: { base_url: 'https://api.minimaxi.com/v1', api_key: '***masked***', default_model: 'MiniMax-M2.5' },
+      deepseek: { base_url: 'https://api.deepseek.com/v1', api_key: '***masked***', default_model: 'deepseek-v4-pro' },
+      qwen: { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', api_key: '***masked***', default_model: 'qwen3.6-plus' },
+      kimi: { base_url: 'https://api.moonshot.ai/v1', api_key: '***masked***', default_model: 'kimi-k2.6' },
     },
     defaults: { temperature: 0.3, max_tokens: 4096 },
     agents: {
-      news_crawler: { name: '新闻爬取员', provider: 'deepseek', model: 'deepseek-chat', fallback: { provider: 'qwen', model: 'qwen-turbo' }, frequency: 'every_5min', task: '财经新闻摘要、分类、重要性评分(0-10)' },
-      sentiment_analyst: { name: '情绪分析师', provider: 'deepseek', model: 'deepseek-chat', fallback: { provider: 'qwen', model: 'qwen-turbo' }, frequency: 'every_30min', task: '社交媒体情绪、论坛情感、恐慌贪婪指数' },
-      data_cleaner: { name: '数据清洗员', provider: 'deepseek', model: 'deepseek-chat', fallback: { provider: 'qwen', model: 'qwen-turbo' }, frequency: 'realtime', task: '原始数据标准化、异常值标记、格式转换' },
-      fundamental_analyst: { name: '基本面分析师', provider: 'qwen', model: 'qwen-plus', fallback: { provider: 'deepseek', model: 'deepseek-chat' }, frequency: 'daily_or_event', task: '财报解读、PE/PB估值、行业对比' },
-      technical_analyst: { name: '技术分析师', provider: 'qwen', model: 'qwen-plus', fallback: { provider: 'deepseek', model: 'deepseek-chat' }, frequency: 'daily', task: 'K线形态、MACD/RSI/布林带、趋势判断' },
-      intelligence_officer: { name: '情报研判员（含MiroFish）', provider: 'minimax', model: 'MiniMax-M2.5', fallback: { provider: 'qwen', model: 'qwen-plus' }, frequency: 'event_triggered', task: '信息融合、隐性变量推演、驱动MiroFish仿真' },
-      bull_researcher: { name: '看多研究员', provider: 'minimax', model: 'MiniMax-M2.5', fallback: { provider: 'qwen', model: 'qwen-plus' }, frequency: 'per_trading_day', task: '构建看多论点、寻找上涨催化剂' },
-      bear_researcher: { name: '看空研究员', provider: 'minimax', model: 'MiniMax-M2.5', fallback: { provider: 'qwen', model: 'qwen-plus' }, frequency: 'per_trading_day', task: '构建看空论点、寻找下跌风险' },
-      risk_officer: { name: '风控官', provider: 'minimax', model: 'MiniMax-M2.5', fallback: { provider: 'qwen', model: 'qwen-plus' }, frequency: 'per_trading_day', task: '投组风险评估、仓位建议、否决权' },
-      fund_manager: { name: '基金经理（终局决策）', provider: 'minimax', model: 'MiniMax-M2.5', fallback: { provider: 'qwen', model: 'qwen-plus' }, frequency: 'per_trading_day', task: '综合所有Agent报告，输出最终买卖信号' },
+      news_crawler: { name: '新闻爬取员', provider: 'deepseek', model: 'deepseek-v4-pro', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'every_5min', task: '财经新闻摘要、分类、重要性评分(0-10)' },
+      sentiment_analyst: { name: '情绪分析师', provider: 'deepseek', model: 'deepseek-v4-pro', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'every_30min', task: '社交媒体情绪、论坛情感、恐慌贪婪指数' },
+      data_cleaner: { name: '数据清洗员', provider: 'deepseek', model: 'deepseek-v4-pro', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'realtime', task: '原始数据标准化、异常值标记、格式转换' },
+      fundamental_analyst: { name: '基本面分析师', provider: 'qwen', model: 'qwen3.6-plus', fallback: { provider: 'deepseek', model: 'deepseek-v4-pro' }, frequency: 'daily_or_event', task: '财报解读、PE/PB估值、行业对比' },
+      technical_analyst: { name: '技术分析师', provider: 'qwen', model: 'qwen3.6-plus', fallback: { provider: 'deepseek', model: 'deepseek-v4-pro' }, frequency: 'daily', task: 'K线形态、MACD/RSI/布林带、趋势判断' },
+      intelligence_officer: { name: '情报研判员（含MiroFish）', provider: 'kimi', model: 'kimi-k2.6', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'event_triggered', task: '信息融合、隐性变量推演、驱动MiroFish仿真' },
+      bull_researcher: { name: '看多研究员', provider: 'kimi', model: 'kimi-k2.6', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'per_trading_day', task: '构建看多论点、寻找上涨催化剂' },
+      bear_researcher: { name: '看空研究员', provider: 'kimi', model: 'kimi-k2.6', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'per_trading_day', task: '构建看空论点、寻找下跌风险' },
+      risk_officer: { name: '风控官', provider: 'kimi', model: 'kimi-k2.6', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'per_trading_day', task: '投组风险评估、仓位建议、否决权' },
+      fund_manager: { name: '基金经理（终局决策）', provider: 'kimi', model: 'kimi-k2.6', fallback: { provider: 'qwen', model: 'qwen3.6-plus' }, frequency: 'per_trading_day', task: '综合所有Agent报告，输出最终买卖信号' },
     },
   }
 }
@@ -197,7 +197,7 @@ function mockMiroFishConfig(): MiroFishConfig {
       agent_count: 300,
       rounds: 20,
       trigger_threshold: 7,
-      model: 'MiniMax-M2.5',
+      model: 'kimi-k2.6',
     },
     cost_estimate: {
       input_price_per_1k: 0.0021,
@@ -214,8 +214,8 @@ function mockCostSummary(): CostSummary {
   const providerMap: Record<string, string> = {
     news_crawler: 'deepseek', sentiment_analyst: 'deepseek',
     fundamental_analyst: 'qwen', technical_analyst: 'qwen',
-    intelligence_officer: 'minimax', bull_researcher: 'minimax',
-    bear_researcher: 'minimax', risk_officer: 'minimax', fund_manager: 'minimax',
+    intelligence_officer: 'kimi', bull_researcher: 'kimi',
+    bear_researcher: 'kimi', risk_officer: 'kimi', fund_manager: 'kimi',
   }
 
   for (let d = 0; d < 30; d++) {

@@ -55,7 +55,7 @@ class HiddenVariableExtractor:
 
         Process:
         1. Build context from event + evolution + sentiment enrichment
-        2. Use MiniMax M2.5 to identify themes absent from original event
+        2. Use Kimi K2.6 to identify themes absent from original event
         3. Assess probability via weighted agent consensus
         4. Filter to only truly hidden variables
         5. Rank by potential market impact

@@ -119,13 +119,13 @@ const testingProvider = ref<string | null>(null)
 const providerLabels: Record<string, string> = {
   deepseek: 'DeepSeek',
   qwen: 'Qwen (DashScope)',
-  minimax: 'MiniMax',
+  kimi: 'Kimi (Moonshot)',
 }
 
 const providerColors: Record<string, string> = {
   deepseek: '#00c853',
   qwen: '#ff9100',
-  minimax: '#448aff',
+  kimi: '#448aff',
 }
 
 const expansionSlots = [

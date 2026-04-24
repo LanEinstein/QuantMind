@@ -22,17 +22,17 @@ def mock_config_service() -> AsyncMock:
             "deepseek": {
                 "base_url": "https://api.deepseek.com/v1",
                 "api_key": "***masked***",
-                "default_model": "deepseek-chat",
+                "default_model": "deepseek-v4-pro",
             },
             "qwen": {
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "api_key": "***masked***",
-                "default_model": "qwen-plus",
+                "default_model": "qwen3.6-plus",
             },
-            "minimax": {
-                "base_url": "https://api.minimaxi.com/v1",
+            "kimi": {
+                "base_url": "https://api.moonshot.ai/v1",
                 "api_key": "***masked***",
-                "default_model": "MiniMax-M2.5",
+                "default_model": "kimi-k2.6",
             },
         },
         "defaults": {"temperature": 0.3, "max_tokens": 4096},
@@ -40,8 +40,8 @@ def mock_config_service() -> AsyncMock:
             "news_crawler": {
                 "name": "新闻爬取员",
                 "provider": "deepseek",
-                "model": "deepseek-chat",
-                "fallback": {"provider": "qwen", "model": "qwen-turbo"},
+                "model": "deepseek-v4-pro",
+                "fallback": {"provider": "qwen", "model": "qwen3.6-plus"},
                 "frequency": "every_5min",
                 "task": "财经新闻摘要、分类、重要性评分(0-10)",
             },
@@ -57,7 +57,7 @@ def mock_config_service() -> AsyncMock:
             "enabled": True,
             "agent_count": 300,
             "rounds": 20,
-            "model": "MiniMax-M2.5",
+            "model": "kimi-k2.6",
             "trigger_threshold": 7,
         },
         "cost_estimate": {
@@ -134,7 +134,7 @@ class TestGetLLMConfig:
         agent = agents["news_crawler"]
         assert agent["name"] == "新闻爬取员"
         assert agent["provider"] == "deepseek"
-        assert agent["model"] == "deepseek-chat"
+        assert agent["model"] == "deepseek-v4-pro"
         assert agent["fallback"]["provider"] == "qwen"
 
 
@@ -150,7 +150,7 @@ class TestUpdateLLMConfig:
             "/api/settings/llm-config",
             json={
                 "agents": {
-                    "news_crawler": {"provider": "qwen", "model": "qwen-turbo"},
+                    "news_crawler": {"provider": "qwen", "model": "qwen3.6-plus"},
                 },
             },
         )

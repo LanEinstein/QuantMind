@@ -148,8 +148,8 @@ function mockPerformanceData(): PerformanceData {
         cost_unit: '¥',
       },
       {
-        model: 'minimax',
-        label: 'MiniMax',
+        model: 'kimi',
+        label: 'Kimi',
         accuracy_label: '决策胜率',
         accuracy_value: 0.64,
         call_label: '日均调用',

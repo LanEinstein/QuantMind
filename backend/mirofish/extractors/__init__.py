@@ -59,6 +59,7 @@ def _normalize_scenario_direction(value: str) -> ScenarioDirection:
 def _normalize_momentum_direction(value: str) -> MomentumDirection:
     return value if value in _VALID_MOMENTUM_DIRECTIONS else ""  # type: ignore[return-value]
 
+
 if TYPE_CHECKING:
     from backend.llm.router import LLMRouter
 
@@ -264,7 +265,7 @@ class HiddenVariableExtractionPipeline:
         inflection_points: tuple,
         extreme_scenarios: tuple,
     ) -> str:
-        """Generate recommended action summary using MiniMax M2.5."""
+        """Generate recommended action summary using Kimi K2.6."""
         sentiment_text = ""
         if sentiment_rounds:
             last = sentiment_rounds[-1]
