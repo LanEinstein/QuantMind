@@ -128,11 +128,9 @@ docker-compose.yml                  — +logs volume
 |--------|--------|------|------|
 | DataScheduler | interval | 每30s (交易时段) | 市场行情采集 |
 | DataScheduler | interval | 每300s | 新闻采集 |
+| DataScheduler | cron | 15:30 CST Mon-Fri | CSI300 指数收盘价采集 (2026-04-24 接入) |
+| DataScheduler | cron | 23:00 CST daily | LLM 成本 Redis→MongoDB 刷新 (2026-04-24 接入) |
 | AnalysisScheduler | cron | 09:45 CST Mon-Fri | 自选股每日分析 |
-| 待接入 | cron | 15:30 CST Mon-Fri | CSI300 指数收盘价采集 |
-| 待接入 | cron | 23:00 CST | LLM 成本 Redis→MongoDB 刷新 |
-
-注: 后两个 cron 任务的代码已实现 (database 方法 + flush_to_mongodb), 但 DataScheduler 的 `start()` 中尚未注册这两个 job, 需在部署时补充或下一迭代添加。
 
 ---
 
@@ -162,7 +160,7 @@ docker-compose.yml                  — +logs volume
 
 | 项 | 优先级 | 说明 |
 |----|--------|------|
-| DataScheduler 注册 index + cost_flush 两个 cron job | HIGH | 代码已实现, 需在 scheduler.py 的 start() 中添加 |
+| ~~DataScheduler 注册 index + cost_flush 两个 cron job~~ | ~~HIGH~~ | ✅ 2026-04-24 已补齐: index 15:30 CST Mon-Fri, cost_flush 23:00 CST daily, 共 +8 测试 |
 | 修复 test_hidden_variable_extraction 3个遗留失败 | MEDIUM | mock 数据中的 reasoning 文本需包含 "simulated crowd wisdom" |
 | SignalEvaluator N+1 查询优化 | LOW | 当前可接受, 信号量级 <100 时无性能问题 |
 | performance.py 中 points 列表原地修改 | LOW | 与已有代码模式一致, 非回归 |

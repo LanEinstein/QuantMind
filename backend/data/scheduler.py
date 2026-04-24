@@ -9,6 +9,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from backend.data.publisher import publish_market_update, publish_news
 from backend.data.trading_hours import is_trading_hours
+from backend.llm.cost_tracker import flush_to_mongodb
+
+BENCHMARK_INDEX_CODE = "000300"
+BENCHMARK_BACKFILL_DAYS = 5
 
 if TYPE_CHECKING:
     import redis.asyncio
@@ -65,6 +69,27 @@ class DataScheduler:
             name="News collection",
         )
 
+        self._scheduler.add_job(
+            self._run_index_job,
+            "cron",
+            hour=15,
+            minute=30,
+            day_of_week="mon-fri",
+            timezone="Asia/Shanghai",
+            id="index_price_job",
+            name="CSI300 daily close collection",
+        )
+
+        self._scheduler.add_job(
+            self._run_cost_flush_job,
+            "cron",
+            hour=23,
+            minute=0,
+            timezone="Asia/Shanghai",
+            id="cost_flush_job",
+            name="LLM cost Redis->MongoDB flush",
+        )
+
         self._scheduler.start()
         self._log.info(
             "scheduler_started",
@@ -103,3 +128,40 @@ class DataScheduler:
                 self._log.debug("news_job_complete", count=len(articles))
         except Exception as exc:
             self._log.warning("news_job_failed", error=str(exc))
+
+    async def _run_index_job(self) -> None:
+        """Fetch CSI300 recent daily closes and upsert to MongoDB."""
+        try:
+            df = await self._market_data.get_index_history(
+                BENCHMARK_INDEX_CODE, days=BENCHMARK_BACKFILL_DAYS
+            )
+            if df is None or df.empty:
+                return
+            prices: list[dict[str, object]] = [
+                {str(k): v for k, v in row.items()}
+                for row in df.to_dict(orient="records")
+            ]
+            count = await self._mongodb.save_index_prices(
+                BENCHMARK_INDEX_CODE, prices
+            )
+            self._log.info(
+                "index_job_complete",
+                code=BENCHMARK_INDEX_CODE,
+                fetched=len(prices),
+                persisted=count,
+            )
+        except Exception as exc:
+            self._log.warning("index_job_failed", error=str(exc))
+
+    async def _run_cost_flush_job(self) -> None:
+        """Flush today's LLM cost entries from Redis to MongoDB."""
+        if self._redis is None:
+            self._log.debug("cost_flush_skipped", reason="no_redis")
+            return
+        try:
+            count = await flush_to_mongodb(
+                self._redis, self._mongodb, days=1
+            )
+            self._log.info("cost_flush_complete", entries=count)
+        except Exception as exc:
+            self._log.warning("cost_flush_failed", error=str(exc))
