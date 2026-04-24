@@ -2,9 +2,9 @@
 E2E tests for Settings pages using Playwright.
 
 Requires:
-    - Frontend dev server running at localhost:3000
+    - Frontend dev server running at localhost:9276
     - Backend API running at localhost:8000
-    - Or: VITE_API_BASE_URL set to backend URL
+    - Or: E2E_BASE_URL set to frontend URL
 
 These tests use Playwright's async API and are designed to be run
 with: npx playwright test tests/e2e/test_settings_e2e.py
@@ -16,6 +16,8 @@ Note: In CI, these tests may use mock data from the frontend dev mode.
 from __future__ import annotations
 
 import os
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import pytest
 
@@ -27,10 +29,32 @@ try:
 except ImportError:
     HAS_PLAYWRIGHT = False
 
-BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:3000")
+BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:9276")
+
+
+def _frontend_is_quantmind(url: str, timeout: float = 1.0) -> bool:
+    """Confirm the URL serves the QuantMind frontend (not just any server).
+
+    TCP-only probe is unreliable: another app (e.g. Open WebUI) may occupy
+    the port, causing playwright to time out on selectors. We do a cheap
+    HTTP GET and sniff the title/root mount point to be sure.
+    """
+    try:
+        with urlopen(url, timeout=timeout) as resp:
+            body = resp.read(4096).decode("utf-8", errors="replace")
+    except (URLError, OSError, ValueError):
+        return False
+    return "QuantMind" in body or 'id="app"' in body
+
+
+FRONTEND_UP = _frontend_is_quantmind(BASE_URL)
 
 pytestmark = [
     pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed"),
+    pytest.mark.skipif(
+        not FRONTEND_UP,
+        reason=f"frontend dev server not reachable at {BASE_URL}",
+    ),
     pytest.mark.e2e,
 ]
 

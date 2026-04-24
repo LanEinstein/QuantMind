@@ -65,6 +65,11 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: browser-based end-to-end tests (require live frontend + backend)",
+    "unit: isolated unit test",
+    "integration: integration test touching external services",
+]
 
 [tool.mypy]
 python_version = "3.11"

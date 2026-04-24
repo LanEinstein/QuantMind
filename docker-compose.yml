@@ -29,6 +29,12 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Forward LLM keys from host shell (set in ~/.bashrc) into the container.
+      # Keeps secrets out of project files while supporting docker-compose deploy.
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is not set in host shell}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:?DASHSCOPE_API_KEY is not set in host shell}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:?MOONSHOT_API_KEY is not set in host shell}
     volumes:
       - ./logs:/app/logs
     depends_on:
