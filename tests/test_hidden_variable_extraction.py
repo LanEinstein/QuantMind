@@ -744,9 +744,10 @@ class TestExtractionPipeline:
         assert len(result.extreme_scenarios) >= 2
         assert result.cost_rmb == 0.5
         assert result.duration_seconds == 10.0
-        # Hidden variables should include disclaimer in reasoning
-        for hv in result.hidden_variables:
-            assert "simulated crowd wisdom" in hv.reasoning
+        # Hidden variable reasoning is preserved verbatim (no disclaimer
+        # string contamination — P4-T03 design: disclaimer lives on the
+        # EnrichedHiddenVariable structured field, not mutated into reasoning).
+        assert all(hv.reasoning for hv in result.hidden_variables)
 
     @pytest.mark.asyncio
     async def test_to_simulation_result_includes_momentum_shifts(
@@ -812,8 +813,10 @@ class TestExtractionPipeline:
             extraction, config, cost_rmb=0.3, duration_seconds=5.0
         )
 
-        # Momentum shift should be appended to recommended_action
-        assert "动量转换" in sim_result.recommended_action
+        # Momentum shifts surface as a structured field (P4-T03 design:
+        # no string mutation of recommended_action).
+        assert len(sim_result.momentum_shifts) >= 1
+        assert sim_result.momentum_shifts[0].magnitude > 0
 
     @pytest.mark.asyncio
     async def test_pipeline_recommendation_fallback(self) -> None:
@@ -925,15 +928,13 @@ class TestIntegration:
         assert result.cost_rmb > 0
         assert result.duration_seconds >= 0
 
-        # Verify hidden variables contain disclaimer
-        for hv in result.hidden_variables:
-            assert "simulated crowd wisdom" in hv.reasoning
+        # Hidden variables preserve their reasoning verbatim (disclaimer is
+        # surfaced separately via the extraction layer, not mutated in).
+        assert all(hv.reasoning for hv in result.hidden_variables)
 
-        # Verify extreme scenarios have both directions
-        scenarios_text = " ".join(
-            es.scenario for es in result.extreme_scenarios
-        )
-        assert "upside" in scenarios_text or "downside" in scenarios_text
+        # Verify extreme scenarios preserve their direction classification
+        directions = {es.direction for es in result.extreme_scenarios}
+        assert "upside" in directions or "downside" in directions
 
         # Total calls: 2 (persona + evolution) + 5 (extraction pipeline)
         assert router.complete.call_count == 7
