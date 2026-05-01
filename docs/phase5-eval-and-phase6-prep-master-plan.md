@@ -410,9 +410,13 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 - **Pre-commit**: §2.4 minor-fix 路径(R1 + R3 两轮 codex-review)
 - **Done**: 24h 监控通过 + commit + marker 改 ✅
 
-#### P5A-T02 — Daily LLM Cost Hard-Cap (cost_guard) [⏳ 待做]
+#### P5A-T02 — Daily LLM Cost Hard-Cap (cost_guard) [✅ 已完成]
 
-- **Owner**: 任意
+- **Owner**: claude-opus-4-7-1m (2026-05-01 session)
+- **Commit**: (pending — 同次 commit,见 §7.4)
+- **Test report**: `docs/reviews/p5a-t02-codex-review.md` (5 轮综合) + R1-R5 占位文件
+- **关键超出计划**: ① 双层 NaN/Inf 防御(parser + guard 各自 fail-closed) ② 单条负 cost_rmb 数据腐败也被 drop ③ `asyncio.Lock` 序列化 cron + manual 并发 ④ `_read_env_float` 拒绝 NaN/Inf 与负值钳制 ⑤ Codex 5 轮渐进式审查共发现 6 个 issue (4×P2 + 2×P3) 全部修复
+- **关键偏离**: ① `hypothesis` 未安装,改用参数化 unit 测试覆盖等价边界 ② E2E redis-cli + curl 验证延后到部署后 ③ 7 天线上无误熔断纳入 Phase 5A 出口检查
 - **Dependencies**: P5A-T01
 - **背景**: 当前 `analysis_scheduler` catch-up 不感知日成本;catch-up 异常重启或长 watchlist 都可能在一日内累计大额 LLM 花费。需要代码级硬熔断 + 软警戒线。
 - **实现**:
@@ -1722,7 +1726,8 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 日期 | 修改人(session) | commit | 摘要 |
 |---|---|---|---|
 | 2026-05-01 | claude-opus-4-7-1m | 24a0db6 | 初版 SSoT 落盘 |
-| 2026-05-01 | claude-opus-4-7-1m | (本次 commit) | P5A-T01 ⏳→✅ news_crawler KeyError 修复(精确匹配 + minor-fix R1+R3 PASS) |
+| 2026-05-01 | claude-opus-4-7-1m | 975af0b | P5A-T01 ⏳→✅ news_crawler KeyError 修复(精确匹配 + minor-fix R1+R3 PASS) |
+| 2026-05-01 | claude-opus-4-7-1m | (本次 commit) | P5A-T02 ⏳→✅ cost_guard 硬熔断 + 双层 NaN/Inf 防御 + scheduler 并发锁(major 5 轮 codex PASS) |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

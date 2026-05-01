@@ -9,11 +9,14 @@ UI have one source of truth.
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request
+
+from backend.services.cost_guard import get_budget_state
 
 log = structlog.get_logger(component="api_monitoring")
 
@@ -201,6 +204,39 @@ def _overall_status(
     if llm.get("available_count", 0) < len(llm.get("providers", [])):
         return "degraded"
     return "ok"
+
+
+@router.get("/api/monitoring/budget")
+async def budget(request: Request) -> dict[str, Any]:
+    """Return the live ``BudgetState`` for the daily LLM hard-cap.
+
+    Read-only — never mutates spend data. When Redis is not wired up
+    we surface ``status="unavailable"`` instead of crashing so the
+    operator UI can render a clear "no data" panel.
+    """
+    redis_client = getattr(request.app.state, "redis", None)
+    if redis_client is None:
+        return _ok({
+            "daily_budget": 0.0,
+            "spent_today": 0.0,
+            "soft_ceiling": 0.0,
+            "hard_ceiling": 0.0,
+            "remaining": 0.0,
+            "status": "unavailable",
+        })
+    try:
+        state = await get_budget_state(redis_client)
+    except Exception as exc:
+        log.warning("budget_endpoint_failed", error=str(exc))
+        return _ok({
+            "daily_budget": 0.0,
+            "spent_today": 0.0,
+            "soft_ceiling": 0.0,
+            "hard_ceiling": 0.0,
+            "remaining": 0.0,
+            "status": "unavailable",
+        })
+    return _ok(asdict(state))
 
 
 @router.get("/api/monitoring/dashboard")

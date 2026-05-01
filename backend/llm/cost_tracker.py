@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
@@ -154,6 +155,20 @@ async def _parse_usage_key(
         completion_tokens = int(data.get("completion_tokens", 0))
         requests = int(data.get("requests", 0))
         cost_rmb = float(data.get("cost_rmb", 0.0))
+
+        # Drop entries with corrupt cost values: a negative or non-finite
+        # cost_rmb would otherwise offset legitimate spend in the daily
+        # aggregate and silently undercut the cost_guard hard cap. This
+        # is the data-layer defense; cost_guard.get_budget_state has a
+        # second fail-closed check on the aggregate.
+        if not math.isfinite(cost_rmb) or cost_rmb < 0:
+            log.warning(
+                "cost_entry_invalid",
+                key=key,
+                cost_rmb=cost_rmb,
+                action="dropped",
+            )
+            return None
 
         return DailyCostEntry(
             date=date_str,

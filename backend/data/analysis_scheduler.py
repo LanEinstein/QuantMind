@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime, time as dt_time
+import uuid
+from datetime import UTC, datetime
+from datetime import time as dt_time
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -13,7 +15,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from backend.agents.graph import AnalysisRunError, run_analysis
 from backend.agents.models import TradingSignal
-from backend.agents.records import AnalysisRunResult
+from backend.agents.records import AnalysisRecord, AnalysisRunResult
+from backend.services.cost_guard import (
+    DailyBudgetExceededError,
+    assert_budget_allows,
+)
 
 if TYPE_CHECKING:
     import redis.asyncio
@@ -52,6 +58,13 @@ class AnalysisScheduler:
         self._mongodb = mongodb
         self._redis = redis_client
         self._scheduler: AsyncIOScheduler | None = None
+        # Serializes _run_and_persist so a manual API call cannot race
+        # against the cron-driven daily loop and double-spend the daily
+        # budget by both observing the same under-cap snapshot. Within
+        # one process that's enough; cross-process races would require
+        # a Redis lock and are out of scope while the eval-period
+        # backend runs as a single instance.
+        self._run_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Register cron job and run catch-up if today's run was missed.
@@ -154,7 +167,50 @@ class AnalysisScheduler:
 
         AnalysisRunError carries the failed AnalysisRecord; it is
         persisted before re-raising so /history shows the failure.
+
+        Cost ceiling enforcement (P5A-T02): before kicking off a new
+        run we check the daily LLM budget against ``assert_budget_allows``.
+        On ``hard_breach`` we record a synthetic failed analysis (so
+        ``/history`` reflects the skip) and return ``None`` instead of
+        paying for another LLM call. The Redis-less / probe failure
+        paths fall through to the normal pipeline so we never
+        accidentally wedge runs on transient infra glitches.
+
+        ``self._run_lock`` serializes concurrent calls so the cron loop
+        and a manual API call cannot both observe the same under-cap
+        snapshot and double-spend.
         """
+        async with self._run_lock:
+            return await self._run_and_persist_locked(stock_code)
+
+    async def _run_and_persist_locked(
+        self, stock_code: str
+    ) -> TradingSignal | None:
+        if self._redis is not None:
+            try:
+                state = await assert_budget_allows(
+                    self._redis, agent_name="pipeline"
+                )
+            except DailyBudgetExceededError as exc:
+                await self._persist_cost_skip(stock_code, exc)
+                return None
+            except Exception as probe_exc:
+                # A Redis hiccup must NOT block analysis — log and proceed.
+                log.warning(
+                    "cost_guard_probe_failed",
+                    code=stock_code,
+                    error=str(probe_exc),
+                )
+            else:
+                if state.status == "soft_breach":
+                    # Phase 5B will degrade thinking; for now we just
+                    # record the warning so operators can see it.
+                    log.warning(
+                        "cost_soft_breach_observed",
+                        code=stock_code,
+                        spent=state.spent_today,
+                        soft_ceiling=state.soft_ceiling,
+                    )
         try:
             result = await run_analysis(stock_code, self._services)
         except AnalysisRunError as exc:
@@ -201,6 +257,34 @@ class AnalysisScheduler:
 
         await self._publish_signal(signal_dict)
         return signal
+
+    async def _persist_cost_skip(
+        self, stock_code: str, exc: DailyBudgetExceededError
+    ) -> None:
+        """Record a synthetic failed analysis when the budget hard-caps us.
+
+        We do not have a TradingSignal in this branch; only the record
+        is written so ``/history`` reflects the skip with a structured
+        ``error`` prefix that downstream tooling can grep for.
+        """
+        record = AnalysisRecord(
+            run_id=str(uuid.uuid4()),
+            stock_code=stock_code,
+            stock_name=stock_code,
+            trade_date=datetime.now(SHANGHAI).strftime("%Y-%m-%d"),
+            status="failed",
+            error=f"cost_ceiling_breached: {exc}",
+        )
+        try:
+            await self._mongodb.save_analysis_record(
+                record.model_dump(mode="json")
+            )
+        except Exception as persist_exc:
+            log.warning(
+                "save_cost_skip_record_failed",
+                code=stock_code,
+                error=str(persist_exc),
+            )
 
     async def _publish_signal(self, signal_dict: dict[str, Any]) -> None:
         """Publish signal to Redis for WebSocket clients."""
