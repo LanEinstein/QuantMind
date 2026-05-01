@@ -326,9 +326,12 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 - **Pre-commit**: 不产生新 commit
 - **Done definition**: 用户显式确认 push 完成或显式选择保持本地
 
-#### P5A-T01 — 修复 news_crawler 'result' KeyError [⏳ 待做]
+#### P5A-T01 — 修复 news_crawler 'result' KeyError [✅ 已完成]
 
-- **Owner**: 任意
+- **Owner**: claude-opus-4-7-1m (2026-05-01 session)
+- **Commit**: (pending — 同次 commit,见 §7.4)
+- **Test report**: `docs/reviews/p5a-t01-r1-architecture.md` + `docs/reviews/p5a-t01-r3-testing.md`
+- **关键偏离**: ① 原计划用 `"result" in str(exc)` 做匹配,会误匹配 `'not_result'` 子串,改为 `exc.args == ("result",)` 精确匹配 ② `hypothesis`/`vcr.py` 未安装,minor-fix 不引入新依赖,改用等价 unit + mock-based integration ③ 24h 线上日志验证延后到部署后,纳入 Phase 5A 出口检查
 - **Dependencies**: P5A-T00
 - **Bug 位置**: `backend/data/news_crawler.py:30` `_fetch_news_eastmoney()` 调用 `akshare.stock_news_em(symbol="")`。akshare 上游 API 在收到空 symbol 时,JSON 解析阶段对缺失的 `'result'` key raise KeyError,直接传播到 `NewsCrawlerService.fetch_latest_news`,产生每 5 分钟一次的 warning 日志(已观察到 24h 内 50 条)。
 - **实现**:
@@ -1718,7 +1721,8 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 
 | 日期 | 修改人(session) | commit | 摘要 |
 |---|---|---|---|
-| 2026-05-01 | claude-opus-4-7-1m | (待 commit) | 初版 SSoT 落盘 |
+| 2026-05-01 | claude-opus-4-7-1m | 24a0db6 | 初版 SSoT 落盘 |
+| 2026-05-01 | claude-opus-4-7-1m | (本次 commit) | P5A-T01 ⏳→✅ news_crawler KeyError 修复(精确匹配 + minor-fix R1+R3 PASS) |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from backend.data import news_crawler
 from backend.data.config import DataSourcesConfig, load_data_sources_config
 from backend.data.news_crawler import NewsCrawlerService
 from backend.models.market import NewsArticle
@@ -148,4 +149,73 @@ class TestFetchStockNews:
             side_effect=Exception("fail"),
         ):
             result = await service.fetch_stock_news("600519")
+        assert result == []
+
+
+class TestSafeFetchNewsEastmoney:
+    """Tolerant wrapper around the akshare eastmoney empty-symbol call.
+
+    Pinned to the production regression where upstream raises
+    ``KeyError('result')`` every 5 minutes. The wrapper must:
+    1. Suppress that exact KeyError as "empty payload" info,
+    2. Re-raise any other KeyError so real schema bugs stay loud,
+    3. Downgrade unrelated exceptions to a warning + empty DataFrame
+       so the scheduler keeps running.
+    """
+
+    def test_returns_empty_on_keyerror_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake() -> pd.DataFrame:
+            raise KeyError("result")
+
+        monkeypatch.setattr(news_crawler, "_fetch_news_eastmoney", fake)
+        df = news_crawler._safe_fetch_news_eastmoney()
+        assert df.empty
+        assert list(df.columns) == news_crawler._EXPECTED_NEWS_COLUMNS
+
+    def test_propagates_unrelated_keyerror(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake() -> pd.DataFrame:
+            raise KeyError("some_other_field")
+
+        monkeypatch.setattr(news_crawler, "_fetch_news_eastmoney", fake)
+        with pytest.raises(KeyError):
+            news_crawler._safe_fetch_news_eastmoney()
+
+    def test_swallows_general_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake() -> pd.DataFrame:
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(news_crawler, "_fetch_news_eastmoney", fake)
+        df = news_crawler._safe_fetch_news_eastmoney()
+        assert df.empty
+        assert list(df.columns) == news_crawler._EXPECTED_NEWS_COLUMNS
+
+    def test_returns_payload_when_no_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        df_in = _akshare_news_df()
+        monkeypatch.setattr(
+            news_crawler, "_fetch_news_eastmoney", lambda: df_in
+        )
+        df_out = news_crawler._safe_fetch_news_eastmoney()
+        pd.testing.assert_frame_equal(df_out, df_in)
+
+    @pytest.mark.asyncio
+    async def test_service_path_keyerror_result_yields_empty(
+        self,
+        service: NewsCrawlerService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Integration: full ``fetch_latest_news`` survives KeyError('result')."""
+
+        def fake() -> pd.DataFrame:
+            raise KeyError("result")
+
+        monkeypatch.setattr(news_crawler, "_fetch_news_eastmoney", fake)
+        result = await service.fetch_latest_news(limit=50)
         assert result == []

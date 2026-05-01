@@ -17,6 +17,15 @@ log = structlog.get_logger(component="news_crawler")
 # Regex for 6-digit A-share stock codes in content
 _STOCK_CODE_RE = re.compile(r"(?<!\d)([036]\d{5})(?!\d)")
 
+# Columns the akshare eastmoney endpoint normally returns; used as the
+# fallback schema when upstream regresses so downstream parsing is stable.
+_EXPECTED_NEWS_COLUMNS: list[str] = [
+    "新闻标题",
+    "新闻内容",
+    "新闻链接",
+    "发布时间",
+]
+
 
 # ---------------------------------------------------------------------------
 # Low-level fetchers
@@ -28,6 +37,29 @@ def _fetch_news_eastmoney() -> pd.DataFrame:
     import akshare
 
     return akshare.stock_news_em(symbol="")
+
+
+def _safe_fetch_news_eastmoney() -> pd.DataFrame:
+    """Tolerant wrapper around ``_fetch_news_eastmoney``.
+
+    akshare's upstream raises ``KeyError('result')`` when its server returns
+    an unexpected payload for empty-symbol queries — observed every 5 min
+    in production logs. We treat that exact key as "no news" (info-level
+    log) and return an empty DataFrame with the expected columns. Other
+    ``KeyError`` keys are re-raised so genuine schema bugs stay visible.
+    Network and parsing failures degrade to a warning + empty DataFrame
+    so the scheduler keeps running.
+    """
+    try:
+        return _fetch_news_eastmoney()
+    except KeyError as exc:
+        if exc.args == ("result",):
+            log.info("eastmoney_empty_payload", reason="upstream_regression")
+            return pd.DataFrame(columns=_EXPECTED_NEWS_COLUMNS)
+        raise
+    except Exception as exc:
+        log.warning("eastmoney_news_failed", error=str(exc))
+        return pd.DataFrame(columns=_EXPECTED_NEWS_COLUMNS)
 
 
 def _fetch_stock_news_akshare(code: str) -> pd.DataFrame:
@@ -118,9 +150,11 @@ class NewsCrawlerService:
         """
         all_articles: list[NewsArticle] = []
 
-        # Source 1: eastmoney via akshare
+        # Source 1: eastmoney via akshare. The safe wrapper classifies
+        # upstream regressions (info) vs real failures (warning) and never
+        # raises, so the service-level guard here is defense-in-depth only.
         try:
-            df = await asyncio.to_thread(_fetch_news_eastmoney)
+            df = await asyncio.to_thread(_safe_fetch_news_eastmoney)
             all_articles.extend(_parse_news_df(df, source="eastmoney"))
         except Exception as exc:
             self._log.warning("eastmoney_news_failed", error=str(exc))
