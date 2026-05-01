@@ -13,6 +13,28 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from backend.data.publisher import publish_portfolio_event
+from backend.services.authorization import (
+    CrossPhaseAuthorizationError,
+    assert_mode_allowed_for_phase,
+    normalize_mode,
+)
+
+
+# Inverse of authorization._LONG_TO_SHORT, kept here because it is a
+# pure presentation concern: the env / policy layer canonicalizes to
+# the short form, the API response layer continues to emit the legacy
+# long form so existing frontend / clients (including the playwright
+# E2E suite) keep working without a coordinated migration.
+_SHORT_TO_LONG: dict[str, str] = {
+    "suggest": "suggestion",
+    "confirm": "semi_auto",
+    "auto": "full_auto",
+}
+
+
+def _to_legacy_long(canonical: str) -> str:
+    """Project canonical short modes back onto the legacy display form."""
+    return _SHORT_TO_LONG.get(canonical, canonical)
 
 log = structlog.get_logger(component="api_risk")
 
@@ -66,14 +88,29 @@ class RiskConfigUpdate(BaseModel):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_VALID_AUTH_MODES = {"suggestion", "semi_auto", "full_auto"}
+_VALID_AUTH_MODES = {
+    # Canonical short forms (master plan §2.9 vocabulary).
+    "suggest",
+    "confirm",
+    "auto",
+    # Legacy long forms accepted for back-compat with older clients.
+    "suggestion",
+    "semi_auto",
+    "full_auto",
+}
 
 
 def _get_auth_mode() -> str:
-    """Read current authorization mode from env (default: suggestion)."""
-    return os.environ.get("AUTHORIZATION_MODE", "suggest").replace(
-        "suggest", "suggestion"
-    )
+    """Read current authorization mode in legacy long form for API responses.
+
+    The env now stores the canonical short form (P5A-T03 redline), so
+    we normalize first, then project to the long form the existing
+    frontend expects. This kills the prior ``replace("suggest",
+    "suggestion")`` bug that produced ``"suggestionion"`` when env was
+    already the long form.
+    """
+    canonical = normalize_mode(os.environ.get("AUTHORIZATION_MODE", "suggest"))
+    return _to_legacy_long(canonical)
 
 
 def _build_risk_status(
@@ -353,27 +390,51 @@ async def get_risk_events(
 async def switch_auth_mode(
     request: Request, body: AuthModeRequest
 ) -> dict[str, Any]:
-    """Switch the authorization mode (suggestion/semi_auto/full_auto)."""
+    """Switch the authorization mode (suggestion/semi_auto/full_auto).
+
+    Beyond format validation, the request is rejected with 403 when
+    the requested mode is not allowed in the active QUANTMIND_PHASE
+    (P5A-T03 redline). This blocks accidental cross-phase escalation
+    such as enabling ``full_auto`` while the system is still in
+    ``phase5_eval``.
+    """
     if body.mode not in _VALID_AUTH_MODES:
         _err(
             f"Invalid mode: {body.mode}. Must be one of {_VALID_AUTH_MODES}",
             422,
         )
 
-    os.environ["AUTHORIZATION_MODE"] = body.mode
-    log.info("auth_mode_switched", mode=body.mode)
+    try:
+        canonical = assert_mode_allowed_for_phase(body.mode)
+    except CrossPhaseAuthorizationError as exc:
+        _err(str(exc), 403)
+
+    # Persist the canonical short form so audit trail / startup
+    # assertion / cost_guard etc. see one normalized vocabulary, no
+    # matter what alias the API client used.
+    os.environ["AUTHORIZATION_MODE"] = canonical
+    log.info(
+        "auth_mode_switched",
+        canonical_mode=canonical,
+        requested_mode=body.mode,
+    )
 
     redis_client = getattr(request.app.state, "redis", None)
     await publish_portfolio_event(
         redis_client,
         "auth_mode_change",
-        {"mode": body.mode, "system_status": "normal"},
+        {"mode": canonical, "system_status": "normal"},
     )
 
     record_risk_event(
         "info",
-        f"Authorization mode switched to {body.mode}",
+        f"Authorization mode switched to {canonical}",
         "Mode updated",
     )
 
-    return _ok(_build_risk_status(request, auth_mode=body.mode))
+    # API response stays in the legacy long form so existing frontend
+    # consumers (AuthorizationMode = 'suggestion'|'semi_auto'|'full_auto')
+    # keep rendering correctly. A coordinated frontend migration to the
+    # canonical vocabulary is a separate change.
+    display_mode = _to_legacy_long(canonical)
+    return _ok(_build_risk_status(request, auth_mode=display_mode))

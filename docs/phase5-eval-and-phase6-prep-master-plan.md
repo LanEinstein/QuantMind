@@ -581,9 +581,13 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 - **Pre-commit**: §2.4 major-feature 路径(5 轮 codex-review,改 scheduler)
 - **Done**: 7 天线上无误熔断 + commit
 
-#### P5A-T03 — AUTHORIZATION_MODE Startup Assertion [⏳ 待做]
+#### P5A-T03 — AUTHORIZATION_MODE Startup Assertion [✅ 已完成]
 
-- **Owner**: 任意
+- **Owner**: claude-opus-4-7-1m (2026-05-01 session)
+- **Commit**: (pending — 同次 commit,见 §7.4)
+- **Test report**: `docs/reviews/p5a-t03-r1-architecture.md` + `docs/reviews/p5a-t03-r3-testing.md`
+- **关键超出计划**: ① 抽出独立 `backend/services/authorization.py` 模块(可测试 + 可重用) ② 双向同义词矩阵 (`_LONG_TO_SHORT` + `_SHORT_TO_LONG`),env 存 canonical short / API 响应回 long form 保 frontend back-compat ③ 修掉旧 `_get_auth_mode` 的 `replace("suggest","suggestion")` 串接 bug,POST suggestion 时 env="suggestion" 会变 "suggestionion" ④ 通过 codex 3 轮迭代发现并修复 4 个 P2 issue
+- **关键偏离**: ① docker-compose 启动 negative test 转化为 unit-level `SystemExit` 断言(语义等价) ② E2E uvicorn fork 同上
 - **Dependencies**: P5A-T01
 - **背景**: 红线 `AUTHORIZATION_MODE=suggest` 当前靠 .env 默认值守护;若误改为 `auto`,自动下单链路被打开。需要启动期 fail-fast。
 - **实现**:
@@ -1727,7 +1731,8 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 |---|---|---|---|
 | 2026-05-01 | claude-opus-4-7-1m | 24a0db6 | 初版 SSoT 落盘 |
 | 2026-05-01 | claude-opus-4-7-1m | 975af0b | P5A-T01 ⏳→✅ news_crawler KeyError 修复(精确匹配 + minor-fix R1+R3 PASS) |
-| 2026-05-01 | claude-opus-4-7-1m | (本次 commit) | P5A-T02 ⏳→✅ cost_guard 硬熔断 + 双层 NaN/Inf 防御 + scheduler 并发锁(major 5 轮 codex PASS) |
+| 2026-05-01 | claude-opus-4-7-1m | 61cfc7d | P5A-T02 ⏳→✅ cost_guard 硬熔断 + 双层 NaN/Inf 防御 + scheduler 并发锁(major 5 轮 codex PASS) |
+| 2026-05-01 | claude-opus-4-7-1m | (本次 commit) | P5A-T03 ⏳→✅ authorization phase gate + canonical/legacy 双向矩阵 + kill suggestionion bug(minor-fix 3 轮 codex PASS) |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

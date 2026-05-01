@@ -187,16 +187,24 @@ async def _shutdown_data_layer(application: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Manage application lifecycle."""
-    import redis.asyncio as aioredis
-
     # -- Startup --
     import time as _time
+
+    import redis.asyncio as aioredis
 
     from backend.logging_config import configure_logging
 
     configure_logging(
         log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO")
     )
+
+    # Phase / authorization-mode redline (P5A-T03). Refuse to start if
+    # QUANTMIND_PHASE is unknown or if AUTHORIZATION_MODE is not allowed
+    # in that phase. SystemExit propagates as a non-zero uvicorn exit so
+    # systemd / docker-compose surface the violation immediately.
+    from backend.services.authorization import assert_authorization_mode
+
+    assert_authorization_mode()
 
     application.state.app_start_time = _time.time()
 
