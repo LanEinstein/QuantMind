@@ -1,37 +1,75 @@
-/** SSE composable for streaming agent debate events. */
+/** SSE composable for streaming agent debate events.
+ *
+ * Consumes the discriminated union defined in types/agent:
+ *   { event_type: 'agent_started'      | ... }
+ *   { event_type: 'agent_completed'    | ... }
+ *   { event_type: 'pipeline_completed' | ... }
+ *   { event_type: 'error'              | ... }
+ *
+ * The caller (views/AgentDebate) normally creates a job via
+ * analysisApi.createJob() and passes the returned job_id to connect().
+ * SSE is strictly GET, so POST happens on the API client side first.
+ */
 
 import { ref, readonly, onUnmounted } from 'vue'
-import type { SSEEvent, SSEStatus } from '@/types/agent'
+import type {
+  SSEEvent,
+  AgentCompletedEvent,
+  AgentRole,
+} from '@/types/agent'
+import { analysisApi } from '@/api/analysis'
 
 export interface AgentSSEState {
-  readonly events: readonly SSEEvent[]
+  readonly events: readonly AgentCompletedEvent[]
   readonly connected: boolean
   readonly error: string | null
-  readonly thinkingAgent: string | null
+  readonly errorRecordId: string | null
+  readonly thinkingAgent: AgentRole | null
+  readonly pipelineRecordId: string | null
+  readonly pipelineSignalId: string | null
+  readonly completed: boolean
+}
+
+/** Map technical SSE error to a Chinese user-facing message.
+ *
+ * Backend error events may carry raw exception strings ("Analysis
+ * failed: ...") that can leak stack trace fragments; strip the prefix
+ * and fall back to a generic Chinese phrase when the message is empty
+ * or clearly an internal diagnostic.
+ */
+function humanizeErrorMessage(raw: string | undefined): string {
+  if (!raw) return '分析发生错误'
+  const stripped = raw.replace(/^Analysis failed:\s*/i, '').trim()
+  if (!stripped) return '分析发生错误'
+  // Keep Chinese messages verbatim; wrap any leaked English so the user
+  // still sees actionable text.
+  if (/[一-鿿]/.test(stripped)) return stripped
+  return `分析发生错误：${stripped}`
 }
 
 export function useAgentSSE() {
-  const events = ref<SSEEvent[]>([])
+  const events = ref<AgentCompletedEvent[]>([])
   const connected = ref(false)
   const error = ref<string | null>(null)
-  const thinkingAgent = ref<string | null>(null)
+  const errorRecordId = ref<string | null>(null)
+  const thinkingAgent = ref<AgentRole | null>(null)
+  const pipelineRecordId = ref<string | null>(null)
+  const pipelineSignalId = ref<string | null>(null)
+  const completed = ref(false)
 
   let eventSource: EventSource | null = null
 
-  function getBaseUrl(): string {
-    return import.meta.env.VITE_API_BASE_URL || ''
-  }
-
-  function connect(analysisId: string) {
+  function connect(jobId: string) {
     disconnect()
-    error.value = null
+    resetState()
 
-    const url = `${getBaseUrl()}/api/analysis/stream/${encodeURIComponent(analysisId)}`
+    const url = analysisApi.streamUrl(jobId)
 
     try {
       eventSource = new EventSource(url)
     } catch (e) {
-      error.value = `Failed to connect SSE: ${e}`
+      console.warn('SSE connect failed', e)
+      error.value = '无法建立实时连接'
       return
     }
 
@@ -42,7 +80,7 @@ export function useAgentSSE() {
 
     eventSource.onmessage = (event) => {
       try {
-        const data: SSEEvent = JSON.parse(event.data)
+        const data = JSON.parse(event.data) as SSEEvent
         handleEvent(data)
       } catch {
         console.warn('SSE: invalid message format')
@@ -51,21 +89,37 @@ export function useAgentSSE() {
 
     eventSource.onerror = () => {
       connected.value = false
-      error.value = 'SSE connection lost'
+      if (!completed.value) {
+        error.value = '实时连接已中断'
+      }
       eventSource?.close()
       eventSource = null
     }
   }
 
   function handleEvent(event: SSEEvent) {
-    if (event.status === 'thinking') {
-      thinkingAgent.value = event.agent
-      return
+    switch (event.event_type) {
+      case 'agent_started':
+        thinkingAgent.value = event.agent
+        return
+      case 'agent_completed':
+        thinkingAgent.value = null
+        events.value = [...events.value, event]
+        return
+      case 'pipeline_completed':
+        completed.value = true
+        pipelineRecordId.value = event.record_id
+        pipelineSignalId.value = event.signal_id
+        thinkingAgent.value = null
+        disconnect()
+        return
+      case 'error':
+        error.value = humanizeErrorMessage(event.message)
+        errorRecordId.value = event.record_id ?? null
+        thinkingAgent.value = null
+        disconnect()
+        return
     }
-
-    // status === 'done': add the completed event
-    thinkingAgent.value = null
-    events.value = [...events.value, event]
   }
 
   function disconnect() {
@@ -75,10 +129,18 @@ export function useAgentSSE() {
     thinkingAgent.value = null
   }
 
-  function reset() {
-    disconnect()
+  function resetState() {
     events.value = []
     error.value = null
+    errorRecordId.value = null
+    pipelineRecordId.value = null
+    pipelineSignalId.value = null
+    completed.value = false
+  }
+
+  function reset() {
+    disconnect()
+    resetState()
   }
 
   onUnmounted(disconnect)
@@ -87,7 +149,11 @@ export function useAgentSSE() {
     events: readonly(events),
     connected: readonly(connected),
     error: readonly(error),
+    errorRecordId: readonly(errorRecordId),
     thinkingAgent: readonly(thinkingAgent),
+    pipelineRecordId: readonly(pipelineRecordId),
+    pipelineSignalId: readonly(pipelineSignalId),
+    completed: readonly(completed),
     connect,
     disconnect,
     reset,

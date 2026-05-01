@@ -1,8 +1,12 @@
 services:
   mongodb:
     image: mongo:7
+    restart: unless-stopped
+    # Bind to loopback only — there is no Mongo auth configured for the
+    # evaluation deployment, so exposing 27017 to all interfaces would
+    # let any host on the network read/write the trading database.
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongodb_data:/data/db
     healthcheck:
@@ -13,8 +17,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    # Bind to loopback only — Redis runs without auth in the evaluation
+    # profile.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -24,7 +31,13 @@ services:
       retries: 5
 
   backend:
+    # Opt-in container backend. Evaluation period runs the backend under
+    # systemd on the host so it can read LLM keys from an interactive shell
+    # env file. To use this service instead, run:
+    #   docker compose --profile container-backend up -d
+    profiles: ["container-backend"]
     build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:

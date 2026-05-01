@@ -56,5 +56,13 @@ frontend/components.d.ts
 *.log
 logs/
 
+# Local Mongo backup archives (only used when BACKUP_DIR is overridden
+# to point inside the repo; default is ~/.local/state/quantmind/backups).
+backups/
+
 # Claude
 .claude/
+
+# Codex local scratch/cache
+.codex
+.codex/

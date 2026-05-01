@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 
 from backend.agents.bear_researcher import bear_researcher_node
 from backend.agents.bull_researcher import bull_researcher_node
+from backend.agents.collector import EventEmitter, RunCollector
 from backend.agents.fund_manager import fund_manager_node
 from backend.agents.fundamental_analyst import fundamental_analyst_node
 from backend.agents.intelligence_officer import intelligence_officer_node
@@ -21,11 +23,14 @@ from backend.agents.models import (
     TradingSignal,
 )
 from backend.agents.news_crawler import news_crawler_node
+from backend.agents.records import AnalysisRecord, AnalysisRunResult
 from backend.agents.risk_officer import risk_officer_node
 from backend.agents.sentiment_analyst import sentiment_analyst_node
 from backend.agents.technical_analyst import technical_analyst_node
 
 log = structlog.get_logger(component="analysis_graph")
+
+DEBATE_AGENTS = ("bull_researcher", "bear_researcher")
 
 
 def should_continue_debate(
@@ -52,7 +57,7 @@ def should_continue_debate(
 
 
 async def _init_debate_node(state: AnalysisState) -> dict[str, Any]:
-    """Initialize debate state with empty values."""
+    """Initialize debate state with empty values. Not recorded as agent step."""
     return {
         "debate_state": DebateState(
             history="",
@@ -65,12 +70,49 @@ async def _init_debate_node(state: AnalysisState) -> dict[str, Any]:
 
 
 def _make_node(
-    fn: Any, services: AnalysisServices
+    node_name: str,
+    fn: Any,
+    services: AnalysisServices,
+    collector: RunCollector | None,
 ) -> Any:
-    """Wrap an agent node function to inject services."""
+    """Wrap an agent node function to inject services and record steps.
+
+    When `collector` is provided, each call emits agent_started /
+    agent_completed events and appends an AgentStepRecord. Errors from
+    `fn` are forwarded after emitting a failed step + error event, so
+    LangGraph can still terminate the run; callers decide whether to
+    re-raise.
+    """
 
     async def wrapper(state: AnalysisState) -> dict[str, Any]:
-        return await fn(state, services)
+        round_ = 0
+        if node_name in DEBATE_AGENTS:
+            current_count = state.get("debate_state", {}).get("count", 0)
+            round_ = (current_count // 2) + 1
+
+        if collector is not None:
+            started_at = await collector.on_agent_started(node_name, round_)
+        else:
+            started_at = datetime.now(tz=UTC)
+
+        try:
+            result = await fn(state, services)
+        except Exception as exc:
+            if collector is not None:
+                # Record a proper failed step (was previously emitted as
+                # status=completed with empty content, which masked the
+                # failure in the persisted record).
+                await collector.on_agent_failed(
+                    node_name, round_, started_at, str(exc)
+                )
+                await collector.on_error(f"{node_name}: {exc}")
+            raise
+
+        if collector is not None:
+            await collector.on_agent_completed(
+                node_name, round_, started_at, result
+            )
+        return result
 
     wrapper.__name__ = fn.__name__
     return wrapper
@@ -78,6 +120,8 @@ def _make_node(
 
 def build_analysis_graph(
     services: AnalysisServices,
+    *,
+    collector: RunCollector | None = None,
 ) -> Any:
     """Build and compile the LangGraph analysis pipeline.
 
@@ -89,6 +133,9 @@ def build_analysis_graph(
 
     Args:
         services: Bundle of LLM router and data services.
+        collector: Optional run collector for step recording and SSE
+            event emission. When None, graph runs without instrumentation
+            (legacy callers).
 
     Returns:
         Compiled LangGraph graph ready for ainvoke().
@@ -97,34 +144,68 @@ def build_analysis_graph(
     graph = StateGraph(AnalysisState)
 
     # Stage 1: parallel analysts
-    graph.add_node("news_crawler", _make_node(news_crawler_node, services))
     graph.add_node(
-        "sentiment_analyst", _make_node(sentiment_analyst_node, services)
+        "news_crawler",
+        _make_node("news_crawler", news_crawler_node, services, collector),
+    )
+    graph.add_node(
+        "sentiment_analyst",
+        _make_node(
+            "sentiment_analyst", sentiment_analyst_node, services, collector
+        ),
     )
     graph.add_node(
         "fundamental_analyst",
-        _make_node(fundamental_analyst_node, services),
+        _make_node(
+            "fundamental_analyst",
+            fundamental_analyst_node,
+            services,
+            collector,
+        ),
     )
     graph.add_node(
-        "technical_analyst", _make_node(technical_analyst_node, services)
+        "technical_analyst",
+        _make_node(
+            "technical_analyst",
+            technical_analyst_node,
+            services,
+            collector,
+        ),
     )
     graph.add_node(
         "intelligence_officer",
-        _make_node(intelligence_officer_node, services),
+        _make_node(
+            "intelligence_officer",
+            intelligence_officer_node,
+            services,
+            collector,
+        ),
     )
 
-    # Stage 2: debate
+    # Stage 2: debate. init_debate is not recorded as an agent step.
     graph.add_node("init_debate", _init_debate_node)
     graph.add_node(
-        "bull_researcher", _make_node(bull_researcher_node, services)
+        "bull_researcher",
+        _make_node(
+            "bull_researcher", bull_researcher_node, services, collector
+        ),
     )
     graph.add_node(
-        "bear_researcher", _make_node(bear_researcher_node, services)
+        "bear_researcher",
+        _make_node(
+            "bear_researcher", bear_researcher_node, services, collector
+        ),
     )
 
     # Stage 3: decision
-    graph.add_node("risk_officer", _make_node(risk_officer_node, services))
-    graph.add_node("fund_manager", _make_node(fund_manager_node, services))
+    graph.add_node(
+        "risk_officer",
+        _make_node("risk_officer", risk_officer_node, services, collector),
+    )
+    graph.add_node(
+        "fund_manager",
+        _make_node("fund_manager", fund_manager_node, services, collector),
+    )
 
     # Edges: START → 4 parallel analysts
     graph.add_edge(START, "news_crawler")
@@ -181,18 +262,30 @@ def build_analysis_graph(
 
 
 async def run_analysis(
-    stock_code: str, services: AnalysisServices
-) -> TradingSignal:
+    stock_code: str,
+    services: AnalysisServices,
+    *,
+    run_id: str | None = None,
+    emitter: EventEmitter | None = None,
+) -> AnalysisRunResult:
     """Run the full multi-agent analysis pipeline for a stock.
 
     Args:
         stock_code: 6-digit A-share stock code.
         services: Bundle of LLM router and data services.
+        run_id: Optional pre-assigned UUID (the jobs API assigns one so
+            the stream can key events before run_analysis starts).
+        emitter: Optional async callable that receives SSE event dicts.
+            When provided, per-agent started/completed events are pushed
+            as the pipeline progresses (Session A2).
 
     Returns:
-        TradingSignal with the final trading decision.
+        AnalysisRunResult containing the terminal TradingSignal and the
+        complete AnalysisRecord. `record.signal_id` stays None until the
+        caller persists the signal and assigns it.
     """
-    log.info("analysis_started", stock_code=stock_code)
+    resolved_run_id = run_id or str(uuid.uuid4())
+    log.info("analysis_started", stock_code=stock_code, run_id=resolved_run_id)
 
     # Look up stock name
     stock_name = stock_code
@@ -200,9 +293,20 @@ async def run_analysis(
         quote = await services.market_data.get_stock_realtime(stock_code)
         stock_name = getattr(quote, "name", stock_code)
     except Exception as exc:
-        log.warning("stock_name_lookup_failed", stock_code=stock_code, error=str(exc))
+        log.warning(
+            "stock_name_lookup_failed", stock_code=stock_code, error=str(exc)
+        )
 
     trade_date = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+
+    collector = RunCollector(
+        run_id=resolved_run_id,
+        stock_code=stock_code,
+        stock_name=stock_name,
+        trade_date=trade_date,
+        max_rounds=services.pipeline_config.max_debate_rounds,
+        emitter=emitter,
+    )
 
     initial_state: AnalysisState = {
         "stock_code": stock_code,
@@ -224,8 +328,40 @@ async def run_analysis(
         "trading_signal": {},
     }
 
-    compiled = build_analysis_graph(services)
-    result = await compiled.ainvoke(initial_state)
+    compiled = build_analysis_graph(services, collector=collector)
+
+    try:
+        result = await compiled.ainvoke(initial_state)
+    except Exception as exc:
+        log.error(
+            "analysis_pipeline_failed",
+            stock_code=stock_code,
+            run_id=resolved_run_id,
+            error=str(exc),
+        )
+        record = collector.finalize(
+            status="failed", signal=None, error=str(exc)
+        )
+        raise AnalysisRunError(record) from exc
+
+    # When the graph completes but at least one agent finalized as
+    # failed (either a graceful "[agent error: ...]" string from
+    # call_agent or a hard exception caught in _make_node), the run is
+    # NOT a clean success. Promoting it to status=completed with a
+    # synthetic neutral signal would silently bypass the failure
+    # instead of surfacing it through /history and the SSE error path.
+    if collector.has_failed_steps():
+        summary = collector.first_failure_summary() or "agent failed"
+        log.warning(
+            "analysis_pipeline_partial_failure",
+            stock_code=stock_code,
+            run_id=resolved_run_id,
+            failure=summary,
+        )
+        record = collector.finalize(
+            status="failed", signal=None, error=summary
+        )
+        raise AnalysisRunError(record)
 
     signal_data = result.get("trading_signal", {})
     signal = TradingSignal(
@@ -239,10 +375,26 @@ async def run_analysis(
         trade_date=trade_date,
     )
 
+    record = collector.finalize(status="completed", signal=signal)
+
     log.info(
         "analysis_completed",
         stock_code=stock_code,
+        run_id=resolved_run_id,
         action=signal.action,
         confidence=signal.confidence,
     )
-    return signal
+    return AnalysisRunResult(signal=signal, record=record)
+
+
+class AnalysisRunError(Exception):
+    """Surfaces an AnalysisRecord through an exception path.
+
+    Callers (jobs API, /stock, scheduler) catch this and persist
+    ``record`` so failed runs still appear in /history. The exception
+    message comes from ``record.error`` when available.
+    """
+
+    def __init__(self, record: AnalysisRecord) -> None:
+        super().__init__(record.error or "analysis failed")
+        self.record = record

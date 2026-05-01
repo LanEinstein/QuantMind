@@ -200,6 +200,46 @@ class TestQuerySignals:
         assert "$gte" in query["trade_date"]
 
 
+class TestQuerySignalsForTradeDate:
+    """Tests for exact trading-day signal lookup."""
+
+    @pytest.mark.asyncio
+    async def test_query_signals_for_trade_date_uses_exact_day_and_codes(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        coll = mock_db["trading_signals"]
+        sample = [{**_sample_signal_dict(), "_id": _OID_1}]
+        cursor = coll.find.return_value
+        cursor.to_list.return_value = sample
+
+        result = await service.query_signals_for_trade_date(
+            trade_date="2026-04-13",
+            stock_codes=["600519", "000858"],
+        )
+
+        assert result == sample
+        coll.find.assert_called_once_with(
+            {
+                "trade_date": "2026-04-13",
+                "stock_code": {"$in": ["600519", "000858"]},
+            }
+        )
+        cursor.sort.assert_called_once_with("stock_code", 1)
+        cursor.to_list.assert_awaited_once_with(length=2)
+
+    @pytest.mark.asyncio
+    async def test_query_signals_for_trade_date_empty_codes_skips_mongo(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        result = await service.query_signals_for_trade_date(
+            trade_date="2026-04-13",
+            stock_codes=[],
+        )
+
+        assert result == []
+        mock_db["trading_signals"].find.assert_not_called()
+
+
 class TestGetSignalById:
     """Tests for get_signal_by_id method."""
 

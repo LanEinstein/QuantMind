@@ -79,6 +79,14 @@ class MongoDBService:
             unique=True,
             background=True,
         )
+        # Monitoring dashboard aggregates by date without stock_code, so
+        # the compound index above cannot cover the trade_date-only scan.
+        # A standalone descending index keeps count_signals_for_date /
+        # count_signals_since O(log n) as evaluation data grows.
+        await signals.create_index(
+            [("trade_date", DESCENDING)],
+            background=True,
+        )
 
         index_prices = self._db["index_prices"]
         await index_prices.create_index(
@@ -95,6 +103,47 @@ class MongoDBService:
                 ("provider", ASCENDING),
             ],
             unique=True,
+            background=True,
+        )
+
+        analysis_records = self._db["analysis_records"]
+        await analysis_records.create_index(
+            [("run_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await analysis_records.create_index(
+            [
+                ("stock_code", ASCENDING),
+                ("trade_date", DESCENDING),
+                ("created_at", DESCENDING),
+            ],
+            background=True,
+        )
+        # Not unique: trading_signals upserts by (stock_code, trade_date),
+        # so multiple analysis_records for the same trading day legitimately
+        # share a signal_id pointing at the latest signal row.
+        await analysis_records.create_index(
+            [("signal_id", ASCENDING)],
+            sparse=True,
+            background=True,
+        )
+        await analysis_records.create_index(
+            [("created_at", DESCENDING)],
+            background=True,
+        )
+        # History-list filter shapes: {stock_code}, {trade_date}, and
+        # {stock_code, trade_date}. The main (stock_code, trade_date,
+        # created_at) index covers the last two, but stock_code-only
+        # queries benefit from a (stock_code, created_at DESC) index
+        # that also covers the sort, and trade_date-only queries
+        # benefit from (trade_date DESC, created_at DESC).
+        await analysis_records.create_index(
+            [("stock_code", ASCENDING), ("created_at", DESCENDING)],
+            background=True,
+        )
+        await analysis_records.create_index(
+            [("trade_date", DESCENDING), ("created_at", DESCENDING)],
             background=True,
         )
 
@@ -271,6 +320,22 @@ class MongoDBService:
         )
         return await cursor.to_list(length=1000)
 
+    async def query_signals_for_trade_date(
+        self, trade_date: str, stock_codes: list[str]
+    ) -> list[dict[str, Any]]:
+        """Query signals for a specific trading day and stock set."""
+        if not stock_codes:
+            return []
+
+        coll = self._db["trading_signals"]
+        cursor = coll.find(
+            {
+                "trade_date": trade_date,
+                "stock_code": {"$in": stock_codes},
+            }
+        ).sort("stock_code", ASCENDING)
+        return await cursor.to_list(length=len(stock_codes))
+
     async def get_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:
         """Retrieve a single signal by MongoDB ObjectId string."""
         from bson import ObjectId
@@ -347,3 +412,99 @@ class MongoDBService:
         coll = self._db["cost_tracking"]
         cursor = coll.find({"date": {"$gte": cutoff}}).sort("date", DESCENDING)
         return await cursor.to_list(length=10000)
+
+    # -- Analysis record persistence --
+
+    async def save_analysis_record(
+        self, record: dict[str, Any]
+    ) -> str:
+        """Upsert a full AnalysisRecord to `analysis_records` by run_id.
+
+        Same run_id replays overwrite; distinct run_ids accumulate so
+        re-runs on the same stock/date preserve every trail. Returns the
+        document _id as string.
+        """
+        coll = self._db["analysis_records"]
+        key = {"run_id": record["run_id"]}
+        result = await coll.update_one(key, {"$set": record}, upsert=True)
+        if result.upserted_id is not None:
+            return str(result.upserted_id)
+        doc = await coll.find_one(key, {"_id": 1})
+        return str(doc["_id"])
+
+    async def query_analysis_records(
+        self,
+        stock_code: str | None = None,
+        trade_date: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query recent analysis records.
+
+        Sorted by created_at DESC so the most recent runs are first. When
+        multiple runs share a (stock_code, trade_date) pair, all are
+        returned (we never collapse runs into a single row).
+        """
+        query: dict[str, Any] = {}
+        if stock_code:
+            query["stock_code"] = stock_code
+        if trade_date:
+            query["trade_date"] = trade_date
+
+        bounded = max(1, min(limit, 500))
+        coll = self._db["analysis_records"]
+        cursor = coll.find(query).sort("created_at", DESCENDING).limit(bounded)
+        return await cursor.to_list(length=bounded)
+
+    async def get_analysis_record_by_id(
+        self, record_id: str
+    ) -> dict[str, Any] | None:
+        """Retrieve a single analysis record.
+
+        Matches either the MongoDB ObjectId string or the run_id UUID.
+        Returns None for any invalid id; never raises ObjectId errors.
+        """
+        from bson import ObjectId
+        from bson.errors import InvalidId
+
+        coll = self._db["analysis_records"]
+        try:
+            oid = ObjectId(record_id)
+        except (InvalidId, TypeError, ValueError):
+            return await coll.find_one({"run_id": record_id})
+        doc = await coll.find_one({"_id": oid})
+        if doc is None:
+            doc = await coll.find_one({"run_id": record_id})
+        return doc
+
+    # -- Monitoring helpers (Session C) --
+
+    async def count_signals_for_date(self, date: str) -> int:
+        """Number of trading_signals rows with trade_date == date."""
+        coll = self._db["trading_signals"]
+        return await coll.count_documents({"trade_date": date})
+
+    async def count_signals_since(self, cutoff: str) -> int:
+        """Number of trading_signals rows with trade_date >= cutoff."""
+        coll = self._db["trading_signals"]
+        return await coll.count_documents({"trade_date": {"$gte": cutoff}})
+
+    async def sum_cost_for_date(self, date: str) -> float:
+        """Total CNY cost recorded in cost_tracking on a given date."""
+        coll = self._db["cost_tracking"]
+        pipeline = [
+            {"$match": {"date": date}},
+            {"$group": {"_id": None, "total": {"$sum": "$cost_cny"}}},
+        ]
+        async for doc in coll.aggregate(pipeline):
+            total = doc.get("total")
+            return float(total) if total is not None else 0.0
+        return 0.0
+
+    async def get_latest_analysis_record(
+        self,
+    ) -> dict[str, Any] | None:
+        """Most recent analysis_records row, or None if empty."""
+        coll = self._db["analysis_records"]
+        cursor = coll.find({}).sort("created_at", DESCENDING).limit(1)
+        docs = await cursor.to_list(length=1)
+        return docs[0] if docs else None

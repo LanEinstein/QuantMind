@@ -1,3 +1,9 @@
+> ⚠️ **SUPERSEDED (2026-04-24)** —— 本文档的 P5-T01 7 个 Gap 已全部完成（checkpoint `3665edd`）。
+> 当前权威：[`docs/phase5-next-actions-2026-04-24.md`](./phase5-next-actions-2026-04-24.md)。
+> 本文件保留归档，请勿据此执行。
+
+---
+
 # Next Session Prompt — Phase 5 Kickoff
 
 Copy the content below into a new Claude Code session:

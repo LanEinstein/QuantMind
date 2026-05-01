@@ -350,10 +350,33 @@ async def approve_order(
             approval_account = p.account_id
             break
 
+    from backend.broker.approval_queue import CircuitBreakerHaltedError
+
     try:
         result = await queue.approve(approval_id)
     except KeyError:
         _err(f"Pending approval '{approval_id}' not found", 404)
+        return _ok(None)  # unreachable
+    except CircuitBreakerHaltedError as exc:
+        # Halted approvals are intentionally left in the queue so the
+        # operator can re-approve after cooldown. Return 409 (conflict)
+        # rather than letting it surface as an opaque 500.
+        alerter = getattr(request.app.state, "alerter", None)
+        if alerter is not None:
+            try:
+                import asyncio as _asyncio
+
+                _asyncio.create_task(
+                    alerter.fire(
+                        "circuit_breaker_open",
+                        f"Approval blocked: {exc}",
+                        severity="critical",
+                        context={"approval_id": approval_id},
+                    )
+                )
+            except Exception:  # pragma: no cover
+                pass
+        _err(str(exc), 409)
         return _ok(None)  # unreachable
 
     redis_client = _get_redis(request)

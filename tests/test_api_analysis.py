@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.agents.models import TradingSignal
+from backend.agents.records import AnalysisRecord, AnalysisRunResult
 from backend.main import app
 
 
@@ -24,13 +26,44 @@ def _sample_signal() -> TradingSignal:
     )
 
 
+def _sample_result() -> AnalysisRunResult:
+    signal = _sample_signal()
+    record = AnalysisRecord(
+        run_id="00000000-0000-0000-0000-000000000001",
+        stock_code=signal.stock_code,
+        stock_name=signal.stock_name,
+        trade_date=signal.trade_date,
+        status="completed",
+        max_rounds=2,
+        current_round=2,
+        created_at=datetime.now(tz=UTC),
+        completed_at=datetime.now(tz=UTC),
+    )
+    return AnalysisRunResult(signal=signal, record=record)
+
+
 @pytest.fixture()
 def mock_app_state() -> None:
-    """Attach mock services to app.state."""
-    app.state.llm_router = AsyncMock()
+    """Attach mock services to app.state.
+
+    Explicitly reset mongodb so another test's lingering fixture cannot
+    trigger the signal/record persist path during these unit tests.
+
+    ``llm_router.preflight`` is provided as a plain lambda (not an
+    AsyncMock coroutine) because the API layer calls it synchronously;
+    the previous AsyncMock-everything pattern returned a coroutine that
+    silently bypassed the 503 guard and made the tests exercise a
+    non-real path.
+    """
+    from unittest.mock import MagicMock
+
+    router = AsyncMock()
+    router.preflight = MagicMock(return_value={"deepseek": True})
+    app.state.llm_router = router
     app.state.market_data = AsyncMock()
     app.state.history_data = AsyncMock()
     app.state.news_crawler = AsyncMock()
+    app.state.mongodb = None
 
 
 @pytest.fixture()
@@ -46,7 +79,7 @@ class TestAnalyzeStock:
         with patch(
             "backend.api.analysis.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ):
             resp = await client.post(
                 "/api/analysis/stock",
@@ -71,7 +104,7 @@ class TestAnalyzeStock:
         with patch(
             "backend.api.analysis.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ):
             resp = await client.post(
                 "/api/analysis/stock",

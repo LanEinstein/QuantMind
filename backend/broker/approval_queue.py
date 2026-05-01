@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import structlog
@@ -17,6 +18,14 @@ from backend.broker.models import (
 from backend.broker.registry import BrokerRegistry
 
 log = structlog.get_logger(component="broker.approval_queue")
+
+
+class CircuitBreakerHaltedError(RuntimeError):
+    """Raised when an approval is attempted while trading is halted.
+
+    Distinct from generic RuntimeError so the API layer can map this
+    specifically to HTTP 409/503 and surface it in the risk dashboard.
+    """
 
 
 class PendingApproval(BaseModel):
@@ -44,9 +53,21 @@ class ApprovalQueue:
     orders are intercepted here instead of being sent directly to the broker.
     """
 
-    def __init__(self, registry: BrokerRegistry) -> None:
+    def __init__(
+        self,
+        registry: BrokerRegistry,
+        halt_check: Callable[[], bool] | None = None,
+    ) -> None:
+        """Args:
+            registry: Broker registry for account → broker resolution.
+            halt_check: Optional callable returning True when the circuit
+                breaker is open. When provided, approve() refuses to
+                dispatch orders and the PendingApproval stays in the
+                queue so the operator can re-approve after cooldown.
+        """
         self._registry = registry
         self._pending: dict[str, PendingApproval] = {}
+        self._halt_check = halt_check
 
     def submit(
         self,
@@ -115,10 +136,20 @@ class ApprovalQueue:
         Raises:
             KeyError: If the approval ID does not exist.
         """
-        approval = self._pending.pop(approval_id, None)
-        if approval is None:
+        if approval_id not in self._pending:
             raise KeyError(f"Pending approval '{approval_id}' not found")
 
+        # Circuit breaker check runs BEFORE popping so halted approvals
+        # remain in the queue and can be re-approved after cooldown.
+        if self._halt_check is not None and self._halt_check():
+            log.warning(
+                "approval_blocked_circuit_breaker", id=approval_id
+            )
+            raise CircuitBreakerHaltedError(
+                "Trading halted — circuit breaker is open"
+            )
+
+        approval = self._pending.pop(approval_id)
         broker = self._registry.get_broker(approval.account_id)
         result = await broker.place_order(
             code=approval.code,

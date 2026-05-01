@@ -79,6 +79,34 @@ class LLMRouter:
             )
         return self._config
 
+    def preflight(self) -> dict[str, bool]:
+        """Snapshot which providers currently hold a resolvable API key.
+
+        Inspects the config's ``api_key`` entry for each provider. A
+        literal key is always present; a ``${ENV}`` reference is present
+        only when the environment variable is non-empty at call time.
+
+        Returns a mapping ``{provider_name: True/False}``. Does not make
+        any network calls — callers use this for a fast 503 cascade
+        decision before booting the pipeline.
+        """
+        import os
+        import re
+
+        env_pattern = re.compile(r"^\$\{(\w+)\}$")
+        if self._config is None:
+            return {}
+        status: dict[str, bool] = {}
+        for name, provider_cfg in self._config.providers.items():
+            raw = provider_cfg.api_key
+            m = env_pattern.match(raw)
+            if m is None:
+                # Literal key in config — assume valid.
+                status[name] = bool(raw)
+            else:
+                status[name] = bool(os.environ.get(m.group(1)))
+        return status
+
     async def complete(
         self,
         agent_name: str,

@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from datetime import UTC, datetime
+
 from backend.agents.models import TradingSignal
+from backend.agents.records import AnalysisRecord, AnalysisRunResult
 from backend.data.analysis_scheduler import AnalysisScheduler
 
 
@@ -21,6 +24,25 @@ def _sample_signal(code: str = "600519", name: str = "贵州茅台") -> TradingS
         stock_name=name,
         trade_date="2026-04-13",
     )
+
+
+def _sample_result(
+    code: str = "600519", name: str = "贵州茅台"
+) -> AnalysisRunResult:
+    signal = _sample_signal(code, name)
+    now = datetime.now(tz=UTC)
+    record = AnalysisRecord(
+        run_id=f"run-{code}",
+        stock_code=code,
+        stock_name=name,
+        trade_date=signal.trade_date,
+        status="completed",
+        max_rounds=2,
+        current_round=2,
+        created_at=now,
+        completed_at=now,
+    )
+    return AnalysisRunResult(signal=signal, record=record)
 
 
 def _make_watchlist_stocks(count: int) -> list[dict]:
@@ -47,6 +69,7 @@ def mock_services() -> MagicMock:
 def mock_mongodb() -> AsyncMock:
     mongodb = AsyncMock()
     mongodb.save_signal = AsyncMock(return_value="signal_id")
+    mongodb.save_analysis_record = AsyncMock(return_value="record_id")
     return mongodb
 
 
@@ -81,7 +104,7 @@ class TestRunDailyAnalysis:
         with patch(
             "backend.data.analysis_scheduler.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ) as mock_run, patch(
             "backend.data.analysis_scheduler.asyncio.sleep",
             new_callable=AsyncMock,
@@ -98,7 +121,7 @@ class TestRunDailyAnalysis:
         with patch(
             "backend.data.analysis_scheduler.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ), patch(
             "backend.data.analysis_scheduler.asyncio.sleep",
             new_callable=AsyncMock,
@@ -108,6 +131,85 @@ class TestRunDailyAnalysis:
         assert mock_mongodb.save_signal.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_persists_each_analysis_record_with_signal_id(
+        self,
+        scheduler: AnalysisScheduler,
+        mock_mongodb: AsyncMock,
+    ) -> None:
+        """R3 HIGH #4: record persistence coverage.
+
+        Each successful run must call save_analysis_record with the
+        signal_id stamped into the record.model_copy(update={...}). A
+        regression that drops the record persist call would silently
+        break AgentDebate /history.
+        """
+        with patch(
+            "backend.data.analysis_scheduler.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_sample_result(),
+        ), patch(
+            "backend.data.analysis_scheduler.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await scheduler.run_daily_analysis()
+
+        assert mock_mongodb.save_analysis_record.call_count == 3
+        for call in mock_mongodb.save_analysis_record.await_args_list:
+            doc = call.args[0]
+            assert doc["status"] == "completed"
+            assert doc["signal_id"] == "signal_id"
+
+    @pytest.mark.asyncio
+    async def test_run_analysis_error_persists_failed_record(
+        self,
+        scheduler: AnalysisScheduler,
+        mock_mongodb: AsyncMock,
+    ) -> None:
+        """R3 HIGH #4: failed runs still surface in /history.
+
+        When run_analysis raises AnalysisRunError, the scheduler must
+        persist exc.record before re-raising so the operator can see
+        which agent failed, and the overall daily run continues.
+        """
+        from backend.agents.graph import AnalysisRunError
+
+        failed_record = AnalysisRecord(
+            run_id="run-failed",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            trade_date="2026-04-13",
+            status="failed",
+            max_rounds=2,
+            current_round=1,
+            created_at=datetime.now(tz=UTC),
+            completed_at=datetime.now(tz=UTC),
+            error="fundamental_analyst: empty response",
+        )
+
+        side_effects = [
+            AnalysisRunError(failed_record),
+            _sample_result("000858", "五粮液"),
+            _sample_result("601318", "中国平安"),
+        ]
+
+        with patch(
+            "backend.data.analysis_scheduler.run_analysis",
+            new_callable=AsyncMock,
+            side_effect=side_effects,
+        ), patch(
+            "backend.data.analysis_scheduler.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await scheduler.run_daily_analysis()
+
+        # The failed record was persisted (first call), plus the two
+        # successful records' signal_id-stamped copies.
+        assert mock_mongodb.save_analysis_record.call_count == 3
+        first_doc = mock_mongodb.save_analysis_record.await_args_list[0].args[0]
+        assert first_doc["status"] == "failed"
+        assert first_doc["run_id"] == "run-failed"
+
+    @pytest.mark.asyncio
     async def test_continues_on_failure(
         self,
         scheduler: AnalysisScheduler,
@@ -115,9 +217,9 @@ class TestRunDailyAnalysis:
     ) -> None:
         """If one stock fails, the rest are still analyzed."""
         side_effects = [
-            _sample_signal("600519"),
+            _sample_result("600519"),
             RuntimeError("LLM timeout"),
-            _sample_signal("601318"),
+            _sample_result("601318"),
         ]
         with patch(
             "backend.data.analysis_scheduler.run_analysis",
@@ -144,7 +246,7 @@ class TestRunDailyAnalysis:
         with patch(
             "backend.data.analysis_scheduler.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ), patch(
             "backend.data.analysis_scheduler.asyncio.sleep",
             new_callable=AsyncMock,
@@ -183,7 +285,7 @@ class TestRunDailyAnalysis:
         with patch(
             "backend.data.analysis_scheduler.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ), patch(
             "backend.data.analysis_scheduler.asyncio.sleep",
             new_callable=AsyncMock,
@@ -205,7 +307,7 @@ class TestRunSingleAnalysis:
         with patch(
             "backend.data.analysis_scheduler.run_analysis",
             new_callable=AsyncMock,
-            return_value=_sample_signal(),
+            return_value=_sample_result(),
         ):
             signal = await scheduler.run_single_analysis("600519")
 

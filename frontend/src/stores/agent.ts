@@ -5,7 +5,9 @@ import { ref, computed } from 'vue'
 import type {
   AnalysisSummary,
   AnalysisDetail,
+  DebateArgument,
   DebateRound,
+  ModelLabel,
   RiskAssessment,
   FundManagerDecision,
   SSEEvent,
@@ -14,17 +16,40 @@ import type {
 } from '@/types/agent'
 import { analysisApi } from '@/api/analysis'
 
+const MOCK_ENABLED =
+  import.meta.env.VITE_ENABLE_MOCK_AGENT === '1' ||
+  import.meta.env.VITE_ENABLE_MOCK_AGENT === 'true'
+
+const STOCK_CODE_PATTERN = /^\d{6}$/
+
+const KNOWN_MODEL_LABELS: readonly ModelLabel[] = [
+  'DeepSeek',
+  'Qwen',
+  'Kimi',
+  'MiroFish',
+]
+
+/** Narrow an arbitrary SSE `model_label` string down to ModelLabel. */
+function normalizeModelLabel(label: string | undefined): ModelLabel {
+  if (!label) return 'Kimi'
+  const match = KNOWN_MODEL_LABELS.find(
+    (m) => m.toLowerCase() === label.toLowerCase(),
+  )
+  return match ?? 'Kimi'
+}
+
 export const useAgentStore = defineStore('agent', () => {
   // --- State ---
   const currentAnalysis = ref<AnalysisDetail | null>(null)
   const history = ref<AnalysisSummary[]>([])
   const loading = ref(false)
+  const historyLoading = ref(false)
+  const historyError = ref<string | null>(null)
   const analysisStatus = ref<AnalysisStatus>('pending')
   const authMode = ref<AuthMode>('suggest')
   const searchQuery = ref('')
   const searchDate = ref('')
-
-  const isDev = import.meta.env.DEV
+  const lastError = ref<string | null>(null)
 
   // --- Computed ---
   const filteredHistory = computed(() => {
@@ -55,22 +80,28 @@ export const useAgentStore = defineStore('agent', () => {
     return currentAnalysis.value?.decision ?? null
   })
 
-  const currentRound = computed(() => currentAnalysis.value?.current_round ?? 0)
-  const maxRounds = computed(() => currentAnalysis.value?.max_rounds ?? 4)
+  const currentRound = computed(
+    () => currentAnalysis.value?.current_round ?? 0,
+  )
+  const maxRounds = computed(
+    () => currentAnalysis.value?.max_rounds ?? 2,
+  )
 
   // --- Actions ---
   async function triggerAnalysis(stockCode: string, maxDebateRounds = 2) {
     loading.value = true
     analysisStatus.value = 'running'
+    lastError.value = null
     try {
       const result = await analysisApi.trigger({
         stock_code: stockCode,
         max_debate_rounds: maxDebateRounds,
       })
       return result.id
-    } catch {
+    } catch (err: unknown) {
       analysisStatus.value = 'failed'
-      console.warn('Failed to trigger analysis')
+      lastError.value = getErrorMessage(err)
+      console.warn('Failed to trigger analysis:', lastError.value)
       return null
     } finally {
       loading.value = false
@@ -79,52 +110,144 @@ export const useAgentStore = defineStore('agent', () => {
 
   async function fetchDetail(id: string) {
     loading.value = true
+    lastError.value = null
     try {
       currentAnalysis.value = await analysisApi.getDetail(id)
       analysisStatus.value = currentAnalysis.value.status
-    } catch {
-      // Backend GET /api/analysis/{id} is not yet implemented.
-      // Fall back to mock data so the page is usable during development.
-      console.warn('Failed to fetch analysis detail, using mock data')
-      currentAnalysis.value = mockAnalysisDetail(id)
-      analysisStatus.value = currentAnalysis.value.status
+    } catch (err: unknown) {
+      lastError.value = getErrorMessage(err)
+      console.warn(
+        'Failed to fetch analysis detail:',
+        lastError.value,
+      )
+      if (MOCK_ENABLED) {
+        // Developer opt-in fallback; disabled in production builds unless
+        // VITE_ENABLE_MOCK_AGENT is set. No silent fallback.
+        currentAnalysis.value = mockAnalysisDetail(id)
+        analysisStatus.value = currentAnalysis.value.status
+      } else {
+        currentAnalysis.value = null
+        analysisStatus.value = 'failed'
+      }
     } finally {
       loading.value = false
     }
   }
 
   async function fetchHistory() {
+    historyLoading.value = true
+    historyError.value = null
+    lastError.value = null
     try {
+      // The history search input supports both stock codes and names.
+      // The backend /api/analysis/history endpoint only accepts exact
+      // stock_code matches, so forward the code filter ONLY when the
+      // query looks like a 6-digit A-share code; otherwise let the
+      // client-side `filteredHistory` computed property handle fuzzy
+      // name/substring search against the full recent list.
+      const trimmed = searchQuery.value.trim()
+      const codeFilter = STOCK_CODE_PATTERN.test(trimmed) ? trimmed : undefined
       history.value = await analysisApi.getHistory({
-        stock_code: searchQuery.value || undefined,
-        date: searchDate.value || undefined,
+        stock_code: codeFilter,
+        trade_date: searchDate.value || undefined,
         limit: 50,
       })
-    } catch {
-      // Backend GET /api/analysis/history is not yet implemented.
-      console.warn('Failed to fetch analysis history, using mock data')
-      history.value = mockHistory()
+    } catch (err: unknown) {
+      const msg = getErrorMessage(err)
+      historyError.value = '加载分析历史失败，请稍后重试'
+      lastError.value = msg
+      console.warn('Failed to fetch analysis history:', msg)
+      history.value = MOCK_ENABLED ? mockHistory() : []
+    } finally {
+      historyLoading.value = false
     }
   }
 
+  /** Seed a provisional AnalysisDetail so live SSE events can render
+   * debate rounds before the final MongoDB-backed record is available.
+   * The provisional detail is replaced by the real one when
+   * `pipeline_completed` carries a non-null `record_id`. */
+  function beginStreamingRun(
+    stockCode: string,
+    stockName?: string,
+    maxDebateRounds = 2,
+  ): void {
+    const now = new Date()
+    const iso = now.toISOString()
+    const tradeDate = iso.slice(0, 10)
+    currentAnalysis.value = {
+      id: 'provisional',
+      run_id: 'provisional',
+      stock_code: stockCode,
+      stock_name: stockName || stockCode,
+      trade_date: tradeDate,
+      status: 'running',
+      max_rounds: maxDebateRounds,
+      current_round: 0,
+      steps: [],
+      analysts: [],
+      intelligence_officer: null,
+      debates: [],
+      risk_assessment: null,
+      decision: null,
+      signal_id: null,
+      created_at: iso,
+      completed_at: null,
+      error: null,
+    }
+    analysisStatus.value = 'running'
+    lastError.value = null
+  }
+
   function applySSEEvent(event: SSEEvent) {
-    if (!currentAnalysis.value) return
+    if (event.event_type === 'error') {
+      lastError.value = event.message
+      analysisStatus.value = 'failed'
+      return
+    }
 
-    // Only bull/bear researcher events produce debate round arguments
-    if (event.agent !== 'bull_researcher' && event.agent !== 'bear_researcher') return
+    if (event.event_type === 'pipeline_completed') {
+      analysisStatus.value = 'completed'
+      return
+    }
 
+    if (event.event_type === 'agent_started') {
+      // Spinner/highlight is managed in useSSE; store only tracks round.
+      return
+    }
+
+    // event_type === 'agent_completed'
+    if (
+      event.agent !== 'bull_researcher' &&
+      event.agent !== 'bear_researcher'
+    ) {
+      return
+    }
+    // No `currentAnalysis` typically means the caller didn't seed a
+    // provisional detail — fall back to seeding one so we don't drop
+    // live debate events, instead of silently returning.
+    if (!currentAnalysis.value) {
+      beginStreamingRun(event.run_id || 'live')
+    }
     const analysis = currentAnalysis.value
-    const role: 'bull' | 'bear' = event.agent === 'bull_researcher' ? 'bull' : 'bear'
+    if (!analysis) return
+    const role: 'bull' | 'bear' =
+      event.agent === 'bull_researcher' ? 'bull' : 'bear'
 
     const existingRounds = [...analysis.debates]
-    const roundIdx = existingRounds.findIndex((r) => r.round === event.round)
+    const roundIdx = existingRounds.findIndex(
+      (r) => r.round === event.round,
+    )
 
-    const argument = {
-      role: role as 'bull' | 'bear',
+    const argument: DebateArgument = {
+      role,
       round: event.round,
       content: event.content,
-      evidence: event.evidence ?? [],
-      model: 'Kimi' as const,
+      evidence: [],
+      // SSE event carries the agent's actual provider; don't collapse
+      // every live argument to 'Kimi' regardless of which backend model
+      // produced the content.
+      model: normalizeModelLabel(event.model_label),
       timestamp: event.timestamp,
     }
 
@@ -145,7 +268,7 @@ export const useAgentStore = defineStore('agent', () => {
     currentAnalysis.value = {
       ...analysis,
       debates: existingRounds,
-      current_round: event.round,
+      current_round: Math.max(analysis.current_round, event.round),
     }
   }
 
@@ -153,14 +276,22 @@ export const useAgentStore = defineStore('agent', () => {
     authMode.value = mode
   }
 
+  function resetCurrentAnalysis() {
+    currentAnalysis.value = null
+    analysisStatus.value = 'pending'
+  }
+
   return {
     currentAnalysis,
     history,
     loading,
+    historyLoading,
+    historyError,
     analysisStatus,
     authMode,
     searchQuery,
     searchDate,
+    lastError,
     filteredHistory,
     debates,
     riskAssessment,
@@ -170,108 +301,64 @@ export const useAgentStore = defineStore('agent', () => {
     triggerAnalysis,
     fetchDetail,
     fetchHistory,
+    beginStreamingRun,
     applySSEEvent,
     setAuthMode,
+    resetCurrentAnalysis,
   }
 })
 
-// --- Mock data for dev mode ---
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  return 'Unknown error'
+}
+
+// ---------------------------------------------------------------------------
+// Dev-only mock data — activated via VITE_ENABLE_MOCK_AGENT env flag. Never
+// used in production builds. Kept for manual UI validation without a live
+// backend.
+// ---------------------------------------------------------------------------
 
 function mockAnalysisDetail(id: string): AnalysisDetail {
   return {
     id,
+    run_id: `mock-${id}`,
     stock_code: '600519',
     stock_name: '贵州茅台',
     trade_date: '2026-03-24',
     status: 'completed',
-    max_rounds: 4,
-    current_round: 3,
+    max_rounds: 2,
+    current_round: 2,
+    steps: [],
+    analysts: [],
+    intelligence_officer: null,
     debates: [
       {
         round: 1,
         bull: {
           role: 'bull',
           round: 1,
-          content:
-            '茅台2025年全年营收同比增长15.2%，净利润增速达18%，批价坚挺在2800元以上。一季度开门红数据优异，经销商打款积极。消费升级趋势下，高端白酒的品牌护城河持续加深。',
-          evidence: [
-            { label: '基本面', model: 'Qwen', status: 'positive', detail: '营收增长15.2%，超市场预期。净利润率维持50%以上高位。' },
-            { label: '情绪', model: 'DeepSeek', status: 'positive', detail: '社交媒体讨论度高，机构研报一致看好。市场情绪偏乐观。' },
-            { label: '仿真', model: 'MiroFish', status: 'positive', detail: '300 Agent仿真显示78%看多共识，短期上涨概率较高。' },
-          ],
+          content: '（mock）看多观点',
+          evidence: [],
           model: 'Kimi',
           timestamp: '2026-03-24T10:15:00Z',
         },
         bear: {
           role: 'bear',
           round: 1,
-          content:
-            '当前PE 32倍已处于历史高位区间，外资近3个月持续减持，持仓占比下降3个百分点。宏观经济复苏不及预期，消费降级风险犹存。白酒行业库存周期见顶，批价稳定或是控量保价的结果。',
-          evidence: [
-            { label: '技术面', model: 'Qwen', status: 'mixed', detail: 'MACD顶背离，RSI进入超买区域。但均线系统仍多头排列。' },
-            { label: '情报', model: 'Kimi', status: 'mixed', detail: '行业库存周期见顶信号明显，经销商反馈动销放缓。' },
-            { label: '资金面', model: 'DeepSeek', status: 'negative', detail: '北向资金连续5日净卖出茅台，累计减持12亿元。' },
-          ],
+          content: '（mock）看空观点',
+          evidence: [],
           model: 'Kimi',
           timestamp: '2026-03-24T10:16:30Z',
         },
       },
-      {
-        round: 2,
-        bull: {
-          role: 'bull',
-          round: 2,
-          content:
-            '北向资金减持属短期调仓行为，从历史来看不改变长期趋势。茅台的定价权和品牌壁垒使其在经济下行期反而是避险资产。PE估值需考虑净利润增速，PEG仅1.8倍，仍处合理区间。',
-          evidence: [
-            { label: '基本面', model: 'Qwen', status: 'positive', detail: 'PEG 1.8倍，考虑增速后估值合理。自由现金流充裕。' },
-            { label: '情绪', model: 'DeepSeek', status: 'positive', detail: '机构持仓集中度上升，保险资金加仓明显。' },
-          ],
-          model: 'Kimi',
-          timestamp: '2026-03-24T10:18:00Z',
-        },
-        bear: {
-          role: 'bear',
-          round: 2,
-          content:
-            '即便PEG合理，绝对估值偏高限制了上行空间。反腐政策持续深化对高端白酒的政务消费构成压力。茅台增速已见顶，未来3年复合增速预计降至10%以内。',
-          evidence: [
-            { label: '技术面', model: 'Qwen', status: 'negative', detail: '周线级别出现放量滞涨，上方套牢盘压力较大。' },
-            { label: '情报', model: 'Kimi', status: 'mixed', detail: '政务消费比例已降低，但替代效应使商务消费增长放缓。' },
-          ],
-          model: 'Kimi',
-          timestamp: '2026-03-24T10:19:30Z',
-        },
-      },
-      {
-        round: 3,
-        bull: {
-          role: 'bull',
-          round: 3,
-          content:
-            '总结: 茅台核心竞争力未变，短期波动不影响长期投资价值。国际化布局打开增长空间，直营渠道占比提升有利于利润率持续改善。建议逢回调分批建仓。',
-          evidence: [
-            { label: '基本面', model: 'Qwen', status: 'positive', detail: '直营占比提升至40%，渠道利润率改善趋势确认。' },
-            { label: '仿真', model: 'MiroFish', status: 'positive', detail: '中长期仿真（60轮）显示价值回归概率高。' },
-          ],
-          model: 'Kimi',
-          timestamp: '2026-03-24T10:21:00Z',
-        },
-        bear: null,
-      },
     ],
     risk_assessment: {
       model: 'Kimi',
-      checks: [
-        { label: '仓位合规', passed: true },
-        { label: '止损设置', passed: true },
-        { label: '集中度合规', passed: true },
-        { label: '流动性检查', passed: true },
-        { label: '波动率风控', passed: false },
-      ],
+      checks: [],
       position_limit: '15%',
-      raw_text:
-        '该标的流动性充足，日均成交额超30亿。建议单只仓位不超过15%。当前波动率偏高，需设置严格止损位。',
+      raw_text: '（mock）风控评估',
     },
     decision: {
       model: 'Kimi',
@@ -279,14 +366,16 @@ function mockAnalysisDetail(id: string): AnalysisDetail {
       score_label: '偏多',
       action: '买入',
       target_price: 2150,
-      stop_loss: 1850,
-      position_pct: 5,
-      reasoning:
-        '综合多空辩论和风控评估，茅台基本面稳健，估值合理偏高但增长确定性强。短期技术面承压，建议小仓位试探性建仓，目标价2150元，止损1850元。',
+      stop_loss: null,
+      position_pct: null,
+      reasoning: '（mock）综合决策',
       confidence: 0.72,
       risk_score: 0.35,
     },
+    signal_id: null,
     created_at: '2026-03-24T10:10:00Z',
+    completed_at: '2026-03-24T10:22:00Z',
+    error: null,
   }
 }
 
@@ -294,53 +383,17 @@ function mockHistory(): AnalysisSummary[] {
   return [
     {
       id: 'a001',
+      run_id: 'mock-run-001',
       stock_code: '600519',
       stock_name: '贵州茅台',
       trade_date: '2026-03-24',
       status: 'completed',
       action: '买入',
-      score: 72,
+      confidence: 0.72,
+      risk_score: 0.35,
+      signal_id: null,
       created_at: '2026-03-24T10:10:00Z',
-    },
-    {
-      id: 'a002',
-      stock_code: '000858',
-      stock_name: '五粮液',
-      trade_date: '2026-03-23',
-      status: 'completed',
-      action: '持有',
-      score: 55,
-      created_at: '2026-03-23T14:30:00Z',
-    },
-    {
-      id: 'a003',
-      stock_code: '300750',
-      stock_name: '宁德时代',
-      trade_date: '2026-03-23',
-      status: 'completed',
-      action: '卖出',
-      score: 35,
-      created_at: '2026-03-23T09:45:00Z',
-    },
-    {
-      id: 'a004',
-      stock_code: '601318',
-      stock_name: '中国平安',
-      trade_date: '2026-03-22',
-      status: 'completed',
-      action: '买入',
-      score: 68,
-      created_at: '2026-03-22T11:00:00Z',
-    },
-    {
-      id: 'a005',
-      stock_code: '000001',
-      stock_name: '平安银行',
-      trade_date: '2026-03-22',
-      status: 'failed',
-      action: '持有',
-      score: 50,
-      created_at: '2026-03-22T09:30:00Z',
+      completed_at: '2026-03-24T10:22:00Z',
     },
   ]
 }

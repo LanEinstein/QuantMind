@@ -1,16 +1,16 @@
 /** API client for multi-agent stock analysis endpoints.
  *
- * Current backend (backend/api/analysis.py) exposes only:
- *   POST /api/analysis/stock  →  returns ApiEnvelope<TradingSignal>
- *
- * Future endpoints (GET /api/analysis/{id}, GET /api/analysis/history,
- * GET /api/analysis/stream/{id}) are planned but not yet implemented.
- * The client degrades gracefully: trigger() returns a synthetic id from
- * the TradingSignal, and getDetail()/getHistory() throw so the store
- * falls back to dev mocks.
+ * Backend contract (post Phase-5 A1/A2):
+ *   POST /api/analysis/stock              → ApiEnvelope<TradingSignal>
+ *   GET  /api/analysis/signals            → ApiEnvelope<TradingSignal[]>
+ *   GET  /api/analysis/signal-accuracy    → ApiEnvelope<...>
+ *   GET  /api/analysis/history            → ApiEnvelope<AnalysisSummary[]>
+ *   GET  /api/analysis/{record_id}        → ApiEnvelope<AnalysisDetail>
+ *   POST /api/analysis/jobs               → ApiEnvelope<{ job_id, status }>
+ *   GET  /api/analysis/stream/{job_id}    → text/event-stream
  */
 
-import { apiGet } from './request'
+import { apiGet, apiPost } from './request'
 import instance from './request'
 import type { AnalysisSummary, AnalysisDetail } from '@/types/agent'
 
@@ -24,32 +24,66 @@ export interface TriggerResponse {
   readonly status: string
 }
 
+export interface CreateJobResponse {
+  readonly job_id: string
+  readonly status: string
+}
+
+export interface HistoryQuery {
+  readonly stock_code?: string
+  readonly trade_date?: string
+  readonly limit?: number
+}
+
 export const analysisApi = {
-  /** Trigger a new analysis. Returns a synthetic id derived from stock_code + date. */
+  /**
+   * Run a synchronous analysis. Returns a synthetic id derived from the
+   * trading signal so the caller can stash a reference, even though the
+   * real persistence id lives in the AnalysisRecord (see createJob flow).
+   */
   async trigger(params: TriggerAnalysisParams): Promise<TriggerResponse> {
     const res = await instance.post('/api/analysis/stock', params)
-    const envelope = res as unknown as { status: string; data: Record<string, unknown>; error: string | null }
+    const envelope = res as unknown as {
+      status: string
+      data: Record<string, unknown>
+      error: string | null
+    }
     if (envelope.status === 'error') {
       throw new Error(envelope.error ?? 'Analysis trigger failed')
     }
-    // Backend currently returns TradingSignal directly (no id field).
-    // Synthesize an id from stock_code + trade_date for frontend routing.
     const data = envelope.data ?? {}
-    const id = String(data.id ?? `${params.stock_code}-${data.trade_date ?? Date.now()}`)
+    const id = String(
+      data.id ?? `${params.stock_code}-${data.trade_date ?? Date.now()}`,
+    )
     return { id, status: 'completed' }
   },
 
-  /** Get analysis detail by id. (Backend endpoint not yet implemented.) */
+  /** Fetch a full AnalysisRecord by id (ObjectId string or run_id UUID). */
   async getDetail(id: string): Promise<AnalysisDetail> {
-    return apiGet<AnalysisDetail>(`/api/analysis/${encodeURIComponent(id)}`)
+    return apiGet<AnalysisDetail>(
+      `/api/analysis/${encodeURIComponent(id)}`,
+    )
   },
 
-  /** Get analysis history. (Backend endpoint not yet implemented.) */
-  async getHistory(params?: {
-    stock_code?: string
-    date?: string
-    limit?: number
-  }): Promise<AnalysisSummary[]> {
-    return apiGet<AnalysisSummary[]>('/api/analysis/history', params as Record<string, unknown>)
+  /** List AgentDebate history rows from the analysis_records collection. */
+  async getHistory(params?: HistoryQuery): Promise<AnalysisSummary[]> {
+    const query: Record<string, unknown> = {}
+    if (params?.stock_code) query.stock_code = params.stock_code
+    if (params?.trade_date) query.trade_date = params.trade_date
+    if (params?.limit !== undefined) query.limit = params.limit
+    return apiGet<AnalysisSummary[]>('/api/analysis/history', query)
+  },
+
+  /** Create a live analysis job that publishes events over SSE. */
+  async createJob(
+    params: TriggerAnalysisParams,
+  ): Promise<CreateJobResponse> {
+    return apiPost<CreateJobResponse>('/api/analysis/jobs', params)
+  },
+
+  /** Absolute URL for the SSE stream; consumed by native EventSource. */
+  streamUrl(jobId: string): string {
+    const base = import.meta.env.VITE_API_BASE_URL || ''
+    return `${base}/api/analysis/stream/${encodeURIComponent(jobId)}`
   },
 }

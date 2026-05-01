@@ -1,0 +1,49 @@
+[Unit]
+Description=QuantMind FastAPI backend (suggest-mode evaluation)
+Documentation=https://github.com/LanEinstein/QuantMind
+After=network-online.target docker.service
+Wants=network-online.target
+# MongoDB and Redis run in docker compose; we depend on the docker service
+# being up rather than on named containers (which aren't systemd units).
+
+[Service]
+Type=simple
+User=ps
+Group=ps
+WorkingDirectory=/home/ps/papers/QuantMind
+
+# Non-secret runtime config
+EnvironmentFile=/home/ps/papers/QuantMind/.env
+# Private LLM keys — file is chmod 600 and lives OUTSIDE the repo.
+# See deploy/llm.env.example for contents. Path must exist; systemd will
+# refuse to start the unit otherwise.
+EnvironmentFile=/home/ps/.config/quantmind/llm.env
+
+# Activate the project conda env, then launch uvicorn bound to loopback
+# (nginx terminates TLS and reverse-proxies). Single worker keeps the
+# in-process AnalysisStreamHub coherent for live SSE subscribers.
+# (No --log-config: structlog is configured inside backend.main on
+# startup; pointing at a non-existent YAML would prevent the service
+# from starting.)
+ExecStart=/home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# Log capture — journalctl -u quantmind-backend still works but dedicated
+# files make debugging and daily-check.sh easier.
+StandardOutput=append:/home/ps/papers/QuantMind/logs/backend.stdout.log
+StandardError=append:/home/ps/papers/QuantMind/logs/backend.stderr.log
+
+# Hardening (suggest-mode evaluation doesn't need elevated privileges)
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ps/papers/QuantMind/logs /home/ps/papers/QuantMind/data /home/ps/.local/state/quantmind
+
+[Install]
+WantedBy=multi-user.target

@@ -18,6 +18,7 @@ from backend.agents.models import (
     PipelineConfig,
     TradingSignal,
 )
+from backend.agents.records import AnalysisRecord, AnalysisRunResult
 
 
 def _make_completion(content: str) -> MagicMock:
@@ -181,17 +182,173 @@ class TestRunAnalysis:
     @pytest.mark.asyncio
     async def test_full_pipeline_single_round(self) -> None:
         services = _mock_services(max_rounds=1)
-        signal = await run_analysis("600519", services)
-        assert isinstance(signal, TradingSignal)
-        assert signal.action == "买入"
-        assert signal.stock_code == "600519"
+        result = await run_analysis("600519", services)
+        assert isinstance(result, AnalysisRunResult)
+        assert isinstance(result.signal, TradingSignal)
+        assert isinstance(result.record, AnalysisRecord)
+        assert result.signal.action == "买入"
+        assert result.signal.stock_code == "600519"
         # 5 analysts + 2 debate (1 round: bull + bear) + 2 decision = 9 calls
         assert services.llm_router.complete.call_count == 9
 
     @pytest.mark.asyncio
     async def test_full_pipeline_two_rounds(self) -> None:
         services = _mock_services(max_rounds=2)
-        signal = await run_analysis("600519", services)
-        assert isinstance(signal, TradingSignal)
+        result = await run_analysis("600519", services)
+        assert isinstance(result, AnalysisRunResult)
+        assert isinstance(result.signal, TradingSignal)
         # 5 analysts + 4 debate (2 rounds) + 2 decision = 11 calls
         assert services.llm_router.complete.call_count == 11
+
+    @pytest.mark.asyncio
+    async def test_record_populated(self) -> None:
+        """Record contains analysts, intelligence, debates, risk, decision."""
+        services = _mock_services(max_rounds=2)
+        result = await run_analysis("600519", services)
+        record = result.record
+
+        assert record.stock_code == "600519"
+        assert record.status == "completed"
+        assert record.max_rounds == 2
+        assert record.current_round == 2
+
+        # 4 parallel analysts all recorded
+        analyst_agents = {s.agent for s in record.analysts}
+        assert analyst_agents == {
+            "news_crawler",
+            "sentiment_analyst",
+            "fundamental_analyst",
+            "technical_analyst",
+        }
+
+        assert record.intelligence_officer is not None
+        assert record.intelligence_officer.agent == "intelligence_officer"
+
+        # 2 debate rounds, each with bull + bear
+        assert len(record.debates) == 2
+        for r in record.debates:
+            assert r.bull is not None
+            assert r.bear is not None
+
+        # Risk + decision populated
+        assert record.risk_assessment is not None
+        assert record.decision is not None
+        assert record.decision.action == result.signal.action
+
+        # Steps total: 4 analysts + 1 intel + 4 debate + 1 risk + 1 fund = 11
+        assert len(record.steps) == 11
+
+        # Bull/bear content has prefix stripped
+        for r in record.debates:
+            if r.bull is not None:
+                assert not r.bull.content.startswith("Bull:")
+            if r.bear is not None:
+                assert not r.bear.content.startswith("Bear:")
+
+        # signal_id stays None until caller persists
+        assert record.signal_id is None
+
+    @pytest.mark.asyncio
+    async def test_emitter_receives_events(self) -> None:
+        """Emitter callback receives started/completed/pipeline events."""
+        services = _mock_services(max_rounds=1)
+        events: list[dict] = []
+
+        async def emitter(event: dict) -> None:
+            events.append(event)
+
+        await run_analysis("600519", services, emitter=emitter)
+
+        types = [e["event_type"] for e in events]
+        assert "agent_started" in types
+        assert "agent_completed" in types
+        # started count == completed count == 9 (1-round pipeline)
+        assert types.count("agent_started") == 9
+        assert types.count("agent_completed") == 9
+
+    @pytest.mark.asyncio
+    async def test_agent_failure_raises_analysis_run_error(self) -> None:
+        """Graph-level regression guard for R1 C2/C3:
+
+        When call_agent returns its graceful "[agent error: ...]" string
+        for a node, run_analysis() must NOT finalize a completed signal.
+        Instead it raises AnalysisRunError and the attached record carries
+        status=failed with at least one failed step. A regression that
+        flips status back to completed would make this test fail.
+        """
+        from backend.agents.graph import AnalysisRunError
+
+        services = _mock_services(max_rounds=1)
+        original_side_effect = services.llm_router.complete.side_effect
+
+        def side_effect(*args, **kwargs):
+            agent_name = args[0] if args else ""
+            if agent_name == "fundamental_analyst":
+                # Empty choices triggers the graceful-failure branch in
+                # backend/agents/base.py:call_agent, which returns
+                # "[fundamental_analyst error: empty response]" — the
+                # sentinel string that collector.classify_status maps to
+                # status=failed.
+                resp = MagicMock()
+                resp.choices = []
+                resp.usage = None
+                return resp
+            return original_side_effect(*args, **kwargs)
+
+        services.llm_router.complete.side_effect = side_effect
+
+        with pytest.raises(AnalysisRunError) as exc_info:
+            await run_analysis("600519", services)
+
+        record = exc_info.value.record
+        assert record.status == "failed"
+        failed_steps = [s for s in record.steps if s.status == "failed"]
+        assert len(failed_steps) >= 1
+        assert any(
+            s.agent == "fundamental_analyst" for s in failed_steps
+        )
+        # error message surfaces the failing agent
+        assert record.error is not None
+        assert "fundamental_analyst" in record.error
+
+    @pytest.mark.asyncio
+    async def test_emitter_marks_failed_agent_step(self) -> None:
+        """Ensure on_agent_failed emits agent_completed with status=failed.
+
+        Guards against a regression where the SSE event for a failed
+        agent would either be missing or would carry status=completed
+        (the pre-fix behavior that showed up in R1 findings).
+        """
+        from backend.agents.graph import AnalysisRunError
+
+        services = _mock_services(max_rounds=1)
+        original_side_effect = services.llm_router.complete.side_effect
+
+        def side_effect(*args, **kwargs):
+            agent_name = args[0] if args else ""
+            if agent_name == "sentiment_analyst":
+                resp = MagicMock()
+                resp.choices = []
+                resp.usage = None
+                return resp
+            return original_side_effect(*args, **kwargs)
+
+        services.llm_router.complete.side_effect = side_effect
+
+        events: list[dict] = []
+
+        async def emitter(event: dict) -> None:
+            events.append(event)
+
+        with pytest.raises(AnalysisRunError):
+            await run_analysis("600519", services, emitter=emitter)
+
+        failed_events = [
+            e
+            for e in events
+            if e.get("event_type") == "agent_completed"
+            and e.get("status") == "failed"
+        ]
+        assert any(
+            e.get("agent") == "sentiment_analyst" for e in failed_events
+        ), f"No failed agent_completed event: {events}"

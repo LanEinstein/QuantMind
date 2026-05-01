@@ -6,7 +6,11 @@ export type ModelLabel = 'DeepSeek' | 'Qwen' | 'Kimi' | 'MiroFish'
 
 export type AuthMode = 'suggest' | 'confirm' | 'auto'
 
-export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type AnalysisStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
 
 export type AgentRole =
   | 'news_crawler'
@@ -19,7 +23,7 @@ export type AgentRole =
   | 'risk_officer'
   | 'fund_manager'
 
-export type SSEStatus = 'thinking' | 'done'
+export type AgentAction = '买入' | '持有' | '卖出'
 
 export interface EvidenceItem {
   readonly label: string
@@ -59,7 +63,7 @@ export interface FundManagerDecision {
   readonly model: ModelLabel
   readonly score: number
   readonly score_label: string
-  readonly action: string
+  readonly action: AgentAction
   readonly target_price: number | null
   readonly stop_loss: number | null
   readonly position_pct: number | null
@@ -68,36 +72,101 @@ export interface FundManagerDecision {
   readonly risk_score: number
 }
 
+/** Raw agent step as persisted server-side (backend records.AgentStepRecord). */
+export interface AnalystStep {
+  readonly agent: AgentRole
+  readonly round: number
+  readonly content: string
+  readonly model_label: string
+  readonly model_id: string
+  readonly status: 'running' | 'completed' | 'failed'
+  readonly error: string | null
+  readonly started_at: string
+  readonly completed_at: string | null
+  readonly tokens_input?: number
+  readonly tokens_output?: number
+  readonly cost_cny?: number
+}
+
 export interface AnalysisSummary {
   readonly id: string
+  readonly run_id: string
   readonly stock_code: string
   readonly stock_name: string
   readonly trade_date: string
   readonly status: AnalysisStatus
-  readonly action: string
-  readonly score: number
+  readonly action: AgentAction | null
+  readonly confidence: number | null
+  readonly risk_score: number | null
+  readonly signal_id: string | null
   readonly created_at: string
+  readonly completed_at: string | null
 }
 
 export interface AnalysisDetail {
   readonly id: string
+  readonly run_id: string
   readonly stock_code: string
   readonly stock_name: string
   readonly trade_date: string
   readonly status: AnalysisStatus
   readonly max_rounds: number
   readonly current_round: number
+  readonly steps: readonly AnalystStep[]
+  readonly analysts: readonly AnalystStep[]
+  readonly intelligence_officer: AnalystStep | null
   readonly debates: readonly DebateRound[]
   readonly risk_assessment: RiskAssessment | null
   readonly decision: FundManagerDecision | null
+  readonly signal_id: string | null
   readonly created_at: string
+  readonly completed_at: string | null
+  readonly error: string | null
 }
 
-export interface SSEEvent {
+/* -------------------------------------------------------------------------- */
+/* SSE event union                                                            */
+/* -------------------------------------------------------------------------- */
+
+export interface AgentStartedEvent {
+  readonly event_type: 'agent_started'
+  readonly agent: AgentRole
+  readonly round: number
+  readonly timestamp: string
+  readonly run_id: string
+}
+
+export interface AgentCompletedEvent {
+  readonly event_type: 'agent_completed'
   readonly agent: AgentRole
   readonly round: number
   readonly content: string
-  readonly status: SSEStatus
-  readonly evidence?: readonly EvidenceItem[]
+  readonly model_label?: string
+  readonly model_id?: string
+  readonly status: 'completed' | 'failed'
+  readonly error: string | null
+  readonly timestamp: string
+  readonly run_id: string
+}
+
+export interface PipelineCompletedEvent {
+  readonly event_type: 'pipeline_completed'
+  readonly run_id: string
+  readonly record_id: string | null
+  readonly signal_id: string | null
   readonly timestamp: string
 }
+
+export interface SSEErrorEvent {
+  readonly event_type: 'error'
+  readonly message: string
+  readonly run_id?: string
+  readonly record_id?: string | null
+  readonly timestamp: string
+}
+
+export type SSEEvent =
+  | AgentStartedEvent
+  | AgentCompletedEvent
+  | PipelineCompletedEvent
+  | SSEErrorEvent

@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from backend.api.analysis import router as analysis_router
 from backend.api.health import router as health_router
 from backend.api.market import router as market_router
+from backend.api.monitoring import router as monitoring_router
 from backend.api.performance import router as performance_router
 from backend.api.risk import router as risk_router
 from backend.api.settings import router as settings_router
@@ -103,7 +104,6 @@ async def _init_trading_layer(application: FastAPI) -> None:
 
     registry = BrokerRegistry(broker_config)
     application.state.broker_registry = registry
-    application.state.approval_queue = ApprovalQueue(registry)
 
     try:
         risk_config = load_risk_config("config/risk.yaml")
@@ -111,6 +111,27 @@ async def _init_trading_layer(application: FastAPI) -> None:
     except Exception as exc:
         log.warning("risk_config_load_failed", error=str(exc))
         application.state.risk_config = None
+
+    # Instantiate circuit breaker from risk config when available so
+    # ApprovalQueue can refuse dispatches while trading is halted.
+    circuit_breaker = None
+    try:
+        risk_cfg = application.state.risk_config
+        cb_cfg = getattr(risk_cfg, "circuit_breaker", None) if risk_cfg else None
+        if cb_cfg is not None:
+            from backend.risk.circuit_breaker import CircuitBreaker
+
+            circuit_breaker = CircuitBreaker(cb_cfg)
+    except Exception as exc:
+        log.warning("circuit_breaker_init_failed", error=str(exc))
+    application.state.circuit_breaker = circuit_breaker
+
+    halt_check = (
+        circuit_breaker.is_halted if circuit_breaker is not None else None
+    )
+    application.state.approval_queue = ApprovalQueue(
+        registry, halt_check=halt_check
+    )
 
     log.info("trading_layer_initialized")
 
@@ -189,6 +210,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.llm_router = router
     application.state.config_service = ConfigService(redis_client=redis_pool)
 
+    # Live agent-debate SSE hub (A2). Lives in-process; jobs lost on restart
+    # are acceptable because the full AnalysisRecord is persisted to MongoDB.
+    from backend.services.analysis_stream import AnalysisStreamHub
+
+    application.state.analysis_stream_hub = AnalysisStreamHub()
+
+    # Webhook alerter (Session C/D). Falls back to log-only when
+    # ALERT_WEBHOOK_URL is unset, so wiring this up is safe.
+    from backend.monitoring.alerter import Alerter
+
+    application.state.alerter = Alerter()
+
     await _init_data_layer(application, redis_pool)
 
     # Trading subsystem
@@ -213,6 +246,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await ws_subscriber_task
     except asyncio.CancelledError:
         pass
+
+    if hasattr(application.state, "analysis_stream_hub"):
+        await application.state.analysis_stream_hub.shutdown()
 
     await _shutdown_data_layer(application)
     await router.close()
@@ -242,6 +278,7 @@ app.include_router(risk_router)
 app.include_router(performance_router)
 app.include_router(watchlist_router)
 app.include_router(health_router)
+app.include_router(monitoring_router)
 app.include_router(websocket_router)
 
 
