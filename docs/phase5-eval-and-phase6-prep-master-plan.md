@@ -306,9 +306,11 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 
 ### Phase 5A — 评估期生命线(Week 1)
 
-#### P5A-T00 — 提交决策与基线复核 [⏳ 待做]
+#### P5A-T00 — 提交决策与基线复核 [✅ 已完成]
 
-- **Owner**: 任何 session 首次接手时
+- **Owner**: claude-opus-4-7-1m (2026-05-01 session)
+- **Commit/Tag**: `24a0db6`(SSoT 落盘 + push origin/main)+ tag `phase5-eval-start` (origin)
+- **Test report**: 用户显式回答 "push 全部到 origin/main + 推 tag phase5-eval-start";`git rev-parse origin/main == HEAD == phase5-eval-start == 24a0db6`
 - **Dependencies**: 无
 - **背景**: 当前本地 main 领先 origin/main 3 commit(`92f73a2`、`dbd0718`、`8451ada`),工作树 clean。需要用户决定是否 push 与 tag。
 - **Steps**:
@@ -329,7 +331,7 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 #### P5A-T01 — 修复 news_crawler 'result' KeyError [✅ 已完成]
 
 - **Owner**: claude-opus-4-7-1m (2026-05-01 session)
-- **Commit**: (pending — 同次 commit,见 §7.4)
+- **Commit**: `975af0b`
 - **Test report**: `docs/reviews/p5a-t01-r1-architecture.md` + `docs/reviews/p5a-t01-r3-testing.md`
 - **关键偏离**: ① 原计划用 `"result" in str(exc)` 做匹配,会误匹配 `'not_result'` 子串,改为 `exc.args == ("result",)` 精确匹配 ② `hypothesis`/`vcr.py` 未安装,minor-fix 不引入新依赖,改用等价 unit + mock-based integration ③ 24h 线上日志验证延后到部署后,纳入 Phase 5A 出口检查
 - **Dependencies**: P5A-T00
@@ -413,7 +415,7 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 #### P5A-T02 — Daily LLM Cost Hard-Cap (cost_guard) [✅ 已完成]
 
 - **Owner**: claude-opus-4-7-1m (2026-05-01 session)
-- **Commit**: (pending — 同次 commit,见 §7.4)
+- **Commit**: `61cfc7d`
 - **Test report**: `docs/reviews/p5a-t02-codex-review.md` (5 轮综合) + R1-R5 占位文件
 - **关键超出计划**: ① 双层 NaN/Inf 防御(parser + guard 各自 fail-closed) ② 单条负 cost_rmb 数据腐败也被 drop ③ `asyncio.Lock` 序列化 cron + manual 并发 ④ `_read_env_float` 拒绝 NaN/Inf 与负值钳制 ⑤ Codex 5 轮渐进式审查共发现 6 个 issue (4×P2 + 2×P3) 全部修复
 - **关键偏离**: ① `hypothesis` 未安装,改用参数化 unit 测试覆盖等价边界 ② E2E redis-cli + curl 验证延后到部署后 ③ 7 天线上无误熔断纳入 Phase 5A 出口检查
@@ -584,7 +586,7 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 #### P5A-T03 — AUTHORIZATION_MODE Startup Assertion [✅ 已完成]
 
 - **Owner**: claude-opus-4-7-1m (2026-05-01 session)
-- **Commit**: (pending — 同次 commit,见 §7.4)
+- **Commit**: `54f7def`
 - **Test report**: `docs/reviews/p5a-t03-r1-architecture.md` + `docs/reviews/p5a-t03-r3-testing.md`
 - **关键超出计划**: ① 抽出独立 `backend/services/authorization.py` 模块(可测试 + 可重用) ② 双向同义词矩阵 (`_LONG_TO_SHORT` + `_SHORT_TO_LONG`),env 存 canonical short / API 响应回 long form 保 frontend back-compat ③ 修掉旧 `_get_auth_mode` 的 `replace("suggest","suggestion")` 串接 bug,POST suggestion 时 env="suggestion" 会变 "suggestionion" ④ 通过 codex 3 轮迭代发现并修复 4 个 P2 issue
 - **关键偏离**: ① docker-compose 启动 negative test 转化为 unit-level `SystemExit` 断言(语义等价) ② E2E uvicorn fork 同上
@@ -687,12 +689,13 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 - **Pre-commit**: minor-fix(R1 + R3)
 - **Done**: deploy SOP 更新 + commit
 
-#### Phase 5A 出口检查 [⏳ 待做]
+#### Phase 5A 出口检查 [✅ 已完成 — STOP 等用户书面授权]
 
-- pytest 全绿,coverage 不下降
-- 24h 线上无 KeyError('result')、无误熔断、无 auto-mode 启动
-- 输出 `docs/reviews/phase5a-summary-2026-05-08.md`(模板见 §2.2)
-- **STOP**,等用户授权进入 Phase 5B
+- ✅ pytest 全绿(672 → **762 passed**,+90 net,11 skipped 不变,0 failed)
+- ✅ coverage 不下降(`backend/risk/engine.py`=100% / `cost_guard`=100% / `authorization`=100% / `news_crawler`=90%)
+- ⏳ 24h 线上跟踪 5 项延后到部署窗口验证(详见 summary §4)
+- ✅ Summary 报告 `docs/reviews/phase5a-summary-2026-05-08.md` 已生成 (commit `737bf83`)
+- ✅ **STOP** — 等用户授权(回复 "授权进入 Phase 5B")
 
 ---
 
@@ -1732,7 +1735,9 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-01 | claude-opus-4-7-1m | 24a0db6 | 初版 SSoT 落盘 |
 | 2026-05-01 | claude-opus-4-7-1m | 975af0b | P5A-T01 ⏳→✅ news_crawler KeyError 修复(精确匹配 + minor-fix R1+R3 PASS) |
 | 2026-05-01 | claude-opus-4-7-1m | 61cfc7d | P5A-T02 ⏳→✅ cost_guard 硬熔断 + 双层 NaN/Inf 防御 + scheduler 并发锁(major 5 轮 codex PASS) |
-| 2026-05-01 | claude-opus-4-7-1m | (本次 commit) | P5A-T03 ⏳→✅ authorization phase gate + canonical/legacy 双向矩阵 + kill suggestionion bug(minor-fix 3 轮 codex PASS) |
+| 2026-05-01 | claude-opus-4-7-1m | 54f7def | P5A-T03 ⏳→✅ authorization phase gate + canonical/legacy 双向矩阵 + kill suggestionion bug(minor-fix 3 轮 codex PASS) |
+| 2026-05-01 | claude-opus-4-7-1m | 737bf83 | Phase 5A 出口 summary,4 项 task 全 ✅,STOP 等授权 |
+| 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | 补齐 SSoT 状态:P5A-T00 marker ⏳→✅、Phase 5A 出口 marker ⏳→✅、T01-T03 commit hash 占位实填 |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 
