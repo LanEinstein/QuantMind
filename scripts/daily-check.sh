@@ -73,16 +73,36 @@ if [[ -n "$dashboard_json" ]] && command -v python3 >/dev/null; then
     echo "$dashboard_json" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)["data"]
-print(f"  overall_status={d[\"overall_status\"]}")
-print(f"  signals today/7d={d[\"signals\"][\"today\"]}/{d[\"signals\"][\"last_7_days\"]}")
-print(f"  latest analysis lag_seconds={d[\"analysis\"][\"lag_seconds\"]}")
-print(f"  cost today={d[\"cost\"][\"today_cny\"]}/{d[\"cost\"][\"daily_budget_cny\"]} over_budget={d[\"cost\"][\"over_budget\"]}")
-print(f"  llm providers available={d[\"llm\"][\"available_count\"]}/{len(d[\"llm\"][\"providers\"])}")
-print(f"  risk circuit_breaker={d[\"risk\"][\"circuit_breaker\"]}")
+overall_status = d["overall_status"]
+signals = d["signals"]
+analysis = d["analysis"]
+cost = d["cost"]
+llm = d["llm"]
+risk = d["risk"]
+signals_today = signals["today"]
+signals_7d = signals["last_7_days"]
+lag_seconds = analysis["lag_seconds"]
+cost_today = cost["today_cny"]
+daily_budget = cost["daily_budget_cny"]
+over_budget = cost["over_budget"]
+llm_available = llm["available_count"]
+llm_total = len(llm["providers"])
+circuit_breaker = risk["circuit_breaker"]
+print(f"  overall_status={overall_status}")
+print(f"  signals today/7d={signals_today}/{signals_7d}")
+print(f"  latest analysis lag_seconds={lag_seconds}")
+print(f"  cost today={cost_today}/{daily_budget} over_budget={over_budget}")
+print(f"  llm providers available={llm_available}/{llm_total}")
+print(f"  risk circuit_breaker={circuit_breaker}")
 sys.exit(0 if d["overall_status"] != "critical" else 2)
 '
     rc=$?
-    if [[ $rc -eq 2 ]]; then exit_code=1; fi
+    if [[ $rc -eq 2 ]]; then
+        exit_code=1
+    elif [[ $rc -ne 0 ]]; then
+        echo "  dashboard parse failed"
+        exit_code=1
+    fi
 else
     echo "  dashboard unreachable at $BASE_URL/api/monitoring/dashboard"
     exit_code=1
