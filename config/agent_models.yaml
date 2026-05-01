@@ -11,7 +11,7 @@ providers:
     api_key: "${DASHSCOPE_API_KEY}"
     default_model: "qwen3.6-plus"
   kimi:
-    base_url: "https://api.moonshot.ai/v1"
+    base_url: "https://api.moonshot.cn/v1"
     api_key: "${MOONSHOT_API_KEY}"
     default_model: "kimi-k2.6"
   # --- Reserved for future expansion ---

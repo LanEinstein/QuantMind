@@ -152,6 +152,59 @@ class TestRouterRouting:
             call_kwargs = mock_client.chat.completions.create.call_args
             assert call_kwargs.kwargs["temperature"] == 0.8
 
+    async def test_kimi_k26_uses_thinking_mode_temperature(
+        self,
+        tmp_path: Path,
+        mock_env_vars: None,
+        mock_redis: AsyncMock,
+    ) -> None:
+        config_path = tmp_path / "agent_models.yaml"
+        config_path.write_text(
+            """\
+providers:
+  kimi:
+    base_url: "https://api.moonshot.cn/v1"
+    api_key: "${MOONSHOT_API_KEY}"
+    default_model: "kimi-k2.6"
+
+defaults:
+  temperature: 0.3
+  max_tokens: 4096
+
+agents:
+  risk_officer:
+    name: "Risk Officer"
+    provider: kimi
+    model: kimi-k2.6
+    frequency: "daily"
+    task: "Assess risk"
+""",
+            encoding="utf-8",
+        )
+        router = LLMRouter(config_path=config_path)
+        await router.initialize(redis_client=mock_redis)
+
+        mock_response = make_chat_completion()
+        with patch.object(router, "_get_client") as mock_get:
+            mock_client = AsyncMock()
+            mock_client.chat.completions.create = AsyncMock(
+                return_value=mock_response
+            )
+            mock_get.return_value = mock_client
+
+            await router.complete(
+                "risk_officer",
+                [{"role": "user", "content": "hi"}],
+                temperature=0.2,
+                extra_body={"custom": "value"},
+            )
+
+        call_kwargs = mock_client.chat.completions.create.call_args
+        assert call_kwargs.kwargs["temperature"] == 1
+        assert call_kwargs.kwargs["max_tokens"] == 16_000
+        assert call_kwargs.kwargs["extra_body"] == {"custom": "value"}
+        await router.close()
+
     async def test_unknown_agent_raises(self, router: LLMRouter) -> None:
         with pytest.raises(KeyError, match="unknown_agent"):
             await router.complete("unknown_agent", [{"role": "user", "content": "hi"}])

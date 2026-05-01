@@ -212,10 +212,14 @@ class LLMRouter:
             model=model,
         )
 
+        call_kwargs = self._normalize_provider_kwargs(
+            provider_name, model, kwargs
+        )
+
         response = await client.chat.completions.create(
             model=model,
             messages=messages,  # type: ignore[arg-type]
-            **kwargs,
+            **call_kwargs,
         )
 
         if response.usage:
@@ -236,6 +240,28 @@ class LLMRouter:
             )
 
         return response
+
+    @staticmethod
+    def _normalize_provider_kwargs(
+        provider_name: str,
+        model: str,
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply provider/model-specific Chat Completions constraints."""
+        normalized = dict(kwargs)
+
+        if provider_name == "kimi" and model == "kimi-k2.6":
+            # Kimi K2.6 rejects arbitrary temperature values in its
+            # default thinking mode; keep thinking enabled and use the
+            # provider-supported default. The thinking response can be
+            # large, so use the provider-recommended minimum cap to avoid
+            # spending the whole output budget on reasoning_content.
+            normalized["temperature"] = 1
+            max_tokens = normalized.get("max_tokens")
+            if not isinstance(max_tokens, int) or max_tokens < 16_000:
+                normalized["max_tokens"] = 16_000
+
+        return normalized
 
     def _get_client(self, provider_name: str) -> AsyncOpenAI:
         """Get a pre-initialized client for the given provider.
