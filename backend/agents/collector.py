@@ -256,8 +256,17 @@ class RunCollector:
         status: str,
         signal: TradingSignal | None,
         error: str | None = None,
+        signal_parse_ok: bool = True,
     ) -> AnalysisRecord:
-        """Build the terminal AnalysisRecord from accumulated steps."""
+        """Build the terminal AnalysisRecord from accumulated steps.
+
+        ``signal_parse_ok`` defaults to True for backwards compat;
+        ``run_analysis`` passes False when ``fund_manager_node`` had to
+        emit the synthetic ``持有 / 0.5`` fallback because the LLM
+        response wasn't parseable. The flag rides on
+        :class:`FundManagerRecord` so Phase 5B shadow harness can
+        exclude synthetic legs from gate math.
+        """
         analysts = [s for s in self._steps if s.agent in ANALYST_AGENTS]
 
         intelligence = next(
@@ -287,6 +296,7 @@ class RunCollector:
                 confidence=signal.confidence,
                 risk_score=signal.risk_score,
                 reasoning=signal.reasoning,
+                parse_ok=signal_parse_ok,
                 step=fund_step,
             )
 

@@ -249,6 +249,56 @@ class TestRunAnalysis:
         assert record.signal_id is None
 
     @pytest.mark.asyncio
+    async def test_fund_manager_parse_failure_propagates_to_record(
+        self,
+    ) -> None:
+        """codex P5B-shadow R4 P2 end-to-end lock.
+
+        An invalid fund_manager response must:
+        1. trigger ``_parse_signal``'s synthetic 持有/0.5 fallback
+        2. surface ``trading_signal["parse_ok"] = False``
+        3. flow through ``run_analysis`` → ``RunCollector.finalize``
+        4. land on ``record.decision.parse_ok = False``
+        5. survive ``model_dump(mode="json")`` round-trip so Mongo
+           and AnalysisRecord rebuilds agree.
+
+        Without this lock, a regression on any one of those hops
+        would silently re-poison the shadow gate math (R2 P2 root).
+        """
+        call_count = 0
+
+        def _route_response(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            agent_name = args[0] if args else "unknown"
+            if agent_name == "fund_manager":
+                # Malformed: not JSON at all → live extractor returns
+                # None → _parse_signal hits its synthetic fallback.
+                return _make_completion("not even close to json")
+            return _make_completion(f"[{agent_name}] 模拟报告")
+
+        services = _mock_services(max_rounds=1)
+        services.llm_router.complete = AsyncMock(side_effect=_route_response)
+        result = await run_analysis("600519", services)
+
+        assert result.signal.action == "持有"  # synthetic fallback
+        assert result.signal.confidence == 0.5
+        assert result.record.decision is not None
+        assert result.record.decision.parse_ok is False
+
+        # Round-trip through model_dump(mode="json") — that's how
+        # analysis_scheduler persists records into Mongo. The flag
+        # must be retained so on read-back the shadow runner still
+        # sees the synthetic decision.
+        dumped = result.record.model_dump(mode="json")
+        decision = dumped.get("decision")
+        assert isinstance(decision, dict)
+        assert decision["parse_ok"] is False
+        rebuilt = AnalysisRecord.model_validate(dumped)
+        assert rebuilt.decision is not None
+        assert rebuilt.decision.parse_ok is False
+
+    @pytest.mark.asyncio
     async def test_emitter_receives_events(self) -> None:
         """Emitter callback receives started/completed/pipeline events."""
         services = _mock_services(max_rounds=1)

@@ -1,25 +1,14 @@
-"""QuantMind data layer: market data, history, news, persistence."""
+"""QuantMind data layer: market data, history, news, persistence.
 
-from backend.data.config import DataSourcesConfig, load_data_sources_config
-from backend.data.database import MongoDBService
-from backend.data.history_data import HistoryDataService
-from backend.data.market_data import DataFetchError, MarketDataService
-from backend.data.news_crawler import NewsCrawlerService
-from backend.data.publisher import publish_market_update, publish_news
-from backend.data.scheduler import DataScheduler
-from backend.data.trading_hours import is_trading_day, is_trading_hours
+Empty __init__ on purpose. Consumers explicit-import the submodule
+they need (``from backend.data.database import MongoDBService`` etc.).
 
-__all__ = [
-    "DataFetchError",
-    "DataScheduler",
-    "DataSourcesConfig",
-    "HistoryDataService",
-    "MarketDataService",
-    "MongoDBService",
-    "NewsCrawlerService",
-    "is_trading_day",
-    "is_trading_hours",
-    "load_data_sources_config",
-    "publish_market_update",
-    "publish_news",
-]
+The previous version eagerly imported ``DataScheduler`` and friends,
+which transitively pulled ``backend.llm.cost_tracker`` into any module
+that did ``from backend.data.trading_hours import X`` — including
+``backend/risk/engine.py``. That silently violated the SSoT risk
+isolation redline: a fresh ``import backend.risk`` ended up loading
+``backend.llm.*``. Codex P5B-shadow R5 HIGH surfaced it. Keeping
+this file empty is the canonical fix; importers stay explicit and
+the redline holds.
+"""

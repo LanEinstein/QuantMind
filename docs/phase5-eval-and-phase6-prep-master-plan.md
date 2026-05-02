@@ -973,26 +973,37 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 
 - **owner_session**: 2026-05-02 main session (claude-opus-4-7-1m + Codex CLI)
 - **harness_commit**: 12bac5b
-- **test_report**: `docs/reviews/p5b-exit-codex-summary.md` + R1-R7 各 1 份;`docs/reviews/phase5b-summary-2026-05-15.md`
+- **wiring_commit**: _本 commit 待回填_(shadow_runner + fund_manager parse_ok 透传 + analysis_scheduler hook + 风控隔离 redline 修复)
+- **test_report**: `docs/reviews/p5b-exit-codex-summary.md` (R1-R7) + `docs/reviews/p5b-shadow-codex-summary.md` (R1-R7);`docs/reviews/phase5b-summary-2026-05-15.md`;`docs/reviews/phase5b-shadow-deployment-runbook.md`
 - **Done(已落地)**:
-  - `backend/services/shadow_recorder.py` (100% cov) — 纯数据层 `ShadowDecisionEntry/Leg` schema + `record_shadow_decision` + `query_shadow_decisions`(UTC cutoff,fail-soft)
-  - `backend/services/shadow_compare.py` (94% cov) — 纯计算层 `compute_shadow_report`:action_match_rate / |Δconf| p50/p95/mean / per-leg parse_ok / escalation_rate / per-day breakdown / 阈值 gate
-  - `backend/services/phase5b_exit_check.py` (97% cov) — 7 项 gate 计算层:fast/slow cost p95、daily_total、fast/slow p95 latency、shadow action_match、shadow confidence_delta
-  - `scripts/shadow_compare.py` — CLI(MongoDB or JSONL replay,`--days [1,30]` clamp,`--strict` CI 模式,JSONL 200K 行 cap)
-  - `scripts/phase5b_exit_check.py` — CLI(motor + Redis,`$or` 窗口过滤兼容 BSON Date / ISO string,5-字段投影,`--strict` CI 模式)
-  - `backend/data/database.py` — `shadow_decisions` 集合 unique(run_id) 索引 + TTL(created_at, 30 天)索引
-  - 117 个新测试覆盖 schema validation / pure compute / CLI 边界 / Mongo+Redis live IO mocked / 索引契约
-  - 7 轮 codex review:R1 architecture / R2 followup / R3 perf / R4 testing / R5 security / R6+R7 final verify;15 个发现全部 RESOLVED,无回归
+  - **harness 层**(commit 12bac5b):
+    - `backend/services/shadow_recorder.py` (100% cov) — 纯数据层 `ShadowDecisionEntry/Leg` schema + `record_shadow_decision` + `query_shadow_decisions`(UTC cutoff,fail-soft)
+    - `backend/services/shadow_compare.py` (94% cov) — 纯计算层 `compute_shadow_report`:action_match_rate / |Δconf| p50/p95/mean / per-leg parse_ok / escalation_rate / per-day breakdown / 阈值 gate
+    - `backend/services/phase5b_exit_check.py` (97% cov) — 7 项 gate 计算层:fast/slow cost p95、daily_total、fast/slow p95 latency、shadow action_match、shadow confidence_delta
+    - `scripts/shadow_compare.py` — CLI(MongoDB or JSONL replay,`--days [1,30]` clamp,`--strict` CI 模式,JSONL 200K 行 cap)
+    - `scripts/phase5b_exit_check.py` — CLI(motor + Redis,`$or` 窗口过滤兼容 BSON Date / ISO string,5-字段投影,`--strict` CI 模式)
+    - `backend/data/database.py` — `shadow_decisions` 集合 unique(run_id) 索引 + TTL(created_at, 30 天)索引
+  - **wiring 层**(本次新增):
+    - `backend/services/shadow_runner.py` — fire-and-forget 后台 runner:env 开关(`QUANTMIND_SHADOW_ENABLED` + `QUANTMIND_SHADOW_SAMPLE_RATE`)、cost_guard 序列化预算检查、admission control(_MAX_INFLIGHT_SHADOW=4)、`asyncio.wait_for` 900s 超时、live `extract_json_from_response` 解析与 fund_manager 一致、parse_ok 全链路透传到 ShadowDecisionLeg
+    - `config/agent_models.yaml::fund_manager_shadow_baseline` — kimi-only 影子 agent(无 routing 块,thinking config 与 fund_manager 一致)
+    - `backend/agents/fund_manager.py::_parse_signal` 改返回 `(signal, parse_ok)`;`fund_manager_node` 把 parse_ok 写进 trading_signal dict
+    - `backend/agents/graph.py::run_analysis` 把 parse_ok 透传给 collector
+    - `backend/agents/collector.py::finalize` 接 `signal_parse_ok` 参数
+    - `backend/agents/records.py::FundManagerRecord` 新增 `parse_ok: bool = True`(default 兼容历史记录)
+    - `backend/data/analysis_scheduler.py::_run_and_persist_locked` 在 save_analysis_record 后 fire-and-forget `schedule_shadow_run(services, record_with_signal, self._redis)`
+    - `backend/data/__init__.py` 改空,修复风控 redline transitive 违规(`backend/risk/engine.py` 经 `backend.data.trading_hours` 间接 import 了 `backend.llm.cost_tracker`,被 codex R5 HIGH 抓出)
+    - 新增 `tests/test_risk_isolation_redline.py` — 用 subprocess 锁定 `import backend.risk` 不会 transitively 加载 `backend.llm` / `backend.agents` / `backend.mirofish` / `backend.services`
+  - **测试基线**:1139 passed, 11 skipped, 0 failed(vs harness commit 12bac5b 的 1077);新增 62 个测试覆盖 shadow_runner unit / e2e parse_ok 透传 / risk 隔离 redline / shadow_compare gateable+parse_failed 计数 / admission control / 超时回退
+  - **codex review**(本次):另跑 7 轮(R1 architecture / R2 followup / R3 perf / R4 testing / R5 security / R6+R7 final verify);14 个发现全部 RESOLVED,无回归;R5 抓到的 HIGH redline transitive 违规已修复并加 subprocess 锁定测试
 - **Deferred 到部署窗口(deployment-bound)**:
   - 单股成本 fast ≤ ¥0.20 实测(harness ✅,真值待 7 天产线运行后 `phase5b_exit_check.py --days 7 --strict`)
   - 单股成本 slow ≤ ¥0.50 实测(同上)
   - 日均成本 ≤ ¥1.20 实测(同上)
   - fast p95 ≤ 8 min 实测(同上)
   - slow p95 ≤ 15 min 实测(同上)
-  - 决策一致率 ≥ 85% 实测(需 operator 启用 shadow_recorder cron + 7 天数据)
+  - 决策一致率 ≥ 85% 实测(operator 启用 `QUANTMIND_SHADOW_ENABLED=1` 后端启动后自动采集,无需额外 cron;详见 `docs/reviews/phase5b-shadow-deployment-runbook.md`)
   - 决策置信度偏差 < 0.15 实测(同上)
 - **Deferred 到 Phase 5C 单独 task(cross-cutting)**:
-  - shadow_recorder cron wiring(P5C 部署任务,sampling rate + cost-guard 双保护)
   - prose-prompt agent JSON contract 改造(扩展 routing 到 intelligence/bull/bear/risk)
   - `/api/watchlist/*` + `/api/monitoring/*` operator-auth 网关
   - save_policy round-trip-safe YAML、_reload_config TOCTOU、per-bucket scheduler lock、PolicyStore 跨进程一致性、route 字段含 model id、Hypothesis 框架引入、Redis AuthenticationError 单独 alert 路径、agent/provider regex 白名单
@@ -1796,6 +1807,7 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-02 | claude-opus-4-7-1m | 890695d | P5B-T03 commit hash 回填(SSoT marker 与 §7.4 表 eb10fc1 实填) |
 | 2026-05-02 | claude-opus-4-7-1m | eb10fc1 | P5B-T03 ⏳→✅ Tiered triage→escalation routing:`backend/llm/providers.py` 新增 `EscalationCondition` 类型化(`confidence_lt: float ge=0 le=1, extra='forbid'`,validator 强制至少一规则)+ `RoutingConfig.escalation_condition: EscalationCondition \| None`;`backend/llm/router.py::_should_escalate(routing, response) -> tuple[bool, str]`(reasons: `no_routing`/`no_condition`/`parse_failed`/`low_confidence`/`ok`,显式拒绝 NaN/Infinity/越界/bool/非数字 confidence,`_MAX_TRIAGE_JSON_BYTES=65_536` UTF-8 字节上限 + `RecursionError` 捕获);`complete()` 调用 `track_escalation` 区分 triage/escalation 成本(`agent_name=f"{name}/triage"|"…/escalation"`);`backend/llm/fallback.py::track_escalation` 写 `llm:escalations:{date}:{agent}` Redis hash(count + reason_low_confidence/reason_parse_failed/reason_other 白名单 + route_<src>-><dst>)+ 抽 `_utc_date_str()` 单一来源(`track_usage`/`track_fallback`/`track_escalation`/`aggregate_costs`/`llm_escalations` 全部使用,**修复 cost_guard 在 Asia/Shanghai 凌晨绕开 ¥20/日上限的时区错位 bug**);`backend/api/monitoring.py::GET /api/monitoring/llm/escalations`(scan_iter + hgetall 聚合,Redis down 显式 `status=unavailable`);`config/agent_models.yaml` 仅 `fund_manager`(prompt 强制 JSON contract)启用 routing,其他 4 个 prose-prompt agent(intelligence/bull/bear/risk)留 backlog 等 prompt 改 JSON 后再扩展(避免 100% parse_failed → 成本翻倍);7 轮 codex(R1 baseline / R2 UX / R3 testing / R4 perf / R5 security / R6 + R7 follow-up verify)→ CRITICAL 1 修(prose agent 误启用 routing) + HIGH 6 修 + MEDIUM 14 全部 verified 修或 defer 到 backlog;968 pytest passed(新增 61 个,0 warnings),`backend/risk/` 覆盖率 98%、backend overall 82.47%;known deferred:hypothesis 框架引入(单独 dep PR)、monitoring endpoint operator-auth(P5C 监控面板统一)、prose agent prompt JSON 改造(单独 task)、Redis AuthenticationError 单独 alert 路径、agent/provider regex 白名单(cross-cutting schema backlog) |
 | 2026-05-02 | claude-opus-4-7-1m | 12bac5b | Phase 5B 出口 marker ⏳→🔧:harness 全部就位(`backend/services/{shadow_recorder,shadow_compare,phase5b_exit_check}.py` + `scripts/{shadow_compare,phase5b_exit_check}.py` + `shadow_decisions` Mongo 集合 unique(run_id) + TTL(created_at,30d) 索引);117 个新测试覆盖 schema validation / pure compute / CLI mocked-IO / 索引契约;1077 pytest passed(11 skipped,+109 net 自 P5B-T03 968),backend 覆盖率 83% / risk 98%;7 轮 codex review(R1 architecture / R2 followup / R3 perf / R4 testing / R5 security / R6+R7 final verify)→ 15 个发现全部 RESOLVED,无回归;7 项出口指标 4 项工具就位(cost x3 + latency x2 + shadow consistency x2),真值待 deployment 部署窗口 + operator 启用 shadow_recorder cron 后 7 天采集 + `phase5b_exit_check.py --strict` 输出最终判定;summary 报告 `docs/reviews/phase5b-summary-2026-05-15.md` 生成;11 项 cross-cutting backlog 列入 summary §6;**STOP 等部署窗口 + Phase 5C 授权,不自动跨阶段** |
+| 2026-05-02 | claude-opus-4-7-1m | _本 commit_ | Phase 5B 出口 wiring 落地(用户授权"启动部署窗口让 shadow_recorder 实跑 7 天"):新增 `backend/services/shadow_runner.py`(env 开关 + sample rate + cost_guard 串行化 + admission control [_MAX_INFLIGHT_SHADOW=4] + 900s 超时 + live `extract_json_from_response` 解析);`config/agent_models.yaml` 新增 `fund_manager_shadow_baseline`(kimi-only,无 routing);`fund_manager._parse_signal` 改返回 `(signal, parse_ok)`,parse_ok 经 `fund_manager_node` → `run_analysis` → `RunCollector.finalize(signal_parse_ok=...)` → `FundManagerRecord.parse_ok` 全链路透传到 routed leg;`analysis_scheduler._run_and_persist_locked` 在 `save_analysis_record` 后 `schedule_shadow_run(services, record_with_signal, self._redis)`(asyncio.create_task,fire-and-forget);`shadow_compare.compute_shadow_report` 增 `parse_failed_pairs` 计数,gate math 仅在 `parse_ok=True` 双 leg 上跑;codex R5 抓出 `backend/risk/engine.py` 经 `backend.data.trading_hours` 间接 `import backend.llm.cost_tracker` 的 redline transitive 违规 → 把 `backend/data/__init__.py` 改空 + 加 `tests/test_risk_isolation_redline.py` subprocess 锁定;1139 pytest passed(+62 net 自 12bac5b),0 failed;7 轮 codex review(R1-R7,14 个发现全部 RESOLVED,无回归)报告在 `docs/reviews/p5b-shadow-r{1..7}-*.md` + `p5b-shadow-codex-summary.md`;operator runbook `docs/reviews/phase5b-shadow-deployment-runbook.md`;**STOP 等用户启动 7 天部署窗口完成真值采集后再判最终出口** |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

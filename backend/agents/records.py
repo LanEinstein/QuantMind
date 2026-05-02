@@ -90,7 +90,15 @@ class RiskAssessmentRecord(BaseModel):
 
 
 class FundManagerRecord(BaseModel):
-    """Fund manager final decision, mirrored from TradingSignal."""
+    """Fund manager final decision, mirrored from TradingSignal.
+
+    ``parse_ok`` is False when the LLM response was unparseable and
+    the node emitted a synthetic ``持有 / 0.5`` placeholder. Phase 5B
+    shadow harness reads this to exclude synthetic decisions from
+    action-match / confidence-delta gate math (codex P5B-shadow R2
+    P2). Defaults to True so legacy records (pre-2026-05-02) remain
+    backwards-compatible.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -99,6 +107,7 @@ class FundManagerRecord(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     risk_score: float = Field(ge=0.0, le=1.0)
     reasoning: str = ""
+    parse_ok: bool = True
     step: AgentStepRecord
 
 

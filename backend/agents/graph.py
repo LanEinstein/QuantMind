@@ -374,8 +374,15 @@ async def run_analysis(
         stock_name=stock_name,
         trade_date=trade_date,
     )
+    # ``fund_manager_node`` writes ``parse_ok`` into the signal dict
+    # (codex P5B-shadow R2 P2) so a synthetic ``持有 / 0.5`` fallback
+    # surfaces on FundManagerRecord and the shadow harness can drop
+    # it from gate math. Defaults to True for the legacy path.
+    signal_parse_ok = bool(signal_data.get("parse_ok", True))
 
-    record = collector.finalize(status="completed", signal=signal)
+    record = collector.finalize(
+        status="completed", signal=signal, signal_parse_ok=signal_parse_ok
+    )
 
     log.info(
         "analysis_completed",

@@ -327,6 +327,11 @@ _PROD_THINKING_TABLE: dict[str, tuple[str, int, str]] = {
     "bear_researcher": ("enabled", 8_000, "all"),
     "risk_officer": ("enabled", 6_000, "last_round"),
     "fund_manager": ("enabled", 8_000, "last_round"),
+    # Phase 5B exit shadow-test baseline — kimi-only clone of
+    # fund_manager (no routing block) consumed only by
+    # backend.services.shadow_runner. Same thinking config so the
+    # baseline reasoning footprint matches the routed-tier kimi call.
+    "fund_manager_shadow_baseline": ("enabled", 8_000, "last_round"),
 }
 
 
@@ -339,7 +344,7 @@ def production_router_config() -> RouterConfig:
 
 @pytest.mark.integration
 class TestProductionConfigRoundTrip:
-    def test_all_ten_agents_present(
+    def test_all_agents_present(
         self, production_router_config: RouterConfig
     ) -> None:
         assert set(production_router_config.agents.keys()) == set(

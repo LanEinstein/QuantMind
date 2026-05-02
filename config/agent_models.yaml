@@ -176,3 +176,20 @@ agents:
       keep: last_round
     frequency: "per_trading_day"
     task: "综合所有Agent报告，输出最终买卖信号"
+
+  # Phase 5B exit shadow-test baseline (consumed only by
+  # backend.services.shadow_runner when QUANTMIND_SHADOW_ENABLED=1).
+  # Identical to fund_manager EXCEPT the routing block is intentionally
+  # absent — this leg always calls Kimi directly so we can compare the
+  # tiered-routing decision against the original kimi-only baseline.
+  fund_manager_shadow_baseline:
+    name: "基金经理 (Shadow Baseline / Kimi-only)"
+    provider: kimi
+    model: kimi-k2.6
+    fallback: { provider: deepseek, model: deepseek-v4-pro }
+    thinking:
+      type: enabled
+      max_tokens: 8000
+      keep: last_round
+    frequency: "shadow_only"
+    task: "Phase 5B 出口 7-day shadow window 的 baseline leg；仅在 shadow_runner 启用时被调用，永远不进入实盘决策路径"

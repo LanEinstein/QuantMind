@@ -139,6 +139,36 @@ class TestEmptyInput:
         report = compute_shadow_report([doc])
         assert report.skipped == 1
 
+    def test_parse_failed_pairs_excluded_from_gate(self) -> None:
+        # codex P5B-shadow R1 P2: synthetic 持有/0.5 fallbacks that
+        # carry parse_ok=False must NOT skew action match or |Δconf|.
+        # 9 clean buys + 1 parse-failed → match rate over the 9
+        # gateable pairs is 1.0 (passes), not 0.9.
+        clean_docs = [_doc() for _ in range(9)]
+        bad = _doc()
+        bad["baseline"]["parse_ok"] = False
+        bad["baseline"]["action"] = "持有"  # synthetic fallback
+        bad["baseline"]["confidence"] = 0.5
+        report = compute_shadow_report([*clean_docs, bad])
+        assert report.total_pairs == 10
+        assert report.parse_failed_pairs == 1
+        assert report.action_match_rate == 1.0
+        assert report.passes["action_match"] is True
+
+    def test_all_parse_failed_yields_no_data(self) -> None:
+        # When every recorded pair was synthetic, the gate has no
+        # honest answer — fail closed.
+        docs = []
+        for _ in range(3):
+            d = _doc()
+            d["routed"]["parse_ok"] = False
+            docs.append(d)
+        report = compute_shadow_report(docs)
+        assert report.total_pairs == 3
+        assert report.parse_failed_pairs == 3
+        assert report.passes["has_data"] is False
+        assert report.passes["action_match"] is False
+
     @pytest.mark.parametrize(
         "trade_date",
         [

@@ -8,6 +8,7 @@ for the Bull/Bear debate (Blueprint V3 Section 3.2).
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 import structlog
@@ -95,14 +96,14 @@ async def intelligence_officer_node(
                     )
                     # Persist simulation results to MongoDB for browsing
                     if services.mongodb is not None:
-                        from datetime import datetime, timezone
+                        from datetime import datetime
 
                         coll = services.mongodb._db["simulations"]
                         for r, ev in zip(results, events):
                             doc = {
                                 **r.model_dump(mode="json"),
                                 "event": ev.model_dump(mode="json"),
-                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "created_at": datetime.now(UTC).isoformat(),
                             }
                             try:
                                 await coll.insert_one(doc)

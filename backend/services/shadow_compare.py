@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import math
 import re
-import statistics
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -59,6 +58,13 @@ class ShadowReport:
     ``passes`` is the gate result against SSoT §6 P5B-T03 thresholds.
     Tooling that wants to print but not gate (e.g. mid-window trend
     inspection) can ignore the field; the exit-check CLI uses it.
+
+    ``parse_failed_pairs`` counts pairs where one or both legs were
+    written with ``parse_ok=False`` (the recorder still persists them
+    so the parse-failure rate is observable). Those pairs do NOT
+    contribute to ``action_match_rate`` or the confidence-delta
+    statistics — a synthetic ``持有 / 0.5`` fallback would otherwise
+    pollute the gate math (codex P5B-shadow R1 P2).
     """
 
     total_pairs: int
@@ -69,6 +75,7 @@ class ShadowReport:
     confidence_delta_mean_abs: float
     baseline: LegMetrics
     routed: LegMetrics
+    parse_failed_pairs: int = 0
     by_day: dict[str, dict[str, float]] = field(default_factory=dict)
     passes: dict[str, bool] = field(default_factory=dict)
 
@@ -206,6 +213,7 @@ def compute_shadow_report(
             confidence_delta_mean_abs=0.0,
             baseline=empty_leg,
             routed=empty_leg,
+            parse_failed_pairs=0,
             by_day={},
             passes={
                 "action_match": False,
@@ -214,33 +222,110 @@ def compute_shadow_report(
             },
         )
 
-    matched = sum(
-        1
-        for p in pairs
-        if p["baseline"]["action"] == p["routed"]["action"]
+    # Single-pass accumulator (codex P5B-shadow R3 P3): track leg
+    # metrics, by-day match counters, and gateable deltas in one
+    # iteration over ``pairs`` instead of materialising 6 separate
+    # comprehensions. Pairs whose either leg has parse_ok=False are
+    # counted in parse_failed_pairs and excluded from gate math —
+    # they're synthetic 持有/0.5 placeholders, not real decisions.
+    parse_failed_pairs = 0
+    matched = 0
+    abs_delta_sum = 0.0
+    deltas: list[float] = []
+
+    base_parse_ok_count = 0
+    base_escalated_count = 0
+    base_latency_sum = 0.0
+    routed_parse_ok_count = 0
+    routed_escalated_count = 0
+    routed_latency_sum = 0.0
+
+    by_day_gate_counts: dict[str, dict[str, int]] = {}
+
+    for pair in pairs:
+        b = pair["baseline"]
+        r = pair["routed"]
+        # Leg-metric counters cover ALL recorded legs so per-leg
+        # parse_ok_rate / escalation_rate / latency reflect the full
+        # window — gate math runs on the parse_ok subset only.
+        if b["parse_ok"]:
+            base_parse_ok_count += 1
+        if b["escalated"]:
+            base_escalated_count += 1
+        base_latency_sum += b["latency_ms"]
+        if r["parse_ok"]:
+            routed_parse_ok_count += 1
+        if r["escalated"]:
+            routed_escalated_count += 1
+        routed_latency_sum += r["latency_ms"]
+
+        if not (b["parse_ok"] and r["parse_ok"]):
+            parse_failed_pairs += 1
+            continue
+
+        # Gateable pair contributes to action match + Δconfidence and
+        # to the per-day breakdown.
+        slot = by_day_gate_counts.setdefault(
+            pair["trade_date"], {"matched": 0, "total": 0}
+        )
+        slot["total"] += 1
+        if b["action"] == r["action"]:
+            slot["matched"] += 1
+            matched += 1
+        delta = r["confidence"] - b["confidence"]
+        deltas.append(delta)
+        abs_delta_sum += abs(delta)
+
+    n = len(pairs)
+    baseline_metrics = LegMetrics(
+        parse_ok_rate=round(base_parse_ok_count / n, 4) if n else 0.0,
+        escalation_rate=round(base_escalated_count / n, 4) if n else 0.0,
+        avg_latency_ms=round(base_latency_sum / n, 2) if n else 0.0,
     )
-    total = len(pairs)
-    deltas = [
-        p["routed"]["confidence"] - p["baseline"]["confidence"]
-        for p in pairs
-    ]
-    abs_deltas = [abs(d) for d in deltas]
+    routed_metrics = LegMetrics(
+        parse_ok_rate=round(routed_parse_ok_count / n, 4) if n else 0.0,
+        escalation_rate=round(routed_escalated_count / n, 4) if n else 0.0,
+        avg_latency_ms=round(routed_latency_sum / n, 2) if n else 0.0,
+    )
 
     by_day = {
         day: {
             "match_rate": round(slot["matched"] / slot["total"], 4),
             "samples": slot["total"],
         }
-        for day, slot in sorted(by_day_counts.items())
+        for day, slot in sorted(by_day_gate_counts.items())
     }
 
-    baseline_metrics = _leg_metrics([p["baseline"] for p in pairs])
-    routed_metrics = _leg_metrics([p["routed"] for p in pairs])
+    if not deltas:
+        # All recorded pairs were parse_failed (or pairs was empty).
+        # No honest gate answer — no_data, fail-closed.
+        return ShadowReport(
+            total_pairs=n,
+            skipped=skipped,
+            action_match_rate=0.0,
+            confidence_delta_p50=0.0,
+            confidence_delta_p95=0.0,
+            confidence_delta_mean_abs=0.0,
+            baseline=baseline_metrics,
+            routed=routed_metrics,
+            parse_failed_pairs=parse_failed_pairs,
+            by_day=by_day,
+            passes={
+                "has_data": False,
+                "action_match": False,
+                "confidence_delta": False,
+            },
+        )
 
+    total = len(deltas)
+    # Sort once and derive both percentiles from the sorted list —
+    # statistics.median + a fresh sorted() inside _percentile would
+    # otherwise duplicate the work.
+    deltas.sort()
     action_match_rate = matched / total
-    confidence_delta_mean_abs = sum(abs_deltas) / total
-    p50 = statistics.median(deltas)
-    p95 = _percentile(deltas, 95)
+    confidence_delta_mean_abs = abs_delta_sum / total
+    p50 = _percentile_sorted(deltas, 50)
+    p95 = _percentile_sorted(deltas, 95)
 
     passes = {
         "has_data": True,
@@ -251,7 +336,10 @@ def compute_shadow_report(
     }
 
     return ShadowReport(
-        total_pairs=total,
+        total_pairs=len(pairs),
+        # ``total_pairs`` reflects every recorded pair (parse-failed
+        # included for transparency); gate math runs on ``gateable``
+        # which excludes synthetic legs.
         skipped=skipped,
         action_match_rate=round(action_match_rate, 4),
         confidence_delta_p50=round(p50, 4),
@@ -259,47 +347,32 @@ def compute_shadow_report(
         confidence_delta_mean_abs=round(confidence_delta_mean_abs, 4),
         baseline=baseline_metrics,
         routed=routed_metrics,
+        parse_failed_pairs=parse_failed_pairs,
         by_day=by_day,
         passes=passes,
     )
 
 
-def _leg_metrics(legs: list[dict[str, Any]]) -> LegMetrics:
-    n = len(legs)
-    if n == 0:
-        return LegMetrics(
-            parse_ok_rate=0.0, escalation_rate=0.0, avg_latency_ms=0.0
-        )
-    parse_ok = sum(1 for leg in legs if leg["parse_ok"])
-    escalated = sum(1 for leg in legs if leg["escalated"])
-    latency = sum(leg["latency_ms"] for leg in legs) / n
-    return LegMetrics(
-        parse_ok_rate=round(parse_ok / n, 4),
-        escalation_rate=round(escalated / n, 4),
-        avg_latency_ms=round(latency, 2),
-    )
+def _percentile_sorted(values: list[float], q: float) -> float:
+    """Compute q-th percentile from an ALREADY-SORTED list (linear interp).
 
-
-def _percentile(values: list[float], q: float) -> float:
-    """Compute the q-th percentile (q in 0..100) using linear interpolation.
-
-    Implemented locally so we don't pull NumPy into the runtime path of a
-    reporting harness. ``q`` is clamped to ``[0, 100]`` so a typo cannot
-    produce a meaningless out-of-range index.
+    Caller is responsible for sorting once and passing the same list
+    in for both p50 and p95 (codex P5B-shadow R3 P3). ``q`` is clamped
+    to ``[0, 100]`` so a typo cannot produce a meaningless out-of-
+    range index.
     """
     if not values:
         return 0.0
     q = max(0.0, min(100.0, q))
-    sorted_values = sorted(values)
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    pos = q / 100 * (len(sorted_values) - 1)
+    if len(values) == 1:
+        return values[0]
+    pos = q / 100 * (len(values) - 1)
     lower = int(math.floor(pos))
     upper = int(math.ceil(pos))
     if lower == upper:
-        return sorted_values[lower]
+        return values[lower]
     weight = pos - lower
-    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+    return values[lower] * (1 - weight) + values[upper] * weight
 
 
 def render_markdown(report: ShadowReport) -> str:
@@ -309,6 +382,8 @@ def render_markdown(report: ShadowReport) -> str:
         "",
         f"- Total pairs: **{report.total_pairs}**",
         f"- Skipped (malformed): **{report.skipped}**",
+        f"- Parse-failed pairs (excluded from gate math): "
+        f"**{report.parse_failed_pairs}**",
         f"- Action match rate: **{report.action_match_rate:.4f}** "
         f"(threshold ≥ {ACTION_MATCH_THRESHOLD})",
         f"- |Δconfidence| mean: **{report.confidence_delta_mean_abs:.4f}** "

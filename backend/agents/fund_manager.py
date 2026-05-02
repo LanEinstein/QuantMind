@@ -15,33 +15,48 @@ log = structlog.get_logger(component="agent.fund_manager")
 
 def _parse_signal(
     raw: str, stock_code: str, stock_name: str, trade_date: str
-) -> TradingSignal:
-    """Parse LLM response into a TradingSignal, with fallback."""
+) -> tuple[TradingSignal, bool]:
+    """Parse LLM response into a TradingSignal, with fallback.
+
+    Returns ``(signal, parse_ok)``. ``parse_ok`` is False when the
+    JSON envelope was missing or schema-invalid and we had to emit a
+    synthetic ``持有 / 0.5`` placeholder. The flag flows up through
+    ``state`` and ``FundManagerRecord.parse_ok`` so the Phase 5B
+    shadow harness can exclude synthetic legs from gate math (codex
+    P5B-shadow R2 P2): without it, a malformed routed answer would
+    enter the action-match comparison disguised as a real hold.
+    """
     data = extract_json_from_response(raw)
     if data is not None:
         try:
-            return TradingSignal(
-                action=data.get("action", "持有"),
-                target_price=data.get("target_price"),
-                confidence=float(data.get("confidence", 0.5)),
-                risk_score=float(data.get("risk_score", 0.5)),
-                reasoning=data.get("reasoning", raw[:200]),
-                stock_code=stock_code,
-                stock_name=stock_name,
-                trade_date=trade_date,
+            return (
+                TradingSignal(
+                    action=data.get("action", "持有"),
+                    target_price=data.get("target_price"),
+                    confidence=float(data.get("confidence", 0.5)),
+                    risk_score=float(data.get("risk_score", 0.5)),
+                    reasoning=data.get("reasoning", raw[:200]),
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    trade_date=trade_date,
+                ),
+                True,
             )
         except Exception as exc:
             log.warning("signal_parse_validation_failed", error=str(exc))
 
     # Fallback: default hold signal with raw reasoning
-    return TradingSignal(
-        action="持有",
-        confidence=0.5,
-        risk_score=0.5,
-        reasoning=raw[:500] if raw else "LLM response could not be parsed",
-        stock_code=stock_code,
-        stock_name=stock_name,
-        trade_date=trade_date,
+    return (
+        TradingSignal(
+            action="持有",
+            confidence=0.5,
+            risk_score=0.5,
+            reasoning=raw[:500] if raw else "LLM response could not be parsed",
+            stock_code=stock_code,
+            stock_name=stock_name,
+            trade_date=trade_date,
+        ),
+        False,
     )
 
 
@@ -71,10 +86,15 @@ async def fund_manager_node(
         FUND_MANAGER_PROMPT,
         user_content,
     )
-    signal = _parse_signal(
+    signal, parse_ok = _parse_signal(
         raw_response,
         state["stock_code"],
         state["stock_name"],
         state["trade_date"],
     )
-    return {"trading_signal": signal.model_dump()}
+    payload = signal.model_dump()
+    # Surface parse status into state so the collector can pin it onto
+    # FundManagerRecord; the shadow harness reads it to exclude
+    # synthetic decisions from gate math.
+    payload["parse_ok"] = parse_ok
+    return {"trading_signal": payload}

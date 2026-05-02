@@ -54,6 +54,7 @@ from backend.services.cost_guard import (
     DailyBudgetExceededError,
     assert_budget_allows,
 )
+from backend.services.shadow_runner import schedule_shadow_run
 from backend.services.watchlist_policy import (
     Category,
     WatchlistPolicy,
@@ -536,6 +537,18 @@ class AnalysisScheduler:
         except Exception as exc:
             log.warning(
                 "save_analysis_record_failed",
+                code=stock_code,
+                error=str(exc),
+            )
+
+        # Phase 5B exit shadow-test: opt-in via QUANTMIND_SHADOW_ENABLED.
+        # Schedule the baseline replay as fire-and-forget so a slow Kimi
+        # call cannot stall the next stock in the cron tick.
+        try:
+            schedule_shadow_run(services, record_with_signal, self._redis)
+        except Exception as exc:
+            log.warning(
+                "shadow_schedule_failed",
                 code=stock_code,
                 error=str(exc),
             )

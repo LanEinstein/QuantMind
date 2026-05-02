@@ -136,18 +136,24 @@ $ /home/ps/anaconda3/envs/zhanglan/bin/pytest -q --tb=no
 
 ### 7.1 启用 shadow recording
 
-`backend/services/shadow_recorder.py` 是 **纯数据层**,本身不触发 LLM 调用,需要 operator 写一段后台任务消费它。建议放在 P5C 新建的 `backend/data/shadow_scheduler.py`,触发逻辑示例:
+> **2026-05-02 补丁**: 在 `commit 12bac5b` 之后又补了 `backend/services/shadow_runner.py` + `agent_models.yaml::fund_manager_shadow_baseline` + analysis_scheduler 的 fire-and-forget hook。**operator 不再需要写自定义 cron job** — 设 `QUANTMIND_SHADOW_ENABLED=1` 启动后端就会自动采集。具体步骤见独立 runbook `docs/reviews/phase5b-shadow-deployment-runbook.md`。
 
-```python
-import os, datetime, time
-from backend.services.shadow_recorder import (
-    ShadowDecisionEntry, ShadowDecisionLeg, record_shadow_decision,
-)
+简短回顾:
 
-# 1. 取 production 实时分析的输出 → routed leg
-# 2. 用同 prompt + 强制 kimi-only 配置再跑一次 fund_manager → baseline leg
-# 3. 组装 ShadowDecisionEntry 并 record_shadow_decision(mongodb, entry)
-# 抽样:为压成本只抽 20%,settable via QUANTMIND_SHADOW_SAMPLE_RATE=0.2
+```bash
+# 1. 设置 env
+export QUANTMIND_SHADOW_ENABLED=1
+export QUANTMIND_SHADOW_SAMPLE_RATE=1.0   # 7 天全量
+export QUANTMIND_DAILY_BUDGET=20.0        # cost_guard 单日上限
+
+# 2. 启动后端
+QUANTMIND_PHASE=phase5_eval AUTHORIZATION_MODE=suggest \
+  /home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app \
+  --port 8000 --host 127.0.0.1 --workers 1
+
+# 3. 每次 analysis_scheduler 成功完成一只股票分析,会 asyncio.create_task
+#    触发 shadow_runner: 拷贝同 prompt → 调 fund_manager_shadow_baseline (kimi-only)
+#    → 比对 routed (production) vs baseline → 写 shadow_decisions Mongo 集合
 ```
 
 > ⚠️ 启用前确认 `MongoDBService.initialize()` 已经跑过(unique run_id + TTL created_at 30d 索引到位),否则会撞 unique 冲突或无限堆积。
