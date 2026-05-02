@@ -718,7 +718,7 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 
 - **Owner**: 任意,建议同 session 接 T02-T03
 - **owner_session**: 2026-05-02 main session (Opus 4.7)
-- **commit_hash**: (本次 commit)
+- **commit_hash**: c95e004
 - **test_report**: `docs/reviews/p5b-t01-codex-summary.md` + R1-R5 各 1 份 + R1+R3 / R2+R4+R5 follow-up
 - **Done**: schema/router/api/tests 落地;codex 5 轮 + 2 follow-up CRITICAL+HIGH+WARN(非 deferred)全清;24h 实测对比报告 `docs/reviews/p5b-t01-thinking-impact.md` 留作部署后续
 - **Dependencies**: Phase 5A 全部 ✅
@@ -1759,7 +1759,7 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-01 | claude-opus-4-7-1m | 54f7def | P5A-T03 ⏳→✅ authorization phase gate + canonical/legacy 双向矩阵 + kill suggestionion bug(minor-fix 3 轮 codex PASS) |
 | 2026-05-01 | claude-opus-4-7-1m | 737bf83 | Phase 5A 出口 summary,4 项 task 全 ✅,STOP 等授权 |
 | 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | 补齐 SSoT 状态:P5A-T00 marker ⏳→✅、Phase 5A 出口 marker ⏳→✅、T01-T03 commit hash 占位实填 |
-| 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | P5B-T01 ⏳→✅ thinking config:§2.8 修复 news_crawler 不分级示例(原 routing-only 示例会触发 model_validator 报错)+ schema 段加 extra/Field/validator 注释 + 9→10 agent 计数;新增 known-deferred 项:RoutingConfig.escalation_condition 类型化(T03 owner)、reload TOCTOU 加固(单独 backlog 任务)、blueprint V3 旧示例标注待统一 |
+| 2026-05-02 | claude-opus-4-7-1m | c95e004 | P5B-T01 ⏳→✅ thinking config:§2.8 修复 news_crawler 不分级示例(原 routing-only 示例会触发 model_validator 报错)+ schema 段加 extra/Field/validator 注释 + 9→10 agent 计数 + `_normalize_provider_kwargs` 示例改 extra_body;新增 known-deferred 项:RoutingConfig.escalation_condition 类型化(T03 owner)、reload TOCTOU 加固(单独 backlog 任务)、blueprint V3 旧示例标注待统一、hypothesis 测试框架引入(单独 dep PR) |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 
