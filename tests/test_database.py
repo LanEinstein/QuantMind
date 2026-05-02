@@ -117,6 +117,35 @@ class TestInitialize:
         coll = mock_db["market_realtime"]
         assert coll.create_index.call_count >= 1
 
+    @pytest.mark.asyncio
+    async def test_creates_shadow_decisions_indexes(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        # codex P5B-exit R4 LOW: lock the Phase 5B shadow-test indexes
+        # so a regression that drops them fails this test instead of
+        # silently degrading shadow_decisions reads/writes to scans.
+        await service.initialize()
+        coll = mock_db["shadow_decisions"]
+        all_calls = coll.create_index.call_args_list
+        # Required: unique run_id index for upserts.
+        assert any(
+            call.args[0] == [("run_id", 1)] and call.kwargs.get("unique")
+            for call in all_calls
+        ), "shadow_decisions.run_id unique index missing"
+        # Required: descending created_at TTL index for the lookback
+        # query. The TTL itself prevents indefinite retention of
+        # decision telemetry (codex P5B-exit R5 MED).
+        ttl_calls = [
+            call
+            for call in all_calls
+            if call.args[0] == [("created_at", -1)]
+            and "expireAfterSeconds" in call.kwargs
+        ]
+        assert ttl_calls, "shadow_decisions.created_at TTL index missing"
+        # 30 days in seconds — pin the magic number so a naive cleanup
+        # cannot quietly drop or shorten it.
+        assert ttl_calls[0].kwargs["expireAfterSeconds"] == 30 * 86400
+
 
 class TestSaveMarketSnapshot:
     """Tests for save_market_snapshot."""

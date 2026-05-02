@@ -147,6 +147,30 @@ class MongoDBService:
             background=True,
         )
 
+        # Phase 5B-T03 shadow-test harness reads/writes here; the
+        # recorder upserts by run_id and the consumer scans by
+        # created_at over a 7-30 day window. Without these the harness
+        # devolves to a collection scan once retention grows past a
+        # few weeks (codex P5B-exit R3 P3).
+        shadow_decisions = self._db["shadow_decisions"]
+        await shadow_decisions.create_index(
+            [("run_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        # TTL on created_at — shadow_decisions hold per-stock action /
+        # confidence telemetry that is sensitive (it leaks our routing
+        # behaviour). Auto-expire after 30 days so the store can't
+        # accumulate forever (codex P5B-exit R5 MED on retention).
+        # ``_TTL_DAYS_DEFAULT`` in shadow_recorder mirrors this number
+        # for consistency.
+        from backend.services.shadow_recorder import _TTL_DAYS_DEFAULT
+        await shadow_decisions.create_index(
+            [("created_at", DESCENDING)],
+            expireAfterSeconds=_TTL_DAYS_DEFAULT * 86400,
+            background=True,
+        )
+
         self._log.info("mongodb_indexes_created")
 
     async def save_market_snapshot(
