@@ -1758,8 +1758,10 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-01 | claude-opus-4-7-1m | 61cfc7d | P5A-T02 ⏳→✅ cost_guard 硬熔断 + 双层 NaN/Inf 防御 + scheduler 并发锁(major 5 轮 codex PASS) |
 | 2026-05-01 | claude-opus-4-7-1m | 54f7def | P5A-T03 ⏳→✅ authorization phase gate + canonical/legacy 双向矩阵 + kill suggestionion bug(minor-fix 3 轮 codex PASS) |
 | 2026-05-01 | claude-opus-4-7-1m | 737bf83 | Phase 5A 出口 summary,4 项 task 全 ✅,STOP 等授权 |
-| 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | 补齐 SSoT 状态:P5A-T00 marker ⏳→✅、Phase 5A 出口 marker ⏳→✅、T01-T03 commit hash 占位实填 |
+| 2026-05-02 | claude-opus-4-7-1m | 3013f5d | 补齐 SSoT 状态:P5A-T00 marker ⏳→✅、Phase 5A 出口 marker ⏳→✅、T01-T03 commit hash 占位实填 |
 | 2026-05-02 | claude-opus-4-7-1m | c95e004 | P5B-T01 ⏳→✅ thinking config:§2.8 修复 news_crawler 不分级示例(原 routing-only 示例会触发 model_validator 报错)+ schema 段加 extra/Field/validator 注释 + 9→10 agent 计数 + `_normalize_provider_kwargs` 示例改 extra_body;新增 known-deferred 项:RoutingConfig.escalation_condition 类型化(T03 owner)、reload TOCTOU 加固(单独 backlog 任务)、blueprint V3 旧示例标注待统一、hypothesis 测试框架引入(单独 dep PR) |
+| 2026-05-02 | claude-opus-4-7-1m | 3dc4443 | P5B-T01 commit hash 回填(SSoT marker 与 §7.4 表 c95e004 实填) |
+| 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | CLAUDE.md §1 当前阶段更新为 Phase 5B 进行中 (T01 ✅);§7.4 补 P5A backfill hash (3013f5d) 与 P5B-T01 hash 回填 (3dc4443) 两条遗漏记录 |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

@@ -5,8 +5,8 @@
 个人 A 股量化交易系统,4 周 suggest-mode 评估期 + 实盘前置 + ¥10k 干跑分阶段推进。融合 TradingAgents-CN 多 Agent 决策与 MiroFish 群体智能仿真。
 
 - **三模型协同**:DeepSeek V4 Pro(高频低成本数据/摘要)+ Qwen 3.6 Plus(中文金融分析)+ Kimi K2.6(辩论/决策智能体核心)
-- **当前阶段**:Phase 5A ✅ 已完成 (2026-05-01),等用户授权进入 Phase 5B
-- **绝对红线**:`AUTHORIZATION_MODE=suggest` 在评估期与 Phase 6A/6B 不可越界;实盘 `auto` 仅 Phase 7 用户书面授权
+- **当前阶段**:Phase 5B 进行中 (T01 ✅ 2026-05-02 thinking config 落地,c95e004);T02 Fast/Slow watchlist 拆分 + T03 tiered triage→escalation 仍 ⏳
+- **绝对红线**:`AUTHORIZATION_MODE=suggest` 在评估期与 Phase 6A/6B 不可越界;实盘 `auto` 仅 Phase 7 用户书面授权;不跨阶段自动推进,Phase 末必须 STOP + summary 报告
 
 ## 2. 怎么组织
 
