@@ -137,9 +137,20 @@ async def _init_trading_layer(application: FastAPI) -> None:
 
 
 async def _init_analysis_scheduler(application: FastAPI) -> None:
-    """Initialize the daily analysis orchestrator."""
+    """Initialize the daily analysis orchestrator.
+
+    Phase 5B-T02: when ``config/watchlist_policy.yaml`` is present the
+    scheduler runs in Fast/Slow mode (two cron jobs). When the file is
+    missing or fails to parse we log a warning and fall back to the
+    legacy single-cron mode so a typo in the YAML can't bring the
+    scheduler down.
+    """
     from backend.agents.models import AnalysisServices, PipelineConfig
     from backend.data.analysis_scheduler import AnalysisScheduler
+    from backend.services.watchlist_policy import (
+        WatchlistPolicyError,
+        load_policy,
+    )
 
     required = [
         "llm_router",
@@ -162,15 +173,41 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
         mongodb=application.state.mongodb,
         pipeline_config=PipelineConfig(),
     )
+
+    policy_path = os.environ.get(
+        "QUANTMIND_WATCHLIST_POLICY_PATH", "config/watchlist_policy.yaml"
+    )
+    policy = None
+    if os.path.exists(policy_path):
+        try:
+            policy = load_policy(policy_path)
+        except (WatchlistPolicyError, OSError) as exc:
+            log.warning(
+                "watchlist_policy_load_failed",
+                path=policy_path,
+                error=str(exc),
+            )
+    else:
+        log.info("watchlist_policy_missing", path=policy_path)
     analysis_scheduler = AnalysisScheduler(
         watchlist=application.state.watchlist,
         services=services,
         mongodb=application.state.mongodb,
         redis_client=getattr(application.state, "redis", None),
+        policy=policy,
     )
     await analysis_scheduler.start()
+    # Re-read the scheduler's policy AFTER start(): a malformed cron in
+    # the YAML triggers a runtime fallback that clears the policy, and
+    # app.state must reflect that so the API doesn't keep accepting
+    # /category mutations against a policy whose cron jobs were never
+    # registered (Codex R6 HIGH #2).
+    application.state.watchlist_policy = analysis_scheduler.policy
     application.state.analysis_scheduler = analysis_scheduler
-    log.info("analysis_scheduler_initialized")
+    log.info(
+        "analysis_scheduler_initialized",
+        fast_slow_mode=analysis_scheduler.policy is not None,
+    )
 
 
 async def _shutdown_data_layer(application: FastAPI) -> None:

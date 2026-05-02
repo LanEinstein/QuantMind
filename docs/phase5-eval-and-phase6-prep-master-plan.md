@@ -794,9 +794,13 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 - **Pre-commit**: 5 轮 codex-review(major,改 router)
 - **Done**: 24h 实测对比报告 `docs/reviews/p5b-t01-thinking-impact.md`
 
-#### P5B-T02 — Fast/Slow Watchlist 拆分 [⏳ 待做]
+#### P5B-T02 — Fast/Slow Watchlist 拆分 [✅ 已完成]
 
 - **Owner**: 任意
+- **owner_session**: 2026-05-02 main session (Opus 4.7)
+- **commit_hash**: (pending — 提交后回填)
+- **test_report**: `docs/reviews/p5b-t02-codex-summary.md` + R1-R5 各 1 份 + R6 follow-up;907 pytest passed,82.22% coverage,risk @ 100%(engine)/97% (stop_loss)/96% (circuit_breaker)
+- **Done**: WatchlistPolicy 模块 + Fast/Slow dual-cron scheduler + 2 个 API 端点(`GET /api/watchlist/policy` + `POST /api/watchlist/{code}/category`) + 主 lifespan 接入 + 5 轮 codex review + 1 follow-up;CRITICAL=0,HIGH=0(R6 三个 HIGH 已修),MEDIUM/LOW 部分 deferred 到 Phase 5C(per-bucket lock、PolicyStore 跨进程一致性、operator-auth 网关均为 cross-cutting,单独 backlog 任务)
 - **Dependencies**: P5B-T01
 - **实现**:
   1. 落 `config/watchlist_policy.yaml`(模板见 §2.7)
@@ -1762,6 +1766,7 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-02 | claude-opus-4-7-1m | c95e004 | P5B-T01 ⏳→✅ thinking config:§2.8 修复 news_crawler 不分级示例(原 routing-only 示例会触发 model_validator 报错)+ schema 段加 extra/Field/validator 注释 + 9→10 agent 计数 + `_normalize_provider_kwargs` 示例改 extra_body;新增 known-deferred 项:RoutingConfig.escalation_condition 类型化(T03 owner)、reload TOCTOU 加固(单独 backlog 任务)、blueprint V3 旧示例标注待统一、hypothesis 测试框架引入(单独 dep PR) |
 | 2026-05-02 | claude-opus-4-7-1m | 3dc4443 | P5B-T01 commit hash 回填(SSoT marker 与 §7.4 表 c95e004 实填) |
 | 2026-05-02 | claude-opus-4-7-1m | 4a986c7 | CLAUDE.md §1 当前阶段更新为 Phase 5B 进行中 (T01 ✅);§7.4 补 P5A backfill hash (3013f5d) 与 P5B-T01 hash 回填 (3dc4443) 两条遗漏记录 |
+| 2026-05-02 | claude-opus-4-7-1m | (pending) | P5B-T02 ⏳→✅ Fast/Slow watchlist split:`config/watchlist_policy.yaml` + `backend/services/watchlist_policy.py`(WatchlistPolicy frozen dataclass + load/save/update_override/partition + frozenset cache)+ `analysis_scheduler` 增 `policy: WatchlistPolicy \| None` + 双 cron(`fast_analysis`/`slow_analysis`)+ `run_category_analysis` + per-category `PipelineConfig`(model_copy)+ `asyncio.wait_for` SLA enforcement + `_persist_timeout_skip` + 政策 snapshot 全链路传递 + 失败 cron 回退 legacy + `GET /api/watchlist/policy` + `POST /api/watchlist/{code}/category`(`save_policy` 走 `asyncio.to_thread`,extra='forbid',unknown code → 404,OSError 不泄漏 path);6 轮 codex(R1 architecture / R2 UX / R3 testing / R4 perf / R5 security + R6 follow-up)→ CRITICAL=0,HIGH 全清,MEDIUM/LOW deferred 列在 `docs/reviews/p5b-t02-codex-summary.md`;907 pytest passed(新增 47 个),全 backend 覆盖率 82.22%;known deferred:per-bucket lock(R4 lane 阻塞)、PolicyStore 跨进程一致性、`/api/watchlist/*` operator-auth、save_policy round-trip-safe YAML(保留注释)均为 Phase 5C/cross-cutting backlog |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

@@ -1,0 +1,39 @@
+# config/watchlist_policy.yaml — Phase 5B-T02 Fast/Slow watchlist split
+#
+# Two cron jobs share one process: a fast intraday loop (4 ticks/day) for
+# T+1 short-term names and a slow once-a-day loop for long-horizon ones.
+# A code can only belong to one bucket; ``overrides`` wins, otherwise the
+# bucket named in ``default_category`` decides. Empty ``default_codes``
+# means the bucket starts empty until the runtime watchlist populates it.
+#
+# All ``*_pipeline_timeout_seconds`` are HARD upper bounds enforced by
+# ``asyncio.wait_for`` inside the scheduler — going over kills the run.
+# Keep them aligned with the §2.7 SLA targets:
+#   fast: p95 ≤ 8 min  → timeout 480s leaves no head-room past p95
+#   slow: p95 ≤ 15 min → timeout 900s
+#
+# Cron strings use APScheduler 5-field syntax (no seconds).
+
+fast:
+  cron: "0 9,11,13,15 * * mon-fri"
+  pipeline: fast_pipeline
+  max_debate_rounds: 1
+  pipeline_timeout_seconds: 480
+  default_codes: []
+
+slow:
+  cron: "0 9 * * mon-fri"
+  pipeline: slow_pipeline
+  max_debate_rounds: 2
+  pipeline_timeout_seconds: 900
+  default_codes: []
+
+# Per-code bucket overrides. Codes not listed fall to ``default_category``.
+overrides:
+  "300750": slow   # 宁德时代 — 长线深度
+  "601318": slow   # 中国平安 — 长线深度
+
+default_category: slow
+
+policy_version: 1
+last_updated: 2026-05-02
