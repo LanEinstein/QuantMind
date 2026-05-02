@@ -96,6 +96,20 @@ agents:
     frequency: "daily"
     task: "K线形态、MACD/RSI/布林带、趋势判断"
 
+  # Kimi-using agents (Phase 5B §2.8 tiered routing):
+  #
+  # IMPORTANT — tiered routing only applies where the agent prompt
+  # produces a JSON envelope with a top-level numeric ``confidence`` field
+  # in [0, 1]. The prose-only researchers (intelligence/bull/bear/risk)
+  # currently emit free-form Chinese reports — running them through a
+  # ``confidence_lt`` gate would force ``parse_failed`` on every triage
+  # answer and turn the supposed cost saver into a 2x cost amplifier.
+  #
+  # T03 therefore enables tiered routing ONLY on ``fund_manager`` (the
+  # single agent whose prompt enforces a JSON contract with confidence).
+  # Extending routing to the prose agents is tracked as a follow-up:
+  # update their prompts to a JSON contract (and downstream parsers)
+  # before flipping the YAML.
   intelligence_officer:
     name: "情报研判员（含MiroFish）"
     provider: kimi
@@ -148,7 +162,14 @@ agents:
     name: "基金经理（终局决策）"
     provider: kimi
     model: kimi-k2.6
-    fallback: { provider: qwen, model: qwen3.6-plus }
+    fallback: { provider: deepseek, model: deepseek-v4-pro }
+    routing:
+      triage_provider: qwen
+      triage_model: qwen3.6-plus
+      escalation_provider: kimi
+      escalation_model: kimi-k2.6
+      escalation_condition:
+        confidence_lt: 0.6
     thinking:
       type: enabled
       max_tokens: 8000

@@ -92,7 +92,12 @@ async def aggregate_costs(
     Returns:
         CostSummary with all aggregated data.
     """
-    today = datetime.date.today()
+    # Pin to UTC date — must match the writer in
+    # backend.llm.fallback._utc_date_str(). Using local time here was a
+    # silent timezone-drift bug: in Asia/Shanghai the cost_guard hard
+    # ceiling could read zero spend during 00:00-08:00 UTC+8 even
+    # though Redis already had today's UTC entries (codex P5B-T03 R6).
+    today = datetime.datetime.now(tz=datetime.UTC).date()
     entries: list[DailyCostEntry] = []
 
     for day_offset in range(days):

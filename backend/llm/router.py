@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,12 +13,14 @@ from openai import AsyncOpenAI
 
 from backend.llm.fallback import (
     RETRYABLE_EXCEPTIONS,
+    track_escalation,
     track_fallback,
     track_usage,
 )
 from backend.llm.providers import (
     AgentConfig,
     RouterConfig,
+    RoutingConfig,
     ThinkingConfig,
     create_openai_client,
     load_router_config,
@@ -26,6 +30,14 @@ if TYPE_CHECKING:
     import redis.asyncio
     from openai.types import CompletionUsage
     from openai.types.chat import ChatCompletion
+
+
+# Maximum UTF-8-encoded byte length of a triage response to attempt
+# JSON-parsing. Anything larger is treated as a malformed contract and
+# conservatively escalates. Bounded so adversarial / runaway LLM output
+# cannot DoS the parser (R5 MEDIUM, R6 LOW: the original name suggested
+# bytes but compared char count — multibyte content could exceed budget).
+_MAX_TRIAGE_JSON_BYTES: int = 65_536
 
 
 def _extract_reasoning_tokens(usage: CompletionUsage) -> int:
@@ -174,13 +186,20 @@ class LLMRouter:
 
         # Try primary (or routing.triage) provider
         primary_provider, primary_model = self._select_primary(agent_cfg)
-        primary_stage = "triage" if agent_cfg.routing is not None else "primary"
+        is_tiered = agent_cfg.routing is not None
+        primary_stage = "triage" if is_tiered else "primary"
+        # Suffix the cost-tracking name for tiered agents so daily reports
+        # can split triage vs escalation spend per agent (P5B-T03 trace
+        # requirement). Non-tiered agents keep a flat name unchanged.
+        primary_track_name = (
+            f"{agent_name}/triage" if is_tiered else agent_name
+        )
         try:
             response = await self._call_provider(
                 provider_name=primary_provider,
                 model=primary_model,
                 messages=messages,
-                agent_name=agent_name,
+                agent_name=primary_track_name,
                 thinking=agent_cfg.thinking,
                 route_stage=primary_stage,
                 **call_kwargs,
@@ -221,31 +240,44 @@ class LLMRouter:
                 **call_kwargs,
             )
 
-        if agent_cfg.routing is not None and self._should_escalate(
-            agent_cfg, response
-        ):
-            esc_provider = agent_cfg.routing.escalation_provider
-            esc_model = agent_cfg.routing.escalation_model
-            if esc_provider is None or esc_model is None:
-                return response
-            self._log.info(
-                "escalating_to_expensive_provider",
-                agent_name=agent_name,
-                triage_provider=primary_provider,
-                triage_model=primary_model,
-                escalation_provider=esc_provider,
-                escalation_model=esc_model,
-                escalation_condition=agent_cfg.routing.escalation_condition,
+        if is_tiered:
+            should_esc, reason = self._should_escalate(
+                agent_cfg.routing, response
             )
-            return await self._call_provider(
-                provider_name=esc_provider,
-                model=esc_model,
-                messages=messages,
-                agent_name=agent_name,
-                thinking=agent_cfg.thinking,
-                route_stage="escalation",
-                **call_kwargs,
-            )
+            esc_provider = agent_cfg.routing.escalation_provider  # type: ignore[union-attr]
+            esc_model = agent_cfg.routing.escalation_model  # type: ignore[union-attr]
+            if should_esc and esc_provider is not None and esc_model is not None:
+                await track_escalation(
+                    self._redis,
+                    agent_name,
+                    primary_provider,
+                    esc_provider,
+                    reason,
+                )
+                threshold = (
+                    agent_cfg.routing.escalation_condition.confidence_lt  # type: ignore[union-attr]
+                    if agent_cfg.routing.escalation_condition  # type: ignore[union-attr]
+                    else None
+                )
+                self._log.info(
+                    "escalating_to_expensive_provider",
+                    agent_name=agent_name,
+                    triage_provider=primary_provider,
+                    triage_model=primary_model,
+                    escalation_provider=esc_provider,
+                    escalation_model=esc_model,
+                    reason=reason,
+                    confidence_threshold=threshold,
+                )
+                return await self._call_provider(
+                    provider_name=esc_provider,
+                    model=esc_model,
+                    messages=messages,
+                    agent_name=f"{agent_name}/escalation",
+                    thinking=agent_cfg.thinking,
+                    route_stage="escalation",
+                    **call_kwargs,
+                )
 
         return response
 
@@ -371,19 +403,76 @@ class LLMRouter:
             )
         return (agent_cfg.provider, agent_cfg.model)
 
+    @staticmethod
     def _should_escalate(
-        self,
-        agent_cfg: AgentConfig,
+        routing: RoutingConfig | None,
         response: ChatCompletion,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Decide whether the cheap triage answer must be escalated.
 
-        Wired into :meth:`complete` so P5B-T03 can plug in confidence
-        parsing and contradiction detection without re-touching the
-        retry/fallback logic. Returns ``False`` until then.
+        Returns ``(escalate, reason)``. Reason is one of:
+
+        - ``no_routing``      tiered routing not configured for the agent
+        - ``no_condition``    routing has no escalation_condition rule
+        - ``parse_failed``    triage response was not parseable JSON,
+                              had a missing/non-finite/out-of-range
+                              ``confidence`` field, or was structurally
+                              broken (no choices, no message, etc.).
+                              Conservatively escalates so the request
+                              never silently degrades to junk output
+                              (spec §P5B-T03 fail-open).
+        - ``low_confidence``  parsed ``confidence`` field below threshold
+        - ``ok``              triage answer is trustworthy, return as-is
+
+        Out-of-range confidence (``< 0`` or ``> 1``), ``NaN``, ``Infinity``
+        and ``bool`` are all treated as ``parse_failed``. Python's
+        ``json.loads`` accepts NaN/Infinity by default, so we cannot rely
+        on parse rejection alone — we explicitly check finiteness and
+        bounds.
         """
-        del agent_cfg, response
-        return False
+        if routing is None:
+            return False, "no_routing"
+        cond = routing.escalation_condition
+        if cond is None:
+            return False, "no_condition"
+
+        try:
+            content = response.choices[0].message.content
+        except (AttributeError, IndexError):
+            return True, "parse_failed"
+        if not isinstance(content, str) or not content:
+            return True, "parse_failed"
+        # Cap parser cost — adversarial / runaway LLM output should not
+        # be allowed to spend unbounded CPU/memory on json.loads. The
+        # contract is a small JSON envelope; 65 KB is generous for the
+        # `confidence`/`action`/`reasoning` shape we expect. We measure
+        # the UTF-8-encoded byte length so multibyte (e.g. Chinese)
+        # content cannot smuggle past a char-count budget.
+        if len(content.encode("utf-8")) > _MAX_TRIAGE_JSON_BYTES:
+            return True, "parse_failed"
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            return True, "parse_failed"
+        if not isinstance(parsed, dict):
+            return True, "parse_failed"
+
+        if cond.confidence_lt is not None:
+            conf = parsed.get("confidence")
+            # Python ``bool`` is a subclass of ``int``; reject explicitly
+            # so ``True`` / ``False`` don't bypass the numeric gate.
+            if isinstance(conf, bool):
+                return True, "parse_failed"
+            if not isinstance(conf, (int, float)):
+                return True, "parse_failed"
+            conf_f = float(conf)
+            if not math.isfinite(conf_f):
+                return True, "parse_failed"
+            if conf_f < 0.0 or conf_f > 1.0:
+                return True, "parse_failed"
+            if conf_f < cond.confidence_lt:
+                return True, "low_confidence"
+        return False, "ok"
 
     def _get_client(self, provider_name: str) -> AsyncOpenAI:
         """Get a pre-initialized client for the given provider.

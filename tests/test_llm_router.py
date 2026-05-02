@@ -371,7 +371,12 @@ class TestTrackUsage:
 
     async def test_redis_failure_does_not_crash(self) -> None:
         bad_redis = AsyncMock()
-        bad_redis.pipeline.side_effect = ConnectionError("redis down")
+        # ``pipeline()`` is sync on real ``redis.asyncio.Redis``; using
+        # an AsyncMock leaves a coroutine the test never awaits and
+        # produces a RuntimeWarning.
+        bad_redis.pipeline = MagicMock(
+            side_effect=ConnectionError("redis down")
+        )
         await track_usage(bad_redis, "test", "deepseek", 100, 200)
 
 

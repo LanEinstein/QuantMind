@@ -856,9 +856,13 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 - **Pre-commit**: 5 轮 codex-review(major,改 scheduler)
 - **Done**: 7 天分布数据 + commit
 
-#### P5B-T03 — Tiered Triage→Escalation Routing [⏳ 待做]
+#### P5B-T03 — Tiered Triage→Escalation Routing [✅ 已完成]
 
-- **Owner**: 任意
+- **Owner**: claude-opus-4-7-1m (2026-05-02 session)
+- **Commit**: `(pending: filled at commit time)`
+- **Test report**: `docs/reviews/p5b-t03-codex-summary.md` + R1-R7 占位(R1 architecture, R2 UX, R3 testing, R4 perf, R5 security, R6/R7 follow-up verify)
+- **关键超出计划**: ① 仅 `fund_manager` 启用 routing(其他 4 个 prose-prompt agent 留 backlog,因为 codex R1 P1 发现它们的 prompt 不输出 JSON,启用会导致 100% escalation 反而成本翻倍);② `_utc_date_str()` 单一来源覆盖 4 处 Redis 日期键(`track_usage`/`track_fallback`/`track_escalation`/`aggregate_costs`/`llm_escalations`),修复时区错位让 `cost_guard` 在 Asia/Shanghai 凌晨绕开 ¥20/日上限的硬 bug;③ `_should_escalate` 显式拒绝 NaN/Infinity/越界 confidence(Python `json.loads` 默认接受这些);④ `_MAX_TRIAGE_JSON_BYTES=65_536` UTF-8 字节上限 + `RecursionError` 捕获(R5 MED + R6 LOW);⑤ escalation log 含 `confidence_threshold` 字段(R2 HIGH-1)。
+- **关键偏离**: ① hypothesis 框架引入仍 deferred(R3 deferred,等单独 dep PR);② monitoring endpoints 鉴权改造仍 deferred(R5 HIGH-1,P5C 监控面板统一改造);③ shadow-test 7 天 escalation rate 验证仍 deferred(P5B 出口任务,需要部署 + `scripts/shadow_compare.py`)。
 - **Dependencies**: P5B-T01
 - **目标**: 在 5 个 Kimi-using agent(intelligence/bull/bear/risk/fund)上启用:先 qwen3.6-plus 做 triage,若结构化输出 `confidence < 0.6` 或 bull/bear 两边一致(无对抗信号)则不升级,否则 escalate Kimi。
 - **实现**:
@@ -1768,6 +1772,7 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-02 | claude-opus-4-7-1m | 4a986c7 | CLAUDE.md §1 当前阶段更新为 Phase 5B 进行中 (T01 ✅);§7.4 补 P5A backfill hash (3013f5d) 与 P5B-T01 hash 回填 (3dc4443) 两条遗漏记录 |
 | 2026-05-02 | claude-opus-4-7-1m | 408bc59 | P5B-T02 commit hash 回填(SSoT marker 与 §7.4 表 07a19ea 实填) |
 | 2026-05-02 | claude-opus-4-7-1m | 07a19ea | P5B-T02 ⏳→✅ Fast/Slow watchlist split:`config/watchlist_policy.yaml` + `backend/services/watchlist_policy.py`(WatchlistPolicy frozen dataclass + load/save/update_override/partition + frozenset cache)+ `analysis_scheduler` 增 `policy: WatchlistPolicy \| None` + 双 cron(`fast_analysis`/`slow_analysis`)+ `run_category_analysis` + per-category `PipelineConfig`(model_copy)+ `asyncio.wait_for` SLA enforcement + `_persist_timeout_skip` + 政策 snapshot 全链路传递 + 失败 cron 回退 legacy + `GET /api/watchlist/policy` + `POST /api/watchlist/{code}/category`(`save_policy` 走 `asyncio.to_thread`,extra='forbid',unknown code → 404,OSError 不泄漏 path);6 轮 codex(R1 architecture / R2 UX / R3 testing / R4 perf / R5 security + R6 follow-up)→ CRITICAL=0,HIGH 全清,MEDIUM/LOW deferred 列在 `docs/reviews/p5b-t02-codex-summary.md`;907 pytest passed(新增 47 个),全 backend 覆盖率 82.22%;known deferred:per-bucket lock(R4 lane 阻塞)、PolicyStore 跨进程一致性、`/api/watchlist/*` operator-auth、save_policy round-trip-safe YAML(保留注释)均为 Phase 5C/cross-cutting backlog |
+| 2026-05-02 | claude-opus-4-7-1m | (pending) | P5B-T03 ⏳→✅ Tiered triage→escalation routing:`backend/llm/providers.py` 新增 `EscalationCondition` 类型化(`confidence_lt: float ge=0 le=1, extra='forbid'`,validator 强制至少一规则)+ `RoutingConfig.escalation_condition: EscalationCondition \| None`;`backend/llm/router.py::_should_escalate(routing, response) -> tuple[bool, str]`(reasons: `no_routing`/`no_condition`/`parse_failed`/`low_confidence`/`ok`,显式拒绝 NaN/Infinity/越界/bool/非数字 confidence,`_MAX_TRIAGE_JSON_BYTES=65_536` UTF-8 字节上限 + `RecursionError` 捕获);`complete()` 调用 `track_escalation` 区分 triage/escalation 成本(`agent_name=f"{name}/triage"|"…/escalation"`);`backend/llm/fallback.py::track_escalation` 写 `llm:escalations:{date}:{agent}` Redis hash(count + reason_low_confidence/reason_parse_failed/reason_other 白名单 + route_<src>-><dst>)+ 抽 `_utc_date_str()` 单一来源(`track_usage`/`track_fallback`/`track_escalation`/`aggregate_costs`/`llm_escalations` 全部使用,**修复 cost_guard 在 Asia/Shanghai 凌晨绕开 ¥20/日上限的时区错位 bug**);`backend/api/monitoring.py::GET /api/monitoring/llm/escalations`(scan_iter + hgetall 聚合,Redis down 显式 `status=unavailable`);`config/agent_models.yaml` 仅 `fund_manager`(prompt 强制 JSON contract)启用 routing,其他 4 个 prose-prompt agent(intelligence/bull/bear/risk)留 backlog 等 prompt 改 JSON 后再扩展(避免 100% parse_failed → 成本翻倍);7 轮 codex(R1 baseline / R2 UX / R3 testing / R4 perf / R5 security / R6 + R7 follow-up verify)→ CRITICAL 1 修(prose agent 误启用 routing) + HIGH 6 修 + MEDIUM 14 全部 verified 修或 defer 到 backlog;968 pytest passed(新增 61 个,0 warnings),`backend/risk/` 覆盖率 98%、backend overall 82.47%;known deferred:hypothesis 框架引入(单独 dep PR)、monitoring endpoint operator-auth(P5C 监控面板统一)、prose agent prompt JSON 改造(单独 task)、Redis AuthenticationError 单独 alert 路径、agent/provider regex 白名单(cross-cutting schema backlog) |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.llm.providers import (
-    AgentConfig,
+    EscalationCondition,
     RouterConfig,
     RoutingConfig,
     ThinkingConfig,
@@ -82,7 +82,7 @@ class TestRoutingConfigSchema:
     def test_minimal_triage_only(self) -> None:
         cfg = RoutingConfig(triage_provider="qwen", triage_model="qwen3.6-plus")
         assert cfg.escalation_provider is None
-        assert cfg.escalation_condition == {}
+        assert cfg.escalation_condition is None
 
     def test_full_triage_to_escalation(self) -> None:
         cfg = RoutingConfig(
@@ -92,7 +92,10 @@ class TestRoutingConfigSchema:
             escalation_model="kimi-k2.6",
             escalation_condition={"confidence_lt": 0.6},
         )
-        assert cfg.escalation_condition == {"confidence_lt": 0.6}
+        assert cfg.escalation_condition == EscalationCondition(
+            confidence_lt=0.6
+        )
+        assert cfg.escalation_condition.confidence_lt == 0.6
 
     def test_partial_escalation_pair_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -724,11 +727,13 @@ agents:
 async def test_routing_uses_triage_provider_first(
     routing_yaml: Path, mock_env_vars: None, mock_redis: AsyncMock
 ) -> None:
+    """High-confidence triage answer must NOT trigger escalation."""
     router = LLMRouter(config_path=routing_yaml)
     await router.initialize(redis_client=mock_redis)
 
+    high_conf = make_chat_completion(content='{"confidence": 0.9, "action": "buy"}')
     qwen_client = AsyncMock()
-    qwen_client.chat.completions.create = AsyncMock(return_value=make_chat_completion())
+    qwen_client.chat.completions.create = AsyncMock(return_value=high_conf)
     kimi_client = AsyncMock()
     kimi_client.chat.completions.create = AsyncMock(return_value=make_chat_completion())
 
@@ -739,7 +744,6 @@ async def test_routing_uses_triage_provider_first(
         await router.complete("tiered", [{"role": "user", "content": "hi"}])
 
     qwen_client.chat.completions.create.assert_awaited_once()
-    # Default _should_escalate returns False — escalation must NOT fire
     kimi_client.chat.completions.create.assert_not_awaited()
     await router.close()
 
@@ -763,7 +767,9 @@ async def test_routing_escalates_with_full_kwargs(
 
     with (
         patch.object(router, "_get_client", side_effect=get_client),
-        patch.object(router, "_should_escalate", return_value=True),
+        patch.object(
+            router, "_should_escalate", return_value=(True, "low_confidence")
+        ),
     ):
         await router.complete("tiered", [{"role": "user", "content": "hi"}])
 
@@ -806,7 +812,9 @@ async def test_escalation_error_propagates(
 
     with (
         patch.object(router, "_get_client", side_effect=get_client),
-        patch.object(router, "_should_escalate", return_value=True),
+        patch.object(
+            router, "_should_escalate", return_value=(True, "low_confidence")
+        ),
     ):
         with pytest.raises(openai.APIConnectionError):
             await router.complete("tiered", [{"role": "user", "content": "hi"}])
@@ -902,7 +910,9 @@ async def test_escalation_error_not_caught_by_primary_fallback(
 
     with (
         patch.object(router, "_get_client", side_effect=get_client),
-        patch.object(router, "_should_escalate", return_value=True),
+        patch.object(
+            router, "_should_escalate", return_value=(True, "low_confidence")
+        ),
     ):
         with pytest.raises(openai.APIConnectionError):
             await router.complete(
@@ -918,20 +928,8 @@ async def test_escalation_error_not_caught_by_primary_fallback(
 
 
 @pytest.mark.unit
-def test_should_escalate_default_returns_false() -> None:
-    """Until P5B-T03 plugs in real logic, escalation must never fire."""
-    router = LLMRouter(config_path=Path("/dev/null"))
-    agent = AgentConfig(
-        name="x",
-        provider="kimi",
-        model="kimi-k2.6",
-        routing=RoutingConfig(
-            triage_provider="qwen",
-            triage_model="qwen3.6-plus",
-            escalation_provider="kimi",
-            escalation_model="kimi-k2.6",
-            escalation_condition={"confidence_lt": 0.6},
-        ),
-    )
-    response = make_chat_completion()
-    assert router._should_escalate(agent, response) is False
+def test_should_escalate_returns_no_routing_for_none() -> None:
+    """No routing configured ⇒ never escalate."""
+    response = make_chat_completion(content='{"confidence": 0.1}')
+    decision = LLMRouter._should_escalate(None, response)
+    assert decision == (False, "no_routing")

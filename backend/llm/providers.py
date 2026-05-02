@@ -44,15 +44,38 @@ class FallbackConfig(BaseModel):
     model: str = Field(min_length=1)
 
 
+class EscalationCondition(BaseModel):
+    """Triggers that promote a triage answer to the escalation provider.
+
+    Today only ``confidence_lt`` (numeric threshold against the parsed
+    JSON ``confidence`` field) is implemented; the model is the typed
+    schema deferred from P5B-T01. ``extra='forbid'`` keeps a typo from
+    silently disabling escalation, and the post-init validator forces at
+    least one rule to be set so an empty mapping never reaches the
+    router with the appearance of "configured but inert".
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    confidence_lt: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _at_least_one_rule(self) -> EscalationCondition:
+        if self.confidence_lt is None:
+            raise ValueError(
+                "escalation_condition must define at least one rule "
+                "(currently supported: confidence_lt)"
+            )
+        return self
+
+
 class RoutingConfig(BaseModel):
     """Tiered triage→escalation routing for an agent.
 
     Triage runs the cheap provider first; if escalation_condition fires
-    (confidence below threshold, contradiction with another agent, …)
-    the router re-runs against the expensive provider. The actual
-    escalation decision lives in LLMRouter._should_escalate (P5B-T03);
-    P5B-T01 only lands the schema. ``escalation_condition`` is loosely
-    typed today and will be tightened to a dedicated model in T03.
+    (confidence below threshold, parse failure, …) the router re-runs
+    against the expensive provider. The actual escalation decision lives
+    in :meth:`LLMRouter._should_escalate` (P5B-T03).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -61,7 +84,7 @@ class RoutingConfig(BaseModel):
     triage_model: str = Field(min_length=1)
     escalation_provider: str | None = Field(default=None, min_length=1)
     escalation_model: str | None = Field(default=None, min_length=1)
-    escalation_condition: dict[str, Any] = Field(default_factory=dict)
+    escalation_condition: EscalationCondition | None = Field(default=None)
 
     @model_validator(mode="after")
     def _check_escalation_pair(self) -> RoutingConfig:
@@ -72,7 +95,7 @@ class RoutingConfig(BaseModel):
                 "escalation_provider and escalation_model must be set "
                 "together (or both omitted)"
             )
-        if self.escalation_condition and not has_provider:
+        if self.escalation_condition is not None and not has_provider:
             raise ValueError(
                 "escalation_condition requires both escalation_provider "
                 "and escalation_model"

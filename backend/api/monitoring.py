@@ -16,6 +16,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, Request
 
+from backend.llm.fallback import _utc_date_str
 from backend.services.cost_guard import get_budget_state
 
 log = structlog.get_logger(component="api_monitoring")
@@ -237,6 +238,84 @@ async def budget(request: Request) -> dict[str, Any]:
             "status": "unavailable",
         })
     return _ok(asdict(state))
+
+
+@router.get("/api/monitoring/llm/escalations")
+async def llm_escalations(request: Request) -> dict[str, Any]:
+    """Per-agent LLM escalation counters for the current UTC date.
+
+    Reads ``llm:escalations:{date}:{agent}`` Redis hashes (written by
+    :func:`backend.llm.fallback.track_escalation`). Returns a per-agent
+    breakdown with ``count``, ``reason_*``, and ``route_*`` fields plus
+    an aggregate ``total_escalations``. Read-only; SCAN-based, never
+    KEYS, so it stays safe against a busy production Redis. When Redis
+    is unwired we surface ``status=unavailable`` for the operator UI.
+    """
+    redis_client = getattr(request.app.state, "redis", None)
+    empty: dict[str, Any] = {
+        "date": None,
+        "agents": {},
+        "total_escalations": 0,
+        "status": "unavailable",
+    }
+    if redis_client is None:
+        return _ok(empty)
+
+    try:
+        # Pin to the same UTC date basis the writer uses
+        # (backend.llm.fallback._utc_date_str) so the endpoint never
+        # silently shows zeros while data exists under another bucket.
+        date_str = _utc_date_str()
+        pattern = f"llm:escalations:{date_str}:*"
+        prefix = f"llm:escalations:{date_str}:"
+
+        agents: dict[str, dict[str, int]] = {}
+        total = 0
+        async for raw_key in redis_client.scan_iter(match=pattern):
+            key_str = (
+                raw_key.decode("utf-8")
+                if isinstance(raw_key, (bytes, bytearray))
+                else raw_key
+            )
+            if not key_str.startswith(prefix):
+                continue
+            agent_name = key_str[len(prefix):]
+            data = await redis_client.hgetall(raw_key)
+            normalized: dict[str, int] = {}
+            for field, value in (data or {}).items():
+                fname = (
+                    field.decode("utf-8")
+                    if isinstance(field, (bytes, bytearray))
+                    else field
+                )
+                fvalue = (
+                    value.decode("utf-8")
+                    if isinstance(value, (bytes, bytearray))
+                    else value
+                )
+                try:
+                    normalized[fname] = int(fvalue)
+                except (TypeError, ValueError):
+                    log.warning(
+                        "llm_escalations_bad_field",
+                        key=key_str,
+                        field=fname,
+                        value=fvalue,
+                    )
+                    continue
+            if normalized:
+                agents[agent_name] = normalized
+                total += normalized.get("count", 0)
+    except Exception as exc:
+        log.warning("llm_escalations_endpoint_failed", error=str(exc))
+        return _ok(empty)
+
+    return _ok({
+        "date": date_str,
+        "agents": agents,
+        "total_escalations": total,
+        "status": "ok",
+    })
 
 
 @router.get("/api/monitoring/dashboard")
