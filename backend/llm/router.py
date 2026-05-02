@@ -15,14 +15,35 @@ from backend.llm.fallback import (
     track_usage,
 )
 from backend.llm.providers import (
+    AgentConfig,
     RouterConfig,
+    ThinkingConfig,
     create_openai_client,
     load_router_config,
 )
 
 if TYPE_CHECKING:
     import redis.asyncio
+    from openai.types import CompletionUsage
     from openai.types.chat import ChatCompletion
+
+
+def _extract_reasoning_tokens(usage: CompletionUsage) -> int:
+    """Best-effort lift of Kimi reasoning_tokens from usage details.
+
+    The Moonshot SDK exposes reasoning consumption via
+    ``completion_tokens_details.reasoning_tokens``. When the field is
+    absent (non-Kimi provider, thinking disabled, or older response
+    schema) this returns 0 — used purely for observability so it must
+    never raise.
+    """
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is None:
+        return 0
+    reasoning = getattr(details, "reasoning_tokens", None)
+    if isinstance(reasoning, int) and reasoning >= 0:
+        return reasoning
+    return 0
 
 
 class LLMRouter:
@@ -151,21 +172,25 @@ class LLMRouter:
             **kwargs,
         }
 
-        # Try primary provider
+        # Try primary (or routing.triage) provider
+        primary_provider, primary_model = self._select_primary(agent_cfg)
+        primary_stage = "triage" if agent_cfg.routing is not None else "primary"
         try:
-            return await self._call_provider(
-                provider_name=agent_cfg.provider,
-                model=agent_cfg.model,
+            response = await self._call_provider(
+                provider_name=primary_provider,
+                model=primary_model,
                 messages=messages,
                 agent_name=agent_name,
+                thinking=agent_cfg.thinking,
+                route_stage=primary_stage,
                 **call_kwargs,
             )
         except RETRYABLE_EXCEPTIONS as exc:
             self._log.warning(
                 "primary_provider_failed",
                 agent_name=agent_name,
-                provider=agent_cfg.provider,
-                model=agent_cfg.model,
+                provider=primary_provider,
+                model=primary_model,
                 error=str(exc),
             )
 
@@ -175,7 +200,7 @@ class LLMRouter:
             await track_fallback(
                 self._redis,
                 agent_name,
-                agent_cfg.provider,
+                primary_provider,
                 agent_cfg.fallback.provider,
             )
 
@@ -191,8 +216,38 @@ class LLMRouter:
                 model=agent_cfg.fallback.model,
                 messages=messages,
                 agent_name=agent_name,
+                thinking=agent_cfg.thinking,
+                route_stage="fallback",
                 **call_kwargs,
             )
+
+        if agent_cfg.routing is not None and self._should_escalate(
+            agent_cfg, response
+        ):
+            esc_provider = agent_cfg.routing.escalation_provider
+            esc_model = agent_cfg.routing.escalation_model
+            if esc_provider is None or esc_model is None:
+                return response
+            self._log.info(
+                "escalating_to_expensive_provider",
+                agent_name=agent_name,
+                triage_provider=primary_provider,
+                triage_model=primary_model,
+                escalation_provider=esc_provider,
+                escalation_model=esc_model,
+                escalation_condition=agent_cfg.routing.escalation_condition,
+            )
+            return await self._call_provider(
+                provider_name=esc_provider,
+                model=esc_model,
+                messages=messages,
+                agent_name=agent_name,
+                thinking=agent_cfg.thinking,
+                route_stage="escalation",
+                **call_kwargs,
+            )
+
+        return response
 
     async def _call_provider(
         self,
@@ -200,6 +255,8 @@ class LLMRouter:
         model: str,
         messages: list[dict[str, str]],
         agent_name: str,
+        thinking: ThinkingConfig,
+        route_stage: str = "primary",
         **kwargs: Any,
     ) -> ChatCompletion:
         """Execute a chat completion call against a specific provider."""
@@ -210,10 +267,15 @@ class LLMRouter:
             agent_name=agent_name,
             provider=provider_name,
             model=model,
+            route_stage=route_stage,
+            thinking_type=thinking.type,
         )
 
         call_kwargs = self._normalize_provider_kwargs(
-            provider_name, model, kwargs
+            provider_name=provider_name,
+            model=model,
+            base_kwargs=kwargs,
+            thinking=thinking,
         )
 
         response = await client.chat.completions.create(
@@ -235,8 +297,12 @@ class LLMRouter:
                 agent_name=agent_name,
                 provider=provider_name,
                 model=model,
+                route_stage=route_stage,
+                thinking_type=thinking.type,
+                thinking_max_tokens=thinking.max_tokens,
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,
+                reasoning_tokens=_extract_reasoning_tokens(response.usage),
             )
 
         return response
@@ -245,23 +311,79 @@ class LLMRouter:
     def _normalize_provider_kwargs(
         provider_name: str,
         model: str,
-        kwargs: dict[str, Any],
+        base_kwargs: dict[str, Any],
+        thinking: ThinkingConfig,
     ) -> dict[str, Any]:
-        """Apply provider/model-specific Chat Completions constraints."""
-        normalized = dict(kwargs)
+        """Apply Kimi K2.x thinking-mode + temperature constraints.
 
-        if provider_name == "kimi" and model == "kimi-k2.6":
-            # Kimi K2.6 rejects arbitrary temperature values in its
-            # default thinking mode; keep thinking enabled and use the
-            # provider-supported default. The thinking response can be
-            # large, so use the provider-recommended minimum cap to avoid
-            # spending the whole output budget on reasoning_content.
+        Kimi exposes thinking via the OpenAI-compatible ``extra_body``
+        envelope (it is not part of the upstream Chat Completions
+        schema). Reasoning tokens count against the request's total
+        ``max_tokens`` budget, so when thinking is enabled the request
+        budget is grown by the configured reasoning cap to keep room
+        for the actual completion. Temperature is pinned per Moonshot
+        spec: 1.0 in thinking mode, 0.6 in non-thinking mode.
+
+        Non-Kimi providers receive the kwargs unchanged — thinking is
+        silently dropped.
+        """
+        normalized = dict(base_kwargs)
+
+        if not (provider_name == "kimi" and model.startswith("kimi-k2")):
+            return normalized
+
+        existing_extra = normalized.get("extra_body")
+        extra_body: dict[str, Any] = (
+            dict(existing_extra) if isinstance(existing_extra, dict) else {}
+        )
+
+        if thinking.type == "enabled":
+            extra_body["thinking"] = {
+                "type": "enabled",
+                "max_tokens": thinking.max_tokens,
+            }
             normalized["temperature"] = 1
-            max_tokens = normalized.get("max_tokens")
-            if not isinstance(max_tokens, int) or max_tokens < 16_000:
-                normalized["max_tokens"] = 16_000
+            caller_max = normalized.get("max_tokens")
+            if isinstance(caller_max, int):
+                normalized["max_tokens"] = caller_max + thinking.max_tokens
+        else:
+            extra_body["thinking"] = {"type": "disabled"}
+            # Kimi rejects arbitrary values when thinking is off; pin to
+            # the documented non-thinking constant.
+            normalized["temperature"] = 0.6
 
+        normalized["extra_body"] = extra_body
         return normalized
+
+    @staticmethod
+    def _select_primary(agent_cfg: AgentConfig) -> tuple[str, str]:
+        """Resolve the first-call (provider, model) for an agent.
+
+        With routing.triage_* set, the cheap triage path is the primary;
+        otherwise fall back to the agent's own provider/model. P5B-T01
+        wires the plumbing — full escalation lives in
+        :meth:`_should_escalate` (P5B-T03).
+        """
+        if agent_cfg.routing is not None:
+            return (
+                agent_cfg.routing.triage_provider,
+                agent_cfg.routing.triage_model,
+            )
+        return (agent_cfg.provider, agent_cfg.model)
+
+    def _should_escalate(
+        self,
+        agent_cfg: AgentConfig,
+        response: ChatCompletion,
+    ) -> bool:
+        """Decide whether the cheap triage answer must be escalated.
+
+        Wired into :meth:`complete` so P5B-T03 can plug in confidence
+        parsing and contradiction detection without re-touching the
+        retry/fallback logic. Returns ``False`` until then.
+        """
+        del agent_cfg, response
+        return False
 
     def _get_client(self, provider_name: str) -> AsyncOpenAI:
         """Get a pre-initialized client for the given provider.

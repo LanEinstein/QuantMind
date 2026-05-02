@@ -1,5 +1,5 @@
 # config/agent_models.yaml — LLM Router core configuration
-# Blueprint V3 section 2.2
+# Blueprint V3 §2.2 + Phase 5B §2.8 (per-agent thinking/routing)
 
 providers:
   deepseek:
@@ -28,12 +28,23 @@ defaults:
   temperature: 0.3
   max_tokens: 4096
 
+# Per-agent thinking config (Phase 5B §2.8):
+#   - "disabled" pairs with cheap-summary agents (deepseek/qwen) — drops
+#     reasoning_content, saves output budget.
+#   - "enabled" only meaningful for Kimi K2.x; max_tokens caps the
+#     reasoning_content portion (separate from completion max_tokens).
+#   - keep ∈ {all, last_round, none}: which rounds' reasoning to retain
+#     in subsequent turns of the same conversation (consumed by P5B-T03).
 agents:
   news_crawler:
     name: "新闻爬取员"
     provider: deepseek
     model: deepseek-v4-pro
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "every_5min"
     task: "财经新闻摘要、分类、重要性评分(0-10)"
 
@@ -42,6 +53,10 @@ agents:
     provider: deepseek
     model: deepseek-v4-pro
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "every_30min"
     task: "社交媒体情绪、论坛情感、恐慌贪婪指数"
 
@@ -50,6 +65,10 @@ agents:
     provider: deepseek
     model: deepseek-v4-pro
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "realtime"
     task: "原始数据标准化、异常值标记、格式转换"
 
@@ -58,6 +77,10 @@ agents:
     provider: qwen
     model: qwen3.6-plus
     fallback: { provider: deepseek, model: deepseek-v4-pro }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "daily_or_event"
     task: "财报解读、PE/PB估值、行业对比"
 
@@ -66,6 +89,10 @@ agents:
     provider: qwen
     model: qwen3.6-plus
     fallback: { provider: deepseek, model: deepseek-v4-pro }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "daily"
     task: "K线形态、MACD/RSI/布林带、趋势判断"
 
@@ -74,6 +101,10 @@ agents:
     provider: kimi
     model: kimi-k2.6
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: enabled
+      max_tokens: 10000
+      keep: last_round
     frequency: "event_triggered"
     task: "信息融合、隐性变量推演、驱动MiroFish仿真"
 
@@ -82,6 +113,10 @@ agents:
     provider: kimi
     model: kimi-k2.6
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: enabled
+      max_tokens: 8000
+      keep: all
     frequency: "per_trading_day"
     task: "构建看多论点、寻找上涨催化剂"
 
@@ -90,6 +125,10 @@ agents:
     provider: kimi
     model: kimi-k2.6
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: enabled
+      max_tokens: 8000
+      keep: all
     frequency: "per_trading_day"
     task: "构建看空论点、寻找下跌风险"
 
@@ -98,6 +137,10 @@ agents:
     provider: kimi
     model: kimi-k2.6
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: enabled
+      max_tokens: 6000
+      keep: last_round
     frequency: "per_trading_day"
     task: "投组风险评估、仓位建议、否决权"
 
@@ -106,5 +149,9 @@ agents:
     provider: kimi
     model: kimi-k2.6
     fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: enabled
+      max_tokens: 8000
+      keep: last_round
     frequency: "per_trading_day"
     task: "综合所有Agent报告，输出最终买卖信号"

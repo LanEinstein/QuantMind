@@ -242,51 +242,64 @@ agents:
     name: "新闻爬取员"
     provider: deepseek
     model: deepseek-v4-pro
-    routing:
-      triage_provider: deepseek          # 不分级
+    # 不分级:省略整个 routing 段(等价于直接走 provider/model);
+    # 若要启用分级,triage_provider 与 triage_model 必须成对填写,
+    # 配 escalation_provider/escalation_model + escalation_condition。
     thinking:
       type: disabled                     # 关 thinking 节省成本
       max_tokens: 0
       keep: none
 ```
 
-新增 Pydantic 模型(`backend/llm/providers.py`):
+新增 Pydantic 模型(`backend/llm/providers.py`,实装版含 `extra="forbid"`、Field 边界、invariant validator):
 
 ```python
 class RoutingConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     triage_provider: str
     triage_model: str
     escalation_provider: str | None = None
     escalation_model: str | None = None
     escalation_condition: dict[str, Any] = Field(default_factory=dict)
+    # model_validator: escalation_provider/model 必须成对;
+    # escalation_condition 非空必须有完整 escalation target
 
 
 class ThinkingConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["enabled", "disabled"] = "enabled"
-    max_tokens: int = 8000
+    max_tokens: int = Field(default=8000, ge=0, le=32_000)
     keep: Literal["all", "last_round", "none"] = "all"
+    # model_validator: type='disabled' 必须 max_tokens=0 + keep='none';
+    # type='enabled' 必须 max_tokens>0
 
 
 class AgentConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)  # T03 时同步加 extra='forbid'
     # 已有字段保留
     routing: RoutingConfig | None = None
-    thinking: ThinkingConfig = ThinkingConfig()
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
 ```
 
-`backend/llm/router.py::_normalize_provider_kwargs` 翻译为 Kimi/Moonshot SDK:
+`backend/llm/router.py::_normalize_provider_kwargs` 翻译为 Kimi/Moonshot SDK
+(thinking 必须经 `extra_body`,顶层 kwarg 不被 OpenAI SDK 接受):
 
 ```python
 if provider_name == "kimi" and model.startswith("kimi-k2"):
-    thinking_cfg = agent_cfg.thinking
-    if thinking_cfg.type == "enabled":
-        normalized["thinking"] = {
+    extra_body = dict(normalized.get("extra_body") or {})
+    if thinking.type == "enabled":
+        extra_body["thinking"] = {
             "type": "enabled",
-            "max_tokens": thinking_cfg.max_tokens,
+            "max_tokens": thinking.max_tokens,
         }
+        normalized["temperature"] = 1                       # K2.6 thinking 模式常量
+        if isinstance(normalized.get("max_tokens"), int):
+            # reasoning_content + content 共享 request budget,需为 reasoning 留空间
+            normalized["max_tokens"] += thinking.max_tokens
     else:
-        normalized["thinking"] = {"type": "disabled"}
+        extra_body["thinking"] = {"type": "disabled"}
+        normalized["temperature"] = 0.6                     # K2.6 非 thinking 模式常量
+    normalized["extra_body"] = extra_body
 ```
 
 ### 2.9 红线清单(任何 commit 不得违反)
@@ -701,16 +714,20 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
 
 ### Phase 5B — 分级 LLM 路由 + Fast/Slow Watchlist(Week 1-2)
 
-#### P5B-T01 — agent_models.yaml schema 扩展 + Per-Agent Thinking Config [⏳ 待做]
+#### P5B-T01 — agent_models.yaml schema 扩展 + Per-Agent Thinking Config [✅ 已完成]
 
 - **Owner**: 任意,建议同 session 接 T02-T03
+- **owner_session**: 2026-05-02 main session (Opus 4.7)
+- **commit_hash**: (本次 commit)
+- **test_report**: `docs/reviews/p5b-t01-codex-summary.md` + R1-R5 各 1 份 + R1+R3 / R2+R4+R5 follow-up
+- **Done**: schema/router/api/tests 落地;codex 5 轮 + 2 follow-up CRITICAL+HIGH+WARN(非 deferred)全清;24h 实测对比报告 `docs/reviews/p5b-t01-thinking-impact.md` 留作部署后续
 - **Dependencies**: Phase 5A 全部 ✅
 - **核心**: §2.8 中描述的 `RoutingConfig` / `ThinkingConfig` Pydantic 模型 + Kimi SDK 翻译。
 - **改动文件**:
   - `backend/llm/providers.py`: 加两个模型;嵌入 `AgentConfig`
   - `backend/llm/router.py::_normalize_provider_kwargs`: 新增 thinking 翻译;**删除当前硬编码 `temperature=1, max_tokens=16000`**(此为遗留缺陷,见基线 cost log,Kimi thinking 默认无上限)
   - `backend/llm/router.py::complete`: 新增 `should_escalate(state, response)` hook,routing.escalation_condition 满足时再升级;与 fallback 独立分支
-  - `config/agent_models.yaml`: 9 个 agent 全部填 `thinking` 段(分布):
+  - `config/agent_models.yaml`: 10 个 agent 全部填 `thinking` 段(分布):
 
 | Agent | thinking.type | max_tokens | keep | 理由 |
 |---|---|---|---|---|
@@ -736,18 +753,21 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
           base_kwargs={"max_tokens": 4000},
           thinking=ThinkingConfig(type="disabled", max_tokens=0, keep="none"),
       )
-      assert kw["thinking"] == {"type": "disabled"}
+      assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+      assert "thinking" not in kw                  # 顶层 kwarg 不可用,SDK 不接受
+      assert kw["temperature"] == 0.6              # K2.6 非 thinking 模式常量
 
 
   @pytest.mark.unit
   def test_normalize_kimi_thinking_caps_tokens():
       kw = LLMRouter._normalize_provider_kwargs(
           provider_name="kimi", model="kimi-k2.6",
-          base_kwargs={},
+          base_kwargs={"max_tokens": 4096},
           thinking=ThinkingConfig(type="enabled", max_tokens=8000, keep="all"),
       )
-      assert kw["thinking"]["type"] == "enabled"
-      assert kw["thinking"]["max_tokens"] == 8000
+      assert kw["extra_body"]["thinking"] == {"type": "enabled", "max_tokens": 8000}
+      assert kw["temperature"] == 1                # K2.6 thinking 模式常量
+      assert kw["max_tokens"] == 4096 + 8000       # reasoning + completion 共享 budget
 
 
   @pytest.mark.unit
@@ -758,6 +778,7 @@ if provider_name == "kimi" and model.startswith("kimi-k2"):
           thinking=ThinkingConfig(type="enabled", max_tokens=8000, keep="all"),
       )
       assert "thinking" not in kw
+      assert "extra_body" not in kw
   ```
 
   Contract: hypothesis 生成随机 thinking type/max_tokens 组合,断言 schema validate 拒绝非法 keep 值。
@@ -1738,6 +1759,7 @@ BASE_URL=https://quantmind.local ./scripts/daily-check.sh
 | 2026-05-01 | claude-opus-4-7-1m | 54f7def | P5A-T03 ⏳→✅ authorization phase gate + canonical/legacy 双向矩阵 + kill suggestionion bug(minor-fix 3 轮 codex PASS) |
 | 2026-05-01 | claude-opus-4-7-1m | 737bf83 | Phase 5A 出口 summary,4 项 task 全 ✅,STOP 等授权 |
 | 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | 补齐 SSoT 状态:P5A-T00 marker ⏳→✅、Phase 5A 出口 marker ⏳→✅、T01-T03 commit hash 占位实填 |
+| 2026-05-02 | claude-opus-4-7-1m | (本次 commit) | P5B-T01 ⏳→✅ thinking config:§2.8 修复 news_crawler 不分级示例(原 routing-only 示例会触发 model_validator 报错)+ schema 段加 extra/Field/validator 注释 + 9→10 agent 计数;新增 known-deferred 项:RoutingConfig.escalation_condition 类型化(T03 owner)、reload TOCTOU 加固(单独 backlog 任务)、blueprint V3 旧示例标注待统一 |
 
 ### 7.5 联网调研引用源(节选,核心 12 条)
 

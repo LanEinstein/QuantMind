@@ -152,12 +152,19 @@ class TestRouterRouting:
             call_kwargs = mock_client.chat.completions.create.call_args
             assert call_kwargs.kwargs["temperature"] == 0.8
 
-    async def test_kimi_k26_uses_thinking_mode_temperature(
+    async def test_kimi_k26_thinking_mode_translation(
         self,
         tmp_path: Path,
         mock_env_vars: None,
         mock_redis: AsyncMock,
     ) -> None:
+        """Kimi K2.6 with thinking=enabled emits Moonshot 'thinking' kwarg.
+
+        Replaces the legacy P5A test that asserted a hardcoded
+        max_tokens=16000 floor — that floor was removed in P5B-T01 so
+        per-agent budgets are honored. See tests/test_llm_router_thinking
+        for the full thinking-config matrix.
+        """
         config_path = tmp_path / "agent_models.yaml"
         config_path.write_text(
             """\
@@ -176,6 +183,10 @@ agents:
     name: "Risk Officer"
     provider: kimi
     model: kimi-k2.6
+    thinking:
+      type: enabled
+      max_tokens: 6000
+      keep: last_round
     frequency: "daily"
     task: "Assess risk"
 """,
@@ -200,9 +211,16 @@ agents:
             )
 
         call_kwargs = mock_client.chat.completions.create.call_args
+        # thinking lives in extra_body for Moonshot SDK; temp=1 while on
+        assert call_kwargs.kwargs["extra_body"]["thinking"] == {
+            "type": "enabled",
+            "max_tokens": 6000,
+        }
+        assert call_kwargs.kwargs["extra_body"]["custom"] == "value"
         assert call_kwargs.kwargs["temperature"] == 1
-        assert call_kwargs.kwargs["max_tokens"] == 16_000
-        assert call_kwargs.kwargs["extra_body"] == {"custom": "value"}
+        # reasoning + completion share the request budget, so max_tokens
+        # is grown by the reasoning cap to keep room for the actual output
+        assert call_kwargs.kwargs["max_tokens"] == 4096 + 6000
         await router.close()
 
     async def test_unknown_agent_raises(self, router: LLMRouter) -> None:

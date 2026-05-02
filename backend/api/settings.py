@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 log = structlog.get_logger(component="api_settings")
 
@@ -46,21 +46,50 @@ def _err(message: str, status_code: int = 500) -> None:
 class FallbackInput(BaseModel):
     """Fallback provider input."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     provider: str
     model: str
 
 
+class ThinkingConfigInput(BaseModel):
+    """Per-agent thinking-mode update input.
+
+    Mirrors backend.llm.providers.ThinkingConfig. Bounds are enforced
+    on the wire so an obviously bad payload does not silently land in
+    the YAML.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["enabled", "disabled"] | None = None
+    max_tokens: int | None = Field(default=None, ge=0, le=32_000)
+    keep: Literal["all", "last_round", "none"] | None = None
+
+
+class RoutingConfigInput(BaseModel):
+    """Triage→escalation routing update input."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    triage_provider: str | None = None
+    triage_model: str | None = None
+    escalation_provider: str | None = None
+    escalation_model: str | None = None
+    escalation_condition: dict[str, Any] | None = None
+
+
 class AgentConfigInput(BaseModel):
     """Agent configuration update input."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str | None = None
     provider: str | None = None
     model: str | None = None
     fallback: FallbackInput | None = None
+    routing: RoutingConfigInput | None = None
+    thinking: ThinkingConfigInput | None = None
     frequency: str | None = None
     task: str | None = None
 
@@ -165,6 +194,10 @@ async def update_llm_config(
             _LLM_CONFIG_PATH, update_data
         )
         return _ok(result)
+    except ValidationError as exc:
+        # Merged YAML failed RouterConfig validation — file untouched.
+        log.warning("llm_config_invalid_merge", errors=exc.errors())
+        _err(f"Invalid LLM config after merge: {exc}", 422)
     except Exception as exc:
         log.error("llm_config_write_failed", error=str(exc))
         _err(f"Failed to update LLM config: {exc}")

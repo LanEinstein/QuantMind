@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _ENV_PATTERN = re.compile(r"^\$\{(\w+)\}$")
 
@@ -38,21 +38,90 @@ def resolve_env_var(value: str) -> str:
 class FallbackConfig(BaseModel):
     """Fallback provider specification for an agent."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    provider: str
-    model: str
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class RoutingConfig(BaseModel):
+    """Tiered triage→escalation routing for an agent.
+
+    Triage runs the cheap provider first; if escalation_condition fires
+    (confidence below threshold, contradiction with another agent, …)
+    the router re-runs against the expensive provider. The actual
+    escalation decision lives in LLMRouter._should_escalate (P5B-T03);
+    P5B-T01 only lands the schema. ``escalation_condition`` is loosely
+    typed today and will be tightened to a dedicated model in T03.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    triage_provider: str = Field(min_length=1)
+    triage_model: str = Field(min_length=1)
+    escalation_provider: str | None = Field(default=None, min_length=1)
+    escalation_model: str | None = Field(default=None, min_length=1)
+    escalation_condition: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_escalation_pair(self) -> RoutingConfig:
+        has_provider = self.escalation_provider is not None
+        has_model = self.escalation_model is not None
+        if has_provider != has_model:
+            raise ValueError(
+                "escalation_provider and escalation_model must be set "
+                "together (or both omitted)"
+            )
+        if self.escalation_condition and not has_provider:
+            raise ValueError(
+                "escalation_condition requires both escalation_provider "
+                "and escalation_model"
+            )
+        return self
+
+
+class ThinkingConfig(BaseModel):
+    """Per-agent Kimi K2.6 thinking-mode configuration.
+
+    keep="all" keeps every round's reasoning_content in context (needed
+    for multi-round bull/bear debate); "last_round" only keeps the most
+    recent for terminal judgement; "none" pairs with type=disabled to
+    drop reasoning entirely for cheap summary agents. Bounds match the
+    Moonshot K2.6 reasoning cap (32k upper, 0 lower).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["enabled", "disabled"] = "enabled"
+    max_tokens: int = Field(default=8000, ge=0, le=32_000)
+    keep: Literal["all", "last_round", "none"] = "all"
+
+    @model_validator(mode="after")
+    def _check_disabled_invariant(self) -> ThinkingConfig:
+        if self.type == "disabled":
+            if self.max_tokens != 0 or self.keep != "none":
+                raise ValueError(
+                    "thinking.type='disabled' requires max_tokens=0 and "
+                    "keep='none'"
+                )
+        elif self.max_tokens == 0:
+            raise ValueError(
+                "thinking.type='enabled' requires max_tokens > 0"
+            )
+        return self
 
 
 class AgentConfig(BaseModel):
     """Per-agent LLM routing configuration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    provider: str
-    model: str
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
     fallback: FallbackConfig | None = None
+    routing: RoutingConfig | None = None
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     frequency: str = ""
     task: str = ""
 
@@ -60,11 +129,11 @@ class AgentConfig(BaseModel):
 class ProviderConfig(BaseModel):
     """LLM provider connection configuration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    base_url: str
-    api_key: str
-    default_model: str
+    base_url: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+    default_model: str = Field(min_length=1)
 
 
 class DefaultsConfig(BaseModel):
@@ -84,6 +153,43 @@ class RouterConfig(BaseModel):
     providers: dict[str, ProviderConfig]
     agents: dict[str, AgentConfig]
     defaults: DefaultsConfig = DefaultsConfig()
+
+    @model_validator(mode="after")
+    def _check_provider_references(self) -> RouterConfig:
+        """Fail fast on agent.provider / fallback / routing typos.
+
+        Without this, a bad provider name only surfaces at runtime as
+        ``Unknown provider`` from inside the request hot path, with no
+        agent context. Catching it here gives the operator a single
+        line pointing at the offending YAML key.
+        """
+        known = set(self.providers)
+        for agent_name, agent in self.agents.items():
+            if agent.provider not in known:
+                raise ValueError(
+                    f"agents.{agent_name}.provider='{agent.provider}' "
+                    f"not in providers={sorted(known)}"
+                )
+            if agent.fallback is not None and agent.fallback.provider not in known:
+                raise ValueError(
+                    f"agents.{agent_name}.fallback.provider="
+                    f"'{agent.fallback.provider}' not in providers="
+                    f"{sorted(known)}"
+                )
+            if agent.routing is not None:
+                if agent.routing.triage_provider not in known:
+                    raise ValueError(
+                        f"agents.{agent_name}.routing.triage_provider="
+                        f"'{agent.routing.triage_provider}' not in "
+                        f"providers={sorted(known)}"
+                    )
+                esc = agent.routing.escalation_provider
+                if esc is not None and esc not in known:
+                    raise ValueError(
+                        f"agents.{agent_name}.routing.escalation_provider="
+                        f"'{esc}' not in providers={sorted(known)}"
+                    )
+        return self
 
 
 # -- Client factory --

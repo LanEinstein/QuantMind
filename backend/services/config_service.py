@@ -70,9 +70,23 @@ class ConfigService:
     ) -> dict[str, Any]:
         """Write LLM config, skipping masked API key values.
 
-        Returns the updated config with keys re-masked.
+        Validates the *merged* result against ``RouterConfig`` before
+        committing the YAML so a partial update cannot leave the file
+        in an unloadable state. Returns the updated config with keys
+        re-masked.
+
+        Raises:
+            pydantic.ValidationError: if the merged config is invalid.
         """
+        from backend.llm.providers import RouterConfig
+
         clean = _strip_masked_keys(data)
+        existing = await self.read_yaml(path)
+        merged = copy.deepcopy(existing)
+        _deep_merge(merged, clean)
+        # Raises ValidationError on bad routing/thinking shape, unknown
+        # provider reference, or any other RouterConfig invariant.
+        RouterConfig.model_validate(merged)
         await self.write_yaml(path, clean, config_name="llm")
         return await self.read_llm_config(path)
 
