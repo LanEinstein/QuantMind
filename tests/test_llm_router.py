@@ -79,9 +79,7 @@ class TestLoadRouterConfig:
 
 
 class TestCreateOpenaiClient:
-    def test_creates_client_with_correct_params(
-        self, mock_env_vars: None
-    ) -> None:
+    def test_creates_client_with_correct_params(self, mock_env_vars: None) -> None:
         from backend.llm.providers import ProviderConfig
 
         cfg = ProviderConfig(
@@ -92,6 +90,44 @@ class TestCreateOpenaiClient:
         client = create_openai_client(cfg)
         assert str(client.base_url).rstrip("/").endswith("/v1")
         assert client.api_key == "sk-test-deepseek"
+
+    def test_client_binds_ipv4_only(self, mock_env_vars: None) -> None:
+        """Locks in IPv4-only egress.
+
+        Hosts like dashscope.aliyuncs.com publish AAAA records; in
+        IPv4-only networks Happy Eyeballs stalls every parallel agent
+        call until the connect timeout fires. Regression-prevention.
+        """
+        from backend.llm.providers import ProviderConfig
+
+        cfg = ProviderConfig(
+            base_url="https://api.deepseek.com/v1",
+            api_key="${DEEPSEEK_API_KEY}",
+            default_model="deepseek-chat",
+        )
+        client = create_openai_client(cfg)
+        transport = client._client._transport  # internal but stable
+        pool = transport._pool
+        assert pool._local_address == "0.0.0.0"
+
+    def test_client_has_bounded_timeout_and_retries(self, mock_env_vars: None) -> None:
+        """Locks in connect/read timeouts + sdk-level retry budget.
+
+        Defaults (600s read, 2 retries) let one stuck handshake stall
+        the 900s pipeline. Bounded values keep fallback responsive.
+        """
+        from backend.llm.providers import ProviderConfig
+
+        cfg = ProviderConfig(
+            base_url="https://api.deepseek.com/v1",
+            api_key="${DEEPSEEK_API_KEY}",
+            default_model="deepseek-chat",
+        )
+        client = create_openai_client(cfg)
+        assert client.max_retries == 1
+        timeout_obj = client._client.timeout
+        assert timeout_obj.connect == 10.0
+        assert timeout_obj.read == 120.0
 
 
 # ============================================================
@@ -113,9 +149,7 @@ class TestRouterRouting:
         mock_response = make_chat_completion()
         with patch.object(router, "_get_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_get.return_value = mock_client
 
             await router.complete("news_crawler", [{"role": "user", "content": "hi"}])
@@ -125,9 +159,7 @@ class TestRouterRouting:
         mock_response = make_chat_completion()
         with patch.object(router, "_get_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_get.return_value = mock_client
 
             await router.complete("news_crawler", [{"role": "user", "content": "hi"}])
@@ -139,9 +171,7 @@ class TestRouterRouting:
         mock_response = make_chat_completion()
         with patch.object(router, "_get_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_get.return_value = mock_client
 
             await router.complete(
@@ -198,9 +228,7 @@ agents:
         mock_response = make_chat_completion()
         with patch.object(router, "_get_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_get.return_value = mock_client
 
             await router.complete(
@@ -285,9 +313,7 @@ class TestRouterFallback:
             )
 
         fallback_client = AsyncMock()
-        fallback_client.chat.completions.create = AsyncMock(
-            return_value=ok_response
-        )
+        fallback_client.chat.completions.create = AsyncMock(return_value=ok_response)
 
         def get_client(name: str) -> AsyncMock:
             return primary_client if name == "deepseek" else fallback_client
@@ -304,9 +330,7 @@ class TestRouterFallback:
             side_effect=openai.APIConnectionError(request=MagicMock())
         )
 
-        with patch.object(
-            router, "_get_client", return_value=failing_client
-        ):
+        with patch.object(router, "_get_client", return_value=failing_client):
             with pytest.raises(openai.APIConnectionError):
                 await router.complete(
                     "news_crawler", [{"role": "user", "content": "hi"}]
@@ -318,13 +342,9 @@ class TestRouterFallback:
             side_effect=openai.APIConnectionError(request=MagicMock())
         )
 
-        with patch.object(
-            router, "_get_client", return_value=failing_client
-        ):
+        with patch.object(router, "_get_client", return_value=failing_client):
             with pytest.raises(openai.APIConnectionError):
-                await router.complete(
-                    "analyst", [{"role": "user", "content": "hi"}]
-                )
+                await router.complete("analyst", [{"role": "user", "content": "hi"}])
 
 
 # ============================================================
@@ -374,9 +394,7 @@ class TestTrackUsage:
         # ``pipeline()`` is sync on real ``redis.asyncio.Redis``; using
         # an AsyncMock leaves a coroutine the test never awaits and
         # produces a RuntimeWarning.
-        bad_redis.pipeline = MagicMock(
-            side_effect=ConnectionError("redis down")
-        )
+        bad_redis.pipeline = MagicMock(side_effect=ConnectionError("redis down"))
         await track_usage(bad_redis, "test", "deepseek", 100, 200)
 
 
@@ -403,9 +421,7 @@ class TestHotReload:
         mock_response = make_chat_completion()
         with patch.object(router, "_get_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             mock_get.return_value = mock_client
             await router.complete("news_crawler", [{"role": "user", "content": "hi"}])
 

@@ -7,9 +7,27 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 import yaml
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Concurrent agent fan-out (5 analysts + 2 researchers) shares the
+# AsyncOpenAI client per provider. Without explicit bounds the openai
+# SDK uses 600s default timeout, so a single stuck TCP handshake can
+# stall the whole 900s pipeline. Cap connect/read/write/pool so a
+# flaky connection fails fast and the router's fallback chain takes
+# over before the analysis-scheduler timeout fires.
+_CONNECT_TIMEOUT_SEC = 10.0
+_READ_TIMEOUT_SEC = 120.0
+_WRITE_TIMEOUT_SEC = 30.0
+_POOL_TIMEOUT_SEC = 10.0
+# Default openai SDK retries=2 stack with read_timeout to burn 360s+
+# on a single hanging upstream. With router-level fallback already in
+# place, one SDK retry is plenty: failed primary call hits fallback
+# within ~240s instead of ~480s, leaving 600s+ for the rest of the
+# 900s pipeline budget.
+_MAX_RETRIES = 1
 
 _ENV_PATTERN = re.compile(r"^\$\{(\w+)\}$")
 
@@ -26,9 +44,7 @@ def resolve_env_var(value: str) -> str:
     var_name = match.group(1)
     resolved = os.environ.get(var_name)
     if not resolved:
-        raise ValueError(
-            f"Environment variable {var_name} is not set or empty"
-        )
+        raise ValueError(f"Environment variable {var_name} is not set or empty")
     return resolved
 
 
@@ -124,13 +140,10 @@ class ThinkingConfig(BaseModel):
         if self.type == "disabled":
             if self.max_tokens != 0 or self.keep != "none":
                 raise ValueError(
-                    "thinking.type='disabled' requires max_tokens=0 and "
-                    "keep='none'"
+                    "thinking.type='disabled' requires max_tokens=0 and keep='none'"
                 )
         elif self.max_tokens == 0:
-            raise ValueError(
-                "thinking.type='enabled' requires max_tokens > 0"
-            )
+            raise ValueError("thinking.type='enabled' requires max_tokens > 0")
         return self
 
 
@@ -222,12 +235,36 @@ def create_openai_client(provider_config: ProviderConfig) -> AsyncOpenAI:
     """Create an AsyncOpenAI client from a provider configuration.
 
     Resolves ${ENV_VAR} syntax in the api_key field before creating
-    the client.
+    the client. Applies bounded connect/read/write/pool timeouts and
+    enables SDK-level retries so flaky upstream connections fail fast
+    and trigger router-level fallback before the pipeline timeout.
     """
     api_key = resolve_env_var(provider_config.api_key)
+    # Force IPv4-only egress: hosts like dashscope.aliyuncs.com publish
+    # AAAA records but operators in IPv4-only networks see Happy Eyeballs
+    # races stall on dead IPv6 paths until the connect timeout fires for
+    # every parallel agent call. local_address="0.0.0.0" pins httpx to
+    # IPv4 sockets so AAAA addresses are skipped at connect time.
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            connect=_CONNECT_TIMEOUT_SEC,
+            read=_READ_TIMEOUT_SEC,
+            write=_WRITE_TIMEOUT_SEC,
+            pool=_POOL_TIMEOUT_SEC,
+        ),
+        limits=httpx.Limits(
+            max_connections=64,
+            max_keepalive_connections=16,
+            keepalive_expiry=30.0,
+        ),
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    )
     return AsyncOpenAI(
         base_url=provider_config.base_url,
         api_key=api_key,
+        timeout=_READ_TIMEOUT_SEC,
+        max_retries=_MAX_RETRIES,
+        http_client=http_client,
     )
 
 
