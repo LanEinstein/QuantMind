@@ -44,7 +44,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-1 ✅ 已锁定 — `simulation_auto` always-on 底座 + `feishu_interactive` 可叠加切换;MockBroker 是唯一账户镜像;模式切换 = 账户生命周期事件;旧 `AUTHORIZATION_MODE × QUANTMIND_PHASE` 矩阵一次性破坏式删除;详见 [P0-1 决策文档](docs/decisions/P0-1-simulation-base-feishu-overlay.md)
 - P0-2 ✅ 已锁定 — 企业自建应用 + `lark-oapi` 长连接(双向闭环主路径)+ 自定义机器人 webhook(仅系统告警备用);第一阶段纯文本指令 + 严格回报模板;零公网入站、所有飞书凭证仅 shell env;详见 [P0-2 决策文档](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md)
 - P0-3 ✅ 已锁定 — `InstructionPlan` 严格 Pydantic schema(`QM-{YYYYMMDD}-{HHMMSS}-{code}-{side}-{seq}` 人读 ID + 极简 BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value / 完整证据 by-reference 折中绑定);第一阶段飞书纯文本模板锁定,`HOLD` 不路由不发飞书;`parse_ok=False` 强制降级 HOLD;详见 [P0-3 决策文档](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md)
-- 下一站:P0-4 飞书回报语法与成交状态(回报模板严格语法 + 部分执行/更正/盘后补录 + ambiguous fail-closed 状态机 + 追问超时具体时长)
+- P0-4 ✅ 已锁定 — ExecutionReportParser 严格正则 only(LLM 完全不参与回报路径);五种回报形态(已执行/部分执行/未执行/更正/盘后补录)精确正则锁定;盘中 30 分钟超时 + 1 次追问,valid_until 自动 EXPIRED;盘后补录与更正允许到当日 16:00;状态机扩展 AMBIGUOUS / 终态间迁移;澄清飞书五模板预写死;详见 [P0-4 决策文档](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md)
+- 下一站:P0-5 账户状态来源与对账机制(`UserReportedPortfolio` + 日终对账模板 + 偏差阈值 + 是否引入"对账更正"专用语法)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -87,7 +88,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-1 | 两种运行模式与系统边界                              | ✅ 已锁定   | [P0-1-simulation-base-feishu-overlay.md](docs/decisions/P0-1-simulation-base-feishu-overlay.md) | `simulation_auto` always-on 底座 + `feishu_interactive` 切换器;MockBroker 单一账户镜像;模式切换 = 账户生命周期事件;旧授权矩阵一次性破坏式删除 |
 | P0-2 | 飞书接入形态                                         | ✅ 已锁定   | [P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md) | 企业自建应用 + `lark-oapi` 长连接做双向闭环主路径;自定义机器人 webhook 仅作系统告警逃生通道;第一阶段纯文本;零公网入站 + 凭证仅 shell env |
 | P0-3 | 操作指令结构(`InstructionPlan`)                     | ✅ 已锁定   | [P0-3-instruction-plan-strict-schema-and-text-template.md](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md) | 严格 Pydantic schema(人读 ID + BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value + 详细证据 by-reference);第一阶段飞书纯文本模板锁定;HOLD 不路由不发飞书 |
-| P0-4 | 飞书回报语法与成交状态                              | ⏳ 待讨论   | —       | 已执行/部分/未执行/更正/盘后补录 + 歧义处理红线 |
+| P0-4 | 飞书回报语法与成交状态                              | ✅ 已锁定   | [P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md) | 严格正则 only(LLM 完全不参与回报路径)+ 五种回报形态精确正则 + 状态机扩展 AMBIGUOUS / 终态间迁移 + 30 分钟追问 + 16:00 盘后补录与更正 cutoff |
 | P0-5 | 账户状态来源与对账机制                              | ⏳ 待讨论   | —       | `UserReportedPortfolio` + 日终对账模板 + 偏差阈值 |
 | P0-6 | `simulation_auto` 验收标准                          | ⏳ 待讨论   | —       | 连续天数/收益回撤/指令完整率/数据缺失率/回报解析准确率 |
 | P0-7 | 风险红线与指导强度                                   | ⏳ 待讨论   | —       | 单股/总仓位/单次金额/每日指令数/亏损暂停线 |
@@ -179,6 +180,19 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **飞书指令文本必须由 `renderer.py` 函数生成**,不允许 LLM 自由拼接(P0-2 §2 红线 / 防 prompt injection 间接绕过模板)
 - **InstructionPlan 是 frozen Pydantic 模型**;就地 mutation 红线违规;状态流转必须 `model_copy(update={"status": ...})` 经过状态机守门
 - **第一阶段排除**:市价单(`OrderType.MARKET`)/ 价格区间 / 区间偏移 / ADD/REDUCE 百分比 全部不在 P0-3 范围,引入必须先走 amendment
+
+**飞书回报路径红线**(P0-4 锁定 2026-05-09,详见 [decisions/P0-4](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md) §2):
+
+- **严格正则不通过 = AMBIGUOUS**:任何不满足 P0-4 §1.2 五条正则 + 字段交叉校验的回报,InstructionPlan.status 必须迁移到 AMBIGUOUS,**绝不更新 MockBroker**
+- **LLM 严禁参与回报路径**:`backend/services/execution_report*.py` / `backend/integrations/feishu/parser*.py` / `clarification.py` 严禁 `import backend.llm.*`;澄清飞书文案全部预写死,LLM 不生成
+- **绝不猜测 instruction_id**:回报文本中 instruction_id 必须严格通过 `^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL)-\d{3}$` 匹配;系统不通过上下文反推,格式不符即 AMBIGUOUS
+- **side_zh ↔ instruction_id BUY/SELL 必须一致** + **stock_code 必须与 InstructionPlan 一致** + **股数必须 100 整数倍** + **filled_volume + remain_volume == InstructionPlan.volume**;任一失败 AMBIGUOUS
+- **16:00 Asia/Shanghai cutoff 后任何回报触发 AMBIGUOUS**:状态机抛 `PostCloseFreezeError`;当日 InstructionPlan 状态变更冻结
+- **更正路径仅允许从终态出发**(`{FILLED, REJECTED, EXPIRED, AMBIGUOUS}`);**盘后补录路径仅允许对未回报指令**(`{EXPIRED, AMBIGUOUS, DISPATCHED}`)且每个 instruction_id 仅一次
+- **追问机制**:盘中 30 分钟阈值发 1 次,短追问宽限 10 分钟(若 valid_until - dispatched_at < 30 分钟跳过追问);AMBIGUOUS 期间不发追问;valid_until 自动 EXPIRED
+- **澄清飞书严禁走备用 webhook**(继承 P0-2 §2 红线 2 / 备用 webhook 仅发系统告警);主通道失活时不发澄清,只发告警
+- **状态机迁移必须经守门函数**(`instruction_plan_state_machine.py::transition`);任何 `model_copy(update={"status": ...})` 直接绕过即红线违规
+- **ExecutionReport 是 frozen Pydantic v2 模型**;就地 mutation 红线违规(继承 P0-3 §2 红线 12 immutability 原则)
 
 **安全红线**:
 
