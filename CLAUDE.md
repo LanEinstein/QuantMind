@@ -49,7 +49,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-6 ✅ 已锁定 — `simulation_auto` 验收 = 45 交易日滚动窗口 + 5 项稳定性硬门槛(指令完整率 ≥95% / 回报解析准确率 ≥99% / 数据缺失率 ≤1% / LLM 超时率 ≤5% / 信号生成成功率 ≥95%)+ 3 项策略硬门槛(最大回撤 ≤8% / 累计 PnL ≥0 / 沪深 300 累计基准超额收益 ≥0)+ 7 项观察指标(不阻断切换);P0 系统级中断重置倒计时;reconciliation 冻结日不计入窗口(暂停而非重置);切换 `feishu_on` 必须前置 `acceptance.can_switch_to_feishu_on()` 校验,严禁 env var 绕过;每日 16:00:30 系统生成 `acceptance_reports` 一条记录;LLM 完全不参与验收路径;详见 [P0-6 决策文档](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md)
 - P0-7 ✅ 已锁定 — 保守仓位三连阈值(单股 ≤15% / 总仓 ≤70% / 单次 ≤5 万)+ 中性日内熔断(每日 ≤5 单 / 日亏 -5% / 连亏 3 笔 / 冷却 60 分钟,SELL 默认不熔断)+ 中性 universe(`sh_main`+`sz_main`+`chuangye`+`etf`,禁 ST/科创/北交所/可转债 + 禁涨停 BUY / 跌停 SELL)+ RiskConfig 全锁(runtime 不可改,LLM 永不持有写引用)+ RiskParameterProposal 自进化提议通道(只读 ledger,人工 weekly review → amendment + 重启);RiskEngine 从 7-check 扩展为 14-check(派生 P0-3 amendment 调整 risk_summary 长度);DailyTradingState + StockMetadata 由 InstructionPlanBuilder 装配传入(RiskEngine 仍纯函数 + 无 IO);熔断与切换冻结 / ticket 冻结独立并行;详见 [P0-7 决策文档](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md)
 - P0-8 ✅ 已锁定 — 行情严格主备(adata + akshare;staleness ≤5s / divergence ≤0.3%)+ 全 watchlist 30s 个股快照(填补 audit §6.2 缺口;`watchlist_market_snapshots` collection)+ 多域 5 源情报(财经 2 + 时政 1 + 全球 2:`stock_news_em`/`stock_info_global_cls`/`news_cctv`/`stock_info_global_em`/`stock_info_global_sina`;军事/社交舆论留 P1)+ MiroFish 双路径接线(事件驱动 severity≥HIGH / 盘后复盘 17:00 watchlist_all;原 P2-1 前置;输出仅入 `evidence_collection` 不入 `RiskCheckSummary`)+ DataQualityState 早返第四种买卖类冻结来源(builder 早返降级 HOLD / 不暂停 simulation_auto / risk_summary 长度恒 14 不变)+ 5 类 evidence_id 前缀约定(`NEWS-`/`MIROFISH-`/`MARKET-`/`RISK-`/`DEBATE-`);LLM 完全不参与数据质量判定;派生 P0-3 amendment(`news_source`→`news_sources_by_domain`);P2-1 标记为 superseded;详见 [P0-8 决策文档](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md)
-- 下一站:P0-9 第一阶段标的范围与频率(watchlist 范围 5-20 只 / ETF / 创业板/科创板/北交所边界 / ST/新股次新/低流动性排除 / 盘中扫描频率 / 每日最大新指令数)
+- P0-9 ✅ 已锁定 — 中等双层 watchlist(13 codes = 沪主 4 + 深主 3 + 创业板 3 + 宽基 ETF 3:`510300`/`510500`/`159949`)+ 中等严格排除规则(新股 ≤30 / 次新 ≤180 / 流动性 < 2 亿 / 单价 > 500;由 InstructionPlanBuilder 第五道早返,不进 RiskEngine 14-check)+ 沿用 fast/slow 双频(09:00 slow 全 watchlist 多 Agent 辩论 + 09/11/13/15 fast 盘中验证)+ 5 单 cap 分配(`traditional_path_default_cap=4` + `event_path_reserved_cap=1`,14:30 后 event 未用可释放给 traditional)+ **关键定位:MiroFish 是加分项不是核心,平台底层是传统 AI 量化交易,event 路径硬 cap=1 严禁占用主路径**+ 严格 long-only(BUY/SELL/HOLD 永锁 / 永禁 SHORT/COVER/MARGIN/REPO / ETF 仅二级市场买卖 / ETF 套利预留 P1 但永锁 disabled)+ watchlist 在 runtime 不可改(`backend/api/watchlist*.py` 仅 GET);派生 P0-7 amendment(watchlist 排除规则在 InstructionPlanBuilder 早返而非 RiskEngine);详见 [P0-9 决策文档](docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md)
+- 下一站:P0-10 LLM 角色边界(P0 最后一站;抽取/解释/草案 vs 决策/仓位/风控硬限制 / 多 Agent 辩论 vs RiskConfig 全锁的精确分割)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -97,7 +98,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-6 | `simulation_auto` 验收标准                          | ✅ 已锁定   | [P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md) | 45 交易日滚动窗口 + 5 项稳定性硬门槛(95% / 99% / 1% / 5% / 95%)+ 3 项策略硬门槛(回撤 ≤8% / PnL ≥0 / 沪深 300 超额 ≥0)+ 7 项观察指标;P0 系统级中断重置;reconciliation 冻结暂停不重置;切换 `feishu_on` 必须前置 acceptance 校验;LLM 不参与验收路径 |
 | P0-7 | 风险红线与指导强度                                   | ✅ 已锁定   | [P0-7-risk-redlines-position-circuit-universe-llm-immutability.md](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md) | 保守仓位三连(单股 15% / 总仓 70% / 单次 5 万)+ 中性日内熔断(每日 5 单 / 日亏 -5% / 连亏 3 / 冷却 60 分钟 / SELL 不熔断)+ 中性 universe(主板+创业板+ETF / 禁 ST/科创/北交/可转债 / 禁涨跌停同向交易)+ RiskConfig 全锁 + RiskParameterProposal 自进化提议通道;RiskEngine 7-check → 14-check(派生 P0-3 amendment) |
 | P0-8 | 数据与资讯可信度                                     | ✅ 已锁定   | [P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md) | 行情主备 staleness 5s / divergence 0.3% + 全 watchlist 30s 快照 + 多域 5 源情报(财经 2 / 时政 1 / 全球 2;军事+社交舆论 P1)+ MiroFish 双路径(事件 + 盘后)+ DataQualityState 早返第四种买卖类冻结(不进 RiskEngine,builder 层降级 HOLD,risk_summary 长度恒 14)+ 5 类 evidence_id 前缀约定;派生 P0-3 amendment(多域 news_source)+ P2-1 superseded |
-| P0-9 | 第一阶段标的范围与频率                               | ⏳ 待讨论   | —       | watchlist 范围/排除规则/调仓频率/每日最大新指令数 |
+| P0-9 | 第一阶段标的范围与频率                               | ✅ 已锁定   | [P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md](docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md) | 中等双层 watchlist(13 codes = 沪主 4 + 深主 3 + 创业板 3 + 宽基 ETF 3)+ 中等严格排除(新股 30 / 次新 180 / 流动性 2 亿 / 单价 500;在 InstructionPlanBuilder 早返不进 14-check)+ fast/slow 双频(09:00 slow 全 watchlist + 09/11/13/15 fast 盘中)+ 5 单 cap 分配(traditional 4 + event_reserved 1,14:30 后滑动)+ **MiroFish 是加分项不是核心,event 路径硬 cap=1 严禁占用主路径** + 严格 long-only / ETF 套利留 P1(永锁 disabled);watchlist runtime 不可改;派生 P0-7 amendment(watchlist 排除规则在 InstructionPlanBuilder 早返) |
 | P0-10| LLM 角色边界                                         | ⏳ 待讨论   | —       | 抽取/解释/草案 vs 决策/仓位/风控硬限制 |
 
 ### 2.2 P1 决策点(影响架构,主要闭环开发前定下来)
@@ -274,6 +275,26 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **基准数据缺失保守判定 = 0**:`benchmark_excess_return=0`(等价边界 PASS);严禁基准缺失时跳过校验或假阳性 PASS
 - **AcceptanceReport / EquityPoint / P0InterruptRecord 是 frozen Pydantic v2 模型**:就地 mutation 红线违规(继承 P0-3 §2 红线 12 / P0-4 §2 红线 16 / P0-5 §2 红线 16 immutability 原则)
 
+**watchlist 与频率红线**(P0-9 锁定 2026-05-09,详见 [decisions/P0-9](docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md) §2):
+
+- **watchlist 总 codes 数恒定 = 13**(10 个股 + 3 ETF):`config/watchlist_policy.yaml.watchlist.total_codes` 必须为 13;改动必须先走 `P0-9-amendment-{date}-watchlist-size.md`;实施期 lint rule 校验 `len(default_codes) == 13`
+- **watchlist 板块组成恒定** = `sh_main:4 / sz_main:3 / chuangye:3 / etf:3`;任一板块数量改动必须先走 amendment;`backend/data/watchlist.py::validate_composition()` 启动时强校验
+- **3 只必备 ETF 永锁** = `510300`(沪深300)+ `510500`(中证500)+ `159949`(创业板50);新增/替换 ETF 必须先走 `P0-9-amendment-{date}-etf-list-expand.md`;严禁第一阶段加行业 ETF / 主题 ETF / 跨境 ETF / 商品 ETF / 货币 ETF
+- **科创板(688x)/北交所(8x/92x)/可转债(11x/12x) 在 watchlist 中永禁**(继承 P0-7 §1.3.4;此处复述);任何代码尝试加入这三类 codes 即红线违规
+- **watchlist 在 runtime 不可改**(继承 P0-7 §1.4 RiskConfig 全锁精神):`config/watchlist_policy.yaml.watchlist.default_codes` 列表只能通过 git diff + amendment + 进程重启变更;`backend/api/watchlist*.py` 只允许 `GET` 端点;旧 `WatchlistService.add_stock` / `remove_stock` / `clear` 方法标 deprecated 不暴露在 FastAPI route
+- **watchlist 排除规则四件套阈值锁定**:`ipo_min_trading_days=30` / `sub_new_min_trading_days=180` / `min_avg_amount_20d_yuan=200_000_000` / `max_unit_price_yuan=500.0`;调整任一阈值必须先走 amendment
+- **watchlist 排除规则在 InstructionPlanBuilder 早返**:**不进** RiskEngine 14-check;`backend/risk/` 严禁实现 IPO/SUBNEW/LIQUIDITY/HIGHPRICE 排除逻辑;实施期 lint rule 阻止 RiskEngine `_check_*` 方法引用 `ipo_date` / `avg_amount_20d` / `limit_price * 100`
+- **watchlist 排除规则数据缺失即 fail-closed 降级 HOLD**:`stock_meta.ipo_date=None` / 流动性数据不足 20 交易日 / `limit_price=None` 即降级 HOLD;不允许"缺数据时通过"的乐观回退(继承 P0-7 §2 红线 13 fail-closed 精神)
+- **5 单 cap 分配锁定**:`total_daily_cap=5`(继承 P0-7)/ `traditional_path_default_cap=4` / `event_path_reserved_cap=1`;调整 cap 分配必须先走 amendment;`event_path_reserved_cap > 1` 永禁(MiroFish 不夺主精神)
+- **MiroFish 事件路径不得占用 traditional 主路径 cap**:`backend/services/instruction_plan_builder.py` 必须显式标记 `path: Literal["traditional", "event"]`;`cap_allocator` 按 path 字段独立计数;实施期 lint rule 阻止把 MiroFish severity 映射到 path=traditional 的 candidate
+- **event_path_reserved_cap=1 用满后即使 severity=CRITICAL 也不再发新 InstructionPlan**:仅写 `evidence_collection`;实施期单元测试强覆盖
+- **fast/slow 双频架构锁定**:`fast.cron="0 9,11,13,15 * * mon-fri"` / `slow.cron="0 9 * * mon-fri"`;改 cron 必须先走 amendment;`pipeline_timeout_seconds` 阈值(fast 480 / slow 900)同样锁定
+- **InstructionSide 永锁** `{BUY, SELL, HOLD}`(继承 P0-3 §2 红线 2;此处复述);任何尝试加 SHORT/COVER/MARGIN_BUY/REVERSE_REPO/ETF_SUBSCRIBE/ETF_REDEEM 即红线违规;P1 加 ETF 套利必须先走 `P0-9-amendment-{date}-etf-arbitrage-enable.md`(届时还要扩 P0-3 InstructionSide / P0-7 RiskEngine check)
+- **`broker.allowed_instruments` 永锁** `{sh_main, sz_main, chuangye, etf}`:`backend/broker/mock_broker.py::ALLOWED_INSTRUMENTS` 用 `frozenset` 不可变;严禁 runtime 修改;新增板块/工具必须先走 amendment
+- **SELL 仅可对已持仓 codes**(继承 RiskEngine check 5);MockBroker 永远不维护 short_position 字段(`MockBroker.short_position={}` 永远空字典)
+- **ETF 套利 P1 预留接口永锁 disabled**:`config/broker.yaml.etf_arbitrage_enabled=false`;`backend/broker/etf_arbitrage_stub.py` 仅含 `class ETFArbitrageStub: NotImplementedError`;`backend/api/etf_arbitrage*.py` 不创建 router;启用必须走 amendment
+- **`WatchlistPolicy` / 衍生 schema 是 frozen Pydantic v2 模型**:就地 mutation 红线违规(继承 P0-3 / P0-4 / P0-5 / P0-6 / P0-7 / P0-8 immutability 原则)
+
 **安全红线**:
 
 - LLM key / 飞书凭证(`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY` / `FEISHU_CUSTOM_BOT_WEBHOOK_URL` / `FEISHU_CUSTOM_BOT_SIGN_SECRET`)仅走 shell env(`~/.bashrc`),永不入 `.env`、永不入 git
@@ -340,6 +361,10 @@ grep -rn "from backend.risk\|RiskConfig\|PositionLimitsConfig\|CircuitBreakerCon
 grep -rn "@router.post\|@router.put\|@router.patch" backend/api/risk/
 grep -rn "from backend.llm\|import backend.llm" backend/data/data_quality.py backend/data/divergence.py backend/data/staleness.py backend/data/suspension.py
 grep -rn "MiroFish.*RiskCheckSummary\|RiskCheckSummary.*MiroFish" backend/  # P0-8 红线 6
+grep -rn "@router.post\|@router.put\|@router.patch\|@router.delete" backend/api/watchlist*.py  # P0-9 红线 5
+grep -rn "ipo_date\|avg_amount_20d\|max_unit_price" backend/risk/  # P0-9 红线 7
+grep -rn "SHORT\|COVER\|MARGIN_BUY\|REVERSE_REPO\|ETF_SUBSCRIBE\|ETF_REDEEM" backend/data/instruction_plan.py  # P0-9 红线 13
+grep -rn "etf_arbitrage_enabled" config/broker.yaml | grep -v "false"  # P0-9 红线 16
 ```
 
 LLM key 永远走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。

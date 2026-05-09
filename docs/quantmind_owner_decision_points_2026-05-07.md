@@ -389,38 +389,19 @@ reply_format: ...
 
 ## P0-9. 第一阶段标的范围与频率
 
-### 你需要决定
+✅ **已锁定 2026-05-09** — 决策文档:[`docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md`](decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md)
 
-第一阶段系统只覆盖哪些标的:
+锁定要点:
 
-- 只做 watchlist。
-- 只做 5 到 20 只熟悉股票。
-- 是否纳入 ETF。
-- 是否纳入创业板/科创板/北交所。
-- 是否排除 ST、新股、次新、低流动性股票。
-- 盘中扫描频率。
-- 指令频率上限。
+- **watchlist 规模与组成**:13 codes(沪主 4 + 深主 3 + 创业板 3 + 宽基 ETF 3:`510300` 沪深300 + `510500` 中证500 + `159949` 创业板50);第一阶段不动态选股,用户实施期手工填 13 codes
+- **排除规则四件套**:新股 ≤30 个交易日 + 次新 ≤180 个交易日 + 流动性 < 2 亿元(过去 20 交易日日均成交额) + 单价 > 500 元(高单价排除);在 InstructionPlanBuilder 第五道早返,**不进** RiskEngine 14-check
+- **调仓频率**:沿用 fast/slow 双频(slow_pipeline 每交易日 09:00 + fast_pipeline 09/11/13/15 四次盘中);5 单 cap 分配 = traditional 4 + event_reserved 1;14:30 后 event 未用滑动给 traditional
+- **MiroFish 是加分项不是核心**:平台底层是传统 AI 量化交易,MiroFish 是补充层;event 路径硬 cap=1 严禁占用 traditional 主路径 cap
+- **方向限制**:严格 long-only(InstructionSide 永锁 BUY/SELL/HOLD);永禁 SHORT/COVER/MARGIN_BUY/REVERSE_REPO/ETF_SUBSCRIBE/ETF_REDEEM;ETF 仅二级市场买卖;ETF 套利预留 P1 但永锁 disabled
+- **watchlist runtime 不可改**:`backend/api/watchlist*.py` 仅 GET;旧 add_stock/remove_stock/clear 标 deprecated;改 watchlist 必须先走 amendment + 进程重启
+- **派生 amendment**:`docs/decisions/P0-7-amendment-2026-05-09-watchlist-exclusion-rules.md`(实施期产出)说明排除规则在 InstructionPlanBuilder 早返而非 RiskEngine 边界
 
-### 建议倾向
-
-第一阶段:
-
-- 只做 watchlist。
-- 只做 long-only。
-- 只做高流动性 A 股或 ETF。
-- 不做高频。
-- 每日最多少量指令。
-- 先让 `simulation_auto` 和飞书回报闭环稳定。
-
-### 你需要产出
-
-一个 `Phase-1 Universe` 清单:
-
-- 股票/ETF 范围。
-- 排除规则。
-- 调仓频率。
-- 最大持仓数。
-- 每日最大新指令数。
+红线 17 条详见决策文档 §2;实施期改动清单见 §5。
 
 ## P0-10. LLM 角色边界
 
