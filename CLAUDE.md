@@ -45,7 +45,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-2 ✅ 已锁定 — 企业自建应用 + `lark-oapi` 长连接(双向闭环主路径)+ 自定义机器人 webhook(仅系统告警备用);第一阶段纯文本指令 + 严格回报模板;零公网入站、所有飞书凭证仅 shell env;详见 [P0-2 决策文档](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md)
 - P0-3 ✅ 已锁定 — `InstructionPlan` 严格 Pydantic schema(`QM-{YYYYMMDD}-{HHMMSS}-{code}-{side}-{seq}` 人读 ID + 极简 BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value / 完整证据 by-reference 折中绑定);第一阶段飞书纯文本模板锁定,`HOLD` 不路由不发飞书;`parse_ok=False` 强制降级 HOLD;详见 [P0-3 决策文档](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md)
 - P0-4 ✅ 已锁定 — ExecutionReportParser 严格正则 only(LLM 完全不参与回报路径);五种回报形态(已执行/部分执行/未执行/更正/盘后补录)精确正则锁定;盘中 30 分钟超时 + 1 次追问,valid_until 自动 EXPIRED;盘后补录与更正允许到当日 16:00;状态机扩展 AMBIGUOUS / 终态间迁移;澄清飞书五模板预写死;详见 [P0-4 决策文档](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md)
-- 下一站:P0-5 账户状态来源与对账机制(`UserReportedPortfolio` + 日终对账模板 + 偏差阈值 + 是否引入"对账更正"专用语法)
+- P0-5 ✅ 已锁定 — MockBroker 单一账户镜像(不引入 UserReportedPortfolio 平行 collection);系统 16:00 主动发起日终对账(`RECON-{YYYYMMDD}-{seq}` 人读 ID);分级偏差阈值(持仓股数 0% + 现金 ≤1 元 + 成本价 ≤0.01 元);超阈值创建 `reconciliation_ticket` fail-closed 等用户飞书显式裁定(三选一:采纳用户回报/采纳系统镜像/对账更正);OPEN/EXPIRED ticket 期间冻结次日买卖类 InstructionPlan 路由;公司行动第一阶段不支持自动处理统一走"对账更正";LLM 完全不参与对账路径;详见 [P0-5 决策文档](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md)
+- 下一站:P0-6 simulation_auto 验收标准(连续天数 / 收益回撤 / 指令完整率 / 数据缺失率 / 回报解析准确率 + 何时允许切换到 feishu_on)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -89,7 +90,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-2 | 飞书接入形态                                         | ✅ 已锁定   | [P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md) | 企业自建应用 + `lark-oapi` 长连接做双向闭环主路径;自定义机器人 webhook 仅作系统告警逃生通道;第一阶段纯文本;零公网入站 + 凭证仅 shell env |
 | P0-3 | 操作指令结构(`InstructionPlan`)                     | ✅ 已锁定   | [P0-3-instruction-plan-strict-schema-and-text-template.md](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md) | 严格 Pydantic schema(人读 ID + BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value + 详细证据 by-reference);第一阶段飞书纯文本模板锁定;HOLD 不路由不发飞书 |
 | P0-4 | 飞书回报语法与成交状态                              | ✅ 已锁定   | [P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md) | 严格正则 only(LLM 完全不参与回报路径)+ 五种回报形态精确正则 + 状态机扩展 AMBIGUOUS / 终态间迁移 + 30 分钟追问 + 16:00 盘后补录与更正 cutoff |
-| P0-5 | 账户状态来源与对账机制                              | ⏳ 待讨论   | —       | `UserReportedPortfolio` + 日终对账模板 + 偏差阈值 |
+| P0-5 | 账户状态来源与对账机制                              | ✅ 已锁定   | [P0-5-daily-reconciliation-fail-closed-tickets.md](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md) | MockBroker 单一镜像;系统 16:00 主动发对账(RECON-{YYYYMMDD}-{seq} ID);分级阈值(股数 0% + 现金 ≤1 元 + 成本 ≤0.01 元);超阈值创建 reconciliation_ticket fail-closed 等用户三选一裁定(采纳用户/采纳系统/对账更正);OPEN/EXPIRED ticket 冻结次日买卖类指令路由;公司行动第一阶段走对账更正;LLM 不参与对账路径 |
 | P0-6 | `simulation_auto` 验收标准                          | ⏳ 待讨论   | —       | 连续天数/收益回撤/指令完整率/数据缺失率/回报解析准确率 |
 | P0-7 | 风险红线与指导强度                                   | ⏳ 待讨论   | —       | 单股/总仓位/单次金额/每日指令数/亏损暂停线 |
 | P0-8 | 数据与资讯可信度                                     | ⏳ 待讨论   | —       | 行情/历史/新闻源 + 延迟/断流/源间偏差停发规则 |
@@ -193,6 +194,25 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **澄清飞书严禁走备用 webhook**(继承 P0-2 §2 红线 2 / 备用 webhook 仅发系统告警);主通道失活时不发澄清,只发告警
 - **状态机迁移必须经守门函数**(`instruction_plan_state_machine.py::transition`);任何 `model_copy(update={"status": ...})` 直接绕过即红线违规
 - **ExecutionReport 是 frozen Pydantic v2 模型**;就地 mutation 红线违规(继承 P0-3 §2 红线 12 immutability 原则)
+
+**对账路径红线**(P0-5 锁定 2026-05-09,详见 [decisions/P0-5](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md) §2):
+
+- **不引入独立 `user_reported_portfolios` collection**:MockBroker 是 `feishu_on` 时唯一账户镜像(继承 P0-1 §2 红线 3 不允许两条平行账本);任何代码尝试新建该 collection 或同义命名即红线违规
+- **日终对账必须由系统主动发起**(每个交易日 16:00 Asia/Shanghai 之后系统通过主通道发 `RECON-{YYYYMMDD}-{seq}` 请求);用户主动发的"日终对账"无 ticket_id 一律 AMBIGUOUS,飞书提示"请等待系统在 16:00 自动发起对账"
+- **偏差阈值锁定**:cash 1.00 元 / volume 0%(严格相等)/ cost_price 0.01 元;调整必须先走 `P0-5-amendment-{date}-threshold-adjustment.md`
+- **超阈值必须创建 reconciliation_ticket**:严禁系统自动以用户回报覆盖 MockBroker;严禁系统拒绝接受用户回报让用户卡死;只有用户飞书显式三选一裁定(`对账采纳:用户回报 / 对账采纳:系统镜像 / 对账更正`)才允许覆盖
+- **OPEN/EXPIRED ticket 期间冻结买卖类 InstructionPlan 路由**:ModeRouter 必须在路由前查询 ticket 状态;冻结只在路由阶段(simulation_auto 与 InstructionPlanBuilder 仍持续运行,前端可见冻结期间系统决策)
+- **LLM 严禁参与对账路径**:`backend/services/reconciliation*.py` / `backend/integrations/feishu/reconciliation*.py` 严禁 `import backend.llm.*`;对账请求 / 裁定卡 / 澄清飞书全部预写死,LLM 不生成
+- **`ticket_id` 必须严格匹配** `^RECON-\d{8}-\d{3}$`;同一 trade_date seq ≥ 1000 抛 ValueError;长度恒 16 字符
+- **5 种用户对账回报形态严格正则 only**(对账无误 / 对账差异 / 对账更正 / 对账采纳:用户回报 / 对账采纳:系统镜像);任何不通过即 AMBIGUOUS,绝不更新 ticket / MockBroker
+- **绝不猜测 ticket_id**:回报中 ticket_id 必须严格匹配且当前 status ∈ `{OPEN, EXPIRED}`;系统不通过上下文反推
+- **`对账更正` 与 P0-4 `更正` 严格不混淆**:dispatcher 按前缀路由,zero crossover;违规即红线(`对账更正` 关联 ticket_id 覆盖整账户镜像;`更正` 关联 instruction_id 覆盖单条成交)
+- **公司行动第一阶段不支持自动处理**(分红 / 配股 / 送转 / 停牌等);任何在 `backend/services/reconciliation*.py` 中引入复权计算 / 自动送股 / 自动加现金 / akshare/adata/baostock 复权字段的代码都属红线违规;必须先走 amendment
+- **MockBroker 覆盖必须经过 ReconciliationApplier**(`reset_to_snapshot` 入口);严禁直接 mutation MockBroker 内部 `_cash` / `_positions` / `_trades`;实施期由 lint rule 阻止
+- **裁定卡严禁走备用 webhook**(继承 P0-2 §2 红线 2 / P0-4 §2 红线 13);主通道失活时不发裁定卡,只发"主通道异常"告警
+- **券商真实账户读取严禁**:绝不引入读取券商 API / 解析券商 PDF / 抓券商账户网页的代码(继承 P0-1 §2 红线 1);用户成交单只能离线人工对照
+- **ReconciliationTicket 状态机迁移必须经守门函数**(`reconciliation_state_machine.py::transition_ticket`);任何 `model_copy(update={"status": ...})` 直接绕过即红线违规(继承 P0-4 §2 红线 14)
+- **DailyReconciliation / ReconciliationTicket 是 frozen Pydantic v2 模型**;就地 mutation 红线违规(继承 P0-3 §2 红线 12 / P0-4 §2 红线 16 immutability 原则)
 
 **安全红线**:
 
