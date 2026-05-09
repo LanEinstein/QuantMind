@@ -46,7 +46,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-3 ✅ 已锁定 — `InstructionPlan` 严格 Pydantic schema(`QM-{YYYYMMDD}-{HHMMSS}-{code}-{side}-{seq}` 人读 ID + 极简 BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value / 完整证据 by-reference 折中绑定);第一阶段飞书纯文本模板锁定,`HOLD` 不路由不发飞书;`parse_ok=False` 强制降级 HOLD;详见 [P0-3 决策文档](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md)
 - P0-4 ✅ 已锁定 — ExecutionReportParser 严格正则 only(LLM 完全不参与回报路径);五种回报形态(已执行/部分执行/未执行/更正/盘后补录)精确正则锁定;盘中 30 分钟超时 + 1 次追问,valid_until 自动 EXPIRED;盘后补录与更正允许到当日 16:00;状态机扩展 AMBIGUOUS / 终态间迁移;澄清飞书五模板预写死;详见 [P0-4 决策文档](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md)
 - P0-5 ✅ 已锁定 — MockBroker 单一账户镜像(不引入 UserReportedPortfolio 平行 collection);系统 16:00 主动发起日终对账(`RECON-{YYYYMMDD}-{seq}` 人读 ID);分级偏差阈值(持仓股数 0% + 现金 ≤1 元 + 成本价 ≤0.01 元);超阈值创建 `reconciliation_ticket` fail-closed 等用户飞书显式裁定(三选一:采纳用户回报/采纳系统镜像/对账更正);OPEN/EXPIRED ticket 期间冻结次日买卖类 InstructionPlan 路由;公司行动第一阶段不支持自动处理统一走"对账更正";LLM 完全不参与对账路径;详见 [P0-5 决策文档](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md)
-- 下一站:P0-6 simulation_auto 验收标准(连续天数 / 收益回撤 / 指令完整率 / 数据缺失率 / 回报解析准确率 + 何时允许切换到 feishu_on)
+- P0-6 ✅ 已锁定 — `simulation_auto` 验收 = 45 交易日滚动窗口 + 5 项稳定性硬门槛(指令完整率 ≥95% / 回报解析准确率 ≥99% / 数据缺失率 ≤1% / LLM 超时率 ≤5% / 信号生成成功率 ≥95%)+ 3 项策略硬门槛(最大回撤 ≤8% / 累计 PnL ≥0 / 沪深 300 累计基准超额收益 ≥0)+ 7 项观察指标(不阻断切换);P0 系统级中断重置倒计时;reconciliation 冻结日不计入窗口(暂停而非重置);切换 `feishu_on` 必须前置 `acceptance.can_switch_to_feishu_on()` 校验,严禁 env var 绕过;每日 16:00:30 系统生成 `acceptance_reports` 一条记录;LLM 完全不参与验收路径;详见 [P0-6 决策文档](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md)
+- 下一站:P0-7 风险红线与指导强度(单股仓位 / 总仓位 / 单次金额 / 每日指令数 / 亏损暂停线 / 标的板块限制 / LLM 不可改的硬参数集合)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -91,7 +92,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-3 | 操作指令结构(`InstructionPlan`)                     | ✅ 已锁定   | [P0-3-instruction-plan-strict-schema-and-text-template.md](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md) | 严格 Pydantic schema(人读 ID + BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value + 详细证据 by-reference);第一阶段飞书纯文本模板锁定;HOLD 不路由不发飞书 |
 | P0-4 | 飞书回报语法与成交状态                              | ✅ 已锁定   | [P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md) | 严格正则 only(LLM 完全不参与回报路径)+ 五种回报形态精确正则 + 状态机扩展 AMBIGUOUS / 终态间迁移 + 30 分钟追问 + 16:00 盘后补录与更正 cutoff |
 | P0-5 | 账户状态来源与对账机制                              | ✅ 已锁定   | [P0-5-daily-reconciliation-fail-closed-tickets.md](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md) | MockBroker 单一镜像;系统 16:00 主动发对账(RECON-{YYYYMMDD}-{seq} ID);分级阈值(股数 0% + 现金 ≤1 元 + 成本 ≤0.01 元);超阈值创建 reconciliation_ticket fail-closed 等用户三选一裁定(采纳用户/采纳系统/对账更正);OPEN/EXPIRED ticket 冻结次日买卖类指令路由;公司行动第一阶段走对账更正;LLM 不参与对账路径 |
-| P0-6 | `simulation_auto` 验收标准                          | ⏳ 待讨论   | —       | 连续天数/收益回撤/指令完整率/数据缺失率/回报解析准确率 |
+| P0-6 | `simulation_auto` 验收标准                          | ✅ 已锁定   | [P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md) | 45 交易日滚动窗口 + 5 项稳定性硬门槛(95% / 99% / 1% / 5% / 95%)+ 3 项策略硬门槛(回撤 ≤8% / PnL ≥0 / 沪深 300 超额 ≥0)+ 7 项观察指标;P0 系统级中断重置;reconciliation 冻结暂停不重置;切换 `feishu_on` 必须前置 acceptance 校验;LLM 不参与验收路径 |
 | P0-7 | 风险红线与指导强度                                   | ⏳ 待讨论   | —       | 单股/总仓位/单次金额/每日指令数/亏损暂停线 |
 | P0-8 | 数据与资讯可信度                                     | ⏳ 待讨论   | —       | 行情/历史/新闻源 + 延迟/断流/源间偏差停发规则 |
 | P0-9 | 第一阶段标的范围与频率                               | ⏳ 待讨论   | —       | watchlist 范围/排除规则/调仓频率/每日最大新指令数 |
@@ -213,6 +214,24 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **券商真实账户读取严禁**:绝不引入读取券商 API / 解析券商 PDF / 抓券商账户网页的代码(继承 P0-1 §2 红线 1);用户成交单只能离线人工对照
 - **ReconciliationTicket 状态机迁移必须经守门函数**(`reconciliation_state_machine.py::transition_ticket`);任何 `model_copy(update={"status": ...})` 直接绕过即红线违规(继承 P0-4 §2 红线 14)
 - **DailyReconciliation / ReconciliationTicket 是 frozen Pydantic v2 模型**;就地 mutation 红线违规(继承 P0-3 §2 红线 12 / P0-4 §2 红线 16 immutability 原则)
+
+**验收路径红线**(P0-6 锁定 2026-05-09,详见 [decisions/P0-6](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md) §2):
+
+- **验收期固定 45 个交易日滚动窗口**:任何尝试在新代码中读取 `WINDOW_TRADING_DAYS` 之外的常量(30 / 20 / 60 等)即红线违规;调整必须先走 `P0-6-amendment-{date}-window-length.md`
+- **5 项稳定性硬门槛 + 3 项策略硬门槛阈值锁定**:95% / 99% / 1% / 5% / 95% / 8% / 0 / 0;调整任一阈值必须先走 amendment;实施期 lint rule 阻止阈值常量被修改
+- **LLM 严禁参与验收路径**:`backend/services/acceptance*.py` / `backend/services/equity_curve.py` 严禁 `import backend.llm.*`(继承 P0-4 §2 红线 2 / P0-5 §2 红线 6)
+- **A 股节假日表静态 YAML**:第一阶段不引入 akshare/adata/baostock 节假日 API;只读 `config/a_share_holidays_*.yaml` 人工年度更新
+- **基准固定沪深 300**(`000300.SH`):切换基准必须先走 `P0-6-amendment-{date}-benchmark-change.md`
+- **`equity_curve` 不可绕过 mark-to-market**:每个交易日 15:00 之后必须有一条 `EquityPoint` 写入;`equity_points` collection 缺日红线违规;数据降级时仍写入但标 `mark_quality='degraded'`
+- **回报解析准确率 99% 在 feishu_off 模式下也要求**:SimulationExecutor 必须按 P0-4 §1.2 模板渲染 ExecutionReport 文本,经过相同 parser 解析后才能更新 MockBroker;严禁绕过 parser 直接更新
+- **P0 系统级中断 5 类定义锁定**:行情连续断流 30min / LLM 全停 1h / MockBroker 损坏 / 状态机非法迁移 / 长连接 4h;新增类别必须先走 amendment
+- **reconciliation 冻结只暂停不重置**:任何代码尝试在冻结日触发 `reset_window_on_p0()` 或同语义函数即红线违规
+- **切换 API `POST /api/run-mode/transition` 必须前置 `acceptance_report.can_switch_to_feishu_on()` 校验**:返回 False 时立即 HTTP 403 + 预写死 blockers 文案;严禁 env var / CLI 绕过(继承 P0-1 §1.4)
+- **`acceptance_reports` collection 每日仅 1 条**:`(report_date)` 唯一索引;同日重新生成必须 upsert(防"试探" + 防数据污染)
+- **观察指标不阻断切换 = 不参与 `can_switch_to_feishu_on` 计算**:任何把观察指标写入 `can_switch_to_feishu_on` 判断式的代码即红线违规
+- **验收期内禁止"绕过指标修改 MockBroker"**:用户不能通过前端直接编辑 MockBroker 现金 / 持仓(继承 P0-5 §2 红线 12 ReconciliationApplier 入口收口);否则 equity_curve 失真,PnL / 最大回撤指标无意义
+- **基准数据缺失保守判定 = 0**:`benchmark_excess_return=0`(等价边界 PASS);严禁基准缺失时跳过校验或假阳性 PASS
+- **AcceptanceReport / EquityPoint / P0InterruptRecord 是 frozen Pydantic v2 模型**:就地 mutation 红线违规(继承 P0-3 §2 红线 12 / P0-4 §2 红线 16 / P0-5 §2 红线 16 immutability 原则)
 
 **安全红线**:
 
