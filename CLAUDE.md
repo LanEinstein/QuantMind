@@ -1,103 +1,257 @@
-# QuantMind 智网量化交易系统
+# QuantMind 项目协作上下文
 
-## 1. 这是什么系统
+> 本文件是 Claude 跨 session 接手 QuantMind 时的"第一读"。
+> 当前为**过渡版**(2026-05-09 重写)。2026-05-08 audit 与决策清单整体重写,把项目方向从"半自动实盘升级路径"调整为"模拟实盘能力验证 + 飞书人工执行闭环"两条平行能力。所有决策点全部锁定后会基于决策结果重写本文件并生成新的执行计划。
 
-个人 A 股量化交易系统,4 周 suggest-mode 评估期 + 实盘前置 + ¥10k 干跑分阶段推进。融合 TradingAgents-CN 多 Agent 决策与 MiroFish 群体智能仿真。
+---
 
-- **三模型协同**:DeepSeek V4 Pro(高频低成本数据/摘要)+ Qwen 3.6 Plus(中文金融分析)+ Kimi K2.6(辩论/决策智能体核心)
-- **当前阶段**:Phase 5B 进行中 (T01 ✅ c95e004 / T02 ✅ 07a19ea / T03 ✅ eb10fc1 / 出口 harness ✅ 12bac5b / 出口 wiring ✅ 本次提交;Phase 5B 出口 🔧 wiring 全部就位 — `backend/services/shadow_runner.py` + `fund_manager_shadow_baseline` agent + `FundManagerRecord.parse_ok` 透传 + analysis_scheduler fire-and-forget hook + 风控 redline transitive 修复;1139 测试 + 14 个 codex 发现全 RESOLVED;真值待 operator 起后端 `QUANTMIND_SHADOW_ENABLED=1` 跑 7 天;runbook `docs/reviews/phase5b-shadow-deployment-runbook.md`)
-- **绝对红线**:`AUTHORIZATION_MODE=suggest` 在评估期与 Phase 6A/6B 不可越界;实盘 `auto` 仅 Phase 7 用户书面授权;不跨阶段自动推进,Phase 末必须 STOP + summary 报告
+## 1. 项目概述
 
-## 2. 怎么组织
+### 1.1 项目定位(2026-05-08 重新锁定)
+
+QuantMind **不再以真实券商账户的程序化下单、半自动下单或全自动下单为目标**。新目标是同时支持两种相互独立的运行模式:
+
+| 模式 | 名称 | 目标 | 真实券商 API | 真实下单 |
+|------|------|------|--------------|----------|
+| 模式 A | `simulation_auto` 完全自动化模拟全流程 | 让系统在真实行情/资讯输入下,自主完成"分析 → 指令 → 风控 → 模拟成交 → 复盘"全闭环,作为平台实战能力的考场 | 不接 | 不下 |
+| 模式 B | `feishu_interactive` 飞书交互人工执行 | 系统把结构化操作指令通过飞书发到群里;用户在券商 APP 手动执行;用户飞书回报实际成交;系统解析回报并维护"用户回报账户镜像" | 不接 | 用户手动 |
+
+两种模式共用同一套 `InstructionPlan`、风控、仓位计算、证据链与统一账本(`decision_ledger`)。
+
+### 1.2 旧愿景 vs 当前形态(基于 audit 2026-05-07/08 重构)
+
+最初愿景是"基于大模型隐性信息汇总推演机制的全自动与自进化 A 股量化交易平台",但 audit 揭示当前真实形态更接近"多 Agent 投研信号系统 + 内存 MockBroker 模拟交易展示":
+
+- 已具备:FastAPI 后端 + Vue 前端 + MongoDB/Redis + adata/akshare/baostock 行情 + 9-Agent LangGraph 分析 + LLM Router(DeepSeek/Qwen/Kimi) + MockBroker + RiskEngine + 影子对比/成本守门/阶段授权红线雏形
+- 关键缺口(以 audit 为准):
+  - 没有 `InstructionPlan`,只有粗粒度 `TradingSignal`(缺股数/限价/有效期/失效条件/数据快照 ID/证据 ID/指令编号/回报模板)
+  - `TradingSignal → 模拟订单执行` 链路完全断裂(`AnalysisScheduler` 保存信号后不调用 MockBroker)
+  - `RiskEngine.validate_order` 在 `backend/api/`、`backend/broker/`、`backend/agents/` 中无调用 — 风控未贯穿信号到执行
+  - MockBroker 状态只在内存,无持久化、无 mark-to-market、无日切
+  - 没有飞书发送/接收/解析/去重/回执模块(只有 `backend/monitoring/alerter.py` 的单向 webhook 告警)
+  - 没有 `UserReportedPortfolio` 用户回报账户镜像,也没有 `decision_ledger` 统一账本
+  - MiroFish 适配器存在,但 `AnalysisServices` 构造时未注入 `MiroFishSimulator` — 默认运行时不触发仿真
+  - 前端仍是 `suggest/confirm/auto` 旧语义,关键按钮(批准/拒绝/注入辩论/导出)为 mock 或半接线
+- 历史教训:1139 测试全绿但 RiskEngine 实际未接入订单链路 — **测试通过 ≠ 闭环可用**
+
+### 1.3 当前阶段:决策对齐期(2026-05-08 重启)
+
+旧的 `docs/phase5-eval-and-phase6-prep-master-plan.md` 与 Phase 5B 节奏**暂停推进**。当前只做一件事:针对新方向下的 owner 决策点(P0/P1/P2)逐个完成调研讨论,每个决策点产出 `docs/decisions/{决策编号}-{决策结果简述}.md`(命名约定见 `docs/decisions/README.md`)。
+
+**全部 P0 锁定 → 重写本 CLAUDE.md + 生成新执行计划 → 才开始下一阶段实现工作。**
+
+**进度(2026-05-09)**:
+- P0-1 ✅ 已锁定 — `simulation_auto` always-on 底座 + `feishu_interactive` 可叠加切换;MockBroker 是唯一账户镜像;模式切换 = 账户生命周期事件;旧 `AUTHORIZATION_MODE × QUANTMIND_PHASE` 矩阵一次性破坏式删除;详见 [P0-1 决策文档](docs/decisions/P0-1-simulation-base-feishu-overlay.md)
+- 下一站:P0-2 飞书接入形态(自定义机器人 vs 自建应用 + 长连接/HTTPS 回调)
+
+> ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
+
+### 1.4 项目目录速查
 
 ```
 backend/
-  agents/           # 9-Agent LangGraph pipeline + AnalysisRecord
-  api/              # FastAPI routers (analysis/risk/monitoring/...)
-  data/             # MongoDB / Redis / scheduler / news_crawler
+  agents/           # 9-Agent LangGraph pipeline + AnalysisRecord(产出 TradingSignal,缺 InstructionPlan)
+  api/              # FastAPI routers (analysis/risk/monitoring/trading/...)
+  data/             # MongoDB / Redis / scheduler / news_crawler / market_data
   llm/              # router + cost_tracker + fallback + providers
-  risk/             # 纯 Python 硬编码,严禁 import LLM/agents/mirofish
-  services/         # cost_guard / authorization / signal_evaluator / ...
-  broker/           # MockBroker + (Phase 6C+) real broker stub
-frontend/           # Vue 3 + Element Plus + ECharts (port 9276)
-config/             # agent_models.yaml / risk.yaml / broker.yaml / ...
+  risk/             # 纯 Python 硬编码,严禁 import LLM/agents/mirofish(未贯穿到订单链路)
+  services/         # cost_guard / authorization / signal_evaluator / shadow_runner
+  broker/           # MockBroker(内存) + IBroker interface(实盘 stub 不开发)
+  mirofish/         # 隐性变量仿真模块(默认未注入运行时)
+  monitoring/       # alerter.py 单向 webhook(不是飞书双向闭环)
+frontend/           # Vue 3 + Element Plus + ECharts(port 9276,仍含 suggest/confirm/auto 旧语义)
+config/             # agent_models.yaml / risk.yaml / broker.yaml / data_sources.yaml / mirofish.yaml
 docs/
-  phase5-eval-and-phase6-prep-master-plan.md   # SSoT,执行依据
-  reviews/                                       # codex review + 阶段 summary
-tests/              # pytest 全部测试
+  quantmind_project_audit_2026-05-07.md             # 当前真实状态全景盘点(2026-05-08 重写)
+  quantmind_owner_decision_points_2026-05-07.md     # 待决策点清单(2026-05-08 重写)
+  decisions/                                          # 已锁定决策(目前只有 README.md)
+  reviews/                                            # codex review 与阶段总结
+  phase5-eval-and-phase6-prep-master-plan.md         # 旧 SSoT(暂停)
+  QuantMind_Project_Blueprint_V3.md                   # 早期蓝图
+tests/              # pytest 全部测试(1139 绿,但闭环未通)
 ```
 
-**SSoT (Single Source of Truth)**:`docs/phase5-eval-and-phase6-prep-master-plan.md`。任何 task 推进前先读此文件 §5 自验证 7 步,marker 状态以 SSoT 为准。
+---
 
-## 3. 怎么运行
+## 2. 技术栈决策点
 
-```bash
-# 后端 (suggest-mode redline 启动断言会校验 QUANTMIND_PHASE × AUTHORIZATION_MODE)
-QUANTMIND_PHASE=phase5_eval AUTHORIZATION_MODE=suggest \
-  /home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app --port 8000
+> 本节随每个决策点的落地实时更新。状态:`⏳ 待讨论` / `🔧 调研中` / `✅ 已锁定` / `🛑 暂缓` / `❌ 已废弃`。
+> 决策编号取自 `docs/quantmind_owner_decision_points_2026-05-07.md`(2026-05-08 重写版)。
 
-# 前端 (避开 Open WebUI 占用的 3000)
-cd frontend && npm run dev   # listens on :9276
+### 2.1 P0 决策点(必须先于核心闭环重构完成)
 
-# Docker 一键 (compose 从 host shell 转发 LLM key)
-docker-compose up -d
+| 编号  | 主题                                                | 状态        | 决策文档 | 备注 |
+|------|----------------------------------------------------|------------|---------|------|
+| P0-1 | 两种运行模式与系统边界                              | ✅ 已锁定   | [P0-1-simulation-base-feishu-overlay.md](docs/decisions/P0-1-simulation-base-feishu-overlay.md) | `simulation_auto` always-on 底座 + `feishu_interactive` 切换器;MockBroker 单一账户镜像;模式切换 = 账户生命周期事件;旧授权矩阵一次性破坏式删除 |
+| P0-2 | 飞书接入形态                                         | ⏳ 待讨论   | —       | 自定义机器人 Webhook vs 企业自建应用 + 长连接/HTTPS 回调 + 卡片回调 |
+| P0-3 | 操作指令结构(`InstructionPlan`)                     | ⏳ 待讨论   | —       | 字段集 + 飞书指令模板 + 数据快照/证据/风控校验绑定 |
+| P0-4 | 飞书回报语法与成交状态                              | ⏳ 待讨论   | —       | 已执行/部分/未执行/更正/盘后补录 + 歧义处理红线 |
+| P0-5 | 账户状态来源与对账机制                              | ⏳ 待讨论   | —       | `UserReportedPortfolio` + 日终对账模板 + 偏差阈值 |
+| P0-6 | `simulation_auto` 验收标准                          | ⏳ 待讨论   | —       | 连续天数/收益回撤/指令完整率/数据缺失率/回报解析准确率 |
+| P0-7 | 风险红线与指导强度                                   | ⏳ 待讨论   | —       | 单股/总仓位/单次金额/每日指令数/亏损暂停线 |
+| P0-8 | 数据与资讯可信度                                     | ⏳ 待讨论   | —       | 行情/历史/新闻源 + 延迟/断流/源间偏差停发规则 |
+| P0-9 | 第一阶段标的范围与频率                               | ⏳ 待讨论   | —       | watchlist 范围/排除规则/调仓频率/每日最大新指令数 |
+| P0-10| LLM 角色边界                                         | ⏳ 待讨论   | —       | 抽取/解释/草案 vs 决策/仓位/风控硬限制 |
 
-# 日检 / 监控
-BASE_URL=https://quantmind.local ./scripts/daily-check.sh
-```
+### 2.2 P1 决策点(影响架构,主要闭环开发前定下来)
 
-**LLM key 永远走 shell env**(`~/.bashrc`),不入 .env、不入 git:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。`.env` 仅放非密配置(MONGODB_URI、`QUANTMIND_PHASE`、`QUANTMIND_DAILY_BUDGET` 等)。
+| 编号  | 主题                              | 状态      | 决策文档 | 备注 |
+|------|-----------------------------------|----------|---------|------|
+| P1-1 | 新核心数据模型                    | ⏳ 待讨论 | —       | `instruction_plans`/`simulation_orders`/`execution_reports`/`portfolio_snapshots`/`feishu_messages`/`decision_ledger` |
+| P1-2 | MockBroker 持久化与实时估值       | ⏳ 待讨论 | —       | 持久化口径/日切/撮合/估值源/交易成本模型 |
+| P1-3 | 飞书消息形态                      | ⏳ 待讨论 | —       | 纯文本 / 富文本 / 卡片 / 混合 |
+| P1-4 | 回报解析策略                      | ⏳ 待讨论 | —       | 规则优先 vs LLM 辅助 + 解析状态机 |
+| P1-5 | 前端优先工作流                    | ⏳ 待讨论 | —       | InstructionCenter / SimulationLedger / FeishuConsole / PortfolioMirror / DataQuality |
+| P1-6 | 安全、密钥与访问边界              | ⏳ 待讨论 | —       | App Secret/Verify Token/Encrypt Key 存放 + 公网回调与否 |
+| P1-7 | 成本预算                          | ⏳ 待讨论 | —       | LLM/飞书/数据源/服务器月预算 + 软超限动作 |
+| P1-8 | Kimi thinking 使用策略            | ⏳ 待讨论 | —       | 场景/超时/失败动作矩阵 |
 
-## 4. 怎么验证
+### 2.3 P2 决策点(可稍后细化)
 
-| 层 | 命令 | 阈值 |
-|----|------|------|
-| Backend 全量 | `/home/ps/anaconda3/envs/zhanglan/bin/pytest -q --cov=backend --cov-fail-under=70` | >70% non-risk / >95% risk |
-| 风控引擎单测 | `pytest -q backend/risk --cov=backend/risk --cov-fail-under=95` | 强制 ≥95% |
-| Frontend | `cd frontend && npm run type-check && npm run test -- --run && npm run build` | 全绿 |
-| Playwright E2E | `npx playwright test --workers=1 --reporter=line` | pass rate ≥95% |
-| 红线静态检查 | `grep -rn "from backend.llm\|from backend.agents\|from backend.mirofish" backend/risk/` | 仅命中 docstring,无真 import |
-| 实时健康 | `curl -sk https://quantmind.local/api/health/detailed \| jq .data.status` | `ok` |
-| 实时预算 | `curl -sk https://quantmind.local/api/monitoring/budget \| jq .` | `status ∈ {ok,soft_breach,hard_breach}` |
+| 编号  | 主题                       | 状态      | 决策文档 | 备注 |
+|------|----------------------------|----------|---------|------|
+| P2-1 | MiroFish 真实使用范围      | ⏳ 待讨论 | —       | 重大事件触发 / 盘后复盘 / 研究展示 |
+| P2-2 | 自进化机制边界              | ⏳ 待讨论 | —       | 候选权重/路由/prompt/策略/风控参数 自动改边界 |
+| P2-3 | 移动端或远程访问            | ⏳ 待讨论 | —       | Web UI 内网 + 移动端只飞书 |
+| P2-4 | 告警渠道                    | ⏳ 待讨论 | —       | 行情断流/资讯失败/LLM 不可用/指令生成失败/风控拦截/日终对账缺失 |
 
-## 5. 进度管理(必读)
+### 2.4 当前(尚未决策时)的临时栈快照
 
-**所有 task 推进遵循 SSoT 协议**:
+仅作"系统现在跑成什么样"的事实记录,**不构成最终选择**:
 
-1. **接手前**:跑 SSoT §5 自验证 7 步(读 SSoT、找 ⏳/🔧 task、`git log`、`pytest`、红线 grep、`/api/monitoring/budget`、把 marker 改 🔧 推进中)
-2. **推进中**:用 TaskCreate/TaskUpdate 跟踪步骤;markers ⏳→🔧→✅(或 🚧/🛑)
-3. **完成后 pre-commit gate**(顺序不可颠倒):
-   - 把 SSoT marker 从 🔧 改为 ✅,**填真实 commit hash**(不要留 "(pending)")
-   - 跑测试金字塔 + ruff(全绿)
-   - codex-review:**major** 跑 5 轮 R1-R5(architecture/UX/testing/perf/security)、**minor** 跑 R1+R3 两轮;输出存 `docs/reviews/{task_id}-r{N}-{topic}.md`
-   - commit message 用 §2.4 模板(Task / Status / Tests / Coverage / Codex-Review 字段必填)
-4. **不自动 push**,等用户授权;不自动跨阶段,Phase 末必须 STOP + summary 报告
-5. **报告前必须先更新 SSoT 状态并明确说"做了什么、改了哪些 marker、commit hash 是多少"**;不准发完报告再补 marker 或事后追 hash
+- **后端**: FastAPI + Python 3.11(`/home/ps/anaconda3/envs/zhanglan/bin/python`)
+- **数据层**: MongoDB(127.0.0.1) + Redis(127.0.0.1)
+- **行情源**: adata 主 / akshare 备 / baostock 历史备(免费源,只适合原型与研究)
+- **资讯源**: `akshare.stock_news_em` (Eastmoney 口径) — 单源、缺乏事件聚类与证据链
+- **LLM**: DeepSeek V4 Pro + Qwen 3.6 Plus + Kimi K2.6,通过 `backend/llm/router.py` 按 `config/agent_models.yaml` 路由
+- **前端**: Vue 3 + Pinia + Element Plus + ECharts,port 9276
+- **券商**: 仅 MockBroker(内存模拟),qmt/vnpy 占位但**新方向下不再开发**
+- **授权语义**: `backend/services/authorization.py` 仍是旧的 `phase5_eval/phase6_prep/phase6_dryrun/phase7_live × suggest/confirm/auto` 矩阵 — P0-1 已锁定**一次性破坏式删除**,实施期会替换为 `FEISHU_INTERACTIVE_ENABLED` 单开关 + 切换状态机(详见 [P0-1 §3](docs/decisions/P0-1-simulation-base-feishu-overlay.md))
 
-**Codex Review 同步源**:`https://github.com/LanEinstein/CCodexSkill`,触发前 `git pull` 同步到 `~/.claude/skills/codex-review/`。
+---
 
-## 6. 原则与经验
+## 3. 硬约束和原则
+
+> 本节记录"绝对不能碰的红线 + 已经踩过的坑 + 必须怎么做的原则"。会随项目演进追加。
+
+### 3.1 红线(违反即停止)
+
+**新方向定位红线**(P0-1 锁定 2026-05-09,详见 [decisions/P0-1](docs/decisions/P0-1-simulation-base-feishu-overlay.md) §2):
+
+- **永久禁止真实券商 API 下单/撤单/账户同步**;不开发 QMT / Ptrade / vn.py 适配器,`backend/broker/` 仅留 `IBroker` interface stub 与 `MockBroker`
+- **`FEISHU_INTERACTIVE_ENABLED` 是唯一的运行时开关**;`AUTHORIZATION_MODE` / `QUANTMIND_PHASE` 在新代码中**禁止再读取**(P0-1 落地时一次性破坏式删除)
+- **`live_confirm` / `phase7_live` / `auto` 三个词在新代码中视为非法标识符**(grep 必须为空,通过 lint rule 持续校验)
+- **MockBroker 是唯一账户镜像**:`feishu_off` 下是虚拟资金考场,`feishu_on` 下是用户真实资金的状态镜像(由飞书回报驱动);**不存在两条平行账本**
+- **模式切换不是 flag toggle,是账户生命周期事件**:必须经过强制归档 + MockBroker 重置 + 飞书初始化对账 + 解析成功才正式切换;切换期间冻结买卖类 InstructionPlan
+- **InstructionPlan 必须由角色鲜明的多 Agent 多轮辩论生成**;LLM 不允许绕过辩论直出股数/价格/有效期
+- **`feishu_off` 时只发系统告警,绝不发买卖指令**;`feishu_on` 时未收到回报的 InstructionPlan(超时 + 追问后)标记 expired,不更新 MockBroker
+- **飞书回报歧义必须 fail-closed**:解析不出 `instruction_id` / 股票代码 / 方向 / 股数 / 成交价时,系统不能更新持仓,必须发飞书要求澄清
+
+**架构红线**:
+
+- `backend/risk/` 严禁 `import backend.llm` / `backend.agents` / `backend.mirofish`,LLM 输出不得覆盖风控硬限制
+- 仓位计算、风控红线判断必须由确定性代码完成,**LLM 不允许直接决定股数或风控边界**
+- 飞书指令必须带 `data_snapshot_at`、`quote_source`、`news_source`;数据质量不达标时只允许发"观察/暂停"消息,不发买卖指令
+
+**安全红线**:
+
+- LLM key / 飞书 App Secret / Verify Token / Encrypt Key 仅走 shell env(`~/.bashrc`),永不入 `.env`、永不入 git
+- MongoDB / Redis 端口仅绑定 `127.0.0.1`
+- 前端不能直接显示完整密钥
+- 若飞书事件采用 HTTPS 回调,必须验证事件来源并做 replay 防护(优先采用长连接,避免暴露公网)
+
+**流程红线**:
+
+- 不自动跨阶段推进,Phase 末必须 STOP + summary 报告等用户授权
+- 不自动 push,本地 commit 后等用户授权再推远端
+- IPv4-only 出口:`httpx` 客户端必须 `local_address="0.0.0.0"`,host 无 IPv6 默认路由
+
+### 3.2 必须遵守的工程原则
 
 **编码**
+
 - 注释 / commit message 用英文;UI 文本与文档用中文
 - public function 必须有 type hints + docstring(WHY,不是 WHAT)
 - 配置走 YAML;LLM 调用必须 try/except,降级而非崩溃
 - 不可变数据结构优先(`@dataclass(frozen=True)` / `NamedTuple`)
 - 文件 200-400 行典型,800 行上限;函数 <50 行;嵌套 <4 层
 
-**安全 / 红线**
-- `backend/risk/` 严禁 import `backend.llm` / `backend.agents` / `backend.mirofish`
-- `.env` 永远不入 git;LLM key 仅走 shell env
-- MongoDB / Redis 端口仅绑定 `127.0.0.1`
-- 真实下单代码在 Phase 6C 之前不得激活,仅留 interface stub
-
-**质量取舍**(从过往 P5A-T02 5 轮 codex 学到的)
-- **完整升级路径优先**:不为省工作量妥协系统可用性(用户明确授权)
-- **Fail-closed for data corruption / fail-open for infra glitches**:NaN/Inf/负值在 cost_rmb / spent_today 等数据层与守门层做双层校验,Redis ConnectionError 让 scheduler 兜底通过
-- **抽出独立模块换取可测性**:authorization / cost_guard 都从原本散落的逻辑提到 `backend/services/`
-- **Codex review 是 hard gate**,不可跳;P5A-T02 经 5 轮发现 6 个 issue,P5A-T03 经 3 轮发现 3 个 P2,印证投资回报率
-
 **进度管理**
-- TaskCreate/TaskUpdate 全程跟踪;in_progress 严格只挂 1 个
+
+- TaskCreate/TaskUpdate 全程跟踪,`in_progress` 严格只挂 1 个
 - 每个 task 完成后立刻 mark completed,不批量
-- 跨 session 接手第一件事:读 SSoT + `MEMORY.md` 索引,不重新发明状态
+- 报告"完成"前必须先把状态文档(决策表/计划/SSoT)更新好 + 填真实 commit hash + 报告里明确说改了什么;不要让用户当 reviewer 抓遗漏
+- 跨 session 接手第一件事:读本 CLAUDE.md + audit + 决策清单 + `MEMORY.md` 索引,不重新发明状态
+
+**质量门禁**
+
+- **Codex review 是 hard gate**(从 P5A-T02 5 轮发现 6 issue / P5A-T03 3 轮发现 3 P2 沉淀的经验):major 5 轮 R1-R5,minor R1+R3 两轮,输出存 `docs/reviews/{task_id}-r{N}-{topic}.md`,触发前 `git pull` 同步 [LanEinstein/CCodexSkill](https://github.com/LanEinstein/CCodexSkill) 到 `~/.claude/skills/codex-review/`
+- 后端测试金字塔 + ruff 全绿才允许 commit;非 risk 模块覆盖率 >70%,risk 模块 >95%
+- **测试通过 ≠ 闭环可用**:测试断言要覆盖"被谁调用、贯穿到哪",不能只测"自身行为正确"(audit 已揭示 1139 绿 + RiskEngine 不接订单的反面教材)
+
+### 3.3 已经踩过的坑(沉淀的判断)
+
+- **完整升级路径优先**:不为省工作量妥协系统可用性(用户明确授权)
+- **Fail-closed for data corruption / fail-open for infra glitches**:NaN/Inf/负值在 `cost_rmb` / `spent_today` 等数据层与守门层做双层校验;Redis ConnectionError 让 scheduler 兜底通过
+- **抽出独立模块换取可测性**:authorization / cost_guard 都从原本散落的逻辑提到 `backend/services/`
+- **Codex CRITICAL 是真 bug**:mocks accept any kwargs;codex 抓到 Kimi SDK 不兼容时 125 个绿测试全过 — 信 codex R4 SDK 签名指认胜过绿测试套件
+- **Handoff 文档要详尽**:计划/SSoT 文档未来 session 会读,必须有完整代码片段、精确命令、预期输出 — 不能只列大纲
+- **测试通过 ≠ 闭环可用**:audit 揭示 1139 测试全绿但 RiskEngine 实际未接入订单链路 — 测试要追问"被谁调用",不仅是"自身行为正确"
+- **方向重构要彻底**:CLAUDE.md 早期把旧方向 P0-1/P0-2 标注 ✅ 但链接的决策文件并未落地;audit 重写后这些标注必须及时清理,不能留半新半旧的状态
+
+### 3.4 操作速查(过渡期,P0-1 已锁定但代码迁移待实施期统一进行)
+
+```bash
+# 后端启动 — 当前仍是旧 env var(代码尚未迁移,P0-1 落地后改为 FEISHU_INTERACTIVE_ENABLED=false)
+QUANTMIND_PHASE=phase5_eval AUTHORIZATION_MODE=suggest \
+  /home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app --port 8000
+
+# 前端(避开 Open WebUI 占用的 3000)
+cd frontend && npm run dev   # listens on :9276
+
+# 测试 / 验证
+/home/ps/anaconda3/envs/zhanglan/bin/pytest -q --cov=backend --cov-fail-under=70
+pytest -q backend/risk --cov=backend/risk --cov-fail-under=95
+cd frontend && npm run type-check && npm run test -- --run && npm run build
+
+# 红线静态检查
+grep -rn "from backend.llm\|from backend.agents\|from backend.mirofish" backend/risk/
+```
+
+LLM key 永远走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
+飞书 key(P0-2 锁定后启用):`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY`(命名以 P0-2 决策结果为准)。
+`.env` 仅放非密配置(`MONGODB_URI`、`QUANTMIND_PHASE`、`QUANTMIND_DAILY_BUDGET` 等)。
+
+---
+
+## 4. 重要文档
+
+> 决策对齐期最重要的三份文档(按阅读顺序)
+
+| 路径                                                     | 类型     | 用途 |
+|----------------------------------------------------------|---------|------|
+| `docs/quantmind_project_audit_2026-05-07.md`             | 全景盘点 | 当前系统真实状态、新目标架构、模块连接、关键差距清单、推荐路线图 — **接手第一份必读**,2026-05-08 重写 |
+| `docs/quantmind_owner_decision_points_2026-05-07.md`     | 决策清单 | P0/P1/P2 决策前置清单,每个决策点的关键问题、建议倾向与产出物要求 — 2026-05-08 重写 |
+| `docs/decisions/`                                         | 决策归档 | 已锁定决策文档(`{决策编号}-{结果简述}.md`),只放定稿。当前只有 `README.md`,未有定稿决策 |
+
+### 4.1 历史/参考文档(只读,与新方向有偏差)
+
+| 路径                                                | 状态        | 说明 |
+|----------------------------------------------------|-------------|------|
+| `docs/phase5-eval-and-phase6-prep-master-plan.md`  | 🛑 暂停推进 | 旧 SSoT,Phase 5B 出口已就位,但**整体方向待 P0 决策后重写**;旧 phase 命名将被 run_mode 取代 |
+| `docs/QuantMind_Project_Blueprint_V3.md`           | 📜 早期蓝图 | 最初愿景文档,与 audit 揭示的实际状态有偏差,作历史参考 |
+| `docs/reviews/`                                     | 📜 阶段记录 | codex review 报告 + 阶段 summary + Phase 5B shadow runbook(基于旧方向,新方向下部分结论需要重新评估) |
+
+### 4.2 用户私有规范(全局,跨项目通用)
+
+读取自 `/home/ps/.claude/rules/`:`coding-style.md` / `git-workflow.md` / `development-workflow.md` / `testing.md` / `security.md` / `performance.md` / `agents.md` / `hooks.md` / `patterns.md`,以及 `python/` / `typescript/` 子目录下的特化版本。
+
+### 4.3 自记忆索引
+
+`/home/ps/.claude/projects/-home-ps-papers-QuantMind/memory/MEMORY.md` — 跨 session 持久的用户偏好/反馈/项目状态/外部参考。
+
+> 注意:`project_phase5_status.md` 记录的是 Phase 5B 出口状态,基于旧方向。新方向决策对齐期开始后,该条目会随决策落定逐步更新或退役。
+
+---
+
+_本 CLAUDE.md 是过渡骨架。决策对齐期完成后会基于决策表整体重写,届时本节末尾会移除此说明。_
