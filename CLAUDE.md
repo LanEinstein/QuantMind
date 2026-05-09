@@ -43,7 +43,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 **进度(2026-05-09)**:
 - P0-1 ✅ 已锁定 — `simulation_auto` always-on 底座 + `feishu_interactive` 可叠加切换;MockBroker 是唯一账户镜像;模式切换 = 账户生命周期事件;旧 `AUTHORIZATION_MODE × QUANTMIND_PHASE` 矩阵一次性破坏式删除;详见 [P0-1 决策文档](docs/decisions/P0-1-simulation-base-feishu-overlay.md)
 - P0-2 ✅ 已锁定 — 企业自建应用 + `lark-oapi` 长连接(双向闭环主路径)+ 自定义机器人 webhook(仅系统告警备用);第一阶段纯文本指令 + 严格回报模板;零公网入站、所有飞书凭证仅 shell env;详见 [P0-2 决策文档](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md)
-- 下一站:P0-3 操作指令结构(`InstructionPlan` 字段集 + 飞书指令文本模板)
+- P0-3 ✅ 已锁定 — `InstructionPlan` 严格 Pydantic schema(`QM-{YYYYMMDD}-{HHMMSS}-{code}-{side}-{seq}` 人读 ID + 极简 BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value / 完整证据 by-reference 折中绑定);第一阶段飞书纯文本模板锁定,`HOLD` 不路由不发飞书;`parse_ok=False` 强制降级 HOLD;详见 [P0-3 决策文档](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md)
+- 下一站:P0-4 飞书回报语法与成交状态(回报模板严格语法 + 部分执行/更正/盘后补录 + ambiguous fail-closed 状态机 + 追问超时具体时长)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -85,7 +86,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 |------|----------------------------------------------------|------------|---------|------|
 | P0-1 | 两种运行模式与系统边界                              | ✅ 已锁定   | [P0-1-simulation-base-feishu-overlay.md](docs/decisions/P0-1-simulation-base-feishu-overlay.md) | `simulation_auto` always-on 底座 + `feishu_interactive` 切换器;MockBroker 单一账户镜像;模式切换 = 账户生命周期事件;旧授权矩阵一次性破坏式删除 |
 | P0-2 | 飞书接入形态                                         | ✅ 已锁定   | [P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md) | 企业自建应用 + `lark-oapi` 长连接做双向闭环主路径;自定义机器人 webhook 仅作系统告警逃生通道;第一阶段纯文本;零公网入站 + 凭证仅 shell env |
-| P0-3 | 操作指令结构(`InstructionPlan`)                     | ⏳ 待讨论   | —       | 字段集 + 飞书指令模板 + 数据快照/证据/风控校验绑定 |
+| P0-3 | 操作指令结构(`InstructionPlan`)                     | ✅ 已锁定   | [P0-3-instruction-plan-strict-schema-and-text-template.md](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md) | 严格 Pydantic schema(人读 ID + BUY/SELL/HOLD + 单 limit_price + 当日盘中 valid_until + 7-check 摘要 by-value + 详细证据 by-reference);第一阶段飞书纯文本模板锁定;HOLD 不路由不发飞书 |
 | P0-4 | 飞书回报语法与成交状态                              | ⏳ 待讨论   | —       | 已执行/部分/未执行/更正/盘后补录 + 歧义处理红线 |
 | P0-5 | 账户状态来源与对账机制                              | ⏳ 待讨论   | —       | `UserReportedPortfolio` + 日终对账模板 + 偏差阈值 |
 | P0-6 | `simulation_auto` 验收标准                          | ⏳ 待讨论   | —       | 连续天数/收益回撤/指令完整率/数据缺失率/回报解析准确率 |
@@ -164,6 +165,20 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **第一阶段不实现交互卡片**(`interactive` msg_type / `card.action.trigger` 回调实现属实施期外的范围,加它必须先走 amendment)
 - **长连接断线时**:可继续发系统告警(走备用 webhook),但**不可发买卖指令**;由 ModeRouter 在长连接失活态下 fail-closed 拒绝路由买卖类 InstructionPlan
 - **`lark` / `feishu` / `larksuite` 关键字在 `backend/risk/` 子树严禁出现**(继承 P0-1 §8 原则)
+
+**操作指令结构红线**(P0-3 锁定 2026-05-09,详见 [decisions/P0-3](docs/decisions/P0-3-instruction-plan-strict-schema-and-text-template.md) §2):
+
+- **`instruction_id` 必须严格匹配** `^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL|HOLD)-\d{3}$`;Pydantic schema 强校验,违规即 ValidationError;长度恒在 33-34 字符
+- **`InstructionSide` 集合冻结为** `{BUY, SELL, HOLD}`,任何其他取值红线违规;**HOLD 永不路由到 SimulationExecutor / FeishuMessenger**(`is_routable()` 强制返回 False)
+- **`valid_until` 三连约束**:`> created_at` + 当日内 + `≤ 当日 14:55 Asia/Shanghai`;跨日支持必须先走 `P0-3-amendment-{date}-cross-day-validity.md`
+- **BUY/SELL 必须有 `volume`(100 整数倍)+ `limit_price`(>0)**;HOLD 必须 `volume=None, limit_price=None`,违规 ValidationError
+- **`InstructionPlan.status` 流转必须经过状态机**(DRAFT → VALIDATED → DISPATCHED → FILLED / EXPIRED / REJECTED / AMBIGUOUS);跨态(如 DRAFT→FILLED)红线违规
+- **`risk_summary` 必须包含恰好 7 条**(对应 `backend/risk/engine.py::_check_*` 7-check);HOLD 也要 7-check
+- **`debate_round_count ≥ 1`**(P0-1 §1.6 / 绕过辩论 = 0 即红线违规);Pydantic `Field(ge=1)` 强校
+- **`parse_ok=False` 的 TradingSignal 不得产出可执行 InstructionPlan**;必须降级为 HOLD
+- **飞书指令文本必须由 `renderer.py` 函数生成**,不允许 LLM 自由拼接(P0-2 §2 红线 / 防 prompt injection 间接绕过模板)
+- **InstructionPlan 是 frozen Pydantic 模型**;就地 mutation 红线违规;状态流转必须 `model_copy(update={"status": ...})` 经过状态机守门
+- **第一阶段排除**:市价单(`OrderType.MARKET`)/ 价格区间 / 区间偏移 / ADD/REDUCE 百分比 全部不在 P0-3 范围,引入必须先走 amendment
 
 **安全红线**:
 
