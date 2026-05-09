@@ -47,7 +47,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-4 ✅ 已锁定 — ExecutionReportParser 严格正则 only(LLM 完全不参与回报路径);五种回报形态(已执行/部分执行/未执行/更正/盘后补录)精确正则锁定;盘中 30 分钟超时 + 1 次追问,valid_until 自动 EXPIRED;盘后补录与更正允许到当日 16:00;状态机扩展 AMBIGUOUS / 终态间迁移;澄清飞书五模板预写死;详见 [P0-4 决策文档](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md)
 - P0-5 ✅ 已锁定 — MockBroker 单一账户镜像(不引入 UserReportedPortfolio 平行 collection);系统 16:00 主动发起日终对账(`RECON-{YYYYMMDD}-{seq}` 人读 ID);分级偏差阈值(持仓股数 0% + 现金 ≤1 元 + 成本价 ≤0.01 元);超阈值创建 `reconciliation_ticket` fail-closed 等用户飞书显式裁定(三选一:采纳用户回报/采纳系统镜像/对账更正);OPEN/EXPIRED ticket 期间冻结次日买卖类 InstructionPlan 路由;公司行动第一阶段不支持自动处理统一走"对账更正";LLM 完全不参与对账路径;详见 [P0-5 决策文档](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md)
 - P0-6 ✅ 已锁定 — `simulation_auto` 验收 = 45 交易日滚动窗口 + 5 项稳定性硬门槛(指令完整率 ≥95% / 回报解析准确率 ≥99% / 数据缺失率 ≤1% / LLM 超时率 ≤5% / 信号生成成功率 ≥95%)+ 3 项策略硬门槛(最大回撤 ≤8% / 累计 PnL ≥0 / 沪深 300 累计基准超额收益 ≥0)+ 7 项观察指标(不阻断切换);P0 系统级中断重置倒计时;reconciliation 冻结日不计入窗口(暂停而非重置);切换 `feishu_on` 必须前置 `acceptance.can_switch_to_feishu_on()` 校验,严禁 env var 绕过;每日 16:00:30 系统生成 `acceptance_reports` 一条记录;LLM 完全不参与验收路径;详见 [P0-6 决策文档](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md)
-- 下一站:P0-7 风险红线与指导强度(单股仓位 / 总仓位 / 单次金额 / 每日指令数 / 亏损暂停线 / 标的板块限制 / LLM 不可改的硬参数集合)
+- P0-7 ✅ 已锁定 — 保守仓位三连阈值(单股 ≤15% / 总仓 ≤70% / 单次 ≤5 万)+ 中性日内熔断(每日 ≤5 单 / 日亏 -5% / 连亏 3 笔 / 冷却 60 分钟,SELL 默认不熔断)+ 中性 universe(`sh_main`+`sz_main`+`chuangye`+`etf`,禁 ST/科创/北交所/可转债 + 禁涨停 BUY / 跌停 SELL)+ RiskConfig 全锁(runtime 不可改,LLM 永不持有写引用)+ RiskParameterProposal 自进化提议通道(只读 ledger,人工 weekly review → amendment + 重启);RiskEngine 从 7-check 扩展为 14-check(派生 P0-3 amendment 调整 risk_summary 长度);DailyTradingState + StockMetadata 由 InstructionPlanBuilder 装配传入(RiskEngine 仍纯函数 + 无 IO);熔断与切换冻结 / ticket 冻结独立并行;详见 [P0-7 决策文档](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md)
+- 下一站:P0-8 数据与资讯可信度(行情主备源 / 历史 K 线源 / 新闻公告政策源 / 延迟阈值 / 断流处理 / 源间偏差停发规则 / 是否可用于飞书真实操作指导)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -93,7 +94,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-4 | 飞书回报语法与成交状态                              | ✅ 已锁定   | [P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md](docs/decisions/P0-4-execution-report-parser-strict-regex-and-fail-closed-state-machine.md) | 严格正则 only(LLM 完全不参与回报路径)+ 五种回报形态精确正则 + 状态机扩展 AMBIGUOUS / 终态间迁移 + 30 分钟追问 + 16:00 盘后补录与更正 cutoff |
 | P0-5 | 账户状态来源与对账机制                              | ✅ 已锁定   | [P0-5-daily-reconciliation-fail-closed-tickets.md](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md) | MockBroker 单一镜像;系统 16:00 主动发对账(RECON-{YYYYMMDD}-{seq} ID);分级阈值(股数 0% + 现金 ≤1 元 + 成本 ≤0.01 元);超阈值创建 reconciliation_ticket fail-closed 等用户三选一裁定(采纳用户/采纳系统/对账更正);OPEN/EXPIRED ticket 冻结次日买卖类指令路由;公司行动第一阶段走对账更正;LLM 不参与对账路径 |
 | P0-6 | `simulation_auto` 验收标准                          | ✅ 已锁定   | [P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md) | 45 交易日滚动窗口 + 5 项稳定性硬门槛(95% / 99% / 1% / 5% / 95%)+ 3 项策略硬门槛(回撤 ≤8% / PnL ≥0 / 沪深 300 超额 ≥0)+ 7 项观察指标;P0 系统级中断重置;reconciliation 冻结暂停不重置;切换 `feishu_on` 必须前置 acceptance 校验;LLM 不参与验收路径 |
-| P0-7 | 风险红线与指导强度                                   | ⏳ 待讨论   | —       | 单股/总仓位/单次金额/每日指令数/亏损暂停线 |
+| P0-7 | 风险红线与指导强度                                   | ✅ 已锁定   | [P0-7-risk-redlines-position-circuit-universe-llm-immutability.md](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md) | 保守仓位三连(单股 15% / 总仓 70% / 单次 5 万)+ 中性日内熔断(每日 5 单 / 日亏 -5% / 连亏 3 / 冷却 60 分钟 / SELL 不熔断)+ 中性 universe(主板+创业板+ETF / 禁 ST/科创/北交/可转债 / 禁涨跌停同向交易)+ RiskConfig 全锁 + RiskParameterProposal 自进化提议通道;RiskEngine 7-check → 14-check(派生 P0-3 amendment) |
 | P0-8 | 数据与资讯可信度                                     | ⏳ 待讨论   | —       | 行情/历史/新闻源 + 延迟/断流/源间偏差停发规则 |
 | P0-9 | 第一阶段标的范围与频率                               | ⏳ 待讨论   | —       | watchlist 范围/排除规则/调仓频率/每日最大新指令数 |
 | P0-10| LLM 角色边界                                         | ⏳ 待讨论   | —       | 抽取/解释/草案 vs 决策/仓位/风控硬限制 |
@@ -196,6 +197,25 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **状态机迁移必须经守门函数**(`instruction_plan_state_machine.py::transition`);任何 `model_copy(update={"status": ...})` 直接绕过即红线违规
 - **ExecutionReport 是 frozen Pydantic v2 模型**;就地 mutation 红线违规(继承 P0-3 §2 红线 12 immutability 原则)
 
+**风险红线与 RiskConfig 不可改红线**(P0-7 锁定 2026-05-09,详见 [decisions/P0-7](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md) §2):
+
+- **`RiskConfig` 任何字段在 runtime 不可改**:`backend/api/risk/*.py` 只允许 `GET` 端点;`backend/agents/` / `backend/llm/` / `backend/mirofish/` 严禁 `from backend.risk import` 或 `from backend.broker.models import RiskConfig`(继承 P0-1 §2 红线 8);`RiskConfig` / `PositionLimitsConfig` / `CircuitBreakerConfig` / `UniverseConfig` 必须 `model_config = ConfigDict(frozen=True)`;违规即红线
+- **阈值修改流程 = 不可绕过的三步**:`git diff config/risk.yaml` + 同期产出 `P0-7-amendment-{date}-{原因}.md` + 进程重启;任何 runtime hot-reload / setattr / monkey-patch 绕过即红线违规
+- **保守仓位三连阈值锁定**:`max_single_stock_pct=0.15` / `max_total_position_pct=0.70` / `max_single_instruction_amount=50000`;调整必须先走 `P0-7-amendment-{date}-{原因}.md`;实施期 lint rule 阻止三常量被覆写
+- **中性日内熔断阈值锁定**:`max_daily_new_instructions=5` / `daily_loss_limit_pct=0.05` / `consecutive_loss_count=3` / `cooldown_minutes=60`;调整必须先走 amendment
+- **中性 universe 白名单锁定**:`allowed_boards=("sh_main","sz_main","chuangye","etf")`;**禁止 ST / 科创板(688) / 北交所(8x/92x) / 可转债(11x/12x)**;`forbidden_st=true` / `forbid_buy_at_limit_up=true` / `forbid_sell_at_limit_down=true` 全部锁定
+- **熔断期间冻结 BUY 类 InstructionPlan**:`CircuitBreakerState.is_in_halt=true` 期间 InstructionPlanBuilder 在早返阶段直接降级 BUY 候选为 HOLD;SELL 类按 `apply_to_sell_orders=false` 默认放行(避免锁仓陷阱);改为 true 必须先走 amendment
+- **熔断与 P0-1 切换冻结 / P0-5 ticket 冻结独立并行**:三种买卖类路由冻结来源(切换中 / OPEN-EXPIRED ticket / 熔断冷却)在 ModeRouter 与 InstructionPlanBuilder 中独立判定,任一为真即冻结
+- **RiskEngine 14-check 完整性**:`validate_order` 必须依次执行 14 条 check;`InstructionPlan.risk_summary` 长度恒为 14(passed 字段类型放宽 `bool | None`,通过 P0-3 amendment 同步更新);任何"短路时只填 7 条 RiskCheckSummary"或"实施期跳过 check 8-14"即红线违规
+- **`backend/risk/` 严禁 import `backend.data` / `backend.llm` / `backend.agents` / `backend.mirofish`**:check 11/12 需要的 `stock_meta` / check 10/12/13/14 需要的 `daily_state` 必须由 InstructionPlanBuilder 装配后传入;RiskEngine 不发起任何 IO(继承 P0-1 §2 红线 8 RiskEngine 纯函数原则)
+- **LLM 严禁产出 RiskConfig 字段值或 RiskCheckSummary 结果**:Agent 复盘时仅可写入 `risk_parameter_proposals` collection(只读 ledger),不写入 RiskConfig
+- **`risk_parameter_proposals` collection 是只读 ledger**:`accepted` 后必须由人工同步产出 amendment 文档,decision_doc 字段填路径,YAML 修改 + 重启才正式生效;系统不通过 proposal `accepted` 状态自动改 RiskConfig
+- **`stock_meta` 与 `daily_state` 缺失即 fail-closed**:check 11(stock_meta=None)/ check 12(stock_meta=None 或 current_price=None 或 prev_close=None)直接 REJECTED;不允许"缺数据时通过"的乐观回退
+- **熔断状态持久化必经 `circuit_breaker_repo`**:严禁直接 mutation `CircuitBreakerState` 或在内存中临时存熔断状态;`circuit_breaker_state` collection 是单文档(`_id="singleton"`),所有读写经 repo 接口
+- **板块/ST 识别经 `backend/data/stock_metadata.py` 纯函数**:严禁在 `backend/risk/` 内重复实现板块/ST 识别逻辑;严禁绕过 `classify_board` 直接 hard-code 代码前缀于 RiskEngine 内部
+- **`PositionLimitsConfig` / `CircuitBreakerConfig` / `UniverseConfig` / `RiskParameterProposal` 是 frozen Pydantic v2 模型**:就地 mutation 红线违规(继承 P0-3 §2 红线 12 / P0-4 §2 红线 16 / P0-5 §2 红线 16 / P0-6 §2 红线 14 immutability 原则)
+- **第一阶段排除项目**:`max_sector_pct` 字段保留但 RiskEngine 不实现 sector check(留 P1);科创板 / 北交所 / 可转债 / ST 加入 universe 必须先走 amendment;`apply_to_sell_orders=true`(SELL 也熔断)必须先走 amendment
+
 **对账路径红线**(P0-5 锁定 2026-05-09,详见 [decisions/P0-5](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md) §2):
 
 - **不引入独立 `user_reported_portfolios` collection**:MockBroker 是 `feishu_on` 时唯一账户镜像(继承 P0-1 §2 红线 3 不允许两条平行账本);任何代码尝试新建该 collection 或同义命名即红线违规
@@ -294,7 +314,9 @@ pytest -q backend/risk --cov=backend/risk --cov-fail-under=95
 cd frontend && npm run type-check && npm run test -- --run && npm run build
 
 # 红线静态检查
-grep -rn "from backend.llm\|from backend.agents\|from backend.mirofish" backend/risk/
+grep -rn "from backend.llm\|from backend.agents\|from backend.mirofish\|from backend.data" backend/risk/
+grep -rn "from backend.risk\|RiskConfig\|PositionLimitsConfig\|CircuitBreakerConfig\|UniverseConfig" backend/llm/ backend/agents/ backend/mirofish/
+grep -rn "@router.post\|@router.put\|@router.patch" backend/api/risk/
 ```
 
 LLM key 永远走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
