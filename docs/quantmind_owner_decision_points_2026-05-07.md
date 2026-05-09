@@ -472,21 +472,29 @@ LLM 可以产生建议和解释，但 InstructionPlan 必须通过结构化校�
 
 ## P1-2. MockBroker 持久化与真实行情估值
 
-### 你需要决定
+🔧 **部分锁定 2026-05-09** — 子阶段 A(持久化与日切调度)已锁定,B/C 待讨论
 
-`simulation_auto` 是否必须把 MockBroker 的账户、订单、成交、持仓持久化到 MongoDB，并用实时行情 mark-to-market。
+| 子阶段 | 状态 | 决策文档 | 范围 |
+|--------|------|---------|------|
+| **P1-2.A 持久化与日切调度** | ✅ 已锁定 2026-05-09 | [`docs/decisions/P1-2.A-persistence-hybrid-snapshot-and-broker-scheduler.md`](decisions/P1-2.A-persistence-hybrid-snapshot-and-broker-scheduler.md) | 混合 broker_events delta + broker_snapshots EOD 全量 / Mongo multi-doc tx (RS 强约束) / ReconciliationApplier+ExecutionReportApplier 双类 / 条件自动恢复 ≤3h+checksum / 新建 BrokerScheduler / EOD chain 16:00→16:00:35 sequential + 17:00 MiroFish 独立 / 失败 1-retry + freeze 次日(第五种买卖类路由冻结源 `eod_pipeline_freeze`,派生 P0-7 amendment 候选) |
+| P1-2.B 估值与数据协议 | ⏳ 待讨论 | — | EquityPoint 写入 + DataQualityState 注入接口 + 盘中实时估值数据源(行情主源 vs 备源 vs 真实成交价缓存)+ 盘后 15:00 degraded 标记 |
+| P1-2.C 撮合增强与成本细化 | ⏳ 待讨论 | — | 部分成交模拟 + 涨跌停判定接 daily_state + 滑点流动性分级 + 深市过户费 |
+
+### 你需要决定(整体)
+
+`simulation_auto` 是否必须把 MockBroker 的账户、订单、成交、持仓持久化到 MongoDB,并用实时行情 mark-to-market。
 
 ### 建议倾向
 
-必须做。当前 MockBroker 内存状态重启即丢，且持仓市值近似使用成本价，不足以检验实战能力。
+必须做。当前 MockBroker 内存状态重启即丢,且持仓市值近似使用成本价,不足以检验实战能力。
 
 ### 你需要产出
 
-- 模拟账户持久化口径。
-- 日切规则。
-- 成交撮合规则。
-- 估值数据源。
-- 交易成本模型。
+- ~~模拟账户持久化口径~~ ✅ P1-2.A
+- ~~日切规则~~ ✅ P1-2.A
+- 成交撮合规则 — P1-2.C
+- 估值数据源 — P1-2.B
+- 交易成本模型 — P1-2.C
 
 ## P1-3. 飞书消息形态
 
