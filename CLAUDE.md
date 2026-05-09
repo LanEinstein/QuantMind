@@ -42,7 +42,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 
 **进度(2026-05-09)**:
 - P0-1 ✅ 已锁定 — `simulation_auto` always-on 底座 + `feishu_interactive` 可叠加切换;MockBroker 是唯一账户镜像;模式切换 = 账户生命周期事件;旧 `AUTHORIZATION_MODE × QUANTMIND_PHASE` 矩阵一次性破坏式删除;详见 [P0-1 决策文档](docs/decisions/P0-1-simulation-base-feishu-overlay.md)
-- 下一站:P0-2 飞书接入形态(自定义机器人 vs 自建应用 + 长连接/HTTPS 回调)
+- P0-2 ✅ 已锁定 — 企业自建应用 + `lark-oapi` 长连接(双向闭环主路径)+ 自定义机器人 webhook(仅系统告警备用);第一阶段纯文本指令 + 严格回报模板;零公网入站、所有飞书凭证仅 shell env;详见 [P0-2 决策文档](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md)
+- 下一站:P0-3 操作指令结构(`InstructionPlan` 字段集 + 飞书指令文本模板)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -83,7 +84,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | 编号  | 主题                                                | 状态        | 决策文档 | 备注 |
 |------|----------------------------------------------------|------------|---------|------|
 | P0-1 | 两种运行模式与系统边界                              | ✅ 已锁定   | [P0-1-simulation-base-feishu-overlay.md](docs/decisions/P0-1-simulation-base-feishu-overlay.md) | `simulation_auto` always-on 底座 + `feishu_interactive` 切换器;MockBroker 单一账户镜像;模式切换 = 账户生命周期事件;旧授权矩阵一次性破坏式删除 |
-| P0-2 | 飞书接入形态                                         | ⏳ 待讨论   | —       | 自定义机器人 Webhook vs 企业自建应用 + 长连接/HTTPS 回调 + 卡片回调 |
+| P0-2 | 飞书接入形态                                         | ✅ 已锁定   | [P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md) | 企业自建应用 + `lark-oapi` 长连接做双向闭环主路径;自定义机器人 webhook 仅作系统告警逃生通道;第一阶段纯文本;零公网入站 + 凭证仅 shell env |
 | P0-3 | 操作指令结构(`InstructionPlan`)                     | ⏳ 待讨论   | —       | 字段集 + 飞书指令模板 + 数据快照/证据/风控校验绑定 |
 | P0-4 | 飞书回报语法与成交状态                              | ⏳ 待讨论   | —       | 已执行/部分/未执行/更正/盘后补录 + 歧义处理红线 |
 | P0-5 | 账户状态来源与对账机制                              | ⏳ 待讨论   | —       | `UserReportedPortfolio` + 日终对账模板 + 偏差阈值 |
@@ -153,12 +154,22 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - 仓位计算、风控红线判断必须由确定性代码完成,**LLM 不允许直接决定股数或风控边界**
 - 飞书指令必须带 `data_snapshot_at`、`quote_source`、`news_source`;数据质量不达标时只允许发"观察/暂停"消息,不发买卖指令
 
+**飞书接入红线**(P0-2 锁定 2026-05-09,详见 [decisions/P0-2](docs/decisions/P0-2-feishu-self-built-app-with-longconn-and-webhook-fallback.md) §2):
+
+- **永久禁止 HTTPS 回调入站端口**;事件订阅只走 `lark-oapi` 长连接(WebSocket),零公网入站;若未来真需要 HTTPS 回调必须先走 `P0-2-amendment-{date}-https-callback.md`
+- **自定义机器人 webhook 仅可发系统告警,绝不发买卖指令 / 对账请求 / 澄清消息**;实施期由 lint rule + 集成测试守门
+- **长连接 worker 只能单实例运行**;水平扩多实例属红线违规(飞书消息随机推单 client,会丢消息)
+- **长连接事件处理函数 3 秒内必须返回 ack**;真实解析/落库走异步队列
+- **`tenant_access_token` 不持久化**:不写入 MongoDB / Redis / 文件;只在内存
+- **第一阶段不实现交互卡片**(`interactive` msg_type / `card.action.trigger` 回调实现属实施期外的范围,加它必须先走 amendment)
+- **长连接断线时**:可继续发系统告警(走备用 webhook),但**不可发买卖指令**;由 ModeRouter 在长连接失活态下 fail-closed 拒绝路由买卖类 InstructionPlan
+- **`lark` / `feishu` / `larksuite` 关键字在 `backend/risk/` 子树严禁出现**(继承 P0-1 §8 原则)
+
 **安全红线**:
 
-- LLM key / 飞书 App Secret / Verify Token / Encrypt Key 仅走 shell env(`~/.bashrc`),永不入 `.env`、永不入 git
+- LLM key / 飞书凭证(`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY` / `FEISHU_CUSTOM_BOT_WEBHOOK_URL` / `FEISHU_CUSTOM_BOT_SIGN_SECRET`)仅走 shell env(`~/.bashrc`),永不入 `.env`、永不入 git
 - MongoDB / Redis 端口仅绑定 `127.0.0.1`
-- 前端不能直接显示完整密钥
-- 若飞书事件采用 HTTPS 回调,必须验证事件来源并做 replay 防护(优先采用长连接,避免暴露公网)
+- 前端不能直接显示完整密钥(只允许末四位脱敏 + `webhook_configured` 布尔)
 
 **流程红线**:
 
@@ -219,8 +230,11 @@ grep -rn "from backend.llm\|from backend.agents\|from backend.mirofish" backend/
 ```
 
 LLM key 永远走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
-飞书 key(P0-2 锁定后启用):`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY`(命名以 P0-2 决策结果为准)。
-`.env` 仅放非密配置(`MONGODB_URI`、`QUANTMIND_PHASE`、`QUANTMIND_DAILY_BUDGET` 等)。
+飞书 key(P0-2 已锁定 2026-05-09,实施期启用):
+- 主路径(自建应用 + 长连接):`FEISHU_APP_ID` / `FEISHU_APP_SECRET`;`FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY` 预留(若 `lark-oapi` 长连接路径需要)
+- 备用通道(自定义机器人 webhook,仅系统告警):`FEISHU_CUSTOM_BOT_WEBHOOK_URL` / `FEISHU_CUSTOM_BOT_SIGN_SECRET`(可选,启用 HmacSHA256 签名时)
+
+`.env` 仅放非密配置(`MONGODB_URI`、`QUANTMIND_DAILY_BUDGET` 等;P0-1 锁定后实施期会替换为 `FEISHU_INTERACTIVE_ENABLED`,旧 `AUTHORIZATION_MODE` / `QUANTMIND_PHASE` 一次性破坏式删除)。
 
 ---
 
