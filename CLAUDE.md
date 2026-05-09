@@ -50,7 +50,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-7 ✅ 已锁定 — 保守仓位三连阈值(单股 ≤15% / 总仓 ≤70% / 单次 ≤5 万)+ 中性日内熔断(每日 ≤5 单 / 日亏 -5% / 连亏 3 笔 / 冷却 60 分钟,SELL 默认不熔断)+ 中性 universe(`sh_main`+`sz_main`+`chuangye`+`etf`,禁 ST/科创/北交所/可转债 + 禁涨停 BUY / 跌停 SELL)+ RiskConfig 全锁(runtime 不可改,LLM 永不持有写引用)+ RiskParameterProposal 自进化提议通道(只读 ledger,人工 weekly review → amendment + 重启);RiskEngine 从 7-check 扩展为 14-check(派生 P0-3 amendment 调整 risk_summary 长度);DailyTradingState + StockMetadata 由 InstructionPlanBuilder 装配传入(RiskEngine 仍纯函数 + 无 IO);熔断与切换冻结 / ticket 冻结独立并行;详见 [P0-7 决策文档](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md)
 - P0-8 ✅ 已锁定 — 行情严格主备(adata + akshare;staleness ≤5s / divergence ≤0.3%)+ 全 watchlist 30s 个股快照(填补 audit §6.2 缺口;`watchlist_market_snapshots` collection)+ 多域 5 源情报(财经 2 + 时政 1 + 全球 2:`stock_news_em`/`stock_info_global_cls`/`news_cctv`/`stock_info_global_em`/`stock_info_global_sina`;军事/社交舆论留 P1)+ MiroFish 双路径接线(事件驱动 severity≥HIGH / 盘后复盘 17:00 watchlist_all;原 P2-1 前置;输出仅入 `evidence_collection` 不入 `RiskCheckSummary`)+ DataQualityState 早返第四种买卖类冻结来源(builder 早返降级 HOLD / 不暂停 simulation_auto / risk_summary 长度恒 14 不变)+ 5 类 evidence_id 前缀约定(`NEWS-`/`MIROFISH-`/`MARKET-`/`RISK-`/`DEBATE-`);LLM 完全不参与数据质量判定;派生 P0-3 amendment(`news_source`→`news_sources_by_domain`);P2-1 标记为 superseded;详见 [P0-8 决策文档](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md)
 - P0-9 ✅ 已锁定 — 中等双层 watchlist(13 codes = 沪主 4 + 深主 3 + 创业板 3 + 宽基 ETF 3:`510300`/`510500`/`159949`)+ 中等严格排除规则(新股 ≤30 / 次新 ≤180 / 流动性 < 2 亿 / 单价 > 500;由 InstructionPlanBuilder 第五道早返,不进 RiskEngine 14-check)+ 沿用 fast/slow 双频(09:00 slow 全 watchlist 多 Agent 辩论 + 09/11/13/15 fast 盘中验证)+ 5 单 cap 分配(`traditional_path_default_cap=4` + `event_path_reserved_cap=1`,14:30 后 event 未用可释放给 traditional)+ **关键定位:MiroFish 是加分项不是核心,平台底层是传统 AI 量化交易,event 路径硬 cap=1 严禁占用主路径**+ 严格 long-only(BUY/SELL/HOLD 永锁 / 永禁 SHORT/COVER/MARGIN/REPO / ETF 仅二级市场买卖 / ETF 套利预留 P1 但永锁 disabled)+ watchlist 在 runtime 不可改(`backend/api/watchlist*.py` 仅 GET);派生 P0-7 amendment(watchlist 排除规则在 InstructionPlanBuilder 早返而非 RiskEngine);详见 [P0-9 决策文档](docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md)
-- 下一站:P0-10 LLM 角色边界(P0 最后一站;抽取/解释/草案 vs 决策/仓位/风控硬限制 / 多 Agent 辩论 vs RiskConfig 全锁的精确分割)
+- P0-10 ✅ 已锁定 — 极严 LLM 字段权限矩阵(positive list 仅 4 类:`InstructionPlan.reasoning` + `evidence_collection.content` + `agent_debate_records.{reasoning_text, conclusion}` + `risk_parameter_proposals.proposal_text`;negative list 8 类整合 P0-1 ~ P0-9 累积 + Pydantic strict + extra="forbid" + lint rule 三层守门)+ 严格 fail-closed 降级矩阵(单调用 30s + 0 重试 + 必经 Agent 失败降级 HOLD + LLM 全停 1h 触发 P0-6 系统级中断 + 成本 ¥20 hard 暂停)+ 四必经 Agent + fund_manager 终局守门(必经:`fundamental_analyst` + `technical_analyst` + `risk_officer` + `fund_manager`;可跳过 5 个;fund_manager 唯一 BUY/SELL/HOLD 倡议者 + 双层防护 InstructionPlanBuilder 五道早返 + RiskEngine 14-check)+ agent_models.yaml runtime 不可改 + hot-reload 禁用(继承 P0-7 RiskConfig 全锁精神;仅 GET API;调整必走 amendment + 重启)+ fund_manager tiered routing 锁定(triage qwen + escalation kimi at confidence_lt 0.6);派生 P0-3 amendment(InstructionPlan LLM 可写字段 reasoning 边界);详见 [P0-10 决策文档](docs/decisions/P0-10-llm-role-boundary-strict-field-permission-fail-closed-degradation-four-mandatory-agents.md)
+- **🎉 P0 决策清单全锁(P0-1 ~ P0-10)2026-05-09 完成**;下一站:决策对齐期收尾(基于 10 个 P0 决策结果重写本 CLAUDE.md + 生成新执行计划 → P1 决策对齐 OR 实施期启动)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -99,7 +100,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-7 | 风险红线与指导强度                                   | ✅ 已锁定   | [P0-7-risk-redlines-position-circuit-universe-llm-immutability.md](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md) | 保守仓位三连(单股 15% / 总仓 70% / 单次 5 万)+ 中性日内熔断(每日 5 单 / 日亏 -5% / 连亏 3 / 冷却 60 分钟 / SELL 不熔断)+ 中性 universe(主板+创业板+ETF / 禁 ST/科创/北交/可转债 / 禁涨跌停同向交易)+ RiskConfig 全锁 + RiskParameterProposal 自进化提议通道;RiskEngine 7-check → 14-check(派生 P0-3 amendment) |
 | P0-8 | 数据与资讯可信度                                     | ✅ 已锁定   | [P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md) | 行情主备 staleness 5s / divergence 0.3% + 全 watchlist 30s 快照 + 多域 5 源情报(财经 2 / 时政 1 / 全球 2;军事+社交舆论 P1)+ MiroFish 双路径(事件 + 盘后)+ DataQualityState 早返第四种买卖类冻结(不进 RiskEngine,builder 层降级 HOLD,risk_summary 长度恒 14)+ 5 类 evidence_id 前缀约定;派生 P0-3 amendment(多域 news_source)+ P2-1 superseded |
 | P0-9 | 第一阶段标的范围与频率                               | ✅ 已锁定   | [P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md](docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md) | 中等双层 watchlist(13 codes = 沪主 4 + 深主 3 + 创业板 3 + 宽基 ETF 3)+ 中等严格排除(新股 30 / 次新 180 / 流动性 2 亿 / 单价 500;在 InstructionPlanBuilder 早返不进 14-check)+ fast/slow 双频(09:00 slow 全 watchlist + 09/11/13/15 fast 盘中)+ 5 单 cap 分配(traditional 4 + event_reserved 1,14:30 后滑动)+ **MiroFish 是加分项不是核心,event 路径硬 cap=1 严禁占用主路径** + 严格 long-only / ETF 套利留 P1(永锁 disabled);watchlist runtime 不可改;派生 P0-7 amendment(watchlist 排除规则在 InstructionPlanBuilder 早返) |
-| P0-10| LLM 角色边界                                         | ⏳ 待讨论   | —       | 抽取/解释/草案 vs 决策/仓位/风控硬限制 |
+| P0-10| LLM 角色边界                                         | ✅ 已锁定   | [P0-10-llm-role-boundary-strict-field-permission-fail-closed-degradation-four-mandatory-agents.md](docs/decisions/P0-10-llm-role-boundary-strict-field-permission-fail-closed-degradation-four-mandatory-agents.md) | 极严字段权限矩阵(positive list 4 类:reasoning / evidence content / agent_debate / proposal_text;negative list 8 类整合 P0-1~P0-9)+ 严格 fail-closed 降级(30s 超时 / 0 重试 / 必经 Agent 失败降级 HOLD / LLM 全停 1h 触发 P0-6 中断 / ¥20 hard 暂停)+ 四必经 Agent + fund_manager 终局(`fundamental_analyst` + `technical_analyst` + `risk_officer` + `fund_manager`;可跳过 5 个;fund_manager 双层防护 InstructionPlanBuilder + RiskEngine 14-check)+ agent_models.yaml runtime 不可改 + hot-reload 禁用 + 仅 GET API + tiered routing 锁定;派生 P0-3 amendment(reasoning 字段)|
 
 ### 2.2 P1 决策点(影响架构,主要闭环开发前定下来)
 
@@ -295,6 +296,27 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **ETF 套利 P1 预留接口永锁 disabled**:`config/broker.yaml.etf_arbitrage_enabled=false`;`backend/broker/etf_arbitrage_stub.py` 仅含 `class ETFArbitrageStub: NotImplementedError`;`backend/api/etf_arbitrage*.py` 不创建 router;启用必须走 amendment
 - **`WatchlistPolicy` / 衍生 schema 是 frozen Pydantic v2 模型**:就地 mutation 红线违规(继承 P0-3 / P0-4 / P0-5 / P0-6 / P0-7 / P0-8 immutability 原则)
 
+**LLM 角色边界红线**(P0-10 锁定 2026-05-09,详见 [decisions/P0-10](docs/decisions/P0-10-llm-role-boundary-strict-field-permission-fail-closed-degradation-four-mandatory-agents.md) §2):
+
+- **LLM positive list 仅 4 类字段可写**:`InstructionPlan.reasoning`(人读思路)+ `evidence_collection.content`(evidence body)+ `agent_debate_records.{reasoning_text, conclusion}`(辩论字段)+ `risk_parameter_proposals.proposal_text`(只读 ledger);新增可写字段必须先走 `P0-10-amendment-{date}-llm-positive-list-expand.md`
+- **LLM negative list 8 类整合锁**:类别 1 InstructionPlan 决策字段(volume/limit_price/valid_until/status/risk_summary/evidence_ids[ID]/debate_round_count/instruction_id/code/side)/ 类别 2 RiskCheckSummary 任一字段 / 类别 3 evidence_id 命名 / 类别 4 cap_allocator(path/traditional_consumed/event_consumed)/ 类别 5 MockBroker 任一字段 / 类别 6 WatchlistPolicy / 类别 7 DataQualityState/ReconciliationTicket/AcceptanceReport / 类别 8 RiskConfig — 严禁 LLM 写;实施期 lint rule + Pydantic strict + extra="forbid" 三层守门
+- **InstructionPlan / FundManagerOutput / AgentDebateRecord / EvidenceItem / RiskParameterProposal 必须 frozen Pydantic v2 strict 模式**:`model_config = ConfigDict(frozen=True, strict=True, extra="forbid")`;严禁 `extra="allow"` / `extra="ignore"`(抗 prompt injection 添加未授权字段)
+- **LLM 单调用超时 = 30s 硬阈值**:`llm_single_call_timeout_seconds=30`;调整必走 amendment;`asyncio.wait_for` 强制 enforce;严禁 monkey-patch / try-except 绕过
+- **重试次数 = 0**:LLM 单调用失败 + fallback 失败 → Agent 返回 None;**不重试**;实施期 grep `for retry in range` / `for _ in range(retry_count)` 不出现在 LLM 调用路径
+- **必经 Agent 4 个固定锁** = `fundamental_analyst` + `technical_analyst` + `risk_officer` + `fund_manager`;调整必经名单必走 `P0-10-amendment-{date}-mandatory-agent-list.md`;任一缺失即 InstructionPlanBuilder 降级 HOLD
+- **`fund_manager` 是唯一 BUY/SELL/HOLD 倡议者**:其他 Agent 输出仅作 evidence/debate/context 输入;严禁其他 Agent 直接产生 InstructionSide 输出;实施期 lint rule grep `signal.*=.*['"]buy['"]` 不出现在非 fund_manager Agent 文件
+- **fund_manager 输出必经 InstructionPlanBuilder 五道早返 + RiskEngine 14-check 双层守门**:任何"fund_manager 直出 InstructionPlan 不经守门"或"signal=buy → broker.buy"绕过模式即红线违规
+- **risk_officer (LLM) 与 RiskEngine 14-check (确定性) 双层防护**:risk_officer 失败 → 必经 Agent 缺失 → 降级 HOLD;risk_officer 通过 ≠ RiskEngine 必通过;两者独立并行互不替代
+- **`debate_round_count ≥ 1`**(继承 P0-3 §2 红线 7);`max_debate_rounds`(slow=2 / fast=1;P0-9 锁定)
+- **LLM 全停 ≥ 1h 触发 P0 系统级中断**(继承 P0-6 §1.7 之一):重置 45 交易日窗口 + simulation_auto 进入 `paused-no-llm`;重大事件仅写 evidence 不发指令;严禁绕过此触发条件继续发 InstructionPlan
+- **成本超 hard 阈值 ¥20 即暂停所有 LLM 调用**:`QUANTMIND_DAILY_BUDGET=20` 默认;`cost_guard.hard_ceiling` 命中 → simulation_auto 进入 `paused-budget-breach`;次日 00:00 自动解除;严禁修改 cost_guard 代码 / 绕过 ceiling 继续调用
+- **`config/agent_models.yaml` runtime 不可改 + hot-reload 禁用**(继承 P0-7 §1.4 RiskConfig 全锁精神):`enable_hot_reload: false`;调整任一字段必须先走 `P0-10-amendment-{date}-routing-change.md` + git diff + 进程重启
+- **`backend/api/llm*.py` / `backend/api/agents*.py` 仅允许 GET 端点**:严禁 POST/PUT/PATCH/DELETE;实施期 lint rule grep 必返 0 行
+- **新增 provider 必须先走 amendment**:DeepSeek/Qwen/Kimi 三家锁定;`config/agent_models.yaml` 注释保留 `claude` / `openai` 槽位但启用必走 amendment
+- **fund_manager tiered routing 锁定**:`triage=qwen` / `escalation=kimi` / `confidence_lt=0.6`;调整必走 amendment;严禁 monkey-patch / 配置直改绕过
+- **`fund_manager_shadow_baseline` 永远不参与决策**:`frequency: shadow_only`;实施期 lint rule grep 该 Agent 调用必须仅在 `backend/services/shadow_runner.py`,严禁出现在 `backend/agents/graph.py::run_analysis` / InstructionPlanBuilder 调用路径
+- **`FundManagerOutput` / `AgentDebateRecord` / `RiskParameterProposal` / `EvidenceItem` 是 frozen Pydantic v2 strict 模型**:就地 mutation 红线违规(继承 P0-3 / P0-4 / P0-5 / P0-6 / P0-7 / P0-8 / P0-9 immutability 原则)
+
 **安全红线**:
 
 - LLM key / 飞书凭证(`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY` / `FEISHU_CUSTOM_BOT_WEBHOOK_URL` / `FEISHU_CUSTOM_BOT_SIGN_SECRET`)仅走 shell env(`~/.bashrc`),永不入 `.env`、永不入 git
@@ -365,6 +387,11 @@ grep -rn "@router.post\|@router.put\|@router.patch\|@router.delete" backend/api/
 grep -rn "ipo_date\|avg_amount_20d\|max_unit_price" backend/risk/  # P0-9 红线 7
 grep -rn "SHORT\|COVER\|MARGIN_BUY\|REVERSE_REPO\|ETF_SUBSCRIBE\|ETF_REDEEM" backend/data/instruction_plan.py  # P0-9 红线 13
 grep -rn "etf_arbitrage_enabled" config/broker.yaml | grep -v "false"  # P0-9 红线 16
+grep -rnE "InstructionPlan\.(volume|limit_price|valid_until|status|risk_summary|evidence_ids|debate_round_count|instruction_id)\s*=" backend/agents/ backend/llm/  # P0-10 红线 1/2
+grep -rn "extra.*=.*['\"]allow['\"]\|extra.*=.*['\"]ignore['\"]" backend/agents/models.py backend/llm/providers.py  # P0-10 红线 3
+grep -rnE "for retry in range|for _ in range\(retry_count" backend/llm/router.py  # P0-10 红线 5
+grep -rn "@router.post\|@router.put\|@router.patch\|@router.delete" backend/api/llm*.py backend/api/agents*.py  # P0-10 红线 14
+grep -rn "enable_hot_reload" config/agent_models.yaml | grep -v "false"  # P0-10 红线 13
 ```
 
 LLM key 永远走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。

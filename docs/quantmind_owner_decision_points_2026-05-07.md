@@ -405,18 +405,19 @@ reply_format: ...
 
 ## P0-10. LLM 角色边界
 
-### 你需要决定
+✅ **已锁定 2026-05-09** — 决策文档:[`docs/decisions/P0-10-llm-role-boundary-strict-field-permission-fail-closed-degradation-four-mandatory-agents.md`](decisions/P0-10-llm-role-boundary-strict-field-permission-fail-closed-degradation-four-mandatory-agents.md)
 
-大模型在新定位中到底做什么:
+锁定要点:
 
-- 数据提取。
-- 资讯归纳。
-- 事件推演。
-- 多视角辩论。
-- 候选排序解释。
-- 操作指令起草。
-- 仓位决定。
-- 风控否决。
+- **极严字段权限矩阵**:LLM positive list 仅 4 类(`InstructionPlan.reasoning` + `evidence_collection.content` + `agent_debate_records.{reasoning_text, conclusion}` + `risk_parameter_proposals.proposal_text`);LLM negative list 8 类整合 P0-1~P0-9 累积红线;Pydantic strict + extra="forbid" + lint rule 三层守门
+- **严格 fail-closed 降级矩阵**:单调用超时 30s + 0 重试 + 必经 Agent 失败降级 HOLD + LLM 全停 1h 触发 P0-6 系统级中断 + 成本 ¥20 hard 暂停 simulation_auto
+- **四必经 Agent + fund_manager 终局**:必经 4 个 = `fundamental_analyst`(qwen)+ `technical_analyst`(qwen)+ `risk_officer`(kimi)+ `fund_manager`(kimi+thinking+tiered routing);可跳过 5 个 = news_crawler/sentiment_analyst/data_cleaner/intelligence_officer/bull_researcher/bear_researcher;fund_manager 是唯一 BUY/SELL/HOLD 倡议者 + 双层防护 InstructionPlanBuilder 五道早返 + RiskEngine 14-check
+- **agent_models.yaml baseline 锁定**:runtime 不可改 + hot-reload 禁用(继承 P0-7 RiskConfig 全锁精神);`backend/api/llm*.py` / `backend/api/agents*.py` 仅 GET;调整必走 `P0-10-amendment-{date}-routing-change.md` + git diff + 进程重启
+- **派生 amendment**:`docs/decisions/P0-3-amendment-2026-05-09-instruction-plan-llm-writable-fields.md`(实施期产出)说明 InstructionPlan.reasoning 等 LLM 可写字段边界
+
+红线 18 条详见决策文档 §2;实施期改动清单见 §5。
+
+> 注:本决策同时**部分锁定** §P1-8(Kimi thinking 使用策略),fund_manager tiered routing(triage qwen + escalation kimi at confidence_lt 0.6)+ per-Agent thinking 矩阵已锁;P1-8 后续仅讨论"细节调优"。
 
 ### 建议倾向
 
