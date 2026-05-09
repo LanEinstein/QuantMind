@@ -48,7 +48,8 @@ QuantMind **不再以真实券商账户的程序化下单、半自动下单或�
 - P0-5 ✅ 已锁定 — MockBroker 单一账户镜像(不引入 UserReportedPortfolio 平行 collection);系统 16:00 主动发起日终对账(`RECON-{YYYYMMDD}-{seq}` 人读 ID);分级偏差阈值(持仓股数 0% + 现金 ≤1 元 + 成本价 ≤0.01 元);超阈值创建 `reconciliation_ticket` fail-closed 等用户飞书显式裁定(三选一:采纳用户回报/采纳系统镜像/对账更正);OPEN/EXPIRED ticket 期间冻结次日买卖类 InstructionPlan 路由;公司行动第一阶段不支持自动处理统一走"对账更正";LLM 完全不参与对账路径;详见 [P0-5 决策文档](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md)
 - P0-6 ✅ 已锁定 — `simulation_auto` 验收 = 45 交易日滚动窗口 + 5 项稳定性硬门槛(指令完整率 ≥95% / 回报解析准确率 ≥99% / 数据缺失率 ≤1% / LLM 超时率 ≤5% / 信号生成成功率 ≥95%)+ 3 项策略硬门槛(最大回撤 ≤8% / 累计 PnL ≥0 / 沪深 300 累计基准超额收益 ≥0)+ 7 项观察指标(不阻断切换);P0 系统级中断重置倒计时;reconciliation 冻结日不计入窗口(暂停而非重置);切换 `feishu_on` 必须前置 `acceptance.can_switch_to_feishu_on()` 校验,严禁 env var 绕过;每日 16:00:30 系统生成 `acceptance_reports` 一条记录;LLM 完全不参与验收路径;详见 [P0-6 决策文档](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md)
 - P0-7 ✅ 已锁定 — 保守仓位三连阈值(单股 ≤15% / 总仓 ≤70% / 单次 ≤5 万)+ 中性日内熔断(每日 ≤5 单 / 日亏 -5% / 连亏 3 笔 / 冷却 60 分钟,SELL 默认不熔断)+ 中性 universe(`sh_main`+`sz_main`+`chuangye`+`etf`,禁 ST/科创/北交所/可转债 + 禁涨停 BUY / 跌停 SELL)+ RiskConfig 全锁(runtime 不可改,LLM 永不持有写引用)+ RiskParameterProposal 自进化提议通道(只读 ledger,人工 weekly review → amendment + 重启);RiskEngine 从 7-check 扩展为 14-check(派生 P0-3 amendment 调整 risk_summary 长度);DailyTradingState + StockMetadata 由 InstructionPlanBuilder 装配传入(RiskEngine 仍纯函数 + 无 IO);熔断与切换冻结 / ticket 冻结独立并行;详见 [P0-7 决策文档](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md)
-- 下一站:P0-8 数据与资讯可信度(行情主备源 / 历史 K 线源 / 新闻公告政策源 / 延迟阈值 / 断流处理 / 源间偏差停发规则 / 是否可用于飞书真实操作指导)
+- P0-8 ✅ 已锁定 — 行情严格主备(adata + akshare;staleness ≤5s / divergence ≤0.3%)+ 全 watchlist 30s 个股快照(填补 audit §6.2 缺口;`watchlist_market_snapshots` collection)+ 多域 5 源情报(财经 2 + 时政 1 + 全球 2:`stock_news_em`/`stock_info_global_cls`/`news_cctv`/`stock_info_global_em`/`stock_info_global_sina`;军事/社交舆论留 P1)+ MiroFish 双路径接线(事件驱动 severity≥HIGH / 盘后复盘 17:00 watchlist_all;原 P2-1 前置;输出仅入 `evidence_collection` 不入 `RiskCheckSummary`)+ DataQualityState 早返第四种买卖类冻结来源(builder 早返降级 HOLD / 不暂停 simulation_auto / risk_summary 长度恒 14 不变)+ 5 类 evidence_id 前缀约定(`NEWS-`/`MIROFISH-`/`MARKET-`/`RISK-`/`DEBATE-`);LLM 完全不参与数据质量判定;派生 P0-3 amendment(`news_source`→`news_sources_by_domain`);P2-1 标记为 superseded;详见 [P0-8 决策文档](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md)
+- 下一站:P0-9 第一阶段标的范围与频率(watchlist 范围 5-20 只 / ETF / 创业板/科创板/北交所边界 / ST/新股次新/低流动性排除 / 盘中扫描频率 / 每日最大新指令数)
 
 > ⚠️ 注意:本 CLAUDE.md 的早期版本曾把"P0-1 = 半自动实盘 live_confirm"和"P0-2 = 免费数据栈+财联社+巨潮"标注为 ✅ 已锁定,并在表格中链接 `docs/decisions/P0-1-...` / `docs/decisions/P0-2-...`。这些决定属于**旧方向**,在 2026-05-08 audit/决策清单整体重写后已**全部作废**;链接的决策文件也从未真正落地。新方向下的 P0-1 已于 2026-05-09 重新落定为本节进度所述结果。
 
@@ -95,7 +96,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 | P0-5 | 账户状态来源与对账机制                              | ✅ 已锁定   | [P0-5-daily-reconciliation-fail-closed-tickets.md](docs/decisions/P0-5-daily-reconciliation-fail-closed-tickets.md) | MockBroker 单一镜像;系统 16:00 主动发对账(RECON-{YYYYMMDD}-{seq} ID);分级阈值(股数 0% + 现金 ≤1 元 + 成本 ≤0.01 元);超阈值创建 reconciliation_ticket fail-closed 等用户三选一裁定(采纳用户/采纳系统/对账更正);OPEN/EXPIRED ticket 冻结次日买卖类指令路由;公司行动第一阶段走对账更正;LLM 不参与对账路径 |
 | P0-6 | `simulation_auto` 验收标准                          | ✅ 已锁定   | [P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md](docs/decisions/P0-6-acceptance-45-day-rolling-stability-and-strategy-gates.md) | 45 交易日滚动窗口 + 5 项稳定性硬门槛(95% / 99% / 1% / 5% / 95%)+ 3 项策略硬门槛(回撤 ≤8% / PnL ≥0 / 沪深 300 超额 ≥0)+ 7 项观察指标;P0 系统级中断重置;reconciliation 冻结暂停不重置;切换 `feishu_on` 必须前置 acceptance 校验;LLM 不参与验收路径 |
 | P0-7 | 风险红线与指导强度                                   | ✅ 已锁定   | [P0-7-risk-redlines-position-circuit-universe-llm-immutability.md](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md) | 保守仓位三连(单股 15% / 总仓 70% / 单次 5 万)+ 中性日内熔断(每日 5 单 / 日亏 -5% / 连亏 3 / 冷却 60 分钟 / SELL 不熔断)+ 中性 universe(主板+创业板+ETF / 禁 ST/科创/北交/可转债 / 禁涨跌停同向交易)+ RiskConfig 全锁 + RiskParameterProposal 自进化提议通道;RiskEngine 7-check → 14-check(派生 P0-3 amendment) |
-| P0-8 | 数据与资讯可信度                                     | ⏳ 待讨论   | —       | 行情/历史/新闻源 + 延迟/断流/源间偏差停发规则 |
+| P0-8 | 数据与资讯可信度                                     | ✅ 已锁定   | [P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md) | 行情主备 staleness 5s / divergence 0.3% + 全 watchlist 30s 快照 + 多域 5 源情报(财经 2 / 时政 1 / 全球 2;军事+社交舆论 P1)+ MiroFish 双路径(事件 + 盘后)+ DataQualityState 早返第四种买卖类冻结(不进 RiskEngine,builder 层降级 HOLD,risk_summary 长度恒 14)+ 5 类 evidence_id 前缀约定;派生 P0-3 amendment(多域 news_source)+ P2-1 superseded |
 | P0-9 | 第一阶段标的范围与频率                               | ⏳ 待讨论   | —       | watchlist 范围/排除规则/调仓频率/每日最大新指令数 |
 | P0-10| LLM 角色边界                                         | ⏳ 待讨论   | —       | 抽取/解释/草案 vs 决策/仓位/风控硬限制 |
 
@@ -116,7 +117,7 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 
 | 编号  | 主题                       | 状态      | 决策文档 | 备注 |
 |------|----------------------------|----------|---------|------|
-| P2-1 | MiroFish 真实使用范围      | ⏳ 待讨论 | —       | 重大事件触发 / 盘后复盘 / 研究展示 |
+| P2-1 | MiroFish 真实使用范围      | 🛑 superseded | 由 [P0-8 §1.4](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md) 取代 | P0-8 锁定双路径接线(事件驱动 + 盘后复盘);实施期产出 `P2-1-superseded-by-P0-8.md` 显式记录 |
 | P2-2 | 自进化机制边界              | ⏳ 待讨论 | —       | 候选权重/路由/prompt/策略/风控参数 自动改边界 |
 | P2-3 | 移动端或远程访问            | ⏳ 待讨论 | —       | Web UI 内网 + 移动端只飞书 |
 | P2-4 | 告警渠道                    | ⏳ 待讨论 | —       | 行情断流/资讯失败/LLM 不可用/指令生成失败/风控拦截/日终对账缺失 |
@@ -196,6 +197,26 @@ tests/              # pytest 全部测试(1139 绿,但闭环未通)
 - **澄清飞书严禁走备用 webhook**(继承 P0-2 §2 红线 2 / 备用 webhook 仅发系统告警);主通道失活时不发澄清,只发告警
 - **状态机迁移必须经守门函数**(`instruction_plan_state_machine.py::transition`);任何 `model_copy(update={"status": ...})` 直接绕过即红线违规
 - **ExecutionReport 是 frozen Pydantic v2 模型**;就地 mutation 红线违规(继承 P0-3 §2 红线 12 immutability 原则)
+
+**数据与资讯可信度红线**(P0-8 锁定 2026-05-09,详见 [decisions/P0-8](docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md) §2):
+
+- **多域 5 源情报选型锁定**(`stock_news_em` + `stock_info_global_cls` + `news_cctv` + `stock_info_global_em` + `stock_info_global_sina`):新增/删除任何源必须先走 `P0-8-amendment-{date}-{原因}.md`;微博 / 知乎 / 雪球 / 国防部 RSS / 同花顺全球 / 百度衍生在 P0-8 第一阶段严禁实现(合规风险与稳定性未评估)
+- **行情主备硬阈值锁定**:`staleness_threshold_seconds=5` / `divergence_threshold_pct=0.003` / `minimum_freshness_seconds_for_buy_sell=60`;调整任一阈值必须先走 amendment;实施期 lint rule 守门
+- **DataQualityState 早返是第四种买卖类路由冻结来源**:与 P0-1 切换冻结 / P0-5 ticket 冻结 / P0-7 熔断冷却独立并行;任一为真即冻结买卖类 InstructionPlan;严禁绕过任一种冻结
+- **`pause_simulation_auto_on_quality_breach=false` 锁定**:数据质量违规**不**暂停 simulation_auto;multi-Agent 辩论 + signal 生成 + InstructionPlan 装配持续运行,只是 Builder 早返降级 HOLD;改为 true 必须先走 amendment(违反 P0-1 §1.1 always-on 精神)
+- **MiroFish 双路径触发锁定**:事件驱动(severity ≥ HIGH;runs_per_day_cap=20;runs_per_minute_cap=3)+ 盘后复盘(17:00 cron;watchlist_all;runs_per_day_cap=50);新增触发路径必须先走 amendment;实施期必须为 `AnalysisServices` 注入 `MiroFishSimulator`(audit §10.2 缺口必修)
+- **MiroFish 输出严禁进 `RiskCheckSummary`**:仅写入 `evidence_collection`,通过 `evidence_ids` by-reference 关联(继承 P0-1 §2 红线 8 / P0-7 §2 红线 11);任何把 MiroFish 输出字段映射到 RiskCheckSummary 的代码即红线违规
+- **LLM 严禁参与数据质量判定**:`backend/data/data_quality.py` / `backend/data/divergence.py` / `backend/data/staleness.py` / `backend/data/suspension.py` 严禁 `import backend.llm.*`;MiroFish 内部 LLM 调用走 evidence 不走 DataQualityState / RiskEngine
+- **行情主备价差超 0.3% 即降级**:不允许"价差大但仍发指令"的乐观回退(继承 P0-7 §2 红线 13 fail-closed 精神)
+- **全 watchlist 30s 快照采集是 P0 实施期必修**:audit §6.2 揭示的"只采三大指数"缺口必须填补,否则 P0-6 数据缺失率 ≤ 1% 硬门槛不可达
+- **停牌检测必经 `backend/data/suspension.py` 纯函数**:严禁在 `backend/risk/` / `backend/services/` 内重复实现停牌识别(继承 P0-7 §2 红线 15 单一真相源原则);严禁基于 LLM 推断停牌
+- **5 源情报严禁强制要求全部存活**:`global_require_at_least_n_alive=1`(任一存活即继续);**禁止**把"5 源全断"或"任一域单源故障即冻结全市场"作为更严格的阈值
+- **`news_cctv` 6h 阈值锁定**:新闻联播一日一期,真实更新仅在 19:30+,但 6h 阈值容忍 cron 抖动 + 跨日盘前数据未刷新场景;严禁强行升级到分钟级阈值(违反时政域信号本质)
+- **`evidence_ids` 前缀约定锁定**:`NEWS-` / `MIROFISH-` / `MARKET-` / `RISK-` / `DEBATE-` 五类前缀;新增前缀必须先走 amendment
+- **`watchlist_market_snapshots` collection 索引锁定**:`(code, snapshot_at)` 唯一 + `(snapshot_at, -1)` 倒序 + `(code, snapshot_at, -1)`;严禁删除任一索引(影响 InstructionPlanBuilder 查询性能 + P0-6 数据覆盖度计算)
+- **多源去重严格按 domain + 标题 + 时间窗 60s**:跨 domain 不去重(同一事件多域评价是 MiroFish 输入价值);严禁实施期为减少存储成本而跨域去重
+- **`DataQualityState` / `WatchlistSnapshot` / `NewsArticle` / `StalenessReport` / `DivergenceReport` 是 frozen Pydantic v2 / @dataclass(frozen=True) 模型**:就地 mutation 红线违规(继承 immutability 原则)
+- **第一阶段排除项**:付费行情源(tushare pro / iFinD / wind)/ HTTPS 公网爬虫 / 微博 / 知乎 / 雪球 / 国防部 RSS / sina mil / 同花顺全球 / 百度衍生 / 卡片交互式资讯展示 — 全部留 P1 / amendment 范围;实施期任何引入即红线违规
 
 **风险红线与 RiskConfig 不可改红线**(P0-7 锁定 2026-05-09,详见 [decisions/P0-7](docs/decisions/P0-7-risk-redlines-position-circuit-universe-llm-immutability.md) §2):
 
@@ -317,6 +338,8 @@ cd frontend && npm run type-check && npm run test -- --run && npm run build
 grep -rn "from backend.llm\|from backend.agents\|from backend.mirofish\|from backend.data" backend/risk/
 grep -rn "from backend.risk\|RiskConfig\|PositionLimitsConfig\|CircuitBreakerConfig\|UniverseConfig" backend/llm/ backend/agents/ backend/mirofish/
 grep -rn "@router.post\|@router.put\|@router.patch" backend/api/risk/
+grep -rn "from backend.llm\|import backend.llm" backend/data/data_quality.py backend/data/divergence.py backend/data/staleness.py backend/data/suspension.py
+grep -rn "MiroFish.*RiskCheckSummary\|RiskCheckSummary.*MiroFish" backend/  # P0-8 红线 6
 ```
 
 LLM key 永远走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
