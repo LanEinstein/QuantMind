@@ -638,9 +638,15 @@ received -> rejected -> ignored_with_reason
 
 ## 4. P2 决策点
 
-## P2-1. MiroFish 使用范围
+## P2-1. MiroFish 使用范围 ✅ superseded by P0-8 (2026-05-09)
 
-### 你需要决定
+> 实质决策已在 P0-8 决策时吸收;详见 `docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md` §1
+> 关键澄清:MiroFish 是加分项不是核心(P0-9 用户明确;`~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_mirofish_supplementary_not_core.md`)
+> 不需要独立 P2-1 决策文档;P2 收官见 `docs/decisions/P2-decisions-finalization-2026-05-10.md` §1
+
+### 原始决策点(已被 P0-8 取代)
+
+#### 你需要决定
 
 MiroFish 是:
 
@@ -649,13 +655,21 @@ MiroFish 是:
 - 只做盘后复盘。
 - 只做研究展示。
 
-### 建议倾向
+#### 建议倾向
 
 只在重大事件和盘后复盘触发。MiroFish 输出作为证据之一，不直接产生买卖股数。
 
-## P2-2. 自进化机制边界
+## P2-2. 自进化机制边界 ⏳ deferred to dedicated session (2026-05-10)
 
-### 你需要决定
+> 用户明确要单开 dedicated session 仔细调研讨论自进化策略;不允许在 P2 收官 session 做最终决策。
+> **关键约束(用户给出)**:自进化输出必须经过模拟盘验证 + 必须有状态回滚机制;不能完全禁止任何自进化路径。
+> **当前实施期 Phase A/B/B-finale 严禁写任何自进化代码**直到 P2-2 dedicated session 锁定。
+> Critical feedback memory: `~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_self_evolution_must_have.md`
+> P2 收官见 `docs/decisions/P2-decisions-finalization-2026-05-10.md` §2(含 dedicated session 调研建议方向)
+
+### 原始决策点(P2-2 dedicated session 待召开)
+
+#### 你需要决定
 
 系统可以自动改变什么:
 
@@ -666,23 +680,40 @@ MiroFish 是:
 - 风控参数。
 - 飞书指令模板。
 
-### 建议倾向
+#### 建议倾向
 
 允许自动生成改进建议，不允许自动部署到影响指令的规则。风控参数和仓位公式必须人工确认。
 
-## P2-3. 移动端或远程访问
+> 注:用户 2026-05-10 明确"自进化是必须有的"否决了"全锁不启用"路径。"建议倾向"在 dedicated session 重新评估。
 
-### 你需要决定
+## P2-3. 移动端或远程访问 ✅ superseded by P1-6 §1.5 (2026-05-10)
+
+> 实质决策已在 P1-6 §1.5 决策时吸收;详见 `docs/decisions/P1-6-secrets-shell-env-12month-event-driven-rotation-loopback-only-no-local-auth-audit-mongo-jsonl-dual-write.md` §1.5
+> 等价含义:移动端 Web UI 不开放(127.0.0.1 only + 严禁 LAN/公网 + 远程仅 SSH tunnel)
+> 移动端依赖飞书交互(继承 P0-1 §1.3 + 用户原决策建议倾向)
+> 不需要独立 P2-3 决策文档;P2 收官见 `docs/decisions/P2-decisions-finalization-2026-05-10.md` §3
+
+### 原始决策点(已被 P1-6 §1.5 取代)
+
+#### 你需要决定
 
 是否需要在外部网络访问 Web UI，或者完全通过飞书交互。
 
-### 建议倾向
+#### 建议倾向
 
 第一阶段 Web UI 保持本机/内网，移动侧主要依赖飞书。
 
-## P2-4. 告警渠道
+## P2-4. 告警渠道 ✅ 已锁定 2026-05-10(派生 P1-6 二次 amendment 26 → 27 类 AuditEventType)
 
-### 你需要决定
+> 决策定稿: `docs/decisions/P2-decisions-finalization-2026-05-10.md` §4
+> 派生 amendment: `docs/decisions/P1-6-amendment-2026-05-10-audit-eventtype-27.md`(新增 `EXECUTION_REPORT_PARSE_FAILED`)
+> 锁定结果: 7/8 类用户列出事件已被 P1-6 + P1-7 累积覆盖(行情/资讯断流→DATA_QUALITY_BREACH;LLM 全停→LLM_CALL_TIMEOUT_30S+DAILY_COST_CEILING_20CNY_BREACHED;指令生成失败→BUILDER_EARLY_RETURN;风控拦截→RISK_ENGINE_CHECK_REJECTED;模拟账户异常→MOCKBROKER_PRICE_LIMIT_VIOLATION_AT_FILL+STATE_MACHINE_ILLEGAL_TRANSITION;日终对账→EOD_PIPELINE_FAILED+RECONCILIATION_TICKET_OPEN_OR_EXPIRED);唯一遗漏"飞书回报解析失败"由本 amendment 补 EXECUTION_REPORT_PARSE_FAILED 解决(归类 4 异常+拦截;reason_namespace='execution_report_ambiguous';澄清飞书走 P0-2 §1.2 主路径长连接 + P0-4 §1 五模板预写死,严禁走 P0-2 §2.5 备用 webhook)。告警通道维持 P1-7 §1.7 锁定:仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP/Slack/Discord 第二通道(继承 P1-6 §1.1 凭证池仅 LLM 3+飞书 6 锁状态)。
+>
+> **决策对齐期 P0+P1+P2 全完成 ✅**(P2-2 deferred 不阻塞实施期 Phase A)→ 启动实施期 Phase A
+
+### 原始决策点(已被本决策取代)
+
+#### 你需要决定
 
 哪些事件必须飞书提醒:
 
@@ -695,7 +726,7 @@ MiroFish 是:
 - 飞书回报解析失败。
 - 日终对账缺失。
 
-### 建议倾向
+#### 建议倾向
 
 把“告警”和“交易指令”分开，避免你在飞书里混淆。
 

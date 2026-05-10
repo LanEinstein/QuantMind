@@ -1,6 +1,6 @@
 # QuantMind 项目协作上下文
 
-> 跨 session 接手 QuantMind 的"第一读"。**决策对齐期 P0 + P1 全部完成 ✅**(2026-05-10 P1-7 锁定收官);核心约束已稳定。下一站:**实施期 Phase A 启动**(代码迁移合并 P1-5 + P1-6 + P1-7 + P0-1 旧矩阵删除)。
+> 跨 session 接手 QuantMind 的"第一读"。**决策对齐期 P0 + P1 + P2 全完成 ✅**(2026-05-10 P2 收官 — P2-1/P2-3 superseded by P0-8/P1-6 §1.5;**P2-2 自进化 deferred to dedicated session — 用户 critical feedback 否决 "全锁不启用",自进化必须有但需深度调研**;P2-4 派生 P1-6 二次 amendment 27 类 AuditEventType);核心约束已稳定。下一站:**实施期 Phase A 启动**(代码迁移合并 P1-5 + P1-6 + P1-7 + P0-1 旧矩阵删除)。
 >
 > ⚠️ 本文件只提炼原则与红线,**不重复决策条文**;详细规约请直接读 `docs/decisions/` 下对应决策文档 §2 红线节。
 
@@ -161,6 +161,13 @@ QuantMind = 多 Agent 投研信号系统 + 模拟实盘验证 + 飞书人工执�
 - **`AuditEventType` 扩 22 → 26 类永锁**(派生 P1-6 amendment):新增 `monthly_budget_50/80/100pct_reached` + `kimi_daily_cap_4cny_breached` 4 类均归类 4(异常 + 拦截事件)`reason_namespace='cost_budget_threshold'` `actor=SYSTEM` `resource_type='cost_budget'`;cost_guard 写 audit 仅 SYSTEM/SCHEDULER actor + 严禁 frontend_user/feishu_user actor 写 cost_budget event(防伪造);cost_breakdown 响应严禁 plaintext API key fingerprint(by_provider key 用 'deepseek'/'qwen'/'kimi' 字面量)
 - **`BudgetState` frozen Pydantic v2 strict + extra="forbid" 三层守门永锁**:升级后字段集 = (daily_*) 6 + (monthly_*) 5 + (kimi_*) 3 + (kimi_escalation_blocked) 1 = 15 字段;严禁就地 mutation;严禁 `extra="allow"`/`"ignore"`;hot-reload 禁用(继承 P0-3 §2 红线 12 + P0-7 §2 红线 14)
 - **`backend/services/cost_guard.py` + `backend/services/soft_degrade_manager.py` 严禁 import `backend.{llm,agents,mirofish,data}` 永锁**(继承 P0-10 §2 红线 1 LLM 字段权限矩阵):cost_guard 是基础设施层 LLM 是上层调用方;LLM 写引用反向依赖即破隔离;`SoftDegradeManager.activate_kimi_escalation_block` 仅由 cost_guard 调用(防 LLM/agents 模块绕过预算守门主动触发降级);严禁 frontend 暴露写入端点
+
+### 2.14 P2 收官(2026-05-10)
+
+- **P2-1 MiroFish 范围 superseded by P0-8 永锁**:不重新评估;不引入"日常每只股票都跑"路径;详见 `docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md` §1
+- **P2-2 自进化机制边界 deferred to dedicated session 永锁**(用户 critical feedback):用户原话"自进化功能是必须要有的可以引入'自我进化后必须经过模拟盘验证'以及状态回滚但绝对不能完全禁止;大模型如果没有持续学习/持续适应新变化/持续追踪最前沿量化以及金融交易思路的能力就一定无法长久立于不败之地;具体采用怎样的策略我们可以单开一个 session 仔细调研讨论";关键约束 = 自进化输出必须经过模拟盘验证(类似 P0-6 acceptance 框架)+ 必须有状态回滚机制(类似 P1-2.A reset_to_snapshot 思路);**实施期 Phase A/B/B-finale 严禁写任何自进化代码**直到 dedicated session 锁定;严禁单方面在其他场景做自进化决策;严禁把"hot-reload 禁用 + LLM 严禁写决策字段"理解为"自进化永远禁止"(用户已明确不同意);Critical feedback memory: `~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_self_evolution_must_have.md`
+- **P2-3 移动端/远程访问 superseded by P1-6 §1.5 永锁**:不开发独立移动端 App;PC 浏览器仅本机/SSH tunnel;移动端依赖飞书交互(继承 P0-1 §1.3)
+- **P2-4 告警渠道维持 P1-7 §1.7 锁定 + 派生 P1-6 二次 amendment**:`AuditEventType` enum 22 → 26 → 27 类(P1-6 + P1-7 + P2-4 三层 amendment 累积);新增 `EXECUTION_REPORT_PARSE_FAILED`(归类 4 异常 + 拦截事件;reason_namespace='execution_report_ambiguous';actor=FEISHU_USER 或 FRONTEND_USER;outcome=FAILURE;payload={raw_text, regex_attempt_results, parse_error_kind};继承 P0-4 严格正则失败即 AMBIGUOUS 节奏);**澄清飞书走 P0-2 §1.2 主路径长连接 + P0-4 §1 五模板预写死永锁;严禁走 P0-2 §2.5 备用 webhook**(继承"备用 webhook 仅可发系统告警绝不发买卖指令/对账请求/澄清消息"红线);告警通道整体维持 P1-7 §1.7 仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP/Slack/Discord 第二通道(继承 P1-6 §1.1 凭证池仅 LLM 3 + 飞书 6 锁状态)
 
 ---
 
