@@ -472,13 +472,13 @@ LLM 可以产生建议和解释，但 InstructionPlan 必须通过结构化校�
 
 ## P1-2. MockBroker 持久化与真实行情估值
 
-🔧 **部分锁定 2026-05-10** — 子阶段 A + B 已锁定,C 待讨论
+✅ **三子阶段全锁 2026-05-10** — A + B + C 全部已锁定
 
 | 子阶段 | 状态 | 决策文档 | 范围 |
 |--------|------|---------|------|
 | **P1-2.A 持久化与日切调度** | ✅ 已锁定 2026-05-09 | [`docs/decisions/P1-2.A-persistence-hybrid-snapshot-and-broker-scheduler.md`](decisions/P1-2.A-persistence-hybrid-snapshot-and-broker-scheduler.md) | 混合 broker_events delta + broker_snapshots EOD 全量 / Mongo multi-doc tx (RS 强约束) / ReconciliationApplier+ExecutionReportApplier 双类 / 条件自动恢复 ≤3h+checksum / 新建 BrokerScheduler / EOD chain 16:00→16:00:35 sequential + 17:00 MiroFish 独立 / 失败 1-retry + freeze 次日(第五种买卖类路由冻结源 `eod_pipeline_freeze`,派生 P0-7 amendment 候选) |
 | **P1-2.B 估值与数据协议** | ✅ 已锁定 2026-05-10 | [`docs/decisions/P1-2.B-mtm-30s-equity-points-data-quality-on-demand.md`](decisions/P1-2.B-mtm-30s-equity-points-data-quality-on-demand.md) | intraday_mtm BrokerScheduler 第四 cron(30s 同 watchlist_snapshot 节奏)+ 三级回退价格(Redis≤60s→Mongo≤300s→last_known_cached degraded;禁 cost_price fallback)+ EquityPoint per-position 明细 + last_broker_event_id 反向索引 / eod_pipeline 插 verify_equity_point(chase_poller↔acceptance 之间;无点补 EOD_FALLBACK)+ DataQualityProvider per-stock evaluate 按需聚合 7 breach + 3 计数 + is_acceptable_for_buy_sell 仅 4 breach 阻断(news_outage/mirofish/snapshot_outage 不入)+ daily_state 不引入 collection 从 broker_events+watchlist_snapshots 按需装配 DailyTradingState |
-| P1-2.C 撮合增强与成本细化 | ⏳ 待讨论 | — | 部分成交模拟 + 涨跌停判定接 daily_state.current_price + 滑点流动性分级 + 深市过户费 |
+| **P1-2.C 撮合增强与成本细化** | ✅ 已锁定 2026-05-10 | [`docs/decisions/P1-2.C-matching-allornone-defensive-limitcheck-tiered-slippage-transfer-fee.md`](decisions/P1-2.C-matching-allornone-defensive-limitcheck-tiered-slippage-transfer-fee.md) | ALL_OR_NONE 撮合(filled=volume 或 0;PARTIALLY_FILLED 仅用户回报路径)+ MockBroker 注入 MarketMetaProvider(get_prev_close + get_current_price 二级回退 Redis≤60s+Mongo≤300s 不退 last_known_cached)防御性涨跌停 re-check + REJECTED reason='price_limit_violation_at_fill'(三层守门:builder 五道早返 + RiskEngine 14-check check 12 pre-route + MockBroker at-fill;两层 reason 不同)/ 滑点 board 分级 sh_main:1.5+sz_main:1.5+chuangye:3.5+etf:1.5(BrokerConfig.slippage_bps_by_board dict 4 board 必齐;移除 slippage_bps:int=2 单标量;runtime 不可改+hot-reload 禁用)/ 深市过户费 0.00341% 双边(=0.0000341;现行实际费率非用户初拟 0.01%;Trade.transfer_fee 非破坏式扩展)/ cost_calculator.py 抽出 OrderCostBreakdown frozen + calculate_cost 纯函数(无self/无IO/无副作用)/ BrokerConfig+Trade 升级 strict+extra="forbid";mock_broker.py:35 孤儿 get_price_limits 助手 + 688x dead branch 实施期 D-007 删除统一走 stock_metadata.get_price_limit_pct(board)单一真相源 |
 
 ### 你需要决定(整体)
 
@@ -492,9 +492,9 @@ LLM 可以产生建议和解释，但 InstructionPlan 必须通过结构化校�
 
 - ~~模拟账户持久化口径~~ ✅ P1-2.A
 - ~~日切规则~~ ✅ P1-2.A
-- 成交撮合规则 — P1-2.C
+- ~~成交撮合规则~~ ✅ P1-2.C
 - ~~估值数据源~~ ✅ P1-2.B
-- 交易成本模型 — P1-2.C
+- ~~交易成本模型~~ ✅ P1-2.C
 
 ## P1-3. 飞书消息形态
 
