@@ -562,28 +562,24 @@ received -> rejected -> ignored_with_reason
 
 红线 18 条详见决策文档 §2;实施期改动清单 32 条(E-001~E-032)详见决策文档 §3。
 
-## P1-6. 安全、密钥与访问边界
+## P1-6. 安全、密钥与访问边界 ✅ 2026-05-10 锁定
 
-### 你需要决定
+> 决策定稿:`docs/decisions/P1-6-secrets-shell-env-12month-event-driven-rotation-loopback-only-no-local-auth-audit-mongo-jsonl-dual-write.md`
 
-- 飞书 App Secret 放哪里。
-- 飞书事件 Verification Token / Encrypt Key 放哪里。
-- 是否允许公网 Webhook。
-- 是否只用长连接。
-- 是否需要本机登录认证。
-- Feishu 消息记录保留多久。
-- 是否允许前端修改飞书配置。
+### 锁定结果摘要
 
-### 建议倾向
+- **Secrets 存储:shell env 单源 + git 钩子防护 + 启动期 fail-fast 三件套**:LLM 3 key + 飞书 6 凭证 + 未来扩展凭证全部走 `~/.bashrc`;`.env` 仅放非密配置 + 启动期 secrets_validator 强制扫描禁止;`.gitignore` 覆盖 `.env`+`*.key` + `.pre-commit-config.yaml` 引入 gitleaks v8.18+ + custom rules 覆盖 sk-* / FEISHU_* / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MOONSHOT_API_KEY pattern
+- **凭证轮换:事件驱动 + 12 月最长保质期 5 类强制触发**:① 凭证泄露/疑似泄露 ② 团队成员变动 ③ provider 通知 key 异常活动 ④ 12 月自然到期(warning 不强制 exit)⑤ 升级 P2 真实账户前;轮换流程 = 编辑 ~/.bashrc + source + systemctl restart + 启动期日志确认 fingerprint;严禁 hot-reload(继承 P0-7+P0-10);凭证 fingerprint = SHA256(value)[:8] 写 audit + 启动日志,严禁 plaintext 写持久化通道
+- **飞书 6 凭证落地时机:P1-6 仅锁约束实际配置延迟到 feishu_interactive 启用前**:P1-6 仅锁定存储方式 + 轮换策略 + 应急 + fingerprint + 启动期 fail-fast 行为;实际 ~/.bashrc 配置不强制现在做(因 acceptance 通过日期未定可能 P2 末);启动期 fail-fast 仅在 `FEISHU_INTERACTIVE_ENABLED=true` 时校验飞书 6 凭证(默认 false 不影响 simulation_auto 启动)
+- **凭证泄露应急:三步应急 playbook + gitleaks pre-commit + 启动期 secrets_validator 三件套**:① 立即轮换(更新 ~/.bashrc + source + systemctl restart + provider revoke)② git history 排查(git log -p -S 前 8 字符 + git filter-repo 重写 + force push 仅本人确认 + 已 push 到公网视为永久泄露必须 revoke)③ 影响评估(audit_events 反查 + 飞书控制台 + cost_guard 异常飙升)
+- **IP 全层严锁 127.0.0.1 only + 远程访问仅 SSH tunnel**:Backend uvicorn 显式 --host 127.0.0.1 + Frontend Vite 修复 host:'127.0.0.1'(P1-5 红线 11 历史违规 F-001 必修)+ MongoDB/Redis docker-compose 127.0.0.1 已 ✅ + Nginx upstream + listen 127.0.0.1 显式补充 + 远程访问仅 SSH tunnel(SSH 本身是身份认证层);严禁 LAN 段开放 + 0.0.0.0 + iptables 控制
+- **本机访问不加任何 auth middleware**(P1-5 §2 红线 11 P1-6 处置承诺履行):127.0.0.1 only 含义 = OS 用户隔离已是身份认证;前端 axios 不插任何 Authorization / Bearer / cookie / localStorage / sessionStorage(继承 P1-5);WebSocket + SSE 不要求 token 参数;不引入单 token 文件认证 / OAuth/OIDC / mTLS
+- **审计日志:Mongo audit_events 180 天 TTL + JSONL 30 天双写**:新建 audit_events collection append-only insert-only(继承 P1-2.A broker_events 8 项红线);schema 由 backend/audit/models.py AuditEvent frozen Pydantic v2 strict + extra='forbid' 锁定 9 字段(event_id/timestamp/event_type/actor/resource_type/resource_id/payload/outcome/correlation_id/reason_namespace);TTL 180 天 = P0-6 45 交易日 acceptance × 4 倍安全余量;Mongo failure 时 fail-open(JSONL 兜底 + warning 不阻主路径);严禁 LLM 写 audit(继承 P0-10)
+- **审计事件类型:4 类全写(22 个 AuditEventType 枚举永锁)**:类 1 — 两唯二写入端点(execution_report_submitted + reconciliation_ticket_decided)/ 类 2 — 模式切换 + 5 冻结源 + 生命周期(feishu_interactive_toggled + mockbroker_reset + freeze_source_*_changed + advance_day + eod_pipeline_*) / 类 3 — 凭证生命周期 + 飞书收发(secrets_validator_* + key_fingerprint_changed + feishu_*_sent + feishu_message_received) / 类 4 — 异常 + 拦截(state_machine_illegal_transition + risk_engine_check_rejected + builder_early_return + mockbroker_price_limit_violation_at_fill + data_quality_breach + reconciliation_ticket_open_or_expired + llm_call_timeout_30s + daily_cost_ceiling_20cny_breached);调试性事件(LLM raw / RiskEngine trace / 行情快照 / cron 心跳 / Redis cache)严禁入 audit 走 quantmind.jsonl
+- **Audit 查询入口:CLI + GET API,不加前端页面**:scripts/query_audit.py CLI(--time-range / --event-type / --actor / --correlation-id / --format) + backend/api/audit.py GET /api/audit/events(仅 GET 符合 P1-5 §2 红线 1+2);**前端不占 P1-5 11 页名额**(后期需加查询界面必须先走 P1-5-amendment + P1-6-amendment 双批准)
+- **派生 amendment**:无破坏式;新增 backend/audit/* 模块 + scripts/query_audit.py + GET /api/audit/events 端点 + 修复 Vite host '0.0.0.0' → '127.0.0.1' 历史违规;P1-5 §2 红线 11 在本决策完成"P1-6 处置"承诺即"不加本机认证"
 
-- App ID、App Secret、飞书 Token、Webhook URL 只走环境变量或本机安全存储。
-- 不写入 `.env` 到 git。
-- 前端不能直接显示完整密钥。
-- 如果使用 HTTPS 回调，必须验证事件来源并做 replay 防护。
-
-### 你需要产出
-
-飞书安全策略。
+红线 20 条详见决策文档 §2;实施期改动清单 34 条(F-001~F-034)详见决策文档 §3。
 
 ## P1-7. 成本预算
 

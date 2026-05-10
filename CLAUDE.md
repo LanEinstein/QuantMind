@@ -136,6 +136,21 @@ QuantMind = 多 Agent 投研信号系统 + 模拟实盘验证 + 飞书人工执�
 - **P1-5 暂不加本机认证(P1-6 处置)**:前端永不存储任何凭证到 localStorage / sessionStorage / cookie;Vite 默认 `host: '127.0.0.1'`(不允许 `'0.0.0.0'`)
 - **Simulation.vue 保留为 P1-5 范围外**:MiroFish 多 Agent 演化可视化展示价值后续阶段细化;P1-5 阶段不改造不重点投入;菜单不展示
 
+### 2.12 安全与可观测性(P1-6)
+
+- **Secrets 仅 shell env 单源永锁**:LLM 3 key + 飞书 6 凭证 + 未来扩展凭证全 `~/.bashrc`;`.env` 永禁含 LLM_KEY/FEISHU_* prefix;不引入 sops/age/Vault/keyring(单实例项目过度工程)
+- **凭证 5 类强制轮换 + 12 月 warning**:① 泄露/疑似 ② 团队变动 ③ provider 告警 ④ 12 月到期(warning 不强制 exit)⑤ P2 升级前;轮换 = 编辑 ~/.bashrc + source + systemctl restart + 启动期日志确认 fingerprint;**严禁 hot-reload**(继承 P0-7+P0-10);凭证 fingerprint=SHA256(value)[:8] 严禁 plaintext 写持久化通道
+- **飞书 6 凭证 P1-6 仅锁约束实际配置延迟到 feishu_interactive 启用前**:启动期 fail-fast 仅在 `FEISHU_INTERACTIVE_ENABLED=true` 时校验飞书凭证(默认 false 不影响 simulation_auto)
+- **凭证泄露三步应急**:① 立即轮换 + provider revoke ② git history 排查(git log -p -S 前 8 字符 + filter-repo + force push 仅本人确认 + 已 push 公网视为永久泄露)③ 影响评估(audit_events 反查 + 飞书控制台 + cost_guard 异常飙升);**docs/runbook/secrets-incident-response.md 必须存在**
+- **gitleaks pre-commit hook 强制**:`.pre-commit-config.yaml` + gitleaks v8.18+ + `.gitleaks.toml` 覆盖 `sk-*`/`FEISHU_*`/`DEEPSEEK_API_KEY`/`DASHSCOPE_API_KEY`/`MOONSHOT_API_KEY`;严禁 `--no-verify` 跳过
+- **启动期 secrets_validator fail-fast**:`backend/services/secrets_validator.py` 在 `main.py:lifespan` 同步调用;失败即 `exit(1)` + 写 audit `secrets_validator_blocked` + ERROR;校验 .env 不含 LLM_KEY/FEISHU_* + process env LLM key 格式 + FEISHU_INTERACTIVE_ENABLED=true 时校验飞书 6 凭证
+- **IP 全层严锁 127.0.0.1 only 永锁**:Backend uvicorn 显式 `--host 127.0.0.1` + Frontend Vite `host:'127.0.0.1'`(F-001 必修当前 `'0.0.0.0'` 历史违规)+ Nginx `listen 127.0.0.1:80/443` 显式补充 + 远程访问仅 SSH tunnel(SSH 是身份认证层);严禁 LAN 段开放 + 0.0.0.0 + iptables 控制(冲突 P0-2 永禁 HTTPS 入站红线);httpx 出站 `local_address="0.0.0.0"` 不冲突入站(出站和入站不同方向)
+- **不加任何本机 auth middleware 永锁**(履行 P1-5 §2 红线 11 P1-6 处置承诺):Backend FastAPI 不挂 `Depends(get_current_user)` / API key / Bearer token / JWT;Frontend axios 不插任何 `Authorization` / `Bearer` / cookie / `localStorage` / `sessionStorage`;WebSocket + SSE 不要求 token 参数;不引入单 token 文件 / OAuth / mTLS
+- **Mongo audit_events 180 天 TTL + JSONL 30 天双写永锁**:audit_events collection append-only insert-only(继承 P1-2.A broker_events 8 项红线);schema 由 `backend/audit/models.py` AuditEvent frozen Pydantic v2 strict + extra='forbid' 锁定 10 字段(event_id/timestamp/event_type/actor/actor_detail/resource_type/resource_id/payload/outcome/correlation_id/reason_namespace);Mongo failure 时 fail-open(JSONL 兜底 + warning 不阻主路径);**严禁 LLM 写 audit_events**(继承 P0-10 §2 红线 1)
+- **`AuditEventType` enum 锁定 22 类 event_type 永锁**:类 1 两写入端点(2)+ 类 2 模式切换+5冻结源+生命周期(11)+ 类 3 凭证生命周期+飞书收发(7)+ 类 4 异常+拦截(8);任何新增/删除/重命名必走 `P1-6-amendment`;调试性事件(LLM raw / RiskEngine trace / 行情快照 / cron 心跳 / Redis cache)严禁入 audit 走 `logs/quantmind.jsonl`
+- **凭证类 audit 仅写 fingerprint 严禁 plaintext + 严禁末四位**(防关联推断;比 P1-5 §2 红线 14 末四位脱敏更严)
+- **Audit 查询入口仅 CLI + GET API 永锁**:`scripts/query_audit.py` CLI + `backend/api/audit.py` GET `/api/audit/events`(仅 GET 符合 P1-5 §2 红线 1+2);**前端不占 P1-5 11 页名额**(后期需加查询界面必须先走 P1-5-amendment + P1-6-amendment 双批准)
+
 ---
 
 ## 3. 工程原则
@@ -195,6 +210,10 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/{risk,watchlist,llm,age
 grep -rn "ApprovalQueue\|auth-mode\|/api/risk/config\|/api/settings/llm-config\|/api/trading/approve\|/api/trading/reject\|/api/trading/cancel" frontend/src/  # P1-5 Phase A 完成后必空
 grep -rn "auth_mode_change\|approval_update" frontend/src/composables/useWebSocket.ts  # P1-5 Phase A 完成后必空(2 类删除消息)
 grep -rn "localStorage\.\|sessionStorage\.\|document\.cookie" frontend/src/  # P1-5 红线 11:前端不允许存储任何凭证
+grep -rnE "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_(APP_ID|APP_SECRET|VERIFY_TOKEN|ENCRYPT_KEY|CUSTOM_BOT_WEBHOOK_URL|CUSTOM_BOT_SIGN_SECRET)" .env .env.example  # P1-6 红线 1:.env 不得含 LLM_KEY/FEISHU_*
+grep -rnE "(host|listen)\s*[=:]\s*['\"]?0\.0\.0\.0" backend/ frontend/ deploy/ docker-compose*.yml | grep -v "local_address"  # P1-6 红线 8:严禁绑 0.0.0.0(httpx local_address 例外)
+grep -rnE "Bearer|Authorization|JWT|@app\.middleware\(.*auth" backend/api/ frontend/src/ | grep -v "lark-oapi\|lark_oapi"  # P1-6 红线 10:不加任何本机 auth middleware
+grep -rn "from backend.audit\|audit_store\.write" backend/llm/ backend/agents/  # P1-6 红线 16:LLM 严禁写 audit_events
 ```
 
 LLM key 走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
