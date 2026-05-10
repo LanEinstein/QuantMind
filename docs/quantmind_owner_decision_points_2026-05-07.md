@@ -581,9 +581,17 @@ received -> rejected -> ignored_with_reason
 
 红线 20 条详见决策文档 §2;实施期改动清单 34 条(F-001~F-034)详见决策文档 §3。
 
-## P1-7. 成本预算
+## P1-7. 成本预算 ✅ 已锁定 2026-05-10
 
-### 你需要决定
+> 决策定稿: `docs/decisions/P1-7-cost-budget-llm-only-monthly-440-daily-20-kimi-cap-4-soft-degrade-feishu-alert.md`
+> 派生 amendment: `docs/decisions/P0-10-amendment-2026-05-10-cost-budget-extension.md` + `docs/decisions/P1-6-amendment-2026-05-10-audit-eventtype-26.md`
+> 锁定结果: 仅锁 LLM 预算(数据/运维不设)+ 日 hard ¥20 严格(继承 P0-10 不变)+ 月 soft ¥440 = 22 工作日 × ¥20 静态固定按自然月 + Kimi daily cap ¥4 单独锁(deepseek+qwen 不单独 cap 防失 failover 弹性)+ 软触发(¥14)关 Kimi escalation 路径(SoftDegradeManager;严禁缩减 4 必经 Agent / 降 fast 频次 / 全模型 deepseek-only)+ 月节点 50% audit only / 80% 飞书 warning / 100% 飞书 critical+cost_breakdown(月预算 100% 严禁触发停摆)+ 飞书仅 hard breach + 月节点(严禁 SMTP/Slack/Discord 第二通道)+ Phase B 成本拆解面板挂载 P1-5 §2 红线 1 锁 4 Phase B 页之一(GET only)+ AuditEventType 22→26 类(派生 P1-6 amendment)+ 20 红线 + 38 实施期任务(G-001~G-038)
+>
+> **P1 决策对齐收官 ✅**(P0-1~P0-10 + P1-2.A/B/C + P1-5 + P1-6 + P1-7 全锁;P1-1/P1-3/P1-4/P1-8 由 P0+P1 累积锁定)→ 启动实施期 Phase A
+
+### 原始决策点(已被上方决策取代)
+
+#### 你需要决定
 
 - 每日 LLM 成本上限。
 - Kimi thinking 使用上限。
@@ -591,15 +599,15 @@ received -> rejected -> ignored_with_reason
 - 行情/资讯源预算。
 - 服务器预算。
 
-### 建议倾向
+#### 建议倾向
 
 `simulation_auto` 可较高频，`feishu_interactive` 必须低噪声:
 
 - 不把每个信号都发飞书。
-- 只发“可执行指令”“风险变化”“需要对账”“错误澄清”。
+- 只发”可执行指令””风险变化””需要对账””错误澄清”。
 - 预算软触发时降级模型和减少深度分析。
 
-### 你需要产出
+#### 你需要产出
 
 月预算表与超限动作。
 

@@ -1,6 +1,6 @@
 # QuantMind 项目协作上下文
 
-> 跨 session 接手 QuantMind 的"第一读"。决策对齐期 P0 阶段已完成,核心约束已稳定。下一站:P1 决策对齐(从 `P1-2 MockBroker 持久化与实时估值` 起步)。
+> 跨 session 接手 QuantMind 的"第一读"。**决策对齐期 P0 + P1 全部完成 ✅**(2026-05-10 P1-7 锁定收官);核心约束已稳定。下一站:**实施期 Phase A 启动**(代码迁移合并 P1-5 + P1-6 + P1-7 + P0-1 旧矩阵删除)。
 >
 > ⚠️ 本文件只提炼原则与红线,**不重复决策条文**;详细规约请直接读 `docs/decisions/` 下对应决策文档 §2 红线节。
 
@@ -151,6 +151,17 @@ QuantMind = 多 Agent 投研信号系统 + 模拟实盘验证 + 飞书人工执�
 - **凭证类 audit 仅写 fingerprint 严禁 plaintext + 严禁末四位**(防关联推断;比 P1-5 §2 红线 14 末四位脱敏更严)
 - **Audit 查询入口仅 CLI + GET API 永锁**:`scripts/query_audit.py` CLI + `backend/api/audit.py` GET `/api/audit/events`(仅 GET 符合 P1-5 §2 红线 1+2);**前端不占 P1-5 11 页名额**(后期需加查询界面必须先走 P1-5-amendment + P1-6-amendment 双批准)
 
+### 2.13 成本预算(P1-7)
+
+- **LLM only 预算永锁**:LLM 总日 hard ¥20(继承 P0-10 §1.4 不变 — 唯一全 LLM 停摆触发器)+ 月 soft ¥440 = 22 工作日 × ¥20(静态固定按自然月不依赖 holidays.yaml)+ Kimi 单独 daily cap ¥4(20% 总日预算);**数据/运维不设 ceiling**(akshare/adata/baostock 全免费;MongoDB/Redis 自托管 127.0.0.1);4 阈值修改 = git diff + amendment + 重启 + 严禁 hot-reload(继承 P0-7 §2 红线 14);派生 P0-10 amendment(¥20 hard 锁定不变扩 monthly + Kimi 子维度)
+- **月节点 50%/80%/100% 渐进升级永锁**:50%(¥220)仅 audit `monthly_budget_50pct_reached`;80%(¥352)audit + 飞书 warning;100%(¥440)audit + 飞书 critical + cost_breakdown 附件;**月预算 100% 严禁触发停摆 LLM**(月度波动属正常仅警告)+ **严禁 25%/75%/120% 额外节点**(过度密集打扰)+ Redis SET NX 幂等(同一节点重复调用仅触发 1 次);Alerter dedup_15min cooldown 防轰炸
+- **Kimi daily cap = ¥4 单独锁永锁**:`backend/services/cost_guard.py::assert_kimi_cap_allows()` 在 Kimi 调用前必经;触发即 raise `KimiDailyCapExceededError`(仅暂停 Kimi 不暂停 deepseek + qwen);**deepseek + qwen 严禁单独 cap**(防失 failover 弹性 — deepseek 灭后 qwen + kimi 总额 ¥10 不够 4 必经 Agent 全跑);Kimi `¥0.0084/k output` 是 deepseek 42 倍;¥4 cap = ~47 笔 escalation/日 buffer 覆盖正常 < 5 次场景
+- **软触发(日 ¥14=70%)优先关 Kimi escalation 路径永锁**:`backend/services/soft_degrade_manager.py::SoftDegradeManager.activate_kimi_escalation_block()` 由 cost_guard 在 soft breach 时调用 + fund_manager tiered routing 强制走 triage qwen;**严禁同时关闭 4 必经 Agent 任一**(继承 P0-10 §2 红线 2)+ **严禁降低 fast 频次 09/11/13/15 → 09/13**(11/15 突发响应延迟不可接受)+ **严禁全模型降级 deepseek-only**(中文金融领域 qwen 优势丧失 + 需走 P0-10-amendment);每日 00:00 BrokerScheduler 1st cron reset 软触发标志位
+- **告警通道仅飞书 + audit + Phase B 成本拆解面板永锁**:`Alerter.webhook_url = FEISHU_CUSTOM_BOT_WEBHOOK_URL`(继承 P0-2 §2.5 备用 webhook 仅告警);**严禁 SMTP/Slack/Discord 第二告警通道**(违反 P1-6 §1.1 凭证池仅 LLM 3 + 飞书 6 锁状态);**严禁 soft breach 发飞书**(违反 P1-5 低噪声原则);Phase B 成本拆解面板 = `backend/api/cost.py` GET `/api/cost/breakdown` + `frontend/src/views/CostBreakdown.vue` 5min polling(P1-5 §2 红线 1 锁 4 Phase B 页之一);**严禁 POST/PUT/PATCH/DELETE 在 backend/api/cost.py**(继承 P1-5 §2 红线 1+2)
+- **`AuditEventType` 扩 22 → 26 类永锁**(派生 P1-6 amendment):新增 `monthly_budget_50/80/100pct_reached` + `kimi_daily_cap_4cny_breached` 4 类均归类 4(异常 + 拦截事件)`reason_namespace='cost_budget_threshold'` `actor=SYSTEM` `resource_type='cost_budget'`;cost_guard 写 audit 仅 SYSTEM/SCHEDULER actor + 严禁 frontend_user/feishu_user actor 写 cost_budget event(防伪造);cost_breakdown 响应严禁 plaintext API key fingerprint(by_provider key 用 'deepseek'/'qwen'/'kimi' 字面量)
+- **`BudgetState` frozen Pydantic v2 strict + extra="forbid" 三层守门永锁**:升级后字段集 = (daily_*) 6 + (monthly_*) 5 + (kimi_*) 3 + (kimi_escalation_blocked) 1 = 15 字段;严禁就地 mutation;严禁 `extra="allow"`/`"ignore"`;hot-reload 禁用(继承 P0-3 §2 红线 12 + P0-7 §2 红线 14)
+- **`backend/services/cost_guard.py` + `backend/services/soft_degrade_manager.py` 严禁 import `backend.{llm,agents,mirofish,data}` 永锁**(继承 P0-10 §2 红线 1 LLM 字段权限矩阵):cost_guard 是基础设施层 LLM 是上层调用方;LLM 写引用反向依赖即破隔离;`SoftDegradeManager.activate_kimi_escalation_block` 仅由 cost_guard 调用(防 LLM/agents 模块绕过预算守门主动触发降级);严禁 frontend 暴露写入端点
+
 ---
 
 ## 3. 工程原则
@@ -214,6 +225,10 @@ grep -rnE "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_(APP_ID|AP
 grep -rnE "(host|listen)\s*[=:]\s*['\"]?0\.0\.0\.0" backend/ frontend/ deploy/ docker-compose*.yml | grep -v "local_address"  # P1-6 红线 8:严禁绑 0.0.0.0(httpx local_address 例外)
 grep -rnE "Bearer|Authorization|JWT|@app\.middleware\(.*auth" backend/api/ frontend/src/ | grep -v "lark-oapi\|lark_oapi"  # P1-6 红线 10:不加任何本机 auth middleware
 grep -rn "from backend.audit\|audit_store\.write" backend/llm/ backend/agents/  # P1-6 红线 16:LLM 严禁写 audit_events
+grep -rn "from backend.\(llm\|agents\|mirofish\|data\)" backend/services/cost_guard.py backend/services/soft_degrade_manager.py  # P1-7 红线 12:cost_guard + SoftDegradeManager 严禁 import LLM/agents/mirofish/data
+grep -rn "activate_kimi_escalation_block" backend/llm/ backend/agents/  # P1-7 红线 14:SoftDegradeManager.activate_kimi_escalation_block 仅由 cost_guard 调用
+grep -rnE "@router\.(post|put|patch|delete)" backend/api/cost.py  # P1-7 红线 8:backend/api/cost.py 仅 GET 严禁 POST/PUT/PATCH/DELETE
+grep -cE "_DEFAULT_(DAILY_BUDGET_RMB|SOFT_CEIL_PCT|MONTHLY_BUDGET_RMB|KIMI_DAILY_CAP_RMB)\s*=\s*[0-9]" backend/services/cost_guard.py  # P1-7 红线 11:cost_guard.py 4 常量定义必为 4(daily ¥20+soft 0.7+monthly ¥440+kimi ¥4)
 ```
 
 LLM key 走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
