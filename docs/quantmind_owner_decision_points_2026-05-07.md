@@ -544,29 +544,23 @@ received -> rejected -> ignored_with_reason
 
 ## P1-5. 前端优先工作流
 
-### 你需要决定
+✅ **已锁定 2026-05-10** — 决策文档:[`docs/decisions/P1-5-frontend-workflow-mvp-7-pages-readonly-first-write-strict-bounded.md`](decisions/P1-5-frontend-workflow-mvp-7-pages-readonly-first-write-strict-bounded.md)
 
-前端先服务哪条主线:
+锁定要点:
 
-1. `simulation_auto` 账本和绩效。
-2. 飞书指令历史与回报校验。
-3. Watchlist 监控。
-4. 数据质量面板。
-5. 复盘报告。
+- **MVP 7 页 + Phase B 4 页**:MVP = Dashboard / 系统状态 / InstructionPlan 池 / Portfolio / 用户回报录入 / 对账裁定 / 验收报告;Phase B 收尾再补 Agent 辩论 / 数据质量 / 飞书消息历史 / 成本拆解
+- **一级菜单按决策闭环 4 分组**:运行状态 / 决策与指令 / 账本与成交 / 复盘与验收;设置(LLMRouter / DataSources / MiroFishConfig / CostDashboard)折叠为只读
+- **写入接口立即下线 + Phase A 一次性破坏式删除**:`backend/api/{risk,watchlist,llm,agents,settings,trading,analysis}*.py` 所有 POST/PUT/PATCH/DELETE handler 删除;前端 RiskCenter / Settings / ApprovalQueue 写入按钮 + axios 调用立即下线;**仅允许 2 个前端写入端点** = POST `/api/execution-reports` + POST `/api/reconciliation-tickets/{ticket_id}/decide`
+- **WS 单通道 12 类消息扩展**:已有 6 类 + 新增 8 类(`instruction_plan_update` / `broker_event` / `equity_point_update` / `data_quality_breach` / `freeze_source_update` / `ticket_update` / `acceptance_report_ready` / `feishu_message_received`)+ 删除 2 类(`auth_mode_change` / `approval_update`);SSE 仅保留 LLM 流式专用
+- **用户回报飞书主 + 前端备用双路径**:飞书主走 lark-oapi 长连接 → ExecutionReportApplier;备用走前端 5 模板表单 + 实时 JS 正则镜像预览 + POST `/api/execution-reports` 同一 ExecutionReportApplier 入口;前端 JS 正则镜像与后端 `backend/execution/regex_patterns.py` 单一真相源保持一致(单元测试断言)
+- **5 冻结源全局 StatusBar 顶部常驻 + 独立系统状态页**:5 状态点(`freeze_source_switch` / `freeze_source_ticket_open` / `freeze_source_circuit_breaker_cooldown` / `freeze_source_data_quality` / `freeze_source_eod_pipeline_freeze`)独立并行;永禁聚合为单一 `frozen=true`
+- **三层决策拦截 reason 在 InstructionPlan 池详情抽屉三 tab**:Builder 早返(六检查项)/ RiskEngine 14-check(逐项)/ MockBroker at-fill(终态 + cost_breakdown);三层 reason 命名空间不同(`price_limit_violation_at_fill` ≠ `limit_up_block`/`limit_down_block`)便于 audit 区分
+- **Performance + 验收报告页分离**:Performance 走 broker_snapshots+equity_points(可视化)/ 验收报告走 acceptance_reports(决策表格 + 5 稳定性 + 3 策略硬门槛 + can_switch_to_feishu_on() 布尔)
+- **P1-5 暂不加本机认证**:范围归 P1-6;前端不允许存储任何凭证到 localStorage / sessionStorage / cookie;敏感配置末四位脱敏 + webhook_configured 布尔;Vite 默认 host: '127.0.0.1' 不允许 '0.0.0.0'
+- **Simulation.vue 保留为 P1-5 范围外**:用户细化指令 — MiroFish 多 Agent 演化可视化具有融资展示价值,但 P1-5 阶段不重点投入,后续阶段再细致打算
+- **派生 amendment**:无(本决策不修改既有 P0/P1-2.A/B/C 决策的硬约束;新增 backend/api 路由表为 GET only 端点扩展属非破坏式落地)
 
-### 建议倾向
-
-优先做:
-
-```text
-Watchlist -> 分析 -> InstructionPlan -> RiskEngine
--> simulation_auto 执行 / feishu_interactive 发送
--> 执行回报/模拟成交 -> PortfolioSnapshot -> 复盘
-```
-
-### 你需要产出
-
-一张用户旅程图，标出哪些按钮必须真实接后端，哪些旧按钮要隐藏或改名。
+红线 18 条详见决策文档 §2;实施期改动清单 32 条(E-001~E-032)详见决策文档 §3。
 
 ## P1-6. 安全、密钥与访问边界
 

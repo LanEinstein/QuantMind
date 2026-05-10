@@ -123,6 +123,19 @@ QuantMind = 多 Agent 投研信号系统 + 模拟实盘验证 + 飞书人工执�
 - 不自动跨阶段推进(每阶段末 STOP + summary);不自动 push,本地 commit 后等用户授权再推
 - httpx 客户端必须 `local_address="0.0.0.0"`(host 无 IPv6 默认路由,AAAA-publishing host 如 dashscope 会静默卡死)
 
+### 2.11 前端工作流(P1-5)
+
+- **MVP 7 页 + Phase B 4 页 + 决策闭环 4 分组永锁**:MVP = Dashboard / 系统状态 / InstructionPlan 池 / Portfolio / 用户回报录入 / 对账裁定 / 验收报告;Phase B 收尾 = Agent 辩论 / 数据质量 / 飞书消息历史 / 成本拆解;一级菜单 = 运行状态 / 决策与指令 / 账本与成交 / 复盘与验收 + 设置只读折叠;新增/删除/合并必走 P1-5-amendment
+- **写入接口立即下线 + Phase A 一次性破坏式删除**:`backend/api/{risk,watchlist,llm,agents,settings,trading,analysis}*.py` 所有 POST/PUT/PATCH/DELETE handler 删除;前端 RiskCenter / Settings / ApprovalQueue / OrderList / AgentDebate 写入按钮 + axios 一并清理
+- **仅允许 2 个前端写入端点**:POST `/api/execution-reports`(用户回报录入)+ POST `/api/reconciliation-tickets/{ticket_id}/decide`(对账三选一裁定);其他全部禁写
+- **WS `/ws/market` 单通道扩展 12 类消息**:已有 6 类(index_update/signal/news/status/position_update/circuit_breaker_update)+ 新增 8 类(instruction_plan_update/broker_event/equity_point_update/data_quality_breach/freeze_source_update/ticket_update/acceptance_report_ready/feishu_message_received)+ 删除 2 类(auth_mode_change/approval_update);SSE `/api/analysis/stream` 仅保留 LLM 流式
+- **用户回报双路径同一 ExecutionReportApplier 入口**:飞书主路径 + 前端备用录入页;前端 JS 正则镜像与后端 `backend/execution/regex_patterns.py` 单一真相源保持一致(单元测试断言);镜像不一致即前端 fail-closed 阻止提交
+- **5 冻结源全局 StatusBar 顶部常驻 5 独立状态点**:`freeze_source_switch` / `freeze_source_ticket_open` / `freeze_source_circuit_breaker_cooldown` / `freeze_source_data_quality` / `freeze_source_eod_pipeline_freeze`;**永禁聚合为单一 frozen=true**;独立"系统状态"页全量展示
+- **三层决策拦截 reason — InstructionPlan 池详情抽屉三 tab**:Builder 早返(6 检查项)/ RiskEngine 14-check(逐项)/ MockBroker at-fill(终态 + cost_breakdown);命名空间 `price_limit_violation_at_fill`(broker)≠ `limit_up_block`/`limit_down_block`(engine)便于 audit 区分
+- **Performance + 验收报告页分离永锁**:Performance 走 broker_snapshots+equity_points(可视化);验收报告走 acceptance_reports(决策表格 5 稳定性 + 3 策略硬门槛 + can_switch_to_feishu_on() 布尔)
+- **P1-5 暂不加本机认证(P1-6 处置)**:前端永不存储任何凭证到 localStorage / sessionStorage / cookie;Vite 默认 `host: '127.0.0.1'`(不允许 `'0.0.0.0'`)
+- **Simulation.vue 保留为 P1-5 范围外**:MiroFish 多 Agent 演化可视化展示价值后续阶段细化;P1-5 阶段不改造不重点投入;菜单不展示
+
 ---
 
 ## 3. 工程原则
@@ -178,6 +191,10 @@ grep -rnE "for retry in range|for _ in range\(retry_count" backend/llm/router.py
 grep -rn "etf_arbitrage_enabled" config/broker.yaml | grep -v "false"
 grep -rn "enable_hot_reload" config/agent_models.yaml | grep -v "false"
 grep -rn "live_confirm\|phase7_live\|AUTHORIZATION_MODE\|QUANTMIND_PHASE" backend/  # 实施期 Phase A 完成后必空
+grep -rnE "@router\.(post|put|patch|delete)" backend/api/{risk,watchlist,llm,agents}*.py backend/api/settings/ backend/api/trading/ backend/api/analysis/  # P1-5 Phase A 完成后必空(排除 execution_reports + reconciliation_tickets/{id}/decide 唯二例外)
+grep -rn "ApprovalQueue\|auth-mode\|/api/risk/config\|/api/settings/llm-config\|/api/trading/approve\|/api/trading/reject\|/api/trading/cancel" frontend/src/  # P1-5 Phase A 完成后必空
+grep -rn "auth_mode_change\|approval_update" frontend/src/composables/useWebSocket.ts  # P1-5 Phase A 完成后必空(2 类删除消息)
+grep -rn "localStorage\.\|sessionStorage\.\|document\.cookie" frontend/src/  # P1-5 红线 11:前端不允许存储任何凭证
 ```
 
 LLM key 走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
