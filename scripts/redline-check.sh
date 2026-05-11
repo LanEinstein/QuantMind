@@ -178,6 +178,29 @@ if [ -f config/agent_models.yaml ]; then
 fi
 
 # ----------------------------------------------------------------------
+# P0-8 §1.6.2 / B-001 — evidence_id prefix allowlist
+# ----------------------------------------------------------------------
+# Any literal assigned to a variable / field named *evidence_id* or
+# inserted into an *evidence_ids* tuple must start with one of the five
+# locked prefixes (NEWS- / MIROFISH- / MARKET- / RISK- / DEBATE-). The
+# runtime gate lives in backend.models.evidence.validate_evidence_id;
+# this static scan exists so a typo never reaches the validator.
+echo
+yellow "[P0-8] evidence_id prefix allowlist"
+EVIDENCE_BAD="$(grep -rnE \
+  "evidence_id[s]?\s*[:=]\s*[(\\[]?\s*['\"][A-Za-z][^'\"]+['\"]" \
+  --include='*.py' backend/ 2>/dev/null \
+  | grep -vE "['\"](NEWS|MIROFISH|MARKET|RISK|DEBATE)-" \
+  || true)"
+if [ -z "$EVIDENCE_BAD" ]; then
+  green "  ok    evidence_id literals use only the five locked prefixes"
+else
+  red "  FAIL  evidence_id literal with unknown prefix (allow: NEWS-/MIROFISH-/MARKET-/RISK-/DEBATE-)"
+  printf '%s\n' "$EVIDENCE_BAD" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ----------------------------------------------------------------------
 # A-007 — hot-reload disabled in ConfigService + LLMRouter
 # ----------------------------------------------------------------------
 echo

@@ -21,6 +21,20 @@ log = structlog.get_logger(component="database")
 
 QuoteType = IndexQuote | StockQuote
 
+_LEDGER_CORRELATION_FIELDS: frozenset[str] = frozenset(
+    {
+        "instruction_id",
+        "analysis_record_id",
+        "signal_id",
+        "risk_validation_id",
+        "broker_order_id",
+        "feishu_message_id",
+        "execution_report_id",
+        "reconciliation_ticket_id",
+        "acceptance_report_id",
+    }
+)
+
 
 class MongoDBService:
     """Async MongoDB persistence for market data, kline, and news.
@@ -168,6 +182,73 @@ class MongoDBService:
         await shadow_decisions.create_index(
             [("created_at", DESCENDING)],
             expireAfterSeconds=_TTL_DAYS_DEFAULT * 86400,
+            background=True,
+        )
+
+        # decision_ledger — single correlation graph keyed by instruction_id
+        # (B-002 / P0-3 §3.1). The unique key drives upsert idempotence;
+        # the remaining indexes back the front-end three-tab Reason
+        # drawer and audit-by-correlation queries.
+        decision_ledger = self._db["decision_ledger"]
+        await decision_ledger.create_index(
+            [("instruction_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        for handle in (
+            "analysis_record_id",
+            "signal_id",
+            "risk_validation_id",
+            "broker_order_id",
+            "feishu_message_id",
+            "execution_report_id",
+            "reconciliation_ticket_id",
+            "acceptance_report_id",
+        ):
+            await decision_ledger.create_index(
+                [(handle, ASCENDING)],
+                sparse=True,
+                background=True,
+            )
+        await decision_ledger.create_index(
+            [("trade_ids", ASCENDING)],
+            sparse=True,
+            background=True,
+        )
+        await decision_ledger.create_index(
+            [("updated_at", DESCENDING)],
+            background=True,
+        )
+
+        # audit_events — append-only insert-only (B-005 / P1-6 §1.7).
+        # TTL=180 days on `timestamp` (P0-6 45 trading-day window × 4
+        # safety multiplier). Indexes back the 4 query shapes used by
+        # scripts/query_audit.py + GET /api/audit/events.
+        audit_events = self._db["audit_events"]
+        await audit_events.create_index(
+            [("timestamp", DESCENDING)], background=True
+        )
+        await audit_events.create_index(
+            [("event_type", ASCENDING), ("timestamp", DESCENDING)],
+            background=True,
+        )
+        await audit_events.create_index(
+            [("actor", ASCENDING), ("timestamp", DESCENDING)],
+            background=True,
+        )
+        await audit_events.create_index(
+            [("correlation_id", ASCENDING)],
+            sparse=True,
+            background=True,
+        )
+        await audit_events.create_index(
+            [("resource_type", ASCENDING), ("resource_id", ASCENDING)],
+            sparse=True,
+            background=True,
+        )
+        await audit_events.create_index(
+            [("timestamp", ASCENDING)],
+            expireAfterSeconds=180 * 86400,
             background=True,
         )
 
@@ -499,6 +580,53 @@ class MongoDBService:
         if doc is None:
             doc = await coll.find_one({"run_id": record_id})
         return doc
+
+    # -- decision_ledger persistence (B-002 / P0-3 §3.1) --
+
+    async def upsert_decision_ledger_entry(
+        self, entry: dict[str, Any]
+    ) -> None:
+        """Upsert a decision_ledger entry keyed by instruction_id.
+
+        The repository layer (DecisionLedgerService) serializes the
+        :class:`DecisionLedgerEntry` to dict; this method only does the
+        Mongo round-trip so the service stays storage-agnostic.
+        """
+        coll = self._db["decision_ledger"]
+        await coll.update_one(
+            {"instruction_id": entry["instruction_id"]},
+            {"$set": entry},
+            upsert=True,
+        )
+
+    async def get_decision_ledger_by_instruction(
+        self, instruction_id: str
+    ) -> dict[str, Any] | None:
+        """Return the ledger entry for ``instruction_id`` or None."""
+        coll = self._db["decision_ledger"]
+        return await coll.find_one({"instruction_id": instruction_id})
+
+    async def find_decision_ledger_by_correlation(
+        self, field: str, value: str
+    ) -> dict[str, Any] | None:
+        """Resolve any one correlation handle back to its ledger entry.
+
+        Supported fields: ``instruction_id``, ``analysis_record_id``,
+        ``signal_id``, ``risk_validation_id``, ``broker_order_id``,
+        ``feishu_message_id``, ``execution_report_id``,
+        ``reconciliation_ticket_id``, ``acceptance_report_id``, plus the
+        virtual ``trade_id`` which queries the ``trade_ids`` array.
+        Unknown fields raise ``ValueError`` so typos at the call site
+        do not silently return ``None``.
+        """
+        if field == "trade_id":
+            query: dict[str, Any] = {"trade_ids": value}
+        elif field in _LEDGER_CORRELATION_FIELDS:
+            query = {field: value}
+        else:
+            raise ValueError(f"unknown ledger correlation field {field!r}")
+        coll = self._db["decision_ledger"]
+        return await coll.find_one(query)
 
     # -- Monitoring helpers (Session C) --
 
