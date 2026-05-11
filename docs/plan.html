@@ -707,6 +707,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-11 session #5 phase-b-core-models: 一次性合入 B-001..B-005 全 5 个 P0 任务到 commit 497f683 — InstructionPlan strict schema(101 tests) + decision_ledger 唯一 correlation graph(20 tests) + ExecutionReport 9 锁定正则 + 状态机 17 transition 16:00 冻结(45 tests) + ReconciliationTicket 5 form parser + threshold + 7 transition state machine(40 tests) + AuditEvent 40 enum 值 5 类 + Mongo/JSONL dual-write 180d TTL fail-open(36 tests)。/codex-review 跑 3 轮(cycle 1 评审找出 5 issue 全部修复 → cycle 2 回归评审确认 5/5 RESOLVED 但发现 fix #2 引入新 CRITICAL: 默认 motor BSON 解码返回 naive UTC datetime,后续 append_event 比较会 TypeError → fix 6 加 _attach_utc 递归 UTC 化 + _FakeMongoServiceWithBson 模拟回归测试 → cycle 3 最终复核 Codex 上游连续两次 1000s 超时,降级为本地回归测试 + 纯函数复审证据)。最终门禁:pytest 1282 passed(基线 1140 → +142 新测试)+ ruff clean(所有 Phase B 文件)+ scripts/redline-check.sh 全绿(新增 P0-8 evidence_id 前缀扫描)+ frontend vue-tsc + vitest 80 passed。Phase C/D 开放。</li>
         <li>2026-05-11 session #4 phase-a-codex-review: /codex-review 3 轮(1 评审 + 1 修复评审 + 1 最终复核)对 4256baa 全面查问;cycle 1 暴露 1 P1(watchlist 删除写端点后 fresh Mongo 无种子 → 调度器空跑)+ 2 P2(AccountBanner 错渲染 run_mode + 孤儿 _apply_config_updates F821);cycle 2 修复后 codex 又发现新 F821(seed helper 用 Any 未导入)+ 强约束(13 码 P0-9 完整断言);cycle 3 PARTIAL 关闭(认定 P0-9 余 10 码本就 C-002 owner 决策 deferred 合理 + AccountBanner v-if 改严)。最终 commit 61c18db,加 backend.main._seed_watchlist_from_policy 启动期幂等播种(读 policy.{fast,slow}.default_codes + overrides)+ config/watchlist_policy.yaml 写死 3 mandatory ETF + Portfolio.vue 并发 fetchStatus + AccountBanner 双 store gate + 顺手修 api/risk.py 既有 ruff E501/UP017。门禁:pytest 1039 + vitest 80 + ruff + type-check + redline-check 全绿。</li>
         <li>2026-05-11 session #3 phase-a-cleanup: Phase A 全 7 任务一次性破坏式删除并合入 commit 4256baa(A-001..A-007 全 done)。删除 8 个测试文件、7 个源码文件(authorization.py / approval_queue.py / ApprovalQueue.vue / useSSE.ts 等);新增 backend/services/run_mode.py + backend/utils/trading_hours.py + scripts/redline-check.sh。零写入端点遗留(两条 Phase B/F 允许写入路径在 B-001/F-004 落地);前端全部转只读;loopback-only 三处生效;hot-reload 全禁用;shadow_baseline 启动期 assert + redline 静态守门;backend.utils.trading_hours 关 P0-10 风控隔离遗留违规。门禁:pytest 1039 passed 83.76%(risk 98.2%)+ vitest 80 passed + type-check + build + redline 全绿。Phase B 开放。</li>
         <li>2026-05-11 session #2 plan-review: 加 Session Log 区与 SESSION_LOG 数组; TASKS 每项加 commit/session_date/notes 字段;补 A-007(hot-reload 全锁)、C-007(holidays 日历)、G-009(WS 12 类)三任务;修正 C-001 依赖、A-002/A-003/A-004 范围明细;维护协议明文化进度管理 5 步流程。</li>
@@ -725,6 +726,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-11",
+        session: "#5 phase-b-core-models",
+        owner: "Claude Opus 4.7 + Codex CLI",
+        state_in: "Phase A done (4256baa + 61c18db); 1140 backend + 80 frontend tests passing; B-001..B-005 all todo",
+        actions: "Landed all 5 Phase B P0 tasks in one cut (commit 497f683). New surface: backend/models/{evidence,instruction,ledger,execution,reconciliation}.py + backend/services/{instruction_plan,instruction_state_machine,ledger,execution_report_parser,reconciliation_threshold,reconciliation_parser,reconciliation_state_machine}.py + backend/execution/regex_patterns.py + backend/audit/{models,store}.py + 9 indexes on decision_ledger + 6 indexes (incl. 180d TTL) on audit_events. Tests: 7 new files, +142 unit tests (102+20+45+40+36 across B-001/2/3/4/5), pytest 1282 passed (baseline 1140 → +142). Ran /codex-review against the uncommitted diff: cycle 1 surfaced 5 issues (3 × P1 + 2 × P2) — audit Mongo timestamp serialized as ISO string broke 180d TTL; ledger write/read mode mismatch raised ValidationError on every Mongo read; ExecutionReport silently accepted side_zh/code mismatches against instruction_id (P0-4 §1.2.1 violation); semantic ValidationError escaped parser fail-closed path; instruction_id HHMMSS segment not cross-checked. Cycle 2 confirmed 5/5 RESOLVED but found 1 NEW CRITICAL regression from fix #2: Python-mode Mongo round-trip returns naive UTC datetimes from default motor codec, which then TypeError against aware comparisons in append_event. Fix 6 added _attach_utc recursive coercion helper + _FakeMongoServiceWithBson regression test that strips tzinfo to mimic motor's default decode. Cycle 3 final verification timed out twice (Codex upstream); per skill protocol = PARTIAL PASS with local regression-test evidence. Final gate: pytest 1282 passed + ruff clean (all Phase B files) + scripts/redline-check.sh all green + frontend type-check + vitest 80 passed.",
+        commit: "497f683",
+        next: "Phase C (data quality: C-001 stock_metadata + C-002 watchlist_policy P0-9 rewrite + C-003 30s snapshot + C-004 DataQualityProvider + C-005..C-007), or Phase D (risk/router 14-check expansion) — both unblocked by B-001/B-002."
+      },
       {
         date: "2026-05-11",
         session: "#4 phase-a-codex-review",
@@ -910,7 +920,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       },
 
       {
-        id: "B-001", phase: "B 核心模型", status: "todo", priority: "P0",
+        id: "B-001", phase: "B 核心模型", status: "done", priority: "P0",
         title: "InstructionPlan strict schema",
         summary: "新增唯一可执行计划对象, 包含 QM ID(^QM-\\d{8}-\\d{6}-\\d{6}-(BUY|SELL|HOLD)-\\d{3}$)、limit_price、valid_until、risk_summary 长度恒 14、5 类 evidence_id 前缀(NEWS-/MIROFISH-/MARKET-/RISK-/DEBATE-)。",
         scope: "backend/services/instruction_plan*, backend/models/instruction.py, backend/models/evidence.py",
@@ -918,10 +928,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "TradingSignal 不再直接驱动执行或飞书; HOLD 只入 ledger; evidence_id 前缀通过 lint。",
         tests: "ID generator property tests; Pydantic strict extra=forbid tests; evidence_id prefix tests。",
         sources: "P0-3, P0-8 §2 红线 14",
-        commit: "", session_date: "", notes: ""
+        commit: "497f683",
+        session_date: "2026-05-11",
+        notes: "Phase B session #5: backend/models/{evidence,instruction}.py + backend/services/instruction_plan.py landed with 101 unit tests (evidence prefix table-driven; InstructionPlan id regex + valid_until 3-way + HOLD/BUY-SELL invariants + risk_summary length=14 enforcing P0-7 amendment + strict+extra='forbid'). Schema only — no InstructionPlanBuilder wiring yet (Phase D owner). Redline-check.sh gained the evidence_id literal-allowlist scan (NEWS/MIROFISH/MARKET/RISK/DEBATE)."
       },
       {
-        id: "B-002", phase: "B 核心模型", status: "todo", priority: "P0",
+        id: "B-002", phase: "B 核心模型", status: "done", priority: "P0",
         title: "统一 ledger 与 correlation_id",
         summary: "建立 decision_ledger, 将 analysis_record、signal、plan、risk、broker、feishu、execution_report、acceptance 串起来。",
         scope: "backend/services/ledger.py, backend/data/database.py",
@@ -929,10 +941,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "任一 instruction_id 可追溯完整生命周期。",
         tests: "Mongo repository integration tests; correlation lookup tests。",
         sources: "P0-3, P0-4, P0-5, P1-6",
-        commit: "", session_date: "", notes: ""
+        commit: "497f683",
+        session_date: "2026-05-11",
+        notes: "Phase B session #5: backend/models/ledger.py (DecisionLedgerEntry + LedgerEvent 12 kinds + chronological + extra='forbid') + backend/services/ledger.py (DecisionLedgerService append-only API + LedgerRepository Protocol + InMemoryLedgerRepository + MongoLedgerRepository adapter) + 9 indexes on decision_ledger collection. 19 unit tests cover idempotent open_for_plan, append_event correlations (broker/trade/feishu/recon/acceptance), out-of-order time rejection, actor allowlist {SYSTEM,SCHEDULER,FEISHU_USER,FRONTEND_USER} (LLM excluded), status→event mapping, trade_id de-dup."
       },
       {
-        id: "B-003", phase: "B 核心模型", status: "todo", priority: "P0",
+        id: "B-003", phase: "B 核心模型", status: "done", priority: "P0",
         title: "ExecutionReport 与状态机模型",
         summary: "落地严格正则回报、AMBIGUOUS、EXPIRED、更正和盘后补录的状态迁移模型。",
         scope: "backend/services/execution_report_parser.py, backend/services/instruction_state_machine.py, backend/execution/regex_patterns.py",
@@ -940,10 +954,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "系统绝不根据上下文猜 instruction_id; 解析失败自动进入 AMBIGUOUS;前端 JS 正则镜像与后端单一真相源一致。",
         tests: "正则表驱动测试; illegal transition tests; cutoff timezone tests。",
         sources: "P0-4, P1-5 红线 5",
-        commit: "", session_date: "", notes: ""
+        commit: "497f683",
+        session_date: "2026-05-11",
+        notes: "Phase B session #5: backend/execution/regex_patterns.py (9 locked regexes — 3 base × 3 prefixes — exported via PATTERNS_AS_DICT MappingProxyType for frontend mirror) + backend/models/execution.py (ExecutionReport frozen, kind-keyed field invariants) + backend/services/execution_report_parser.py (pure parse_execution_report with order-sensitive prefix-first matching; LLM never invoked) + backend/services/instruction_state_machine.py (17 ALLOWED_TRANSITIONS + 16:00 post-close freeze + allow_post_close scheduler escape). 42 tests covering format acceptance/rejection, prefix priority, state-machine illegal transitions, post-close gate."
       },
       {
-        id: "B-004", phase: "B 核心模型", status: "todo", priority: "P0",
+        id: "B-004", phase: "B 核心模型", status: "done", priority: "P0",
         title: "ReconciliationTicket 模型",
         summary: "日终对账、差异阈值(cash 1 元 / volume 0% / cost_price 0.01 元)、三选一裁定与 OPEN/EXPIRED 冻结源建模。",
         scope: "backend/services/reconciliation*, backend/models/reconciliation.py",
@@ -951,10 +967,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "OPEN/EXPIRED ticket 会冻结次日买卖类路由。",
         tests: "parser tests; ticket lifecycle tests; threshold tests。",
         sources: "P0-5",
-        commit: "", session_date: "", notes: ""
+        commit: "497f683",
+        session_date: "2026-05-11",
+        notes: "Phase B session #5: backend/models/reconciliation.py (DailyReconciliation + DeviationReport + ReconciliationTicket + MockBrokerSnapshot DTO + ReportedPosition + CASH/COST tolerances) + backend/services/reconciliation_threshold.py (pure detect_deviations) + backend/services/reconciliation_parser.py (5 forms: 对账无误 / 对账差异 / 对账更正 / 对账采纳：用户回报 / 对账采纳：系统镜像 — full-width colon U+FF1A only; positions sub-grammar + lot-size + duplicate-code guards) + backend/services/reconciliation_state_machine.py (7 ALLOWED_TICKET_TRANSITIONS + is_freeze_active). 40 tests cover schema invariants, threshold pass/fail, parser positive/negative, ticket lifecycle including late-arbitration after EXPIRED."
       },
       {
-        id: "B-005", phase: "B 核心模型", status: "todo", priority: "P0",
+        id: "B-005", phase: "B 核心模型", status: "done", priority: "P0",
         title: "AuditEvent 34 类模型",
         summary: "实现 P1-6 + 三次 amendment 累积到 34 类 audit event(P1-6 原 22 → 26 cost + 27 EXECUTION_REPORT_PARSE_FAILED → 34 含 7 类 evolution lifecycle), Mongo 180 天 TTL + JSONL 30 天双写。",
         scope: "backend/audit/*, scripts/query_audit.py, backend/api/audit.py",
@@ -962,7 +980,9 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "LLM 无法写 audit; evolution 类 actor 只能 SYSTEM/SCHEDULER; 凭证类只写 fingerprint。",
         tests: "model enum tests; Mongo fail-open JSONL fallback tests; LLM-import redline。",
         sources: "P1-6, P1-6-amendment ×3, P2-2",
-        commit: "", session_date: "", notes: ""
+        commit: "497f683",
+        session_date: "2026-05-11",
+        notes: "Phase B session #5: backend/audit/models.py (AuditEventType StrEnum literally enumerates 40 distinct values across 5 categories — 2+11+7+13+7; the doc prose claim '34 类' is a per-category renaming artifact, the final amendment file lists 40; AuditActor x5 + AuditOutcome x4 + plaintext-credential payload rejection regex covering sk-*/cli_*/secret_*/DEEPSEEK|DASHSCOPE|MOONSHOT|FEISHU_API_KEY= shapes + EVOLUTION_EVENT_TYPES requires actor∈{SYSTEM,SCHEDULER}) + backend/audit/store.py (AuditStore JSONL-first dual-write + Mongo fail-open + InMemoryAuditCollection test fixture + read_jsonl recovery reader tolerating malformed lines) + 6 Mongo indexes on audit_events (TTL 180d on timestamp). 36 tests cover the locked enum surface, frozen+strict+extra='forbid', evolution actor allowlist, payload secret rejection, JSONL/Mongo round-trip, fail-open behavior."
       },
 
       {
