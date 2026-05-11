@@ -707,6 +707,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-11 session #3 phase-a-cleanup: Phase A 全 7 任务一次性破坏式删除并合入 commit 4256baa(A-001..A-007 全 done)。删除 8 个测试文件、7 个源码文件(authorization.py / approval_queue.py / ApprovalQueue.vue / useSSE.ts 等);新增 backend/services/run_mode.py + backend/utils/trading_hours.py + scripts/redline-check.sh。零写入端点遗留(两条 Phase B/F 允许写入路径在 B-001/F-004 落地);前端全部转只读;loopback-only 三处生效;hot-reload 全禁用;shadow_baseline 启动期 assert + redline 静态守门;backend.utils.trading_hours 关 P0-10 风控隔离遗留违规。门禁:pytest 1039 passed 83.76%(risk 98.2%)+ vitest 80 passed + type-check + build + redline 全绿。Phase B 开放。</li>
         <li>2026-05-11 session #2 plan-review: 加 Session Log 区与 SESSION_LOG 数组; TASKS 每项加 commit/session_date/notes 字段;补 A-007(hot-reload 全锁)、C-007(holidays 日历)、G-009(WS 12 类)三任务;修正 C-001 依赖、A-002/A-003/A-004 范围明细;维护协议明文化进度管理 5 步流程。</li>
         <li>2026-05-11 session #1 plan-initial: 初版。基于审计文档、owner 决策点、docs/decisions、当前代码结构和测试基线生成 41 任务。</li>
       </ul>
@@ -723,6 +724,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-11",
+        session: "#3 phase-a-cleanup",
+        owner: "Claude Opus 4.7",
+        state_in: "S-001/S-002/S-003 done; A-001..A-007 todo; B+ blocked on Phase A; tests 1141 passed",
+        actions: "Executed all 7 Phase A tasks in one cut: A-001 replace AUTHORIZATION_MODE matrix with backend/services/run_mode.py (FEISHU_INTERACTIVE_ENABLED single switch); A-002 delete backend/broker/approval_queue.py + ApprovalQueue wiring + frontend ApprovalQueue.vue; A-003 frontend write surfaces offline (Portfolio/AgentDebate/RiskCenter/settings/* read-only, useSSE deleted, type AuthorizationMode swapped to RunMode booleans); A-004 destructive delete 15 backend write handlers across api/{analysis,trading,watchlist,risk,settings}.py (zero write endpoints remain; the two permitted Phase B/F writes land later); A-005 loopback-only: Vite 0.0.0.0→127.0.0.1, nginx :80/:443 explicit 127.0.0.1, docker-compose backend 127.0.0.1:8000:8000; A-006 scripts/redline-check.sh covering 10 redlines; A-007 hot-reload removed (ConfigService write paths gone, LLMRouter._maybe_reload_config gone, boot-time fund_manager_shadow_baseline frequency assertion) + relocated backend.data.trading_hours → backend.utils.trading_hours to close P0-10 risk-isolation redline. Gate: pytest 1039 passed (coverage 83.76% > 70%; backend/risk 98.20% > 95%), npm type-check ✅, npm test 80 passed, npm build ✅, scripts/redline-check.sh ✅.",
+        commit: "4256baa",
+        next: "Phase B start: B-001 InstructionPlan strict schema. Dedicated planning-doc session optional before that (per P2-2 notes); both paths unblocked."
+      },
       {
         date: "2026-05-11",
         session: "#2 plan-review",
@@ -798,7 +808,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       },
 
       {
-        id: "A-001", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-001", phase: "A 红线重置", status: "done", priority: "P0",
         title: "替换旧授权阶段语义",
         summary: "移除产品主语义中的 AUTHORIZATION_MODE / QUANTMIND_PHASE, 新增 RunMode 与 FEISHU_INTERACTIVE_ENABLED 的单一解释层。",
         scope: "backend/services/authorization.py, backend/main.py:239, backend/api/risk.py:112+396+415, deploy/*, CLAUDE.md, 相关测试",
@@ -806,10 +816,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "旧 live/phase/auto 真实实盘语义 grep 为空或只在迁移说明中出现。",
         tests: "startup unit tests, negative env tests, rg redline scan。",
         sources: "P0-1, P1-5, P1-6",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "Deleted backend/services/authorization.py + tests/test_authorization.py. Added backend/services/run_mode.py (frozen RunMode + assert_run_mode_env). backend/main.py lifespan + deploy/README.md + tests/test_risk_api.py/test_portfolio_publisher.py/test_websocket.py rewritten. /api/risk/auth-mode and /api/risk/config POST endpoints removed inside this commit (also counted by A-004)."
       },
       {
-        id: "A-002", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-002", phase: "A 红线重置", status: "done", priority: "P0",
         title: "删除 ApprovalQueue 与审批接口",
         summary: "新路线不存在前端审批队列。simulation_auto 自动撮合, feishu_interactive 走飞书人工执行。",
         scope: "backend/broker/approval_queue.py, backend/api/trading.py:240+338+393, backend/main.py:95-132, frontend/src/components/trading/ApprovalQueue.vue, frontend/src/views/Portfolio.vue 调用",
@@ -817,10 +829,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "approve/reject/cancel 后端路由和前端调用全部删除。",
         tests: "API route snapshot, frontend store tests 更新, rg ApprovalQueue/approve/reject/cancel。",
         sources: "P1-5",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "Deleted backend/broker/approval_queue.py + 3 trading POST handlers + _publish_position_update + _get_approval_queue helper. Removed ApprovalQueue init from backend/main.py:_init_trading_layer. Deleted tests/test_approval_queue.py + tests/test_circuit_breaker_approval.py. tests/test_api_trading.py rewritten GET-only with TestTradingWriteRoutesRemoved parametrized smoke. Frontend ApprovalQueue.vue deleted; Portfolio.vue/agent debate decision card stripped of approve/reject handlers."
       },
       {
-        id: "A-003", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-003", phase: "A 红线重置", status: "done", priority: "P0",
         title: "前端写入按钮与 settings 子页下线",
         summary: "RiskCenter / Portfolio / AgentDebate / settings 子页(LLMRouter / DataSources / MiroFishConfig / CostDashboard)中除两条备用写入外全部改只读;Simulation.vue 保留代码但不进 P1-5 菜单。",
         scope: "frontend/src/views/{RiskCenter,Portfolio,AgentDebate,settings/*}.vue, frontend/src/api, frontend/src/stores",
@@ -828,10 +842,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "前端不再调用 risk/config, settings POST, analysis manual POST, trading approve/reject/cancel; Simulation.vue 不在主菜单。",
         tests: "npm run type-check; npm run test; Playwright smoke。",
         sources: "P1-5",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "frontend/src/api/{trading,risk,settings,analysis}.ts stripped of all POSTs; useSSE.ts deleted. types/risk.ts swapped AuthorizationMode->RunMode (simulation_auto + feishu_interactive booleans); types/market.ts dropped auth_mode_change/approval_update from WsMessage union. Stores: portfolio lost approve/reject/cancelOrder+updateAuthMode+fetchPendingApprovals; risk lost updateConfig+switchAuthMode (gained runModeLabel); agent lost triggerAnalysis+setAuthMode+applySSEEvent+beginStreamingRun; settings lost updateLLMConfig+testProvider+testDataSource+updateMiroFishConfig. Views: Portfolio.vue removed ApprovalQueue + cancel handler; RiskCenter.vue rewritten with run-mode label + read-only config block; AgentDebate.vue gutted to read-only history viewer; DecisionCard.vue auth buttons removed; settings/MiroFishConfig.vue rewritten read-only; settings/DataSources.vue lost test button; settings/LLMRouter.vue lost test-connection. StatusBar + AccountBanner show run-mode tag. tests/__tests__/portfolio.spec.ts trimmed; vitest 80 passed."
       },
       {
-        id: "A-004", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-004", phase: "A 红线重置", status: "done", priority: "P0",
         title: "后端写接口破坏式删除",
         summary: "backend/api 下除 POST /api/execution-reports 和 POST /api/reconciliation-tickets/{id}/decide 之外全部 GET only。当前需删 POST 端点见 backend/api/{trading,watchlist,settings,risk,analysis}.py(共 15 处)。",
         scope: "backend/api/*.py, backend/api/settings/*.py",
@@ -839,10 +855,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "route scan 仅保留 P1-5 允许的两个写入端点。",
         tests: "FastAPI route inspection test; existing API tests 改只读。",
         sources: "P1-5, P0-7, P0-9, P0-10",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "Deleted 15 write handlers across backend/api/{risk,trading,watchlist,settings,analysis}.py. backend/api/analysis.py + watchlist.py + settings.py rewritten to GET-only minimal forms (request schemas + helpers also removed). Phase A exit: zero write endpoints — the two Phase B/F-allowed writes (POST /api/execution-reports + POST /api/reconciliation-tickets/{id}/decide) intentionally do not exist yet. Tests test_analysis_run_failures.py / test_analysis_stream.py / test_api_watchlist_category.py / test_llm_preflight.py deleted; test_settings_api.py + test_api_analysis.py rewritten."
       },
       {
-        id: "A-005", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-005", phase: "A 红线重置", status: "done", priority: "P0",
         title: "全层 loopback-only 修复",
         summary: "Vite 从 0.0.0.0 改 127.0.0.1, backend/systemd/nginx 显式 loopback, docker-compose backend profile 也不得暴露公网。",
         scope: "frontend/vite.config.ts:27, deploy/quantmind-backend.service, deploy/nginx-quantmind.conf, docker-compose.yml",
@@ -850,10 +868,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "所有入站服务只监听 127.0.0.1, 远程访问只走 SSH tunnel。",
         tests: "config grep, deploy doc check。",
         sources: "P1-6",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "frontend/vite.config.ts host 0.0.0.0->127.0.0.1; deploy/nginx-quantmind.conf 'listen 80; listen [::]:80' -> 'listen 127.0.0.1:80', same for 443; docker-compose.yml backend ports '8000:8000' -> '127.0.0.1:8000:8000'. systemd unit already on --host 127.0.0.1. deploy/README.md rewritten to document FEISHU_INTERACTIVE_ENABLED single switch + 127.0.0.1 enforcement."
       },
       {
-        id: "A-006", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-006", phase: "A 红线重置", status: "done", priority: "P0",
         title: "红线扫描脚本与 CI 入口",
         summary: "把本文件列出的 grep/rg 红线固化为脚本, 每个后续 task 前后都能快速验证。",
         scope: "scripts/redline-check.sh, pyproject.toml optional task docs",
@@ -861,10 +881,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "脚本对当前违规给出清晰失败, Phase A 完成后全绿。",
         tests: "shell script unit smoke。",
         sources: "CLAUDE.md, P1-5, P1-6, P0-10",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "scripts/redline-check.sh covers 10 checks: P0-1 legacy auth absence (assignment-form + WS event types), P1-5 write-endpoint allowlist (zero now; 2 permitted Phase F), P1-5 frontend ApprovalQueue+approve/reject/cancelOrder absent, P1-6 loopback host bindings, P1-6 .env credential-assignment ban (allows informational comments listing ~/.bashrc names), P0-10 backend/risk import isolation, A-007 fund_manager_shadow_baseline confined to shadow_*.py + frequency='shadow_only' in YAML, A-007 ConfigService write_yaml absent, A-007 LLMRouter._maybe_reload_config absent. Exits non-zero on any violation; chmod +x; ready for CI / pre-commit."
       },
       {
-        id: "A-007", phase: "A 红线重置", status: "todo", priority: "P0",
+        id: "A-007", phase: "A 红线重置", status: "done", priority: "P0",
         title: "hot-reload 全锁 + shadow_baseline 审计",
         summary: "config/{risk,broker,agent_models,watchlist_policy,data_sources,mirofish}.yaml runtime 不可改 + hot-reload 禁用; agent_models.yaml 中 fund_manager_shadow_baseline frequency=shadow_only 永不参与决策; 新增 lint 与启动期断言。",
         scope: "config/*.yaml, backend/services/config_service.py, backend/services/agent_model_loader.py, scripts/redline-check.sh",
@@ -872,7 +894,9 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "任意 setattr/monkey-patch config 路径在 import 期断言失败; shadow_baseline 出现在决策路径即 fail-closed。",
         tests: "config immutability tests; shadow_baseline route tests。",
         sources: "P0-7, P0-10, P1-2.C, P1-7",
-        commit: "", session_date: "", notes: ""
+        commit: "4256baa",
+        session_date: "2026-05-11",
+        notes: "ConfigService stripped of write_yaml + write_llm_config + _notify_config_change (read-only loader now); LLMRouter._maybe_reload_config deleted, _reload_config kept only as one-shot init helper. backend/main.py lifespan asserts at boot that fund_manager_shadow_baseline.frequency == 'shadow_only' (SystemExit otherwise). Verified config/agent_models.yaml:185 already has frequency='shadow_only' + task description '永远不进入实盘决策路径'. Moved backend.data.trading_hours -> backend.utils.trading_hours (closing inherited P0-10 violation: backend/risk could no longer import backend.data). 5 callers + tests rewritten; tests/test_llm_router.py TestHotReload class rewritten as TestHotReloadDisabled; tests/test_settings_integration.py TestFileLocking + TestMiroFishConfigRoundtrip deleted, replaced with TestConfigServiceReadOnly verifying write methods absent."
       },
 
       {
