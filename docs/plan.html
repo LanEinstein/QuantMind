@@ -728,8 +728,8 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         session: "#2 plan-review",
         owner: "Claude Opus 4.7",
         state_in: "plan.html v1 已发布(58 任务); S-001/S-002/S-003 done; 其余 todo/blocked",
-        actions: "审计 plan.html 与 18 决策文档一致性; 修正 6 处依赖/范围(C-001 dep→A-001; A-002/A-003/A-004/E-005/G-001 范围细化); 补 A-007(hot-reload 全锁)、C-007(holidays 日历)、G-009(WS 12 类)三任务,总数 58→61; 加 Session Log 与每任务 commit/session_date/notes 字段; 重写 CLAUDE.md ≤100 行带项目进度协议",
-        commit: "(待回填)",
+        actions: "审计 plan.html 与 18 决策文档一致性; 修正 6 处依赖/范围(C-001 dep→A-001; A-002/A-003/A-004/E-005/G-001 范围细化); 补 A-007(hot-reload 全锁)、C-007(holidays 日历)、G-009(WS 12 类)三任务,总数 58→61; 加 Session Log 与每任务 commit/session_date/notes 字段; 重写 CLAUDE.md 266→82 行带项目进度协议",
+        commit: "9162ef0",
         next: "等用户主动召开 dedicated 计划文档 session,或开始 Phase A 实施(A-001 起)"
       },
       {
@@ -779,7 +779,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "浏览器可打开, 任务可筛选, 状态可本地切换, 源码含结构化 TASKS。",
         tests: "HTML 静态检查, 手工检视关键锚点。",
         sources: "this file",
-        commit: "(待回填)",
+        commit: "9162ef0",
         session_date: "2026-05-11",
         notes: "v1 初稿用户撰写; session #2 接入 Session Log + 每任务 commit/session_date/notes 字段 + 3 补充任务(A-007 / C-007 / G-009)+ 维护协议明文化。"
       },
