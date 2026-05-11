@@ -707,6 +707,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-11 session #4 phase-a-codex-review: /codex-review 3 轮(1 评审 + 1 修复评审 + 1 最终复核)对 4256baa 全面查问;cycle 1 暴露 1 P1(watchlist 删除写端点后 fresh Mongo 无种子 → 调度器空跑)+ 2 P2(AccountBanner 错渲染 run_mode + 孤儿 _apply_config_updates F821);cycle 2 修复后 codex 又发现新 F821(seed helper 用 Any 未导入)+ 强约束(13 码 P0-9 完整断言);cycle 3 PARTIAL 关闭(认定 P0-9 余 10 码本就 C-002 owner 决策 deferred 合理 + AccountBanner v-if 改严)。最终 commit 61c18db,加 backend.main._seed_watchlist_from_policy 启动期幂等播种(读 policy.{fast,slow}.default_codes + overrides)+ config/watchlist_policy.yaml 写死 3 mandatory ETF + Portfolio.vue 并发 fetchStatus + AccountBanner 双 store gate + 顺手修 api/risk.py 既有 ruff E501/UP017。门禁:pytest 1039 + vitest 80 + ruff + type-check + redline-check 全绿。</li>
         <li>2026-05-11 session #3 phase-a-cleanup: Phase A 全 7 任务一次性破坏式删除并合入 commit 4256baa(A-001..A-007 全 done)。删除 8 个测试文件、7 个源码文件(authorization.py / approval_queue.py / ApprovalQueue.vue / useSSE.ts 等);新增 backend/services/run_mode.py + backend/utils/trading_hours.py + scripts/redline-check.sh。零写入端点遗留(两条 Phase B/F 允许写入路径在 B-001/F-004 落地);前端全部转只读;loopback-only 三处生效;hot-reload 全禁用;shadow_baseline 启动期 assert + redline 静态守门;backend.utils.trading_hours 关 P0-10 风控隔离遗留违规。门禁:pytest 1039 passed 83.76%(risk 98.2%)+ vitest 80 passed + type-check + build + redline 全绿。Phase B 开放。</li>
         <li>2026-05-11 session #2 plan-review: 加 Session Log 区与 SESSION_LOG 数组; TASKS 每项加 commit/session_date/notes 字段;补 A-007(hot-reload 全锁)、C-007(holidays 日历)、G-009(WS 12 类)三任务;修正 C-001 依赖、A-002/A-003/A-004 范围明细;维护协议明文化进度管理 5 步流程。</li>
         <li>2026-05-11 session #1 plan-initial: 初版。基于审计文档、owner 决策点、docs/decisions、当前代码结构和测试基线生成 41 任务。</li>
@@ -724,6 +725,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-11",
+        session: "#4 phase-a-codex-review",
+        owner: "Claude Opus 4.7 + Codex CLI",
+        state_in: "A-001..A-007 done in 4256baa; SSoT updated 8b441ae; 1039 tests passing",
+        actions: "Ran /codex-review against commit 4256baa. Cycle 1 surfaced 1 P1 + 2 P2: (a) deleted POST/DELETE watchlist handlers left fresh Mongo with no seed path for the 13-code universe — AnalysisScheduler would skip every Fast/Slow tick; (b) AccountBanner depends on riskStore.riskStatus but Portfolio.vue only loads portfolio store, so the simulation/Feishu tag mis-renders; (c) orphaned _apply_config_updates in api/risk.py referenced the deleted RiskConfigUpdate model (ruff F821). Cycle 1 fixes: added _seed_watchlist_from_policy in backend/main.py (idempotent upsert from policy.{fast,slow}.default_codes + overrides), seeded config/watchlist_policy.yaml slow.default_codes with the 3 P0-9 mandatory ETFs (510300/510500/159949) — the 10 owner-pick individual stocks stay deferred to C-002 per P0-9 §3; Portfolio.vue parallel-fetches riskStore.fetchStatus on mount; deleted orphan helper. Cycle 2 found new F821 (the seed helper used Any without importing it) — fixed via TYPE_CHECKING WatchlistService + WatchlistPolicy imports + concrete annotations, plus cleaned pre-existing E501/UP017 in api/risk.py. Cycle 3 final verification flagged AccountBanner could still mis-render briefly because v-if=store.account didn't wait for risk store — tightened gate to v-if=store.account && riskStore.riskStatus. Final verdict: PARTIAL initially, closed after follow-up. Gate after fix-commit 61c18db: pytest 1039 passed, vitest 80 passed, ruff clean, redline-check all green, type-check + build OK.",
+        commit: "61c18db",
+        next: "Phase B start: B-001 InstructionPlan strict schema (or dedicated planning-doc session first, per P2-2 deferral note)."
+      },
       {
         date: "2026-05-11",
         session: "#3 phase-a-cleanup",
