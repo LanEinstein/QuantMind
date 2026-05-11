@@ -32,13 +32,6 @@ export interface LLMConfig {
   readonly defaults: DefaultsInfo
 }
 
-export interface ConnectionTestResult {
-  readonly provider: string
-  readonly connected: boolean
-  readonly latency_ms: number
-  readonly error: string | null
-}
-
 export interface DataSourceStatus {
   readonly name: string
   readonly type: string

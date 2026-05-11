@@ -13,7 +13,7 @@ import math
 import structlog
 
 from backend.broker.models import CircuitBreakerConfig
-from backend.data.trading_hours import SHANGHAI
+from backend.utils.trading_hours import SHANGHAI
 
 log = structlog.get_logger(component="risk.circuit_breaker")
 

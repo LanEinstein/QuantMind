@@ -44,17 +44,6 @@
             <span v-else class="text-muted">无</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              :loading="testingSource === row.name"
-              @click="onTestSource(row.name)"
-            >
-              测试
-            </el-button>
-          </template>
-        </el-table-column>
       </el-table>
     </el-card>
   </div>
@@ -62,12 +51,10 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import { useSettingsStore } from '@/stores/settings'
 
 const store = useSettingsStore()
 const refreshing = ref(false)
-const testingSource = ref<string | null>(null)
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -104,22 +91,6 @@ async function onRefreshAll() {
     await store.fetchDataSources()
   } finally {
     refreshing.value = false
-  }
-}
-
-async function onTestSource(name: string) {
-  testingSource.value = name
-  try {
-    const result = await store.testDataSource(name)
-    if (result.status === 'connected') {
-      ElMessage.success(`${name} 连接成功`)
-    } else {
-      ElMessage.error(`${name} 连接失败: ${result.error ?? '未知错误'}`)
-    }
-  } catch {
-    ElMessage.error(`${name} 测试请求失败`)
-  } finally {
-    testingSource.value = null
   }
 }
 

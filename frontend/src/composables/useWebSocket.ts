@@ -90,17 +90,6 @@ export function useWebSocket() {
         portfolio.updateCircuitBreaker(msg.data as CircuitBreakerStatus)
         break
       }
-      case 'auth_mode_change': {
-        const payload = msg.data as { mode: string }
-        const portfolio = usePortfolioStore()
-        portfolio.updateAuthMode(payload.mode)
-        break
-      }
-      case 'approval_update': {
-        const portfolio = usePortfolioStore()
-        portfolio.fetchPendingApprovals()
-        break
-      }
     }
   }
 

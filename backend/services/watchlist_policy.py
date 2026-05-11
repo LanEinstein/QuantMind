@@ -18,9 +18,9 @@ Why a separate module instead of inlining into the scheduler:
   isolation (overrides win, default fallback, fast vs slow precedence).
 - The API endpoint that mutates per-code overrides reuses the loader
   to round-trip the file safely.
-- Follows the same pattern Phase 5A established for
-  ``cost_guard`` / ``authorization`` — extract small services out of
-  the scheduler so each piece is independently testable.
+- Follows the same pattern Phase 5A established for ``cost_guard`` —
+  extract small services out of the scheduler so each piece is
+  independently testable.
 """
 
 from __future__ import annotations

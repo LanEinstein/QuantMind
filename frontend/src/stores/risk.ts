@@ -1,4 +1,4 @@
-/** Pinia store for risk control center state management. */
+/** Pinia store for risk control center state (read-only per P1-5 §2). */
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
@@ -9,12 +9,10 @@ import type {
   RiskEvent,
   RiskEventLevel,
   RiskStoreStatus,
-  AuthorizationMode,
 } from '@/types/risk'
 import { riskApi } from '@/api/risk'
 
 export const useRiskStore = defineStore('risk', () => {
-  // --- State ---
   const riskStatus = ref<RiskStatus | null>(null)
   const radarData = ref<RiskRadarData | null>(null)
   const config = ref<RiskConfig | null>(null)
@@ -25,7 +23,6 @@ export const useRiskStore = defineStore('risk', () => {
 
   const isDev = import.meta.env.DEV
 
-  // --- Computed ---
   const systemStatusLabel = computed(() => {
     const labels: Record<string, string> = {
       normal: '正常运行',
@@ -44,13 +41,12 @@ export const useRiskStore = defineStore('risk', () => {
     return icons[riskStatus.value?.system_status ?? 'normal'] ?? '⚪'
   })
 
-  const authModeLabel = computed(() => {
-    const labels: Record<string, string> = {
-      suggestion: '建议模式',
-      semi_auto: '半自动模式',
-      full_auto: '全自动模式',
-    }
-    return labels[riskStatus.value?.authorization_mode ?? 'suggestion'] ?? '未知'
+  const runModeLabel = computed(() => {
+    const mode = riskStatus.value?.run_mode
+    if (!mode) return 'simulation_auto'
+    return mode.feishu_interactive
+      ? 'simulation_auto + 飞书叠加'
+      : 'simulation_auto'
   })
 
   const filteredEvents = computed(() => {
@@ -64,14 +60,12 @@ export const useRiskStore = defineStore('risk', () => {
     return result
   })
 
-  // --- Actions ---
   async function fetchStatus(): Promise<boolean> {
     try {
       riskStatus.value = await riskApi.getStatus()
       return true
     } catch {
       if (isDev) {
-        console.warn('Failed to fetch risk status, using mock data')
         riskStatus.value = mockRiskStatus()
       }
       return isDev
@@ -84,7 +78,6 @@ export const useRiskStore = defineStore('risk', () => {
       return true
     } catch {
       if (isDev) {
-        console.warn('Failed to fetch radar data, using mock data')
         radarData.value = mockRadarData()
       }
       return isDev
@@ -97,7 +90,6 @@ export const useRiskStore = defineStore('risk', () => {
       return true
     } catch {
       if (isDev) {
-        console.warn('Failed to fetch risk config, using mock data')
         config.value = mockRiskConfig()
       }
       return isDev
@@ -113,7 +105,6 @@ export const useRiskStore = defineStore('risk', () => {
       return true
     } catch {
       if (isDev) {
-        console.warn('Failed to fetch risk events, using mock data')
         events.value = mockRiskEvents()
       }
       return isDev
@@ -132,26 +123,6 @@ export const useRiskStore = defineStore('risk', () => {
     status.value = allFailed ? 'error' : 'loaded'
   }
 
-  async function updateConfig(updates: Partial<RiskConfig>): Promise<void> {
-    const previous = config.value
-    try {
-      config.value = await riskApi.updateConfig(updates)
-    } catch (e) {
-      config.value = previous
-      throw e
-    }
-  }
-
-  async function switchAuthMode(mode: AuthorizationMode): Promise<void> {
-    const previous = riskStatus.value
-    try {
-      riskStatus.value = await riskApi.switchAuthMode(mode)
-    } catch (e) {
-      riskStatus.value = previous
-      throw e
-    }
-  }
-
   return {
     riskStatus,
     radarData,
@@ -162,24 +133,20 @@ export const useRiskStore = defineStore('risk', () => {
     eventDateFilter,
     systemStatusLabel,
     systemStatusIcon,
-    authModeLabel,
+    runModeLabel,
     filteredEvents,
     fetchStatus,
     fetchRadarData,
     fetchConfig,
     fetchEvents,
     fetchAll,
-    updateConfig,
-    switchAuthMode,
   }
 })
-
-// --- Mock data (deterministic) ---
 
 function mockRiskStatus(): RiskStatus {
   return {
     system_status: 'normal',
-    authorization_mode: 'suggestion',
+    run_mode: { simulation_auto: true, feishu_interactive: false },
     stop_loss_triggers_today: 0,
     circuit_breaker_triggered: false,
     llm_intercepts_today: 2,

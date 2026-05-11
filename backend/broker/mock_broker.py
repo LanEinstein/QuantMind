@@ -22,7 +22,7 @@ from backend.broker.models import (
     Position,
     Trade,
 )
-from backend.data.trading_hours import SHANGHAI, is_trading_hours
+from backend.utils.trading_hours import SHANGHAI, is_trading_hours
 
 log = structlog.get_logger(component="mock_broker")
 

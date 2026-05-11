@@ -4,8 +4,6 @@ export type EvidenceStatus = 'positive' | 'mixed' | 'negative'
 
 export type ModelLabel = 'DeepSeek' | 'Qwen' | 'Kimi' | 'MiroFish'
 
-export type AuthMode = 'suggest' | 'confirm' | 'auto'
-
 export type AnalysisStatus =
   | 'pending'
   | 'running'
@@ -124,49 +122,3 @@ export interface AnalysisDetail {
   readonly error: string | null
 }
 
-/* -------------------------------------------------------------------------- */
-/* SSE event union                                                            */
-/* -------------------------------------------------------------------------- */
-
-export interface AgentStartedEvent {
-  readonly event_type: 'agent_started'
-  readonly agent: AgentRole
-  readonly round: number
-  readonly timestamp: string
-  readonly run_id: string
-}
-
-export interface AgentCompletedEvent {
-  readonly event_type: 'agent_completed'
-  readonly agent: AgentRole
-  readonly round: number
-  readonly content: string
-  readonly model_label?: string
-  readonly model_id?: string
-  readonly status: 'completed' | 'failed'
-  readonly error: string | null
-  readonly timestamp: string
-  readonly run_id: string
-}
-
-export interface PipelineCompletedEvent {
-  readonly event_type: 'pipeline_completed'
-  readonly run_id: string
-  readonly record_id: string | null
-  readonly signal_id: string | null
-  readonly timestamp: string
-}
-
-export interface SSEErrorEvent {
-  readonly event_type: 'error'
-  readonly message: string
-  readonly run_id?: string
-  readonly record_id?: string | null
-  readonly timestamp: string
-}
-
-export type SSEEvent =
-  | AgentStartedEvent
-  | AgentCompletedEvent
-  | PipelineCompletedEvent
-  | SSEErrorEvent

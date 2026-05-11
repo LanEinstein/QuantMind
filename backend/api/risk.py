@@ -2,39 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import structlog
-import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
 
-from backend.data.publisher import publish_portfolio_event
-from backend.services.authorization import (
-    CrossPhaseAuthorizationError,
-    assert_mode_allowed_for_phase,
-    normalize_mode,
-)
-
-
-# Inverse of authorization._LONG_TO_SHORT, kept here because it is a
-# pure presentation concern: the env / policy layer canonicalizes to
-# the short form, the API response layer continues to emit the legacy
-# long form so existing frontend / clients (including the playwright
-# E2E suite) keep working without a coordinated migration.
-_SHORT_TO_LONG: dict[str, str] = {
-    "suggest": "suggestion",
-    "confirm": "semi_auto",
-    "auto": "full_auto",
-}
-
-
-def _to_legacy_long(canonical: str) -> str:
-    """Project canonical short modes back onto the legacy display form."""
-    return _SHORT_TO_LONG.get(canonical, canonical)
+from backend.services.run_mode import resolve_run_mode
 
 log = structlog.get_logger(component="api_risk")
 
@@ -58,65 +33,11 @@ def _err(message: str, status_code: int = 500) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Request / response schemas
-# ---------------------------------------------------------------------------
-
-
-class AuthModeRequest(BaseModel):
-    """Body for POST /api/risk/auth-mode."""
-
-    model_config = ConfigDict(frozen=True)
-
-    mode: str  # "suggestion" | "semi_auto" | "full_auto"
-
-
-class RiskConfigUpdate(BaseModel):
-    """Body for POST /api/risk/config — all fields optional."""
-
-    model_config = ConfigDict(frozen=True)
-
-    single_stock_limit: float | None = None
-    total_position_limit: float | None = None
-    stop_loss_threshold: float | None = None
-    circuit_breaker_threshold: float | None = None
-    llm_timeout_seconds: float | None = None
-    llm_max_consecutive_failures: int | None = None
-    price_deviation_limit: float | None = None
-
-
-# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_VALID_AUTH_MODES = {
-    # Canonical short forms (master plan §2.9 vocabulary).
-    "suggest",
-    "confirm",
-    "auto",
-    # Legacy long forms accepted for back-compat with older clients.
-    "suggestion",
-    "semi_auto",
-    "full_auto",
-}
 
-
-def _get_auth_mode() -> str:
-    """Read current authorization mode in legacy long form for API responses.
-
-    The env now stores the canonical short form (P5A-T03 redline), so
-    we normalize first, then project to the long form the existing
-    frontend expects. This kills the prior ``replace("suggest",
-    "suggestion")`` bug that produced ``"suggestionion"`` when env was
-    already the long form.
-    """
-    canonical = normalize_mode(os.environ.get("AUTHORIZATION_MODE", "suggest"))
-    return _to_legacy_long(canonical)
-
-
-def _build_risk_status(
-    request: Request,
-    auth_mode: str | None = None,
-) -> dict[str, Any]:
+def _build_risk_status(request: Request) -> dict[str, Any]:
     """Build the RiskStatus response dict from current app state."""
     risk_config = getattr(request.app.state, "risk_config", None)
     circuit_breaker = getattr(request.app.state, "circuit_breaker", None)
@@ -125,7 +46,6 @@ def _build_risk_status(
     if circuit_breaker is not None:
         cb_triggered = circuit_breaker.is_halted()
 
-    # Determine system status
     if cb_triggered:
         system_status = "circuit_breaker"
     elif risk_config is None:
@@ -133,13 +53,16 @@ def _build_risk_status(
     else:
         system_status = "normal"
 
-    # Count today's events from Redis (best-effort)
     stop_loss_today = getattr(request.app.state, "_stop_loss_count_today", 0)
     llm_intercepts = getattr(request.app.state, "_llm_intercepts_today", 0)
 
+    run_mode = resolve_run_mode()
     return {
         "system_status": system_status,
-        "authorization_mode": auth_mode or _get_auth_mode(),
+        "run_mode": {
+            "simulation_auto": run_mode.simulation_auto,
+            "feishu_interactive": run_mode.feishu_interactive,
+        },
         "stop_loss_triggers_today": stop_loss_today,
         "circuit_breaker_triggered": cb_triggered,
         "llm_intercepts_today": llm_intercepts,
@@ -289,80 +212,6 @@ async def get_risk_config(request: Request) -> dict[str, Any]:
     return _ok(_config_to_response(risk_config))
 
 
-@router.post("/api/risk/config")
-async def update_risk_config(
-    request: Request, body: RiskConfigUpdate
-) -> dict[str, Any]:
-    """Update risk configuration parameters.
-
-    Applies partial updates and persists to config/risk.yaml.
-    """
-    risk_config = getattr(request.app.state, "risk_config", None)
-    if risk_config is None:
-        _err("Risk config not loaded", 503)
-
-    current = _config_to_response(risk_config)
-    updated = _apply_config_updates(current, body)
-
-    # Persist back to YAML
-    try:
-        _persist_risk_config(updated)
-        # Reload the config from disk
-        from backend.broker.models import load_risk_config
-
-        request.app.state.risk_config = load_risk_config("config/risk.yaml")
-    except Exception as exc:
-        log.error("risk_config_persist_failed", error=str(exc))
-        _err(f"Failed to save config: {exc}", 500)
-
-    record_risk_event(
-        "info",
-        f"Risk config updated: {body.model_dump(exclude_none=True)}",
-        "Config saved to risk.yaml",
-    )
-
-    return _ok(_config_to_response(request.app.state.risk_config))
-
-
-def _persist_risk_config(frontend_config: dict[str, Any]) -> None:
-    """Write the frontend config back to config/risk.yaml."""
-    yaml_data = {
-        "position_limits": {
-            "max_single_stock_pct": frontend_config["single_stock_limit"] / 100,
-            "max_sector_pct": 0.40,
-            "max_total_positions": 10,
-            "price_deviation_limit": frontend_config["price_deviation_limit"] / 100,
-            "volume_lot_size": 100,
-        },
-        "stop_loss": {
-            "single_stock_pct": abs(frontend_config["stop_loss_threshold"]) / 100,
-            "portfolio_daily_pct": 0.05,
-            "trailing_stop_pct": 0.10,
-        },
-        "circuit_breaker": {
-            "daily_loss_limit_pct": abs(
-                frontend_config["circuit_breaker_threshold"]
-            )
-            / 100,
-            "consecutive_loss_count": frontend_config[
-                "llm_max_consecutive_failures"
-            ],
-            "cooldown_minutes": 60,
-        },
-    }
-    from pathlib import Path
-
-    path = Path("config/risk.yaml")
-    with path.open("w", encoding="utf-8") as f:
-        yaml.dump(
-            yaml_data,
-            f,
-            default_flow_style=False,
-            allow_unicode=True,
-            sort_keys=False,
-        )
-
-
 @router.get("/api/risk/events")
 async def get_risk_events(
     request: Request,
@@ -386,55 +235,3 @@ async def get_risk_events(
     return _ok(filtered[:limit])
 
 
-@router.post("/api/risk/auth-mode")
-async def switch_auth_mode(
-    request: Request, body: AuthModeRequest
-) -> dict[str, Any]:
-    """Switch the authorization mode (suggestion/semi_auto/full_auto).
-
-    Beyond format validation, the request is rejected with 403 when
-    the requested mode is not allowed in the active QUANTMIND_PHASE
-    (P5A-T03 redline). This blocks accidental cross-phase escalation
-    such as enabling ``full_auto`` while the system is still in
-    ``phase5_eval``.
-    """
-    if body.mode not in _VALID_AUTH_MODES:
-        _err(
-            f"Invalid mode: {body.mode}. Must be one of {_VALID_AUTH_MODES}",
-            422,
-        )
-
-    try:
-        canonical = assert_mode_allowed_for_phase(body.mode)
-    except CrossPhaseAuthorizationError as exc:
-        _err(str(exc), 403)
-
-    # Persist the canonical short form so audit trail / startup
-    # assertion / cost_guard etc. see one normalized vocabulary, no
-    # matter what alias the API client used.
-    os.environ["AUTHORIZATION_MODE"] = canonical
-    log.info(
-        "auth_mode_switched",
-        canonical_mode=canonical,
-        requested_mode=body.mode,
-    )
-
-    redis_client = getattr(request.app.state, "redis", None)
-    await publish_portfolio_event(
-        redis_client,
-        "auth_mode_change",
-        {"mode": canonical, "system_status": "normal"},
-    )
-
-    record_risk_event(
-        "info",
-        f"Authorization mode switched to {canonical}",
-        "Mode updated",
-    )
-
-    # API response stays in the legacy long form so existing frontend
-    # consumers (AuthorizationMode = 'suggestion'|'semi_auto'|'full_auto')
-    # keep rendering correctly. A coordinated frontend migration to the
-    # canonical vocabulary is a separate change.
-    display_mode = _to_legacy_long(canonical)
-    return _ok(_build_risk_status(request, auth_mode=display_mode))

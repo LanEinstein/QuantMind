@@ -45,12 +45,12 @@
         </div>
       </el-col>
 
-      <!-- Authorization Mode -->
+      <!-- Run Mode -->
       <el-col :span="2">
         <div class="stat-card">
-          <div class="stat-label">授权模式</div>
-          <el-tag :type="authModeTagType" size="small" effect="dark" class="auth-mode-tag">
-            {{ authModeLabel }}
+          <div class="stat-label">运行模式</div>
+          <el-tag :type="runModeTagType" size="small" effect="dark" class="auth-mode-tag">
+            {{ runModeLabel }}
           </el-tag>
         </div>
       </el-col>
@@ -75,6 +75,7 @@ import { GridComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import type { AccountInfo } from '@/types/trading'
 import { usePortfolioStore } from '@/stores/portfolio'
+import { useRiskStore } from '@/stores/risk'
 
 use([CanvasRenderer, LineChart, GridComponent])
 
@@ -83,26 +84,20 @@ const props = defineProps<{
 }>()
 
 const store = usePortfolioStore()
+const riskStore = useRiskStore()
 
 const positionRatio = computed(() => store.positionRatio)
 const cashRatio = computed(() => store.cashRatio)
 
-const authModeTagType = computed(() => {
-  switch (store.authMode) {
-    case 'semi_auto': return 'warning'
-    case 'full_auto': return 'danger'
-    default: return 'info'
-  }
-})
+// P0-1: simulation_auto is always-on; the tag highlights whether the
+// feishu_interactive human-in-loop overlay is layered on top.
+const runModeTagType = computed(() =>
+  riskStore.riskStatus?.run_mode.feishu_interactive ? 'warning' : 'info',
+)
 
-const authModeLabel = computed(() => {
-  const labels: Record<string, string> = {
-    suggestion: '建议模式',
-    semi_auto: '半自动',
-    full_auto: '全自动',
-  }
-  return labels[store.authMode] ?? '建议模式'
-})
+const runModeLabel = computed(() =>
+  riskStore.riskStatus?.run_mode.feishu_interactive ? '飞书叠加' : '模拟实盘',
+)
 
 const pnlClass = computed(() => {
   if (props.account.total_pnl > 0) return 'text-up'

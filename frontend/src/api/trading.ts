@@ -1,13 +1,12 @@
-/** API client for trading/portfolio endpoints. */
+/** API client for trading/portfolio endpoints (GET-only per P1-5 §2). */
 
-import { apiGet, apiPost } from './request'
+import { apiGet } from './request'
 import type {
   AccountMeta,
   AccountInfo,
   PositionItem,
   OrderItem,
   TradeItem,
-  PendingApproval,
   CircuitBreakerStatus,
 } from '@/types/trading'
 
@@ -32,27 +31,6 @@ export const tradingApi = {
     start_date?: string
     end_date?: string
   } = {}) => apiGet<TradeItem[]>('/api/trading/trades', params as Record<string, unknown>),
-
-  cancelOrder: (orderId: string, accountId = 'default') =>
-    apiPost<{ success: boolean; order_id: string }>(
-      `/api/trading/cancel/${encodeURIComponent(orderId)}?account_id=${accountId}`,
-    ),
-
-  getPendingApprovals: (accountId?: string) =>
-    apiGet<PendingApproval[]>(
-      '/api/trading/pending-approvals',
-      accountId ? { account_id: accountId } : undefined,
-    ),
-
-  approveOrder: (id: string) =>
-    apiPost<{ order_id: string; success: boolean; message: string }>(
-      `/api/trading/approve/${encodeURIComponent(id)}`,
-    ),
-
-  rejectOrder: (id: string) =>
-    apiPost<{ success: boolean; id: string }>(
-      `/api/trading/reject/${encodeURIComponent(id)}`,
-    ),
 
   getCircuitBreakerStatus: () =>
     apiGet<CircuitBreakerStatus>('/api/trading/circuit-breaker-status'),

@@ -49,14 +49,6 @@ def _get_registry(request: Request):
         _err("Trading system not initialized", 503)
 
 
-def _get_approval_queue(request: Request):
-    """Extract ApprovalQueue from app state."""
-    try:
-        return request.app.state.approval_queue
-    except AttributeError:
-        _err("Approval queue not initialized", 503)
-
-
 def _get_risk_config(request: Request) -> RiskConfig | None:
     """Extract RiskConfig from app state, or None if not loaded."""
     return getattr(request.app.state, "risk_config", None)
@@ -65,34 +57,6 @@ def _get_risk_config(request: Request) -> RiskConfig | None:
 def _get_redis(request: Request):
     """Extract Redis client from app state, or None."""
     return getattr(request.app.state, "redis", None)
-
-
-async def _publish_position_update(
-    request: Request, account_id: str
-) -> None:
-    """Fetch current enriched positions and push them via WebSocket."""
-    redis_client = _get_redis(request)
-    if redis_client is None:
-        return
-    try:
-        registry = _get_registry(request)
-        broker = registry.get_broker(account_id)
-        account = await broker.get_account()
-        positions = await broker.get_positions()
-        risk_config = _get_risk_config(request)
-        enriched = [
-            _enrich_position(
-                p.model_dump(mode="json"), account.total_assets, risk_config
-            )
-            for p in positions
-        ]
-        await publish_portfolio_event(
-            redis_client,
-            "position_update",
-            {"account_id": account_id, "positions": enriched},
-        )
-    except Exception as exc:
-        log.debug("position_update_publish_failed", error=str(exc))
 
 
 def _enrich_position(
@@ -237,27 +201,6 @@ async def get_orders(
     return _ok([o.model_dump(mode="json") for o in orders])
 
 
-@router.post("/api/trading/cancel/{order_id}")
-async def cancel_order(
-    request: Request,
-    order_id: str,
-    account_id: str = Query(default="default"),
-) -> dict[str, Any]:
-    """Cancel a pending order."""
-    registry = _get_registry(request)
-    try:
-        broker = registry.get_broker(account_id)
-    except KeyError:
-        _err(f"Account '{account_id}' not found", 404)
-        return _ok(None)  # unreachable
-
-    success = await broker.cancel_order(order_id)
-    if not success:
-        _err(f"Cannot cancel order '{order_id}': not found or not pending", 400)
-    await _publish_position_update(request, account_id)
-    return _ok({"success": True, "order_id": order_id})
-
-
 # ---------------------------------------------------------------------------
 # Trades
 # ---------------------------------------------------------------------------
@@ -317,106 +260,6 @@ async def get_trades(
             _err("Invalid end_date format (use ISO 8601)", 422)
 
     return _ok(result)
-
-
-# ---------------------------------------------------------------------------
-# Approval queue
-# ---------------------------------------------------------------------------
-
-
-@router.get("/api/trading/pending-approvals")
-async def get_pending_approvals(
-    request: Request,
-    account_id: str | None = Query(default=None),
-) -> dict[str, Any]:
-    """List pending order approvals."""
-    queue = _get_approval_queue(request)
-    pending = queue.list_pending(account_id=account_id)
-    return _ok([p.model_dump(mode="json") for p in pending])
-
-
-@router.post("/api/trading/approve/{approval_id}")
-async def approve_order(
-    request: Request,
-    approval_id: str,
-) -> dict[str, Any]:
-    """Approve a pending order and send it to the broker."""
-    queue = _get_approval_queue(request)
-    # Resolve the approval's account_id before approving (approve removes it)
-    pending = queue.list_pending()
-    approval_account = "default"
-    for p in pending:
-        if p.id == approval_id:
-            approval_account = p.account_id
-            break
-
-    from backend.broker.approval_queue import CircuitBreakerHaltedError
-
-    try:
-        result = await queue.approve(approval_id)
-    except KeyError:
-        _err(f"Pending approval '{approval_id}' not found", 404)
-        return _ok(None)  # unreachable
-    except CircuitBreakerHaltedError as exc:
-        # Halted approvals are intentionally left in the queue so the
-        # operator can re-approve after cooldown. Return 409 (conflict)
-        # rather than letting it surface as an opaque 500.
-        alerter = getattr(request.app.state, "alerter", None)
-        if alerter is not None:
-            try:
-                import asyncio as _asyncio
-
-                _asyncio.create_task(
-                    alerter.fire(
-                        "circuit_breaker_open",
-                        f"Approval blocked: {exc}",
-                        severity="critical",
-                        context={"approval_id": approval_id},
-                    )
-                )
-            except Exception:  # pragma: no cover
-                pass
-        _err(str(exc), 409)
-        return _ok(None)  # unreachable
-
-    redis_client = _get_redis(request)
-    await _publish_position_update(request, approval_account)
-    await publish_portfolio_event(
-        redis_client,
-        "approval_update",
-        {"account_id": approval_account, "action": "approved", "approval_id": approval_id},
-    )
-
-    return _ok(result.model_dump(mode="json"))
-
-
-@router.post("/api/trading/reject/{approval_id}")
-async def reject_order(
-    request: Request,
-    approval_id: str,
-) -> dict[str, Any]:
-    """Reject a pending order."""
-    queue = _get_approval_queue(request)
-    # Resolve account_id before rejecting (reject removes it)
-    pending = queue.list_pending()
-    reject_account = "default"
-    for p in pending:
-        if p.id == approval_id:
-            reject_account = p.account_id
-            break
-
-    success = queue.reject(approval_id)
-    if not success:
-        _err(f"Pending approval '{approval_id}' not found", 404)
-
-    redis_client = _get_redis(request)
-    await publish_portfolio_event(
-        redis_client,
-        "approval_update",
-        {"account_id": reject_account, "action": "rejected", "approval_id": approval_id},
-    )
-
-    return _ok({"success": True, "id": approval_id})
 
 
 # ---------------------------------------------------------------------------

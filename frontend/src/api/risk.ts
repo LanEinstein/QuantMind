@@ -1,13 +1,12 @@
-/** API client for risk control center endpoints. */
+/** API client for risk control center endpoints (GET-only per P1-5 §2). */
 
-import { apiGet, apiPost } from './request'
+import { apiGet } from './request'
 import type {
   RiskStatus,
   RiskConfig,
   RiskEvent,
   RiskEventLevel,
   RiskRadarData,
-  AuthorizationMode,
 } from '@/types/risk'
 
 export const riskApi = {
@@ -23,10 +22,6 @@ export const riskApi = {
     return apiGet<RiskConfig>('/api/risk/config')
   },
 
-  updateConfig(config: Partial<RiskConfig>): Promise<RiskConfig> {
-    return apiPost<RiskConfig>('/api/risk/config', config)
-  },
-
   getEvents(params: {
     level?: RiskEventLevel
     start_date?: string
@@ -37,9 +32,5 @@ export const riskApi = {
       '/api/risk/events',
       params as Record<string, unknown>,
     )
-  },
-
-  switchAuthMode(mode: AuthorizationMode): Promise<RiskStatus> {
-    return apiPost<RiskStatus>('/api/risk/auth-mode', { mode })
   },
 }

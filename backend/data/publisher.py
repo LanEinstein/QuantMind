@@ -79,8 +79,7 @@ async def publish_portfolio_event(
 
     Args:
         redis_client: Async Redis client. If None, no-op.
-        event_type: One of ``position_update``, ``circuit_breaker_update``,
-            ``auth_mode_change``, ``approval_update``.
+        event_type: One of ``position_update``, ``circuit_breaker_update``.
         data: Event payload dict.
     """
     if redis_client is None:

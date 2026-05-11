@@ -101,17 +101,6 @@ class TestTranslateRedisMessage:
         assert parsed["type"] == "circuit_breaker_update"
         assert parsed["data"]["halted"] is True
 
-    def test_portfolio_auth_mode_change(self) -> None:
-        payload = {
-            "type": "auth_mode_change",
-            "data": {"mode": "semi_auto", "system_status": "normal"},
-        }
-        raw = json.dumps(payload)
-        messages = _translate_redis_message(CHANNEL_PORTFOLIO, raw)
-        assert len(messages) == 1
-        parsed = json.loads(messages[0])
-        assert parsed["data"]["mode"] == "semi_auto"
-
     def test_unknown_channel(self) -> None:
         messages = _translate_redis_message(
             "unknown:channel", json.dumps({"foo": 1})

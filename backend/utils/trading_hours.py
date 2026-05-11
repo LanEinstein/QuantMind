@@ -1,4 +1,13 @@
-"""Trading hours utility for A-share market."""
+"""Trading hours utility for A-share market.
+
+Pure stdlib (datetime + zoneinfo); no IO, no LLM, no data-layer
+dependency. Lives under ``backend.utils`` so ``backend.risk`` can
+import it without violating the P0-10 redline that forbids
+``backend.risk`` from depending on ``backend.{llm,agents,mirofish,data}``.
+
+C-007 (Phase C) will swap ``is_trading_day`` to read the static
+``config/holidays.yaml`` calendar; until then it is a Mon–Fri check.
+"""
 
 from __future__ import annotations
 
@@ -40,10 +49,10 @@ def is_trading_hours(now: dt.datetime | None = None) -> bool:
 
 
 def is_trading_day(date: dt.date | None = None) -> bool:
-    """Check if the given date is a trading day (weekday).
+    """Check if the given date is a trading day.
 
-    Does NOT account for Chinese public holidays.
-    TODO: Integrate holiday calendar for accurate trading day check.
+    Currently a Mon–Fri check. C-007 will swap this to read the static
+    ``config/holidays.yaml`` calendar (P0-6 acceptance window scaffold).
 
     Args:
         date: Date to check. Defaults to today in Beijing timezone.

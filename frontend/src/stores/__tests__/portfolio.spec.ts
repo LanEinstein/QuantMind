@@ -3,7 +3,6 @@ import { setActivePinia, createPinia } from 'pinia'
 import { usePortfolioStore } from '@/stores/portfolio'
 import type { PositionItem, CircuitBreakerStatus } from '@/types/trading'
 
-// Mock the trading API module
 vi.mock('@/api/trading', () => ({
   tradingApi: {
     getAccounts: vi.fn().mockRejectedValue(new Error('mock')),
@@ -11,17 +10,7 @@ vi.mock('@/api/trading', () => ({
     getPositions: vi.fn().mockRejectedValue(new Error('mock')),
     getOrders: vi.fn().mockRejectedValue(new Error('mock')),
     getTrades: vi.fn().mockRejectedValue(new Error('mock')),
-    getPendingApprovals: vi.fn().mockRejectedValue(new Error('mock')),
     getCircuitBreakerStatus: vi.fn().mockRejectedValue(new Error('mock')),
-    cancelOrder: vi.fn(),
-    approveOrder: vi.fn(),
-    rejectOrder: vi.fn(),
-  },
-}))
-
-vi.mock('@/api/risk', () => ({
-  riskApi: {
-    getStatus: vi.fn().mockRejectedValue(new Error('mock')),
   },
 }))
 
@@ -105,24 +94,10 @@ describe('Portfolio Store', () => {
     })
   })
 
-  describe('updateAuthMode', () => {
-    it('sets authorization mode', () => {
-      const store = usePortfolioStore()
-      expect(store.authMode).toBe('suggestion')
-
-      store.updateAuthMode('semi_auto')
-      expect(store.authMode).toBe('semi_auto')
-
-      store.updateAuthMode('full_auto')
-      expect(store.authMode).toBe('full_auto')
-    })
-  })
-
   describe('fetchAll', () => {
     it('falls back to mock data in dev mode and sets loaded status', async () => {
       const store = usePortfolioStore()
       await store.fetchAll()
-      // In test (DEV=true), mock fallback populates data
       expect(store.status).toBe('loaded')
       expect(store.accounts.length).toBeGreaterThan(0)
       expect(store.positions.length).toBeGreaterThan(0)

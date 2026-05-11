@@ -1,9 +1,8 @@
-/** API client for system settings endpoints. */
+/** API client for system settings endpoints (GET-only per P1-5 §2). */
 
-import { apiGet, apiPost } from './request'
+import { apiGet } from './request'
 import type {
   LLMConfig,
-  ConnectionTestResult,
   DataSourceStatus,
   MiroFishConfig,
   CostSummary,
@@ -14,34 +13,12 @@ export const settingsApi = {
     return apiGet<LLMConfig>('/api/settings/llm-config')
   },
 
-  updateLLMConfig(data: Record<string, unknown>): Promise<LLMConfig> {
-    return apiPost<LLMConfig>('/api/settings/llm-config', data)
-  },
-
-  testLLMProvider(provider: string): Promise<ConnectionTestResult> {
-    return apiPost<ConnectionTestResult>(
-      '/api/settings/llm-config/test',
-      { provider },
-    )
-  },
-
   getDataSources(): Promise<DataSourceStatus[]> {
     return apiGet<DataSourceStatus[]>('/api/settings/data-sources')
   },
 
-  testDataSource(source: string): Promise<DataSourceStatus> {
-    return apiPost<DataSourceStatus>(
-      '/api/settings/data-sources/test',
-      { source },
-    )
-  },
-
   getMiroFishConfig(): Promise<MiroFishConfig> {
     return apiGet<MiroFishConfig>('/api/settings/mirofish')
-  },
-
-  updateMiroFishConfig(data: Record<string, unknown>): Promise<MiroFishConfig> {
-    return apiPost<MiroFishConfig>('/api/settings/mirofish', data)
   },
 
   getCostStats(params?: {

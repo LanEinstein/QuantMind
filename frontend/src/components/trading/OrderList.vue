@@ -36,19 +36,6 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="80" align="center">
-        <template #default="{ row }">
-          <el-button
-            v-if="row.status === 'PENDING'"
-            size="small"
-            type="warning"
-            text
-            @click="onCancel(row.order_id)"
-          >
-            撤单
-          </el-button>
-        </template>
-      </el-table-column>
       <template #empty>
         <el-empty description="暂无委托" :image-size="60" />
       </template>
@@ -57,17 +44,12 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessageBox, ElMessage } from 'element-plus'
 import type { OrderItem, OrderStatusType } from '@/types/trading'
 import { getStockName } from '@/stores/portfolio'
 import dayjs from 'dayjs'
 
 defineProps<{
   orders: readonly OrderItem[]
-}>()
-
-const emit = defineEmits<{
-  cancel: [orderId: string]
 }>()
 
 function statusTagType(status: OrderStatusType): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
@@ -92,19 +74,6 @@ function statusLabel(status: OrderStatusType): string {
 
 function formatTime(iso: string): string {
   return dayjs(iso).format('HH:mm:ss')
-}
-
-async function onCancel(orderId: string) {
-  try {
-    await ElMessageBox.confirm('确认撤销该委托？', '撤单确认', {
-      confirmButtonText: '确认撤单',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    emit('cancel', orderId)
-  } catch {
-    // User cancelled dialog
-  }
 }
 </script>
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from backend.data.trading_hours import is_trading_day, is_trading_hours
+from backend.utils.trading_hours import is_trading_day, is_trading_hours
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 

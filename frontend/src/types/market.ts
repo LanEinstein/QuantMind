@@ -78,7 +78,8 @@ export interface SystemStatus {
   akshare: boolean
   daily_cost_rmb: number
   risk_status: 'normal' | 'warning' | 'halt'
-  auth_mode: 'suggest' | 'confirm' | 'auto'
+  /** P0-1: feishu_interactive overlay flag (simulation_auto is always on). */
+  feishu_interactive: boolean
 }
 
 export interface MarketStats {
@@ -98,7 +99,5 @@ export interface WsMessage {
     | 'status'
     | 'position_update'
     | 'circuit_breaker_update'
-    | 'auth_mode_change'
-    | 'approval_update'
   data: unknown
 }

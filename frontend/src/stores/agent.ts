@@ -5,14 +5,10 @@ import { ref, computed } from 'vue'
 import type {
   AnalysisSummary,
   AnalysisDetail,
-  DebateArgument,
   DebateRound,
-  ModelLabel,
   RiskAssessment,
   FundManagerDecision,
-  SSEEvent,
   AnalysisStatus,
-  AuthMode,
 } from '@/types/agent'
 import { analysisApi } from '@/api/analysis'
 
@@ -22,22 +18,6 @@ const MOCK_ENABLED =
 
 const STOCK_CODE_PATTERN = /^\d{6}$/
 
-const KNOWN_MODEL_LABELS: readonly ModelLabel[] = [
-  'DeepSeek',
-  'Qwen',
-  'Kimi',
-  'MiroFish',
-]
-
-/** Narrow an arbitrary SSE `model_label` string down to ModelLabel. */
-function normalizeModelLabel(label: string | undefined): ModelLabel {
-  if (!label) return 'Kimi'
-  const match = KNOWN_MODEL_LABELS.find(
-    (m) => m.toLowerCase() === label.toLowerCase(),
-  )
-  return match ?? 'Kimi'
-}
-
 export const useAgentStore = defineStore('agent', () => {
   // --- State ---
   const currentAnalysis = ref<AnalysisDetail | null>(null)
@@ -46,7 +26,6 @@ export const useAgentStore = defineStore('agent', () => {
   const historyLoading = ref(false)
   const historyError = ref<string | null>(null)
   const analysisStatus = ref<AnalysisStatus>('pending')
-  const authMode = ref<AuthMode>('suggest')
   const searchQuery = ref('')
   const searchDate = ref('')
   const lastError = ref<string | null>(null)
@@ -86,27 +65,6 @@ export const useAgentStore = defineStore('agent', () => {
   const maxRounds = computed(
     () => currentAnalysis.value?.max_rounds ?? 2,
   )
-
-  // --- Actions ---
-  async function triggerAnalysis(stockCode: string, maxDebateRounds = 2) {
-    loading.value = true
-    analysisStatus.value = 'running'
-    lastError.value = null
-    try {
-      const result = await analysisApi.trigger({
-        stock_code: stockCode,
-        max_debate_rounds: maxDebateRounds,
-      })
-      return result.id
-    } catch (err: unknown) {
-      analysisStatus.value = 'failed'
-      lastError.value = getErrorMessage(err)
-      console.warn('Failed to trigger analysis:', lastError.value)
-      return null
-    } finally {
-      loading.value = false
-    }
-  }
 
   async function fetchDetail(id: string) {
     loading.value = true
@@ -163,119 +121,6 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
-  /** Seed a provisional AnalysisDetail so live SSE events can render
-   * debate rounds before the final MongoDB-backed record is available.
-   * The provisional detail is replaced by the real one when
-   * `pipeline_completed` carries a non-null `record_id`. */
-  function beginStreamingRun(
-    stockCode: string,
-    stockName?: string,
-    maxDebateRounds = 2,
-  ): void {
-    const now = new Date()
-    const iso = now.toISOString()
-    const tradeDate = iso.slice(0, 10)
-    currentAnalysis.value = {
-      id: 'provisional',
-      run_id: 'provisional',
-      stock_code: stockCode,
-      stock_name: stockName || stockCode,
-      trade_date: tradeDate,
-      status: 'running',
-      max_rounds: maxDebateRounds,
-      current_round: 0,
-      steps: [],
-      analysts: [],
-      intelligence_officer: null,
-      debates: [],
-      risk_assessment: null,
-      decision: null,
-      signal_id: null,
-      created_at: iso,
-      completed_at: null,
-      error: null,
-    }
-    analysisStatus.value = 'running'
-    lastError.value = null
-  }
-
-  function applySSEEvent(event: SSEEvent) {
-    if (event.event_type === 'error') {
-      lastError.value = event.message
-      analysisStatus.value = 'failed'
-      return
-    }
-
-    if (event.event_type === 'pipeline_completed') {
-      analysisStatus.value = 'completed'
-      return
-    }
-
-    if (event.event_type === 'agent_started') {
-      // Spinner/highlight is managed in useSSE; store only tracks round.
-      return
-    }
-
-    // event_type === 'agent_completed'
-    if (
-      event.agent !== 'bull_researcher' &&
-      event.agent !== 'bear_researcher'
-    ) {
-      return
-    }
-    // No `currentAnalysis` typically means the caller didn't seed a
-    // provisional detail — fall back to seeding one so we don't drop
-    // live debate events, instead of silently returning.
-    if (!currentAnalysis.value) {
-      beginStreamingRun(event.run_id || 'live')
-    }
-    const analysis = currentAnalysis.value
-    if (!analysis) return
-    const role: 'bull' | 'bear' =
-      event.agent === 'bull_researcher' ? 'bull' : 'bear'
-
-    const existingRounds = [...analysis.debates]
-    const roundIdx = existingRounds.findIndex(
-      (r) => r.round === event.round,
-    )
-
-    const argument: DebateArgument = {
-      role,
-      round: event.round,
-      content: event.content,
-      evidence: [],
-      // SSE event carries the agent's actual provider; don't collapse
-      // every live argument to 'Kimi' regardless of which backend model
-      // produced the content.
-      model: normalizeModelLabel(event.model_label),
-      timestamp: event.timestamp,
-    }
-
-    if (roundIdx >= 0) {
-      const existing = existingRounds[roundIdx]
-      existingRounds[roundIdx] = {
-        ...existing,
-        [role]: argument,
-      }
-    } else {
-      existingRounds.push({
-        round: event.round,
-        bull: role === 'bull' ? argument : null,
-        bear: role === 'bear' ? argument : null,
-      })
-    }
-
-    currentAnalysis.value = {
-      ...analysis,
-      debates: existingRounds,
-      current_round: Math.max(analysis.current_round, event.round),
-    }
-  }
-
-  function setAuthMode(mode: AuthMode) {
-    authMode.value = mode
-  }
-
   function resetCurrentAnalysis() {
     currentAnalysis.value = null
     analysisStatus.value = 'pending'
@@ -288,7 +133,6 @@ export const useAgentStore = defineStore('agent', () => {
     historyLoading,
     historyError,
     analysisStatus,
-    authMode,
     searchQuery,
     searchDate,
     lastError,
@@ -298,12 +142,8 @@ export const useAgentStore = defineStore('agent', () => {
     decision,
     currentRound,
     maxRounds,
-    triggerAnalysis,
     fetchDetail,
     fetchHistory,
-    beginStreamingRun,
-    applySSEEvent,
-    setAuthMode,
     resetCurrentAnalysis,
   }
 })

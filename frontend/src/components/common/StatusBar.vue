@@ -41,11 +41,11 @@
 
     <div class="status-divider" />
 
-    <!-- Authorization mode -->
+    <!-- Run mode (P0-1) -->
     <div class="status-group">
       <span class="status-label">模式</span>
-      <span :class="['status-dot', authDotClass]" />
-      <span class="status-name">{{ authLabel }}</span>
+      <span :class="['status-dot', runModeDotClass]" />
+      <span class="status-name">{{ runModeLabel }}</span>
     </div>
 
     <!-- WebSocket status -->
@@ -78,16 +78,16 @@ const riskLabel = computed(() => {
   return labels[props.status.risk_status] ?? '未知'
 })
 
-const authDotClass = computed(() => {
-  if (props.status.auth_mode === 'suggest') return 'on'
-  if (props.status.auth_mode === 'confirm') return 'warn'
-  return 'off'
-})
+// P0-1: simulation_auto is always-on; the dot only changes when the
+// feishu_interactive overlay is layered on (warn) so the operator can
+// see the human-in-loop path is active.
+const runModeDotClass = computed(() =>
+  props.status.feishu_interactive ? 'warn' : 'on',
+)
 
-const authLabel = computed(() => {
-  const labels: Record<string, string> = { suggest: '建议', confirm: '确认', auto: '自动' }
-  return labels[props.status.auth_mode] ?? '未知'
-})
+const runModeLabel = computed(() =>
+  props.status.feishu_interactive ? '模拟+飞书' : '模拟',
+)
 </script>
 
 <style lang="scss" scoped>

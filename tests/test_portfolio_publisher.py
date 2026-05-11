@@ -39,17 +39,6 @@ class TestPublishPortfolioEvent:
         assert payload["data"]["halted"] is True
 
     @pytest.mark.asyncio
-    async def test_publishes_auth_mode_change(self) -> None:
-        redis_mock = AsyncMock()
-        await publish_portfolio_event(
-            redis_mock,
-            "auth_mode_change",
-            {"mode": "semi_auto", "system_status": "normal"},
-        )
-        payload = json.loads(redis_mock.publish.call_args.args[1])
-        assert payload["data"]["mode"] == "semi_auto"
-
-    @pytest.mark.asyncio
     async def test_noop_when_redis_is_none(self) -> None:
         # Should not raise
         await publish_portfolio_event(None, "position_update", {})

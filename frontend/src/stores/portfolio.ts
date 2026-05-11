@@ -1,4 +1,4 @@
-/** Pinia store for portfolio / virtual trading state management. */
+/** Pinia store for portfolio / virtual trading state (read-only per P1-5 §2). */
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
@@ -8,33 +8,24 @@ import type {
   PositionItem,
   OrderItem,
   TradeItem,
-  PendingApproval,
   PortfolioStatus,
   CircuitBreakerStatus,
-  AuthorizationMode,
 } from '@/types/trading'
 import { tradingApi } from '@/api/trading'
-import { riskApi } from '@/api/risk'
 
 export const usePortfolioStore = defineStore('portfolio', () => {
-  // --- State ---
   const accounts = ref<AccountMeta[]>([])
   const activeAccountId = ref('default')
   const account = ref<AccountInfo | null>(null)
   const positions = ref<PositionItem[]>([])
   const orders = ref<OrderItem[]>([])
   const trades = ref<TradeItem[]>([])
-  const pendingApprovals = ref<PendingApproval[]>([])
   const status = ref<PortfolioStatus>('idle')
   const tradeFilterCode = ref('')
   const tradeFilterDateRange = ref<[string, string] | null>(null)
   const circuitBreakerStatus = ref<CircuitBreakerStatus | null>(null)
-  const authMode = ref<AuthorizationMode>('suggestion')
 
   const isDev = import.meta.env.DEV
-
-  // --- Computed ---
-  const hasPendingApprovals = computed(() => pendingApprovals.value.length > 0)
 
   const positionRatio = computed(() => {
     if (!account.value || account.value.total_assets <= 0) return 0
@@ -53,7 +44,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     }
     if (tradeFilterDateRange.value) {
       const [start, end] = tradeFilterDateRange.value
-      // Append time boundaries for inclusive day comparison
       const startISO = start.includes('T') ? start : start + 'T00:00:00'
       const endISO = end.includes('T') ? end : end + 'T23:59:59'
       result = result.filter((t) => {
@@ -64,13 +54,11 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     return result
   })
 
-  // --- Actions ---
   async function fetchAccounts(): Promise<boolean> {
     try {
       accounts.value = await tradingApi.getAccounts()
       return true
     } catch {
-      console.warn('Failed to fetch accounts, using mock data')
       if (isDev) accounts.value = mockAccounts()
       return isDev
     }
@@ -82,7 +70,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       account.value = await tradingApi.getAccount(id)
       return true
     } catch {
-      console.warn('Failed to fetch account, using mock data')
       if (isDev) account.value = mockAccountInfo()
       return isDev
     }
@@ -94,7 +81,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       positions.value = await tradingApi.getPositions(id)
       return true
     } catch {
-      console.warn('Failed to fetch positions, using mock data')
       if (isDev) positions.value = mockPositions()
       return isDev
     }
@@ -106,7 +92,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       orders.value = await tradingApi.getOrders(id)
       return true
     } catch {
-      console.warn('Failed to fetch orders, using mock data')
       if (isDev) orders.value = mockOrders()
       return isDev
     }
@@ -118,20 +103,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       trades.value = await tradingApi.getTrades({ account_id: id })
       return true
     } catch {
-      console.warn('Failed to fetch trades, using mock data')
       if (isDev) trades.value = mockTrades()
-      return isDev
-    }
-  }
-
-  async function fetchPendingApprovals(accountId?: string): Promise<boolean> {
-    const id = accountId ?? activeAccountId.value
-    try {
-      pendingApprovals.value = await tradingApi.getPendingApprovals(id)
-      return true
-    } catch {
-      console.warn('Failed to fetch pending approvals, using mock data')
-      if (isDev) pendingApprovals.value = mockPendingApprovals()
       return isDev
     }
   }
@@ -146,27 +118,12 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     }
   }
 
-  async function fetchAuthMode(): Promise<boolean> {
-    try {
-      const status = await riskApi.getStatus()
-      authMode.value = (status.authorization_mode ?? 'suggestion') as AuthorizationMode
-      return true
-    } catch {
-      return isDev
-    }
-  }
-
-  // --- WebSocket-driven updates ---
   function updatePositionsFromWs(newPositions: PositionItem[]) {
     positions.value = newPositions
   }
 
   function updateCircuitBreaker(cb: CircuitBreakerStatus) {
     circuitBreakerStatus.value = cb
-  }
-
-  function updateAuthMode(mode: string) {
-    authMode.value = mode as AuthorizationMode
   }
 
   async function fetchAll() {
@@ -178,9 +135,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       fetchPositions(id),
       fetchOrders(id),
       fetchTrades(id),
-      fetchPendingApprovals(id),
       fetchCircuitBreakerStatus(),
-      fetchAuthMode(),
     ])
     const allFailed = results.every((ok) => !ok)
     status.value = allFailed ? 'error' : 'loaded'
@@ -189,31 +144,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   async function switchAccount(accountId: string) {
     activeAccountId.value = accountId
     await fetchAll()
-  }
-
-  async function cancelOrder(orderId: string) {
-    await tradingApi.cancelOrder(orderId, activeAccountId.value)
-    await Promise.allSettled([fetchAccount(), fetchPositions(), fetchOrders()])
-  }
-
-  async function approveOrder(id: string) {
-    const result = await tradingApi.approveOrder(id)
-    // Always refresh state — backend removes the pending item regardless of broker outcome
-    await Promise.allSettled([
-      fetchAccount(),
-      fetchPositions(),
-      fetchOrders(),
-      fetchTrades(),
-      fetchPendingApprovals(),
-    ])
-    if (!result.success) {
-      throw new Error(result.message || '订单被拒绝')
-    }
-  }
-
-  async function rejectOrder(id: string) {
-    await tradingApi.rejectOrder(id)
-    await fetchPendingApprovals()
   }
 
   function exportTradesCSV() {
@@ -230,7 +160,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       )
       .join('\n')
 
-    const blob = new Blob(['\uFEFF' + header + body], { type: 'text/csv;charset=utf-8' })
+    const blob = new Blob(['﻿' + header + body], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -246,13 +176,10 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     positions,
     orders,
     trades,
-    pendingApprovals,
     status,
     tradeFilterCode,
     tradeFilterDateRange,
     circuitBreakerStatus,
-    authMode,
-    hasPendingApprovals,
     positionRatio,
     cashRatio,
     filteredTrades,
@@ -261,21 +188,14 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     fetchPositions,
     fetchOrders,
     fetchTrades,
-    fetchPendingApprovals,
     fetchCircuitBreakerStatus,
     fetchAll,
     switchAccount,
-    cancelOrder,
-    approveOrder,
-    rejectOrder,
     exportTradesCSV,
     updatePositionsFromWs,
     updateCircuitBreaker,
-    updateAuthMode,
   }
 })
-
-// --- Mock data (deterministic, no Math.random) ---
 
 function mockAccounts(): AccountMeta[] {
   return [
@@ -470,42 +390,6 @@ function mockTrades(): TradeItem[] {
       slippage_cost: 5.96,
       net_amount: 29751.27,
       traded_at: '2026-03-24T10:05:00Z',
-    },
-  ]
-}
-
-function mockPendingApprovals(): PendingApproval[] {
-  return [
-    {
-      id: 'apv-001',
-      account_id: 'default',
-      code: '601318',
-      price: 52.3,
-      volume: 300,
-      direction: 'BUY',
-      order_type: 'LIMIT',
-      agent_recommendation: '基金经理建议买入 601318中国平安 300股@¥52.3',
-      reasoning:
-        '基本面分析显示中国平安当前PE处于历史低位，保险业务复苏趋势明确，预计未来两个季度EPS增长15%。',
-      risk_pre_check: { passed: true, rule_name: 'all_checks', message: '风控检查: 通过' },
-      created_at: '2026-03-25T10:30:00Z',
-    },
-    {
-      id: 'apv-002',
-      account_id: 'default',
-      code: '300750',
-      price: 209.0,
-      volume: 500,
-      direction: 'BUY',
-      order_type: 'LIMIT',
-      agent_recommendation: '基金经理建议买入 300750宁德时代 500股@¥209.0',
-      reasoning: '新能源汽车补贴政策延续利好电池龙头，订单量环比增长20%。',
-      risk_pre_check: {
-        passed: false,
-        rule_name: 'position_limit',
-        message: '仓位将达18%，接近单股上限20%',
-      },
-      created_at: '2026-03-25T10:32:00Z',
     },
   ]
 }

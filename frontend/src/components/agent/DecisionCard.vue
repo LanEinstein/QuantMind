@@ -3,7 +3,7 @@
     <!-- Risk Officer -->
     <el-card shadow="never" class="risk-card" v-if="risk">
       <div class="section-header">
-        <span class="section-icon">\uD83D\uDC54</span>
+        <span class="section-icon">👔</span>
         <span class="section-title">风控官审核</span>
         <el-tag size="small" effect="dark">{{ risk.model }}</el-tag>
       </div>
@@ -14,16 +14,16 @@
           class="risk-check"
           :class="{ passed: check.passed, failed: !check.passed }"
         >
-          {{ check.label }} {{ check.passed ? '\u2705' : '\u274C' }}
+          {{ check.label }} {{ check.passed ? '✅' : '❌' }}
         </span>
-        <span class="risk-position">建议仓位: \u2264{{ risk.position_limit }}</span>
+        <span class="risk-position">建议仓位: ≤{{ risk.position_limit }}</span>
       </div>
     </el-card>
 
-    <!-- Fund Manager Decision -->
+    <!-- Fund Manager Decision (read-only history view) -->
     <el-card shadow="never" class="decision-card" v-if="decision">
       <div class="section-header">
-        <span class="section-icon">\uD83C\uDFAF</span>
+        <span class="section-icon">🎯</span>
         <span class="section-title">基金经理决策</span>
         <el-tag size="small" effect="dark">{{ decision.model }}</el-tag>
       </div>
@@ -56,11 +56,11 @@
           </div>
           <div class="detail-item" v-if="decision.target_price">
             <span class="detail-label">目标价</span>
-            <span class="detail-value">\u00A5{{ decision.target_price }}</span>
+            <span class="detail-value">¥{{ decision.target_price }}</span>
           </div>
           <div class="detail-item" v-if="decision.stop_loss">
             <span class="detail-label">止损价</span>
-            <span class="detail-value">\u00A5{{ decision.stop_loss }}</span>
+            <span class="detail-value">¥{{ decision.stop_loss }}</span>
           </div>
           <div class="detail-item" v-if="decision.position_pct">
             <span class="detail-label">仓位</span>
@@ -69,66 +69,17 @@
         </div>
         <p class="decision-reasoning">{{ decision.reasoning }}</p>
       </div>
-
-      <!-- Authorization Mode Buttons -->
-      <div class="auth-buttons">
-        <el-button-group>
-          <el-button
-            :type="authMode === 'suggest' ? 'success' : 'default'"
-            size="small"
-            @click="$emit('auth-change', 'suggest')"
-          >
-            \uD83D\uDFE2 建议模式
-          </el-button>
-          <el-button
-            :type="authMode === 'confirm' ? 'warning' : 'default'"
-            size="small"
-            @click="$emit('auth-change', 'confirm')"
-          >
-            \uD83D\uDFE1 确认模式
-          </el-button>
-          <el-button
-            :type="authMode === 'auto' ? 'danger' : 'default'"
-            size="small"
-            @click="$emit('auth-change', 'auto')"
-          >
-            \uD83D\uDD34 自动模式
-          </el-button>
-        </el-button-group>
-
-        <div class="auth-action" v-if="authMode === 'suggest'">
-          <el-button type="info" size="small" disabled>仅展示</el-button>
-        </div>
-        <div class="auth-action" v-else-if="authMode === 'confirm'">
-          <el-button type="success" size="small" @click="$emit('approve')">
-            \u2705 批准执行
-          </el-button>
-          <el-button type="danger" size="small" @click="$emit('reject')">
-            \u274C 拒绝
-          </el-button>
-        </div>
-        <div class="auth-action" v-else>
-          <el-tag type="warning" effect="dark">已自动提交</el-tag>
-        </div>
-      </div>
     </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { RiskAssessment, FundManagerDecision, AuthMode } from '@/types/agent'
+import type { RiskAssessment, FundManagerDecision } from '@/types/agent'
 
 const props = defineProps<{
   risk: RiskAssessment | null
   decision: FundManagerDecision | null
-  authMode: AuthMode
-}>()
-
-defineEmits<{
-  'auth-change': [mode: AuthMode]
-  approve: []
-  reject: []
 }>()
 
 const scoreColor = computed(() => {
@@ -182,7 +133,6 @@ const actionClass = computed(() => {
   color: $text-primary;
 }
 
-// Risk card
 .risk-checks {
   display: flex;
   flex-wrap: wrap;
@@ -204,7 +154,6 @@ const actionClass = computed(() => {
   margin-left: auto;
 }
 
-// Score gauge
 .score-row {
   margin-bottom: 16px;
 }
@@ -241,7 +190,6 @@ const actionClass = computed(() => {
   white-space: nowrap;
 }
 
-// Decision details
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -278,21 +226,5 @@ const actionClass = computed(() => {
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
-}
-
-// Auth buttons
-.auth-buttons {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid $border-color;
-}
-
-.auth-action {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 </style>

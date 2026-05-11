@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -125,11 +124,10 @@ class TestGetRiskStatus:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["system_status"] == "normal"
-        assert data["authorization_mode"] in {
-            "suggestion",
-            "semi_auto",
-            "full_auto",
-        }
+        # P0-1: run_mode replaces the legacy authorization_mode tri-state.
+        assert data["run_mode"]["simulation_auto"] is True
+        assert isinstance(data["run_mode"]["feishu_interactive"], bool)
+        assert "authorization_mode" not in data
         assert isinstance(data["circuit_breaker_triggered"], bool)
 
     async def test_circuit_breaker_status(self, client: AsyncClient) -> None:
@@ -180,34 +178,18 @@ class TestGetRiskConfig:
         app.state.risk_config = _make_risk_config()
 
 
-# -- POST /api/risk/config --
+# -- POST /api/risk/config (removed in A-001/A-004) --
 
 
-class TestUpdateRiskConfig:
-    @patch("backend.api.risk._persist_risk_config")
-    @patch("backend.broker.models.load_risk_config")
-    async def test_update_config(
-        self,
-        mock_load: MagicMock,
-        mock_persist: MagicMock,
-        client: AsyncClient,
-    ) -> None:
-        mock_load.return_value = _make_risk_config()
+class TestRiskConfigWriteRemoved:
+    """POST /api/risk/config was destructively deleted (P1-5: only 2 write endpoints)."""
+
+    async def test_post_config_returns_404_or_405(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/risk/config",
             json={"single_stock_limit": 15},
         )
-        assert resp.status_code == 200
-        mock_persist.assert_called_once()
-
-    async def test_update_without_config(self, client: AsyncClient) -> None:
-        app.state.risk_config = None
-        resp = await client.post(
-            "/api/risk/config",
-            json={"single_stock_limit": 15},
-        )
-        assert resp.status_code == 503
-        app.state.risk_config = _make_risk_config()
+        assert resp.status_code in {404, 405}
 
 
 # -- GET /api/risk/events --
@@ -246,131 +228,23 @@ class TestGetRiskEvents:
         assert len(resp.json()["data"]) == 3
 
 
-# -- POST /api/risk/auth-mode --
+# -- POST /api/risk/auth-mode (removed in A-001) --
 
 
-class TestSwitchAuthMode:
-    async def test_switch_mode_to_suggestion_in_eval(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`suggestion` is the only allowed mode in `phase5_eval`."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase5_eval")
+class TestAuthModeRouteRemoved:
+    """POST /api/risk/auth-mode was destructively deleted by P0-1 run_mode redesign.
+
+    Run mode is now driven exclusively by ``FEISHU_INTERACTIVE_ENABLED``
+    at process start; runtime mutation is forbidden so there is no API
+    surface for it.
+    """
+
+    async def test_route_returns_404_or_405(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/risk/auth-mode",
             json={"mode": "suggestion"},
         )
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["authorization_mode"] == "suggestion"
-
-    async def test_invalid_mode(self, client: AsyncClient) -> None:
-        resp = await client.post(
-            "/api/risk/auth-mode",
-            json={"mode": "invalid_mode"},
-        )
-        assert resp.status_code == 422
-
-    async def test_cross_phase_rejected_in_eval(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`semi_auto` / `full_auto` / canonical `confirm` / `auto` must 403 in eval."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase5_eval")
-        for blocked in ("semi_auto", "full_auto", "confirm", "auto"):
-            resp = await client.post(
-                "/api/risk/auth-mode",
-                json={"mode": blocked},
-            )
-            assert resp.status_code == 403, blocked
-            err = resp.json()["detail"]["error"]
-            assert "phase5_eval" in err
-
-    async def test_canonical_short_form_accepted_in_eval(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Canonical `suggest` (short form) must be accepted by the endpoint."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase5_eval")
-        resp = await client.post(
-            "/api/risk/auth-mode",
-            json={"mode": "suggest"},
-        )
-        assert resp.status_code == 200
-
-    async def test_canonical_confirm_accepted_in_dryrun(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`phase6_dryrun` must accept canonical `confirm`."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase6_dryrun")
-        resp = await client.post(
-            "/api/risk/auth-mode",
-            json={"mode": "confirm"},
-        )
-        assert resp.status_code == 200
-
-    async def test_dryrun_rejects_auto(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`phase6_dryrun` must NOT accept `auto` / `full_auto`."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase6_dryrun")
-        for blocked in ("auto", "full_auto"):
-            resp = await client.post(
-                "/api/risk/auth-mode",
-                json={"mode": blocked},
-            )
-            assert resp.status_code == 403, blocked
-
-    async def test_live_phase_accepts_auto(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`phase7_live` must accept canonical `auto` and legacy `full_auto`."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase7_live")
-        for accepted in ("auto", "full_auto"):
-            resp = await client.post(
-                "/api/risk/auth-mode",
-                json={"mode": accepted},
-            )
-            assert resp.status_code == 200, accepted
-
-    async def test_post_then_get_consistency_short_form_input(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """POST canonical short → GET status must show consistent long form.
-
-        Closes the cycle 2 P2 finding: a `suggest` POST used to land env
-        as `suggest` and ``_get_auth_mode``'s ``replace`` produced
-        ``suggestion``; a `suggestion` POST landed env as ``suggestion``
-        and the same replace produced ``suggestionion``.
-        """
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase5_eval")
-        post_resp = await client.post(
-            "/api/risk/auth-mode",
-            json={"mode": "suggest"},
-        )
-        assert post_resp.status_code == 200
-        assert post_resp.json()["data"]["authorization_mode"] == "suggestion"
-
-        # Env should now hold the canonical short, not the raw input.
-        assert os.environ.get("AUTHORIZATION_MODE") == "suggest"
-
-        get_resp = await client.get("/api/risk/status")
-        assert get_resp.status_code == 200
-        assert get_resp.json()["data"]["authorization_mode"] == "suggestion"
-
-    async def test_post_then_get_consistency_long_form_input(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """POST legacy long form must canonicalize and not produce 'suggestionion'."""
-        monkeypatch.setenv("QUANTMIND_PHASE", "phase5_eval")
-        post_resp = await client.post(
-            "/api/risk/auth-mode",
-            json={"mode": "suggestion"},
-        )
-        assert post_resp.status_code == 200
-        # Env stores canonical short, never the long input.
-        assert os.environ.get("AUTHORIZATION_MODE") == "suggest"
-
-        get_resp = await client.get("/api/risk/status")
-        # The bug used to produce "suggestionion" here.
-        assert get_resp.json()["data"]["authorization_mode"] == "suggestion"
+        assert resp.status_code in {404, 405}
 
 
 # -- record_risk_event --

@@ -1,20 +1,16 @@
-"""Tests for trading API endpoints."""
+"""Tests for trading API endpoints (GET-only per P1-5 §2)."""
 
 from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.broker.approval_queue import ApprovalQueue
 from backend.broker.models import (
     BrokerConfig,
     CircuitBreakerConfig,
-    OrderDirection,
-    OrderType,
     PositionLimitsConfig,
     RiskConfig,
     StopLossConfig,
-    ValidationResult,
 )
 from backend.broker.registry import BrokerRegistry
 from backend.main import app
@@ -26,13 +22,6 @@ def registry() -> BrokerRegistry:
     reg = BrokerRegistry(BrokerConfig(initial_capital=1_000_000.0))
     app.state.broker_registry = reg
     return reg
-
-
-@pytest.fixture()
-def approval_queue(registry: BrokerRegistry) -> ApprovalQueue:
-    q = ApprovalQueue(registry)
-    app.state.approval_queue = q
-    return q
 
 
 @pytest.fixture()
@@ -49,7 +38,6 @@ def risk_config() -> RiskConfig:
 @pytest.fixture()
 async def client(
     registry: BrokerRegistry,
-    approval_queue: ApprovalQueue,
     risk_config: RiskConfig,
 ) -> AsyncClient:
     transport = ASGITransport(app=app)
@@ -134,101 +122,25 @@ class TestGetTrades:
         assert resp.status_code == 422
 
 
-class TestCancelOrder:
+class TestTradingWriteRoutesRemoved:
+    """P1-5 §2: trading POST routes (cancel / approve / reject / pending-approvals)
+    were destructively deleted with the ApprovalQueue in A-002. Confirm 405."""
+
     @pytest.mark.asyncio
-    async def test_cancel_nonexistent_returns_400(
-        self, client: AsyncClient
+    @pytest.mark.parametrize(
+        "method, path",
+        [
+            ("POST", "/api/trading/cancel/abc"),
+            ("POST", "/api/trading/approve/abc"),
+            ("POST", "/api/trading/reject/abc"),
+            ("GET", "/api/trading/pending-approvals"),
+        ],
+    )
+    async def test_route_removed(
+        self, client: AsyncClient, method: str, path: str
     ) -> None:
-        resp = await client.post("/api/trading/cancel/nonexistent")
-        assert resp.status_code == 400
-
-
-class TestPendingApprovals:
-    @pytest.mark.asyncio
-    async def test_returns_empty_when_none(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/trading/pending-approvals")
-        assert resp.status_code == 200
-        assert resp.json()["data"] == []
-
-    @pytest.mark.asyncio
-    async def test_returns_pending_after_submit(
-        self, client: AsyncClient, approval_queue: ApprovalQueue
-    ) -> None:
-        approval_queue.submit(
-            account_id="default",
-            code="601318",
-            price=52.3,
-            volume=300,
-            direction=OrderDirection.BUY,
-            order_type=OrderType.LIMIT,
-            agent_recommendation="Buy 601318",
-            reasoning="Undervalued",
-            risk_pre_check=ValidationResult(passed=True),
-        )
-        resp = await client.get("/api/trading/pending-approvals")
-        data = resp.json()["data"]
-        assert len(data) == 1
-        assert data[0]["code"] == "601318"
-
-
-class TestApproveOrder:
-    @pytest.mark.asyncio
-    async def test_approve_nonexistent_returns_404(
-        self, client: AsyncClient
-    ) -> None:
-        resp = await client.post("/api/trading/approve/nonexistent")
-        assert resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_approve_sends_to_broker(
-        self, client: AsyncClient, approval_queue: ApprovalQueue
-    ) -> None:
-        approval = approval_queue.submit(
-            account_id="default",
-            code="601318",
-            price=52.3,
-            volume=300,
-            direction=OrderDirection.BUY,
-            order_type=OrderType.LIMIT,
-            agent_recommendation="Buy 601318",
-            reasoning="Test",
-            risk_pre_check=ValidationResult(passed=True),
-        )
-        resp = await client.post(f"/api/trading/approve/{approval.id}")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert "order_id" in data
-
-
-class TestRejectOrder:
-    @pytest.mark.asyncio
-    async def test_reject_nonexistent_returns_404(
-        self, client: AsyncClient
-    ) -> None:
-        resp = await client.post("/api/trading/reject/nonexistent")
-        assert resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_reject_removes_pending(
-        self, client: AsyncClient, approval_queue: ApprovalQueue
-    ) -> None:
-        approval = approval_queue.submit(
-            account_id="default",
-            code="601318",
-            price=52.3,
-            volume=300,
-            direction=OrderDirection.BUY,
-            order_type=OrderType.LIMIT,
-            agent_recommendation="Buy 601318",
-            reasoning="Test",
-            risk_pre_check=ValidationResult(passed=True),
-        )
-        resp = await client.post(f"/api/trading/reject/{approval.id}")
-        assert resp.status_code == 200
-        assert resp.json()["data"]["success"] is True
-        # Verify removed
-        resp2 = await client.get("/api/trading/pending-approvals")
-        assert len(resp2.json()["data"]) == 0
+        resp = await client.request(method, path)
+        assert resp.status_code in {404, 405}
 
 
 class TestCircuitBreakerStatus:
@@ -236,7 +148,6 @@ class TestCircuitBreakerStatus:
     async def test_returns_default_when_no_breaker(
         self, client: AsyncClient
     ) -> None:
-        # Ensure no circuit breaker is set
         app.state.circuit_breaker = None
         resp = await client.get("/api/trading/circuit-breaker-status")
         assert resp.status_code == 200
@@ -261,7 +172,6 @@ class TestCircuitBreakerStatus:
     ) -> None:
         cb = CircuitBreaker(CircuitBreakerConfig(daily_loss_limit_pct=0.05))
         app.state.circuit_breaker = cb
-        # Trip the breaker with a large loss
         cb.record_trade_result(-0.06)
         resp = await client.get("/api/trading/circuit-breaker-status")
         data = resp.json()["data"]

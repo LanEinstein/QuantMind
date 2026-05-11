@@ -61,7 +61,8 @@ def _extract_reasoning_tokens(usage: CompletionUsage) -> int:
 class LLMRouter:
     """Routes agent LLM requests to the appropriate provider.
 
-    Manages AsyncOpenAI client instances, config hot-reload,
+    Manages AsyncOpenAI client instances (config loaded once at boot;
+    hot-reload disabled per P0-7/P0-10/P1-7 — restart to pick up changes),
     and automatic fallback on provider failure.
 
     Usage::
@@ -148,11 +149,14 @@ class LLMRouter:
     ) -> ChatCompletion:
         """Route a chat completion request for the given agent.
 
-        1. Check for config hot-reload
-        2. Resolve agent -> provider -> client
-        3. Call chat.completions.create
-        4. On retryable failure, try fallback provider
-        5. Track token usage in Redis
+        1. Resolve agent -> provider -> client
+        2. Call chat.completions.create
+        3. On retryable failure, try fallback provider
+        4. Track token usage in Redis
+
+        Config is loaded once during ``initialize()``; hot-reload is
+        disabled per P0-7 / P0-10 / P1-7. Restart the process to pick
+        up ``config/agent_models.yaml`` changes.
 
         Args:
             agent_name: Key from agents section of YAML.
@@ -166,8 +170,6 @@ class LLMRouter:
             KeyError: If agent_name is not in config.
             openai.APIError: If both primary and fallback fail.
         """
-        await self._maybe_reload_config()
-
         config = self.config
 
         if agent_name not in config.agents:
@@ -487,47 +489,22 @@ class LLMRouter:
             )
         return self._clients[provider_name]
 
-    async def _maybe_reload_config(self) -> None:
-        """Check file mtime and reload config if changed."""
-        try:
-            current_mtime = self._config_path.stat().st_mtime
-        except OSError:
-            return
-
-        if current_mtime <= self._config_mtime:
-            return
-
-        async with self._lock:
-            # Double-check inside lock
-            try:
-                current_mtime = self._config_path.stat().st_mtime
-            except OSError:
-                return
-            if current_mtime <= self._config_mtime:
-                return
-            await self._reload_config()
-
     async def _reload_config(self) -> None:
-        """Reload configuration from YAML file.
+        """Load configuration from YAML file (one-shot at initialize).
 
-        Uses asyncio.to_thread for blocking file I/O to avoid
+        Hot-reload is disabled per P0-7 / P0-10 / P1-7: this method only
+        runs once, during ``initialize()``. Restart the process to pick
+        up ``config/agent_models.yaml`` changes — there is no runtime
+        path that re-invokes it.
+
+        Uses ``asyncio.to_thread`` for blocking file I/O to avoid
         stalling the event loop. Eagerly creates clients for all
-        providers so the read path (_get_client) is pure lookup.
+        providers so the read path (``_get_client``) is pure lookup.
         """
         new_config = await asyncio.to_thread(
             load_router_config, self._config_path
         )
-        old_config = self._config
 
-        # Close clients for providers whose config changed or were removed
-        if old_config is not None:
-            for name in list(self._clients.keys()):
-                if name not in new_config.providers:
-                    await self._clients.pop(name).close()
-                elif new_config.providers[name] != old_config.providers.get(name):
-                    await self._clients.pop(name).close()
-
-        # Eagerly create clients for all providers not already cached
         for name, provider_cfg in new_config.providers.items():
             if name not in self._clients:
                 self._clients[name] = create_openai_client(provider_cfg)
@@ -536,7 +513,7 @@ class LLMRouter:
         self._config_mtime = self._config_path.stat().st_mtime
 
         self._log.info(
-            "config_reloaded",
+            "config_loaded",
             providers=sorted(new_config.providers.keys()),
             agents=sorted(new_config.agents.keys()),
         )

@@ -64,26 +64,6 @@ export interface TradeItem {
   readonly traded_at: string
 }
 
-export interface RiskPreCheck {
-  readonly passed: boolean
-  readonly rule_name: string
-  readonly message: string
-}
-
-export interface PendingApproval {
-  readonly id: string
-  readonly account_id: string
-  readonly code: string
-  readonly price: number
-  readonly volume: number
-  readonly direction: 'BUY' | 'SELL'
-  readonly order_type: 'LIMIT' | 'MARKET'
-  readonly agent_recommendation: string
-  readonly reasoning: string
-  readonly risk_pre_check: RiskPreCheck
-  readonly created_at: string
-}
-
 export type PortfolioStatus = 'idle' | 'loading' | 'loaded' | 'error'
 
 export interface CircuitBreakerStatus {
@@ -91,5 +71,3 @@ export interface CircuitBreakerStatus {
   readonly daily_pnl_pct: number
   readonly consecutive_losses: number
 }
-
-export type AuthorizationMode = 'suggestion' | 'semi_auto' | 'full_auto'

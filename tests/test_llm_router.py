@@ -399,12 +399,14 @@ class TestTrackUsage:
 
 
 # ============================================================
-# Group 5: YAML hot-reload
+# Group 5: hot-reload disabled (A-007)
 # ============================================================
 
 
-class TestHotReload:
-    async def test_detects_mtime_change(
+class TestHotReloadDisabled:
+    """Hot-reload was destructively removed in A-007 per P0-7 / P0-10 / P1-7."""
+
+    async def test_yaml_change_does_not_trigger_reload(
         self, sample_yaml_path: Path, mock_env_vars: None, mock_redis: AsyncMock
     ) -> None:
         router = LLMRouter(config_path=sample_yaml_path)
@@ -412,12 +414,12 @@ class TestHotReload:
 
         assert router.config.defaults.temperature == 0.3
 
-        # Modify the YAML
-        time.sleep(0.05)  # ensure mtime differs
+        # Mutate the YAML on disk
+        time.sleep(0.05)
         new_yaml = SAMPLE_YAML.replace("temperature: 0.3", "temperature: 0.7")
         sample_yaml_path.write_text(new_yaml, encoding="utf-8")
 
-        # Trigger reload via complete
+        # complete() must NOT pick the new value up — hot-reload is disabled.
         mock_response = make_chat_completion()
         with patch.object(router, "_get_client") as mock_get:
             mock_client = AsyncMock()
@@ -425,20 +427,12 @@ class TestHotReload:
             mock_get.return_value = mock_client
             await router.complete("news_crawler", [{"role": "user", "content": "hi"}])
 
-        assert router.config.defaults.temperature == 0.7
+        assert router.config.defaults.temperature == 0.3
         await router.close()
 
-    async def test_no_change_skips_reload(
-        self, sample_yaml_path: Path, mock_env_vars: None, mock_redis: AsyncMock
-    ) -> None:
-        router = LLMRouter(config_path=sample_yaml_path)
-        await router.initialize(redis_client=mock_redis)
-
-        config_before = router.config
-        await router._maybe_reload_config()
-        # Same object reference since no reload happened
-        assert router.config is config_before
-        await router.close()
+    def test_maybe_reload_method_removed(self) -> None:
+        """The runtime auto-reload helper was destructively removed."""
+        assert not hasattr(LLMRouter, "_maybe_reload_config")
 
 
 # ============================================================

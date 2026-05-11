@@ -133,10 +133,12 @@ curl -k https://quantmind.local/api/health # 200 ok
 - `/home/ps/.config/quantmind/llm.env` **必须** chmod 600。
 - `/home/ps/papers/QuantMind/.env` 也 **必须** chmod 600（systemd 通过
   EnvironmentFile 加载它）。
-- `AUTHORIZATION_MODE` 评估期必须保持 `suggest`，禁止改 `auto`。
-- nginx 反代 `/api/` 下游必须是 `127.0.0.1:8000`，不得暴露到 0.0.0.0。
-- `docker-compose.yml` 已将 mongodb/redis 端口绑定到 `127.0.0.1`，禁止
-  改回 `0.0.0.0`，否则评估期数据会暴露给同网段任意主机。
+- 运行模式由 `FEISHU_INTERACTIVE_ENABLED`(P0-1)单一开关决定：默认 false 启动
+  `simulation_auto` 底座；仅 P0-6 45 交易日验收通过后才允许置 true 叠加 Feishu
+  人工执行通道。`AUTHORIZATION_MODE` / `QUANTMIND_PHASE` 已删除，禁止重新引入。
+- 全层入站监听必须 127.0.0.1 only(P1-6 §1.5)：backend uvicorn `--host 127.0.0.1`、
+  Vite `host: '127.0.0.1'`、nginx `listen 127.0.0.1:80/443`、docker-compose
+  `127.0.0.1:8000:8000`、Mongo/Redis `127.0.0.1`。远程访问只走 SSH tunnel。
 - `scripts/backup.sh` 默认写 `~/.local/state/quantmind/backups`（仓库外），
   加 `umask 077` + `chmod 600`。如改写到仓库内目录，必须确认
   `.gitignore` 已包含该路径。

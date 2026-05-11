@@ -18,15 +18,6 @@
       </template>
     </el-alert>
 
-    <!-- Section E: Approval Queue (conditional) -->
-    <ApprovalQueue
-      v-if="store.hasPendingApprovals"
-      :approvals="store.pendingApprovals"
-      :trading-halted="store.circuitBreakerStatus?.halted ?? false"
-      @approve="onApprove"
-      @reject="onReject"
-    />
-
     <!-- Section A: Account Overview Banner -->
     <AccountBanner v-if="store.account" :account="store.account" />
 
@@ -47,11 +38,11 @@
       />
     </el-card>
 
-    <!-- Section C + D: Orders & Trades -->
+    <!-- Section C + D: Orders & Trades (read-only per P1-5 §2) -->
     <el-card shadow="never" class="section-card">
       <el-tabs v-model="activeTab">
         <el-tab-pane label="今日委托" name="orders">
-          <OrderList :orders="store.orders" @cancel="onCancelOrder" />
+          <OrderList :orders="store.orders" />
         </el-tab-pane>
         <el-tab-pane label="成交历史" name="trades">
           <TradeHistory />
@@ -75,7 +66,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Loading } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
 import { usePortfolioStore } from '@/stores/portfolio'
 import { useWebSocket } from '@/composables/useWebSocket'
 import type { PositionItem } from '@/types/trading'
@@ -84,7 +74,6 @@ import AccountBanner from '@/components/trading/AccountBanner.vue'
 import PositionTable from '@/components/trading/PositionTable.vue'
 import OrderList from '@/components/trading/OrderList.vue'
 import TradeHistory from '@/components/trading/TradeHistory.vue'
-import ApprovalQueue from '@/components/trading/ApprovalQueue.vue'
 import PositionDetailDrawer from '@/components/trading/PositionDetailDrawer.vue'
 
 const store = usePortfolioStore()
@@ -101,12 +90,8 @@ function onSelectPosition(position: PositionItem) {
 }
 
 onMounted(async () => {
-  // Connect WebSocket for real-time portfolio updates.
-  // Same-origin fallback works when VITE_WS_URL is unset but /ws/market is exposed.
-  // Exponential backoff (max 30s) in useWebSocket prevents runaway reconnects.
   connectWs()
   await store.fetchAll()
-  // Polling fallback — WebSocket is the primary update channel
   refreshTimer = setInterval(async () => {
     await Promise.allSettled([store.fetchPositions(), store.fetchOrders()])
   }, 30_000)
@@ -118,33 +103,6 @@ onUnmounted(() => {
     refreshTimer = null
   }
 })
-
-async function onCancelOrder(orderId: string) {
-  try {
-    await store.cancelOrder(orderId)
-    ElMessage.success('撤单成功')
-  } catch {
-    ElMessage.error('撤单失败')
-  }
-}
-
-async function onApprove(id: string) {
-  try {
-    await store.approveOrder(id)
-    ElMessage.success('订单已批准')
-  } catch {
-    ElMessage.error('批准失败')
-  }
-}
-
-async function onReject(id: string) {
-  try {
-    await store.rejectOrder(id)
-    ElMessage.success('订单已拒绝')
-  } catch {
-    ElMessage.error('拒绝失败')
-  }
-}
 </script>
 
 <style scoped lang="scss">

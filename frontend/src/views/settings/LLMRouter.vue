@@ -27,26 +27,6 @@
               <span class="field-label">API Key</span>
               <span class="field-value masked">{{ p.api_key }}</span>
             </div>
-            <div class="provider-actions">
-              <el-button
-                type="primary"
-                size="small"
-                :loading="testingProvider === p.key"
-                @click="onTestConnection(p.key)"
-              >
-                测试连接
-              </el-button>
-              <span v-if="store.connectionTests[p.key]" class="test-result">
-                <template v-if="store.connectionTests[p.key].connected">
-                  <el-icon color="#00c853"><CircleCheckFilled /></el-icon>
-                  {{ store.connectionTests[p.key].latency_ms }}ms
-                </template>
-                <template v-else>
-                  <el-icon color="#ff1744"><CircleCloseFilled /></el-icon>
-                  {{ store.connectionTests[p.key].error }}
-                </template>
-              </span>
-            </div>
           </div>
         </el-card>
       </el-col>
@@ -108,13 +88,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
+import { computed, onMounted } from 'vue'
 import VChart from 'vue-echarts'
 import { useSettingsStore } from '@/stores/settings'
 
 const store = useSettingsStore()
-const testingProvider = ref<string | null>(null)
 
 const providerLabels: Record<string, string> = {
   deepseek: 'DeepSeek',
@@ -133,25 +111,16 @@ const expansionSlots = [
   { name: 'openai', label: 'GPT (预留)' },
 ]
 
-function connectionStatus(provider: string): 'success' | 'danger' | 'info' {
-  const test = store.connectionTests[provider]
-  if (!test) return 'info'
-  return test.connected ? 'success' : 'danger'
+function connectionStatus(_provider: string): 'success' | 'danger' | 'info' {
+  // Connection-test endpoint was destructively removed in Phase A; show
+  // neutral status until a passive health probe lands in Phase B/H-003.
+  return 'info'
 }
 
 function providerTagType(provider: string): 'success' | 'warning' | 'info' {
   if (provider === 'deepseek') return 'success'
   if (provider === 'qwen') return 'warning'
   return 'info'
-}
-
-async function onTestConnection(provider: string) {
-  testingProvider.value = provider
-  try {
-    await store.testProvider(provider)
-  } finally {
-    testingProvider.value = null
-  }
 }
 
 // ECharts graph option for agent-model mapping

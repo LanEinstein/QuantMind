@@ -1,6 +1,6 @@
 <template>
   <div class="risk-center-layout">
-    <!-- Header Status Bar -->
+    <!-- Header Status Bar (read-only per P1-5 §2) -->
     <el-card shadow="never" class="status-bar-card">
       <div class="status-bar">
         <div class="status-item">
@@ -9,20 +9,8 @@
           <span :class="['status-value', statusClass]">{{ store.systemStatusLabel }}</span>
         </div>
         <div class="status-item">
-          <span class="status-label">授权模式:</span>
-          <el-dropdown trigger="click" @command="onSwitchAuthMode">
-            <span class="auth-mode-btn">
-              {{ store.authModeLabel }}
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="suggestion">建议模式</el-dropdown-item>
-                <el-dropdown-item command="semi_auto">半自动模式</el-dropdown-item>
-                <el-dropdown-item command="full_auto">全自动模式</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+          <span class="status-label">运行模式:</span>
+          <span class="run-mode-label">{{ store.runModeLabel }}</span>
         </div>
         <div class="status-stats">
           <span class="stat-item">今日触发止损 <b>{{ store.riskStatus?.stop_loss_triggers_today ?? 0 }}</b>次</span>
@@ -34,7 +22,7 @@
       </div>
     </el-card>
 
-    <!-- Zone A + B: Radar (left) + Risk Config (right) -->
+    <!-- Zone A + B: Radar (left) + Risk Config (right, read-only) -->
     <el-row :gutter="12" class="zone-ab">
       <el-col :span="12">
         <el-card shadow="never" class="radar-card">
@@ -47,177 +35,39 @@
       <el-col :span="12">
         <el-card shadow="never" class="config-card">
           <template #header>
-            <span class="card-title">风控规则配置</span>
+            <span class="card-title">风控规则配置 (只读)</span>
           </template>
-          <div v-if="editConfig" class="config-form">
+          <div v-if="store.config" class="config-form">
             <div class="config-row">
               <span class="config-label">单股上限</span>
-              <div class="config-controls">
-                <el-slider
-                  v-model="editConfig.single_stock_limit"
-                  :min="5"
-                  :max="50"
-                  :step="1"
-                  class="config-slider"
-                />
-                <el-input-number
-                  v-model="editConfig.single_stock_limit"
-                  :min="5"
-                  :max="50"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">%</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('single_stock_limit')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.single_stock_limit }}%</span>
             </div>
-
             <div class="config-row">
               <span class="config-label">总仓位上限</span>
-              <div class="config-controls">
-                <el-slider
-                  v-model="editConfig.total_position_limit"
-                  :min="20"
-                  :max="100"
-                  :step="5"
-                  class="config-slider"
-                />
-                <el-input-number
-                  v-model="editConfig.total_position_limit"
-                  :min="20"
-                  :max="100"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">%</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('total_position_limit')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.total_position_limit }}%</span>
             </div>
-
             <div class="config-row">
               <span class="config-label">个股止损</span>
-              <div class="config-controls">
-                <el-slider
-                  v-model="editConfig.stop_loss_threshold"
-                  :min="-20"
-                  :max="-1"
-                  :step="1"
-                  class="config-slider"
-                />
-                <el-input-number
-                  v-model="editConfig.stop_loss_threshold"
-                  :min="-20"
-                  :max="-1"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">%</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('stop_loss_threshold')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.stop_loss_threshold }}%</span>
             </div>
-
             <div class="config-row">
               <span class="config-label">日内熔断</span>
-              <div class="config-controls">
-                <el-slider
-                  v-model="editConfig.circuit_breaker_threshold"
-                  :min="-10"
-                  :max="-1"
-                  :step="0.5"
-                  class="config-slider"
-                />
-                <el-input-number
-                  v-model="editConfig.circuit_breaker_threshold"
-                  :min="-10"
-                  :max="-1"
-                  :step="0.5"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">%</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('circuit_breaker_threshold')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.circuit_breaker_threshold }}%</span>
             </div>
-
             <div class="config-row">
               <span class="config-label">LLM超时</span>
-              <div class="config-controls">
-                <el-input-number
-                  v-model="editConfig.llm_timeout_seconds"
-                  :min="5"
-                  :max="120"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">秒</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('llm_timeout_seconds')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.llm_timeout_seconds }}秒</span>
             </div>
-
             <div class="config-row">
               <span class="config-label">LLM最大连续失败</span>
-              <div class="config-controls">
-                <el-input-number
-                  v-model="editConfig.llm_max_consecutive_failures"
-                  :min="1"
-                  :max="10"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">次</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('llm_max_consecutive_failures')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.llm_max_consecutive_failures }}次</span>
             </div>
-
             <div class="config-row">
               <span class="config-label">价格偏离限制</span>
-              <div class="config-controls">
-                <el-slider
-                  v-model="editConfig.price_deviation_limit"
-                  :min="1"
-                  :max="20"
-                  :step="0.5"
-                  class="config-slider"
-                />
-                <el-input-number
-                  v-model="editConfig.price_deviation_limit"
-                  :min="1"
-                  :max="20"
-                  :step="0.5"
-                  size="small"
-                  controls-position="right"
-                />
-                <span class="config-unit">%</span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  @click="onSaveConfig('price_deviation_limit')"
-                >保存</el-button>
-              </div>
+              <span class="config-value">{{ store.config.price_deviation_limit }}%</span>
+            </div>
+            <div class="config-hint">
+              P0-7 红线：风控参数 runtime 不可改 + hot-reload 已禁用。修改需走 git diff + amendment + 重启。
             </div>
           </div>
         </el-card>
@@ -284,49 +134,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
-import { Loading, ArrowDown } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, onMounted } from 'vue'
+import { Loading } from '@element-plus/icons-vue'
 import { useRiskStore } from '@/stores/risk'
-import type { RiskConfig, AuthorizationMode } from '@/types/risk'
 import RiskRadar from '@/components/charts/RiskRadar.vue'
 
 const store = useRiskStore()
-
-/** Mutable form buffer — intentionally writable (RiskConfig fields are readonly). */
-interface EditableRiskConfig {
-  single_stock_limit: number
-  total_position_limit: number
-  stop_loss_threshold: number
-  circuit_breaker_threshold: number
-  llm_timeout_seconds: number
-  llm_max_consecutive_failures: number
-  price_deviation_limit: number
-}
-
-const defaultConfig: EditableRiskConfig = {
-  single_stock_limit: 20,
-  total_position_limit: 80,
-  stop_loss_threshold: -8,
-  circuit_breaker_threshold: -3,
-  llm_timeout_seconds: 30,
-  llm_max_consecutive_failures: 3,
-  price_deviation_limit: 5,
-}
-
-// Local mutable copy of config for the form — replaced immutably on sync
-const editConfig = ref<EditableRiskConfig>({ ...defaultConfig })
-
-// Sync edit config when store config loads (immutable replacement)
-watch(
-  () => store.config,
-  (cfg) => {
-    if (cfg) {
-      editConfig.value = { ...cfg }
-    }
-  },
-  { immediate: true },
-)
 
 const STATUS_CLASS_MAP: Record<string, string> = {
   normal: 'status-normal',
@@ -342,55 +155,6 @@ const statusClass = computed(() => {
 onMounted(async () => {
   await store.fetchAll()
 })
-
-function isUserDismissal(e: unknown): boolean {
-  return e === 'cancel' || e === 'close'
-}
-
-async function onSaveConfig(field: keyof RiskConfig) {
-  try {
-    await ElMessageBox.confirm(
-      '修改风控参数将立即生效，确认？',
-      '风控参数修改',
-      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
-    )
-    await store.updateConfig({ [field]: editConfig.value[field] })
-    ElMessage.success('参数已更新')
-    await store.fetchRadarData()
-  } catch (e) {
-    if (!isUserDismissal(e)) {
-      ElMessage.error('更新失败')
-    }
-  }
-}
-
-const VALID_AUTH_MODES = new Set<AuthorizationMode>(['suggestion', 'semi_auto', 'full_auto'])
-
-const AUTH_MODE_LABELS: Record<string, string> = {
-  suggestion: '建议模式',
-  semi_auto: '半自动模式',
-  full_auto: '全自动模式',
-}
-
-async function onSwitchAuthMode(mode: string) {
-  if (!VALID_AUTH_MODES.has(mode as AuthorizationMode)) {
-    ElMessage.error(`未知的授权模式: ${mode}`)
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      `确认切换授权模式为 "${AUTH_MODE_LABELS[mode]}"？\n此操作将立即生效。`,
-      '授权模式切换',
-      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
-    )
-    await store.switchAuthMode(mode as AuthorizationMode)
-    ElMessage.success(`已切换至${AUTH_MODE_LABELS[mode]}`)
-  } catch (e) {
-    if (!isUserDismissal(e)) {
-      ElMessage.error('模式切换失败')
-    }
-  }
-}
 
 async function onEventFilterChange() {
   await store.fetchEvents()
@@ -421,7 +185,6 @@ function getLevelIcon(level: string): string {
   min-height: 100%;
 }
 
-// Header status bar
 .status-bar-card {
   margin-bottom: $gap-md;
   background: $bg-card;
@@ -459,15 +222,10 @@ function getLevelIcon(level: string): string {
   &.status-critical { color: $status-red; }
 }
 
-.auth-mode-btn {
+.run-mode-label {
   font-size: 13px;
   color: $color-accent;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-
-  &:hover { color: $color-accent-light; }
+  font-weight: 600;
 }
 
 .status-stats {
@@ -491,7 +249,6 @@ function getLevelIcon(level: string): string {
   color: $border-color;
 }
 
-// Zone A+B
 .zone-ab {
   margin-bottom: $gap-md;
 }
@@ -525,43 +282,42 @@ function getLevelIcon(level: string): string {
   color: $text-primary;
 }
 
-// Config form
 .config-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .config-row {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.04);
 }
 
 .config-label {
-  font-size: 12px;
+  font-size: 13px;
   color: $text-muted;
-  font-weight: 500;
 }
 
-.config-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.config-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: $text-primary;
+  font-family: 'Roboto Mono', monospace;
 }
 
-.config-slider {
-  flex: 1;
-  min-width: 80px;
-}
-
-.config-unit {
-  font-size: 12px;
+.config-hint {
+  margin-top: 12px;
+  padding: 8px 12px;
+  font-size: 11px;
   color: $text-muted;
-  min-width: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+  line-height: 1.5;
 }
 
-// Event log
 .event-log-card {
   background: $bg-card;
   border-color: $border-color;

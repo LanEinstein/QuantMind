@@ -91,8 +91,14 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
 
 
 async def _init_trading_layer(application: FastAPI) -> None:
-    """Initialize the trading subsystem: broker registry, approval queue, risk config."""
-    from backend.broker.approval_queue import ApprovalQueue
+    """Initialize the trading subsystem: broker registry + risk config.
+
+    Note: ApprovalQueue was destructively removed in Phase A (P0-1).
+    simulation_auto routes orders directly via the SimulationExecutor
+    (Phase E), and the feishu_interactive overlay sends messages via
+    FeishuMessenger (Phase F); neither requires an in-process approval
+    holding queue.
+    """
     from backend.broker.models import BrokerConfig, load_broker_config, load_risk_config
     from backend.broker.registry import BrokerRegistry
 
@@ -112,8 +118,6 @@ async def _init_trading_layer(application: FastAPI) -> None:
         log.warning("risk_config_load_failed", error=str(exc))
         application.state.risk_config = None
 
-    # Instantiate circuit breaker from risk config when available so
-    # ApprovalQueue can refuse dispatches while trading is halted.
     circuit_breaker = None
     try:
         risk_cfg = application.state.risk_config
@@ -125,13 +129,6 @@ async def _init_trading_layer(application: FastAPI) -> None:
     except Exception as exc:
         log.warning("circuit_breaker_init_failed", error=str(exc))
     application.state.circuit_breaker = circuit_breaker
-
-    halt_check = (
-        circuit_breaker.is_halted if circuit_breaker is not None else None
-    )
-    application.state.approval_queue = ApprovalQueue(
-        registry, halt_check=halt_check
-    )
 
     log.info("trading_layer_initialized")
 
@@ -235,13 +232,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO")
     )
 
-    # Phase / authorization-mode redline (P5A-T03). Refuse to start if
-    # QUANTMIND_PHASE is unknown or if AUTHORIZATION_MODE is not allowed
-    # in that phase. SystemExit propagates as a non-zero uvicorn exit so
-    # systemd / docker-compose surface the violation immediately.
-    from backend.services.authorization import assert_authorization_mode
+    # Resolve run mode (P0-1). simulation_auto is always-on; FEISHU_INTERACTIVE_ENABLED
+    # toggles the human-in-loop overlay. Replaces the legacy AUTHORIZATION_MODE x
+    # QUANTMIND_PHASE matrix; Feishu credential fail-fast lives in the secrets
+    # validator (P1-6 / H-001), not here.
+    from backend.services.run_mode import assert_run_mode_env
 
-    assert_authorization_mode()
+    application.state.run_mode = assert_run_mode_env()
 
     application.state.app_start_time = _time.time()
 
@@ -250,6 +247,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     router = LLMRouter(config_path="config/agent_models.yaml")
     await router.initialize(redis_client=redis_pool)
+
+    # A-007 startup assertion: fund_manager_shadow_baseline must stay on
+    # frequency=shadow_only so it can never enter the decision path. The
+    # check is fail-fast (SystemExit) — uvicorn exits non-zero so systemd
+    # / docker-compose surfaces the misconfiguration immediately.
+    _shadow_agent = router.config.agents.get("fund_manager_shadow_baseline")
+    if _shadow_agent is not None and _shadow_agent.frequency != "shadow_only":
+        raise SystemExit(
+            "Refusing to start: fund_manager_shadow_baseline.frequency must be "
+            f"'shadow_only' but is {_shadow_agent.frequency!r}. P0-10 forbids "
+            "shadow_baseline from entering the decision path; see A-007."
+        )
 
     application.state.redis = redis_pool
     application.state.llm_router = router

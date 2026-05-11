@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -77,121 +76,34 @@ def config_service() -> ConfigService:
     return ConfigService(redis_client=None)
 
 
-# -- ConfigService roundtrip --
+# -- ConfigService read-only behavior (A-007) --
 
 
-class TestConfigServiceRoundtrip:
-    """Test YAML read/write preserves comments and data."""
+class TestConfigServiceReadOnly:
+    """ConfigService is read-only after Phase A: hot-reload disabled
+    and YAML writes destructively removed (P0-7 / P0-10 / P1-2.C / P1-7)."""
 
-    async def test_roundtrip_preserves_comments(
+    async def test_read_yaml_loads_data(
         self, config_service: ConfigService, llm_config_path: Path
     ) -> None:
-        """Write to YAML and verify comments are preserved."""
-        # Read original
-        original = await config_service.read_yaml(llm_config_path)
-        assert original["providers"]["deepseek"]["default_model"] == "deepseek-v4-pro"
-
-        # Update a value
-        await config_service.write_yaml(
-            llm_config_path,
-            {"defaults": {"temperature": 0.5}},
-        )
-
-        # Verify update applied
-        updated = await config_service.read_yaml(llm_config_path)
-        assert updated["defaults"]["temperature"] == 0.5
-        # Original values preserved
-        assert updated["defaults"]["max_tokens"] == 4096
-        assert updated["providers"]["deepseek"]["default_model"] == "deepseek-v4-pro"
-
-        # Verify comments preserved in raw file
-        raw_text = llm_config_path.read_text(encoding="utf-8")
-        assert "# LLM Router core configuration" in raw_text
-        assert "# Blueprint V3 section 2.2" in raw_text
+        data = await config_service.read_yaml(llm_config_path)
+        assert data["providers"]["deepseek"]["default_model"] == "deepseek-v4-pro"
+        assert data["defaults"]["temperature"] == 0.3
 
     async def test_llm_config_masks_keys(
         self, config_service: ConfigService, llm_config_path: Path
     ) -> None:
-        """read_llm_config returns masked API keys."""
         data = await config_service.read_llm_config(llm_config_path)
         for provider in data["providers"].values():
             assert provider["api_key"] == "***masked***"
 
-    async def test_write_llm_config_skips_masked(
-        self, config_service: ConfigService, llm_config_path: Path
+    def test_write_methods_removed(
+        self, config_service: ConfigService
     ) -> None:
-        """write_llm_config does not overwrite keys with mask value."""
-        await config_service.write_llm_config(
-            llm_config_path,
-            {
-                "providers": {
-                    "deepseek": {
-                        "api_key": "***masked***",
-                        "default_model": "deepseek-v2",
-                    },
-                },
-            },
-        )
-
-        # Read raw (unmasked) to verify original key preserved
-        raw = await config_service.read_yaml(llm_config_path)
-        assert raw["providers"]["deepseek"]["api_key"] == "${DEEPSEEK_API_KEY}"
-        assert raw["providers"]["deepseek"]["default_model"] == "deepseek-v2"
-
-
-# -- File locking --
-
-
-class TestFileLocking:
-    """Test concurrent write safety."""
-
-    async def test_concurrent_writes_no_corruption(
-        self, config_service: ConfigService, mirofish_config_path: Path
-    ) -> None:
-        """Multiple concurrent writes don't corrupt the file."""
-
-        async def write_value(val: int) -> None:
-            await config_service.write_yaml(
-                mirofish_config_path,
-                {"simulation": {"agent_count": val}},
-            )
-
-        # Run 5 concurrent writes
-        await asyncio.gather(
-            write_value(100),
-            write_value(200),
-            write_value(300),
-            write_value(400),
-            write_value(500),
-        )
-
-        # File should be valid YAML with one of the values
-        result = await config_service.read_yaml(mirofish_config_path)
-        assert result["simulation"]["agent_count"] in {100, 200, 300, 400, 500}
-        # Other fields preserved
-        assert result["simulation"]["rounds"] == 20
-
-
-# -- MiroFish config roundtrip --
-
-
-class TestMiroFishConfigRoundtrip:
-    """Test MiroFish config read/write cycle."""
-
-    async def test_update_and_read_back(
-        self, config_service: ConfigService, mirofish_config_path: Path
-    ) -> None:
-        """Write new simulation params and read them back."""
-        await config_service.write_yaml(
-            mirofish_config_path,
-            {"simulation": {"agent_count": 500, "rounds": 30}},
-        )
-        result = await config_service.read_yaml(mirofish_config_path)
-        assert result["simulation"]["agent_count"] == 500
-        assert result["simulation"]["rounds"] == 30
-        # Unchanged fields preserved
-        assert result["simulation"]["trigger_threshold"] == 7
-        assert result["simulation"]["model"] == "kimi-k2.6"
+        """The destructive A-007 cleanup removed all write paths."""
+        assert not hasattr(config_service, "write_yaml")
+        assert not hasattr(config_service, "write_llm_config")
+        assert not hasattr(config_service, "_notify_config_change")
 
 
 # -- Cost aggregation --

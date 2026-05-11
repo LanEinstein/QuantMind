@@ -4,7 +4,6 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type {
   LLMConfig,
-  ConnectionTestResult,
   DataSourceStatus,
   MiroFishConfig,
   CostSummary,
@@ -12,12 +11,10 @@ import type {
 import { settingsApi } from '@/api/settings'
 
 export const useSettingsStore = defineStore('settings', () => {
-  // --- State ---
   const llmConfig = ref<LLMConfig | null>(null)
   const dataSources = ref<DataSourceStatus[]>([])
   const mirofishConfig = ref<MiroFishConfig | null>(null)
   const costSummary = ref<CostSummary | null>(null)
-  const connectionTests = ref<Record<string, ConnectionTestResult>>({})
   const loading = ref(false)
   const costPeriod = ref<'daily' | 'weekly'>('daily')
   const costDays = ref(30)
@@ -69,32 +66,6 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  async function updateLLMConfig(data: Record<string, unknown>) {
-    loading.value = true
-    try {
-      llmConfig.value = await settingsApi.updateLLMConfig(data)
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function testProvider(provider: string): Promise<ConnectionTestResult> {
-    try {
-      const result = await settingsApi.testLLMProvider(provider)
-      connectionTests.value = { ...connectionTests.value, [provider]: result }
-      return result
-    } catch {
-      const fallback: ConnectionTestResult = {
-        provider,
-        connected: false,
-        latency_ms: 0,
-        error: 'Request failed',
-      }
-      connectionTests.value = { ...connectionTests.value, [provider]: fallback }
-      return fallback
-    }
-  }
-
   async function fetchDataSources() {
     try {
       dataSources.value = await settingsApi.getDataSources()
@@ -104,29 +75,12 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  async function testDataSource(source: string): Promise<DataSourceStatus> {
-    const result = await settingsApi.testDataSource(source)
-    dataSources.value = dataSources.value.map((ds) =>
-      ds.name.toLowerCase() === source.toLowerCase() ? result : ds,
-    )
-    return result
-  }
-
   async function fetchMiroFishConfig() {
     try {
       mirofishConfig.value = await settingsApi.getMiroFishConfig()
     } catch {
       console.warn('Failed to fetch MiroFish config')
       if (isDev) mirofishConfig.value = mockMiroFishConfig()
-    }
-  }
-
-  async function updateMiroFishConfig(data: Record<string, unknown>) {
-    loading.value = true
-    try {
-      mirofishConfig.value = await settingsApi.updateMiroFishConfig(data)
-    } finally {
-      loading.value = false
     }
   }
 
@@ -144,12 +98,12 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     llmConfig, dataSources, mirofishConfig, costSummary,
-    connectionTests, loading, costPeriod, costDays,
+    loading, costPeriod, costDays,
     providerList, agentList, dailyCostTotals, costByProvider,
     costByAgent, monthlyProjection,
-    fetchLLMConfig, updateLLMConfig, testProvider,
-    fetchDataSources, testDataSource,
-    fetchMiroFishConfig, updateMiroFishConfig,
+    fetchLLMConfig,
+    fetchDataSources,
+    fetchMiroFishConfig,
     fetchCostStats,
   }
 })

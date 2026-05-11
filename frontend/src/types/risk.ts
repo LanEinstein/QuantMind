@@ -2,11 +2,14 @@
 
 export type SystemStatusLevel = 'normal' | 'warning' | 'circuit_breaker'
 
-export type AuthorizationMode = 'suggestion' | 'semi_auto' | 'full_auto'
+export interface RunMode {
+  readonly simulation_auto: boolean
+  readonly feishu_interactive: boolean
+}
 
 export interface RiskStatus {
   readonly system_status: SystemStatusLevel
-  readonly authorization_mode: AuthorizationMode
+  readonly run_mode: RunMode
   readonly stop_loss_triggers_today: number
   readonly circuit_breaker_triggered: boolean
   readonly llm_intercepts_today: number

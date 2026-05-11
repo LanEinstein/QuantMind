@@ -27,7 +27,7 @@ export const useMarketStore = defineStore('market', () => {
     adata: false, akshare: false,
     daily_cost_rmb: 0,
     risk_status: 'normal',
-    auth_mode: 'suggest',
+    feishu_interactive: false,
   })
   const latestSignal = ref<string>('')
   const loading = ref(false)

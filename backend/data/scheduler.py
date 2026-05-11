@@ -8,7 +8,7 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from backend.data.publisher import publish_market_update, publish_news
-from backend.data.trading_hours import is_trading_hours
+from backend.utils.trading_hours import is_trading_hours
 from backend.llm.cost_tracker import flush_to_mongodb
 
 BENCHMARK_INDEX_CODE = "000300"

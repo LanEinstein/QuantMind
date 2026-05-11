@@ -21,7 +21,7 @@ from backend.broker.models import (
     RiskConfig,
     ValidationResult,
 )
-from backend.data.trading_hours import is_trading_hours
+from backend.utils.trading_hours import is_trading_hours
 
 log = structlog.get_logger(component="risk.engine")
 

@@ -38,8 +38,10 @@ services:
     profiles: ["container-backend"]
     build: .
     restart: unless-stopped
+    # Loopback-only per P1-6 §1.5 — never expose backend to the host LAN
+    # or public; remote access goes through SSH tunnel.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:
