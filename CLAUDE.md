@@ -1,6 +1,6 @@
 # QuantMind 项目协作上下文
 
-> 跨 session 接手 QuantMind 的"第一读"。**决策对齐期 P0 + P1 + P2 全完成 ✅**(2026-05-10 P2 收官 — P2-1/P2-3 superseded by P0-8/P1-6 §1.5;**P2-2 自进化 deferred to dedicated session — 用户 critical feedback 否决 "全锁不启用",自进化必须有但需深度调研**;P2-4 派生 P1-6 二次 amendment 27 类 AuditEventType);核心约束已稳定。下一站:**实施期 Phase A 启动**(代码迁移合并 P1-5 + P1-6 + P1-7 + P0-1 旧矩阵删除)。
+> 跨 session 接手 QuantMind 的"第一读"。**决策对齐期 P0 + P1 + P2(含 P2-2)全完成 ✅**(2026-05-11 P2-2 dedicated session 锁定 — 保守 3 路径(DSPy GEPA + RAG provenance-gated + FinMem exemplars)+ 全人工 gate + 飞书主动通知 + 45 日 shadow validate(沿用 P0-6)+ 文件式 prompt registry + BrokerScheduler 第五 cron + RAG 白名单 + audit 27→34 类;派生 3 amendment(P0-7 + P1-2.A + P1-6 第 3 次);28 实施期任务 H-001~H-028 deferred 等用户 dedicated 计划文档 session;2026-05-10 P2 收官 — P2-1/P2-3 superseded by P0-8/P1-6 §1.5;P2-4 派生 P1-6 二次 amendment 27 类 AuditEventType);核心约束已稳定。下一站:**dedicated 计划文档 session 启动**(待用户主动召开)→ Phase A 实施期 + Phase X 实施期(并行可能由用户计划文档决定)。
 >
 > ⚠️ 本文件只提炼原则与红线,**不重复决策条文**;详细规约请直接读 `docs/decisions/` 下对应决策文档 §2 红线节。
 
@@ -165,9 +165,27 @@ QuantMind = 多 Agent 投研信号系统 + 模拟实盘验证 + 飞书人工执�
 ### 2.14 P2 收官(2026-05-10)
 
 - **P2-1 MiroFish 范围 superseded by P0-8 永锁**:不重新评估;不引入"日常每只股票都跑"路径;详见 `docs/decisions/P0-8-data-and-intelligence-multi-domain-mirofish-fail-closed-quality-gate.md` §1
-- **P2-2 自进化机制边界 deferred to dedicated session 永锁**(用户 critical feedback):用户原话"自进化功能是必须要有的可以引入'自我进化后必须经过模拟盘验证'以及状态回滚但绝对不能完全禁止;大模型如果没有持续学习/持续适应新变化/持续追踪最前沿量化以及金融交易思路的能力就一定无法长久立于不败之地;具体采用怎样的策略我们可以单开一个 session 仔细调研讨论";关键约束 = 自进化输出必须经过模拟盘验证(类似 P0-6 acceptance 框架)+ 必须有状态回滚机制(类似 P1-2.A reset_to_snapshot 思路);**实施期 Phase A/B/B-finale 严禁写任何自进化代码**直到 dedicated session 锁定;严禁单方面在其他场景做自进化决策;严禁把"hot-reload 禁用 + LLM 严禁写决策字段"理解为"自进化永远禁止"(用户已明确不同意);Critical feedback memory: `~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_self_evolution_must_have.md`
+- **P2-2 自进化机制边界 已锁定 2026-05-11(dedicated session 完成)永锁**:保守 3 路径 + 全人工 gate + 飞书主动通知 + 45 日 shadow validate + 文件式 prompt registry;详见 §2.15
 - **P2-3 移动端/远程访问 superseded by P1-6 §1.5 永锁**:不开发独立移动端 App;PC 浏览器仅本机/SSH tunnel;移动端依赖飞书交互(继承 P0-1 §1.3)
 - **P2-4 告警渠道维持 P1-7 §1.7 锁定 + 派生 P1-6 二次 amendment**:`AuditEventType` enum 22 → 26 → 27 类(P1-6 + P1-7 + P2-4 三层 amendment 累积);新增 `EXECUTION_REPORT_PARSE_FAILED`(归类 4 异常 + 拦截事件;reason_namespace='execution_report_ambiguous';actor=FEISHU_USER 或 FRONTEND_USER;outcome=FAILURE;payload={raw_text, regex_attempt_results, parse_error_kind};继承 P0-4 严格正则失败即 AMBIGUOUS 节奏);**澄清飞书走 P0-2 §1.2 主路径长连接 + P0-4 §1 五模板预写死永锁;严禁走 P0-2 §2.5 备用 webhook**(继承"备用 webhook 仅可发系统告警绝不发买卖指令/对账请求/澄清消息"红线);告警通道整体维持 P1-7 §1.7 仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP/Slack/Discord 第二通道(继承 P1-6 §1.1 凭证池仅 LLM 3 + 飞书 6 锁状态)
+
+### 2.15 自进化机制边界(P2-2 锁定 2026-05-11)
+
+- **启用 3 路径永锁**:DSPy GEPA 离线 prompt 演化(batch offline;单次 ≤ ¥5;输出 `config/prompts/{agent}/{candidate}.yaml`)+ RAG provenance-gated 知识库自扩展(白名单源 arxiv/semanticscholar/openreview/github releases/akshare changelog;写文件系统 `data/rag/` 不入 Mongo)+ FinMem 风格 in-context exemplars(decision_ledger 近 90 日成功 case;严禁 >3 exemplars per prompt)。**严禁 7 路径永锁**:fine-tune / online learning / RLHF / DPO / continual SFT / 自动 mutate config / 引入新 LLM provider / LLM 自动决策权
+- **全人工 gate + 飞书主动通知永锁**:任何自进化产物(prompt 新版本 / RAG 新文档 / proposal / amendment 草案)必须经过人工最终批准 + amendment + restart 才生效;**用户关键约束 = shadow 45 日通过即主动飞书通知用户"有待进化该处理进化了"**;走 `FEISHU_CUSTOM_BOT_WEBHOOK_URL` 沿用 P1-7 §1.7;**严禁 SMTP/Slack/Discord 第二通道**(继承 P1-6 §1.1 凭证池封闭性);Alerter dedup_15min 防轰炸
+- **Shadow validate 沿用 P0-6 45 交易日永锁**:完全复用 `compute_acceptance_window` + `acceptance_reports` collection + 5 稳定性 + 3 策略硬门槛;challenger 胜判定 = 5+3 全达标 + 4 项严格优于 production(累计 PnL / 沪深 300 累计超额 / 信号生成成功率 / 指令完整率)+ 4 项不显著差于 production(差 ≤ 0.5 个百分点;最大回撤 / LLM 超时率 / 数据缺失率 / 回报解析准确率);shadow_acceptance_reports 独立 collection 不影响 production acceptance_reports;严禁缩短到 30 日或拉长到 60 日
+- **文件式 prompt registry + git + restart 永锁**:新增 `config/prompts/{agent}/{version}.yaml` + `config/prompts.lock.json` + `data/rag/{source}/{date}/{doc_id}.md` + `data/rag/provenance.jsonl`(append-only fcntl flock)+ `docs/decisions/pending/{artifact_id}.md`;版本切换 = git commit + amendment + restart;严禁 hot-reload(继承 P0-7 + P0-10);严禁引入 MLflow/LangSmith 等外部 hosted prompt registry(违反 P1-6 §1.5 全层 127.0.0.1 单实例原则)
+- **BrokerScheduler 第五 cron `evolution_shadow_run` 22:00 mon-fri Asia/Shanghai 永锁**(派生 P1-2.A amendment):BrokerScheduler 4 → 5 cron;在 EOD chain 16:00 + MiroFish 17:00 之后;失败处理较 EOD chain 宽松(不冻结买卖路由 + 不阻断 production simulation_auto);严禁日内运行
+- **RAG 数据源白名单永锁**:仅允许 arxiv.org(q-fin/cs.LG/cs.AI)+ semanticscholar.org + openreview.net + github.com/{qlib, vn.py, freqtrade, NautilusTrader, TradingAgents, DSPy, jesse, FinGPT, FinRobot} releases + akshare/adata/baostock changelogs;**严禁 Twitter/X/Reddit/贴吧/任意 blog/未白名单 PDF**(防 prompt injection);`rag_ingester` 启动期 fail-fast 校验白名单源;非白名单源拒绝入库即写 audit `rag_document_rejected_non_whitelist`
+- **Frontier tracking 每日 22:00 mon-sun 永锁**:近 24h 新增 → DeepSeek 总结(~¥0.05-0.10/日计入 P1-7 daily ¥20 hard);严禁周汇总/月汇总(及时性优先);frontier 输出仅写文件系统 `data/rag/` **严禁** 写入 evidence_collection(防破 P0-8 §2 红线 14 evidence_id 5 前缀约定);严禁创建 frontier_papers collection
+- **Risk_proposals 合并 P2-2 体系永锁**(派生 P0-7 amendment):risk_parameter_proposals collection 扩 4 字段(`target_artifact_type` discriminator + `shadow_validation_status` + `pending_amendment_id` + `feishu_notified_at`)走 P2-2 同款 cron + 45 日 shadow validate + 飞书通知 + 自动起草 P0-7-amendment 流程;人工仅 review + sign-off 不再走 P0-7 §1.4 原周报 review;**RiskConfig 全锁 + LLM 永不持有写引用红线完全保留**
+- **AuditEventType 27 → 34 类永锁**(派生 P1-6 第 3 次 amendment):新建类 5 自进化生命周期(7 类 — `prompt_version_pinned` / `prompt_version_rolled_back` / `rag_document_ingested` / `rag_document_rejected_non_whitelist` / `shadow_evolution_run_completed` / `evolution_amendment_drafted` / `evolution_feishu_notified`);actor=SYSTEM 或 SCHEDULER;**严禁** LLM/FRONTEND_USER/FEISHU_USER 直接写 evolution 类 audit;reason_namespace='self_evolution_lifecycle';resource_type='self_evolution_artifact'
+- **DSPy GEPA 单次 ≤ ¥5 + in-context exemplars ≤ 3 per prompt 永锁**:`GEPABudgetExceededError` raise + cost_guard 计入 P1-7 daily ¥20 hard / monthly ¥440 / Kimi ¥4 daily cap;**严禁** P2-2 单独预算池(继承 P1-7 §1.4)
+- **自进化模块依赖隔离永锁**:`backend/services/{evolution_dispatcher, frontier_crawler, rag_ingester, amendment_drafter, dspy_gepa_runner, shadow_chain, prompt_registry, rag_provenance, exemplar_selector, evolution_feishu_notifier, evolution_audit_writer}.py` **严禁** import `backend.{api, broker, risk, llm, agents, mirofish, data}`(防 LLM/agents 反向调用绕过守门;继承 P0-10 §2 红线 1)
+- **实施期 deferred 等用户 dedicated 计划文档 session 永锁**:本决策锁红线 + 任务清单粒度;**严禁本 session 写任何自进化代码**;Phase A/B/B-finale 实施期间也**严禁** 写自进化代码;待用户在 dedicated 计划文档 session 锁定推进时间表后才允许 Phase X 实施期启动(28 任务 H-001 ~ H-028)
+- **Codex review hard gate 5 轮 R1-R5 在 Phase X 实施期跑永锁**:本决策 + 计划文档 session 均**不**跑 Codex(决策/计划纯文本 R3 SDK + R5 coverage 抽象);Phase X 实施期跑(R1 consistency + R2 red-team + R3 SDK + R4 security + R5 coverage);每轮 review 必存 `docs/reviews/H-XXX-rN-{topic}.md`
+- **过时代码清理 deferred to Phase A 永锁**:本 session **严禁** 修改 backend/ frontend/ 任何代码;P0-1 旧 AUTHORIZATION_MODE/QUANTMIND_PHASE 矩阵 + Phase 5B 遗留 + ApprovalQueue / Settings 写入接口 — 全部在 Phase A 实施期一次性破坏式删除(履行 P1-5 §1.2 锁定)
+- **关键不变量保留永锁**:P0-7 RiskConfig 全锁 + LLM 永不持有写引用 + P0-10 LLM positive list 4 类(不扩展)+ P0-7+P0-10 hot-reload 禁用 + P1-6 §1.1 凭证池仅 LLM 3+飞书 6 + P1-6 §1.5 全层 127.0.0.1 + P1-7 cost_guard 4 常量 + P0-6 45 交易日 acceptance + P1-5 §2 红线 1 锁 11 页名额 + P0-8 §2 红线 14 evidence_id 5 前缀 — **本 P2-2 决策不破不扩任一**
 
 ---
 
@@ -236,6 +254,11 @@ grep -rn "from backend.\(llm\|agents\|mirofish\|data\)" backend/services/cost_gu
 grep -rn "activate_kimi_escalation_block" backend/llm/ backend/agents/  # P1-7 红线 14:SoftDegradeManager.activate_kimi_escalation_block 仅由 cost_guard 调用
 grep -rnE "@router\.(post|put|patch|delete)" backend/api/cost.py  # P1-7 红线 8:backend/api/cost.py 仅 GET 严禁 POST/PUT/PATCH/DELETE
 grep -cE "_DEFAULT_(DAILY_BUDGET_RMB|SOFT_CEIL_PCT|MONTHLY_BUDGET_RMB|KIMI_DAILY_CAP_RMB)\s*=\s*[0-9]" backend/services/cost_guard.py  # P1-7 红线 11:cost_guard.py 4 常量定义必为 4(daily ¥20+soft 0.7+monthly ¥440+kimi ¥4)
+grep -rn "from backend.\(api\|broker\|risk\|llm\|agents\|mirofish\|data\)" backend/services/{evolution_dispatcher,frontier_crawler,rag_ingester,amendment_drafter,dspy_gepa_runner,shadow_chain,prompt_registry,rag_provenance,exemplar_selector,evolution_feishu_notifier,evolution_audit_writer}.py 2>/dev/null  # P2-2 红线 17:自进化模块严禁 import backend.api/broker/risk/llm/agents/mirofish/data(Phase X 实施期后必空)
+grep -rnE "fine.?tune|RLHF|DPO|continual.?SFT|online.?learning" backend/services/{evolution_dispatcher,dspy_gepa_runner,rag_ingester}.py 2>/dev/null  # P2-2 红线 1:严禁 7 路径 fine-tune/online learning/RLHF/DPO/continual SFT(Phase X 实施期后必空)
+grep -rnE "(twitter\.com|reddit\.com|tieba\.baidu|t\.co)" backend/services/{frontier_crawler,rag_ingester}.py 2>/dev/null  # P2-2 红线 8:RAG 白名单仅 arxiv/semanticscholar/openreview/github releases/akshare changelog(Phase X 实施期后必空)
+grep -rnE "(mlflow|langsmith).*server\|register" backend/services/prompt_registry.py 2>/dev/null  # P2-2 红线 5:文件式 prompt registry only 严禁 MLflow/LangSmith 外部 hosted(Phase X 实施期后必空)
+grep -rnE "(SMTP|Slack|Discord|webhook).*notif" backend/services/evolution_feishu_notifier.py 2>/dev/null  # P2-2 红线 2:飞书通知严禁 SMTP/Slack/Discord 第二通道(Phase X 实施期后必空)
 ```
 
 LLM key 走 shell env:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。

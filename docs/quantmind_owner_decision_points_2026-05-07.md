@@ -659,32 +659,58 @@ MiroFish 是:
 
 只在重大事件和盘后复盘触发。MiroFish 输出作为证据之一，不直接产生买卖股数。
 
-## P2-2. 自进化机制边界 ⏳ deferred to dedicated session (2026-05-10)
+## P2-2. 自进化机制边界 ✅ 已锁定 2026-05-11(dedicated session 完成;保守 3 路径 + 全人工 gate + 飞书主动通知 + 45 日 shadow validate + 文件式 prompt registry)
 
-> 用户明确要单开 dedicated session 仔细调研讨论自进化策略;不允许在 P2 收官 session 做最终决策。
-> **关键约束(用户给出)**:自进化输出必须经过模拟盘验证 + 必须有状态回滚机制;不能完全禁止任何自进化路径。
-> **当前实施期 Phase A/B/B-finale 严禁写任何自进化代码**直到 P2-2 dedicated session 锁定。
-> Critical feedback memory: `~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_self_evolution_must_have.md`
-> P2 收官见 `docs/decisions/P2-decisions-finalization-2026-05-10.md` §2(含 dedicated session 调研建议方向)
+> 决策定稿: `docs/decisions/P2-2-self-evolution-conservative-three-paths-shadow-validate-feishu-notify-file-registry.md`
+> 派生 3 amendment:
+>   - `docs/decisions/P0-7-amendment-2026-05-11-risk-proposals-shadow-validation.md`(risk_parameter_proposals 扩字段 + 走 P2-2 shadow validate)
+>   - `docs/decisions/P1-2.A-amendment-2026-05-11-evolution-shadow-cron-5th.md`(BrokerScheduler 4→5 cron;新增 evolution_shadow_run 22:00 mon-fri)
+>   - `docs/decisions/P1-6-amendment-2026-05-11-audit-eventtype-34.md`(AuditEventType 27→34 类;新增 7 类自进化生命周期)
+> Critical feedback memory: `~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_self_evolution_must_have.md`(deferred → 已锁;补充实际锁定策略)
+> 实施期 deferred 等用户在 dedicated 计划文档 session 锁定推进时间表后才允许 Phase X 实施代码启动
 
-### 原始决策点(P2-2 dedicated session 待召开)
+### 已锁定决策(P2-2 dedicated session 4 轮 16 议题)
 
-#### 你需要决定
+#### 启用 3 路径(保守集;严禁 fine-tune/online learning/RLHF/DPO/继续 SFT)
 
-系统可以自动改变什么:
+- **DSPy GEPA 离线 prompt 演化**(batch offline;输出 `config/prompts/{agent}/{candidate}.yaml`;单次 ≤ ¥5 budget;严禁覆盖 production)
+- **RAG provenance-gated 知识库自扩展**(白名单源 arxiv/semanticscholar/openreview/github releases/akshare changelog;写文件系统 `data/rag/`;零 Mongo)
+- **FinMem 风格 in-context exemplars**(decision_ledger 近 90 日成功 case;严禁 >3 exemplars per prompt)
 
-- 候选权重。
-- 模型路由。
-- prompt。
-- 策略参数。
-- 风控参数。
-- 飞书指令模板。
+#### 全人工 gate + 飞书主动通知
 
-#### 建议倾向
+- 任何自进化产物(prompt 新版本 / RAG 新文档 / proposal / amendment 草案)必须人工最终批准 + amendment + restart 才生效
+- shadow validate 45 日通过 + 5+3 硬门槛达标 + challenger 胜 production → 立即发飞书通知(走 FEISHU_CUSTOM_BOT_WEBHOOK_URL;Alerter dedup_15min)
+- LLM 严禁直接 mutate 任何 runtime 状态
 
-允许自动生成改进建议，不允许自动部署到影响指令的规则。风控参数和仓位公式必须人工确认。
+#### Shadow validation 沿用 P0-6 45 交易日
 
-> 注:用户 2026-05-10 明确"自进化是必须有的"否决了"全锁不启用"路径。"建议倾向"在 dedicated session 重新评估。
+- 完全复用 P0-6 `compute_acceptance_window` + `acceptance_reports` collection + 5 稳定性 + 3 策略硬门槛
+- shadow_acceptance_reports 独立 collection 不影响 production acceptance_reports
+- BrokerScheduler 第五 cron `evolution_shadow_run` 22:00 mon-fri 触发
+
+#### 状态回滚:文件式 prompt registry + git + restart
+
+- 新增 `config/prompts/{agent}/{version}.yaml` + `config/prompts.lock.json` + `data/rag/{source}/{date}/{doc_id}.md` + `data/rag/provenance.jsonl`
+- 版本切换 = `git commit` + amendment + restart;严禁 hot-reload
+- 严禁引入 MLflow/LangSmith 等外部 hosted prompt registry
+
+#### Risk_proposals 合并 P2-2 体系
+
+- P0-7 §1.4 risk_parameter_proposals 走 P2-2 同款 cron + shadow validate + 飞书通知 + 自动起草 P0-7-amendment
+- 派生 P0-7-amendment-2026-05-11
+
+#### Audit 27→34 类(新增 7 类自进化生命周期归类 5)
+
+- `prompt_version_pinned` / `prompt_version_rolled_back` / `rag_document_ingested` / `rag_document_rejected_non_whitelist` / `shadow_evolution_run_completed` / `evolution_amendment_drafted` / `evolution_feishu_notified`
+- actor=SYSTEM 或 SCHEDULER;严禁 LLM/FRONTEND_USER/FEISHU_USER 直接写
+- 派生 P1-6-amendment-2026-05-11(第 3 次 amendment)
+
+#### 实施期 deferred 等用户计划文档
+
+- 28 实施期任务 H-001 ~ H-028 完整列出但顶部明标"等用户在 dedicated 计划文档 session 锁定推进时间表"
+- 本 session 严禁写任何自进化代码
+- Codex review 5 轮 R1-R5 在 Phase X 实施期跑;本 session 不跑
 
 ## P2-3. 移动端或远程访问 ✅ superseded by P1-6 §1.5 (2026-05-10)
 
@@ -709,7 +735,7 @@ MiroFish 是:
 > 派生 amendment: `docs/decisions/P1-6-amendment-2026-05-10-audit-eventtype-27.md`(新增 `EXECUTION_REPORT_PARSE_FAILED`)
 > 锁定结果: 7/8 类用户列出事件已被 P1-6 + P1-7 累积覆盖(行情/资讯断流→DATA_QUALITY_BREACH;LLM 全停→LLM_CALL_TIMEOUT_30S+DAILY_COST_CEILING_20CNY_BREACHED;指令生成失败→BUILDER_EARLY_RETURN;风控拦截→RISK_ENGINE_CHECK_REJECTED;模拟账户异常→MOCKBROKER_PRICE_LIMIT_VIOLATION_AT_FILL+STATE_MACHINE_ILLEGAL_TRANSITION;日终对账→EOD_PIPELINE_FAILED+RECONCILIATION_TICKET_OPEN_OR_EXPIRED);唯一遗漏"飞书回报解析失败"由本 amendment 补 EXECUTION_REPORT_PARSE_FAILED 解决(归类 4 异常+拦截;reason_namespace='execution_report_ambiguous';澄清飞书走 P0-2 §1.2 主路径长连接 + P0-4 §1 五模板预写死,严禁走 P0-2 §2.5 备用 webhook)。告警通道维持 P1-7 §1.7 锁定:仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP/Slack/Discord 第二通道(继承 P1-6 §1.1 凭证池仅 LLM 3+飞书 6 锁状态)。
 >
-> **决策对齐期 P0+P1+P2 全完成 ✅**(P2-2 deferred 不阻塞实施期 Phase A)→ 启动实施期 Phase A
+> **决策对齐期 P0+P1+P2 全完成 ✅**(P2-2 dedicated session 2026-05-11 完成锁定:保守 3 路径 + 全人工 gate + 飞书主动通知 + 45 日 shadow validate + 文件式 prompt registry;派生 3 amendment;实施期 deferred 等用户计划文档)→ 下一站等用户在 dedicated 计划文档 session 锁定推进时间表 → Phase A 实施期(代码迁移合并 P1-5 + P1-6 + P1-7 + P0-1 旧矩阵删除)+ Phase X 实施期(自进化 28 任务 H-001~H-028;Codex review 5 轮 R1-R5)
 
 ### 原始决策点(已被本决策取代)
 
