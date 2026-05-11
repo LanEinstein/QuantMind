@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -144,20 +144,13 @@ def _config_to_response(risk_config: Any) -> dict[str, Any]:
             risk_config.circuit_breaker.daily_loss_limit_pct * 100
         ),
         "llm_timeout_seconds": 30,  # Default, not in risk config
-        "llm_max_consecutive_failures": risk_config.circuit_breaker.consecutive_loss_count,
-        "price_deviation_limit": risk_config.position_limits.price_deviation_limit * 100,
+        "llm_max_consecutive_failures": (
+            risk_config.circuit_breaker.consecutive_loss_count
+        ),
+        "price_deviation_limit": (
+            risk_config.position_limits.price_deviation_limit * 100
+        ),
     }
-
-
-def _apply_config_updates(
-    current: dict[str, Any], updates: RiskConfigUpdate
-) -> dict[str, Any]:
-    """Apply partial updates to the config response dict (immutable)."""
-    result = {**current}
-    for field, value in updates.model_dump(exclude_none=True).items():
-        if field in result:
-            result[field] = value
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +168,7 @@ def record_risk_event(
         0,
         {
             "id": f"evt-{uuid.uuid4().hex[:8]}",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "level": level,
             "description": description,
             "action_taken": action_taken,

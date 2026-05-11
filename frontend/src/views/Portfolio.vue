@@ -18,8 +18,14 @@
       </template>
     </el-alert>
 
-    <!-- Section A: Account Overview Banner -->
-    <AccountBanner v-if="store.account" :account="store.account" />
+    <!-- Section A: Account Overview Banner.
+         Gate on BOTH stores so the banner does not render a stale
+         simulation-only label while riskStore.fetchStatus is still in
+         flight (codex review cycle 2 follow-up). -->
+    <AccountBanner
+      v-if="store.account && riskStore.riskStatus"
+      :account="store.account"
+    />
 
     <!-- Section B: Position Table -->
     <el-card shadow="never" class="section-card">
@@ -67,6 +73,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '@/stores/portfolio'
+import { useRiskStore } from '@/stores/risk'
 import { useWebSocket } from '@/composables/useWebSocket'
 import type { PositionItem } from '@/types/trading'
 import AccountTabs from '@/components/trading/AccountTabs.vue'
@@ -77,6 +84,7 @@ import TradeHistory from '@/components/trading/TradeHistory.vue'
 import PositionDetailDrawer from '@/components/trading/PositionDetailDrawer.vue'
 
 const store = usePortfolioStore()
+const riskStore = useRiskStore()
 const { connect: connectWs } = useWebSocket()
 const activeTab = ref('orders')
 const showPositionDrawer = ref(false)
@@ -91,7 +99,12 @@ function onSelectPosition(position: PositionItem) {
 
 onMounted(async () => {
   connectWs()
-  await store.fetchAll()
+  // AccountBanner reads riskStore.riskStatus.run_mode to render the
+  // simulation/Feishu tag. If the operator lands on /portfolio without
+  // first visiting /risk, the store is empty and the banner mis-renders
+  // simulation-only even when FEISHU_INTERACTIVE_ENABLED=true. Load
+  // both stores in parallel here so the banner always sees the truth.
+  await Promise.allSettled([store.fetchAll(), riskStore.fetchStatus()])
   refreshTimer = setInterval(async () => {
     await Promise.allSettled([store.fetchPositions(), store.fetchOrders()])
   }, 30_000)

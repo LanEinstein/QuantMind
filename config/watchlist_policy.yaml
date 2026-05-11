@@ -26,7 +26,14 @@ slow:
   pipeline: slow_pipeline
   max_debate_rounds: 2
   pipeline_timeout_seconds: 900
-  default_codes: []
+  # P0-9 mandatory ETF triplet (sole 13-code subset the decision locks
+  # by name — 沪深300 / 中证500 / 创业板50). The remaining 10 codes
+  # (沪主板 4 + 深主板 3 + 创业板 3) are owner picks deferred to C-002
+  # per docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md §3.
+  default_codes:
+    - "510300"
+    - "510500"
+    - "159949"
 
 # Per-code bucket overrides. Codes not listed fall to ``default_category``.
 overrides:

@@ -5,9 +5,14 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI, Request
+
+if TYPE_CHECKING:
+    from backend.data.watchlist import WatchlistService
+    from backend.services.watchlist_policy import WatchlistPolicy
 
 from backend.api.analysis import router as analysis_router
 from backend.api.health import router as health_router
@@ -133,6 +138,38 @@ async def _init_trading_layer(application: FastAPI) -> None:
     log.info("trading_layer_initialized")
 
 
+_MANDATORY_ETF_NAMES: dict[str, str] = {
+    "510300": "沪深300 ETF",
+    "510500": "中证500 ETF",
+    "159949": "创业板50 ETF",
+}
+
+
+async def _seed_watchlist_from_policy(
+    watchlist_service: WatchlistService, policy: WatchlistPolicy
+) -> None:
+    """Idempotently upsert every code in the policy into Mongo.
+
+    Reads ``policy.{fast,slow}.default_codes`` plus ``policy.overrides``
+    keys and ensures each code has an ``active=True`` row. For the three
+    mandatory ETFs we know the display name; everything else stores the
+    code as the name placeholder until C-002 lands a code→name registry.
+    """
+    seen: set[str] = set()
+    for bucket in (policy.fast, policy.slow):
+        for code in bucket.default_codes:
+            seen.add(code)
+    for code in policy.overrides:
+        seen.add(code)
+
+    for code in sorted(seen):
+        name = _MANDATORY_ETF_NAMES.get(code, code)
+        await watchlist_service.add_stock(code, name)
+
+    if seen:
+        log.info("watchlist_seeded", count=len(seen), codes=sorted(seen))
+
+
 async def _init_analysis_scheduler(application: FastAPI) -> None:
     """Initialize the daily analysis orchestrator.
 
@@ -186,6 +223,21 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
             )
     else:
         log.info("watchlist_policy_missing", path=policy_path)
+
+    # Idempotent watchlist seed (A-002/A-004 follow-up per codex review).
+    # The POST/DELETE handlers were destructively removed, so without
+    # this step a fresh Mongo deployment leaves WatchlistService empty
+    # and AnalysisScheduler skips every Fast/Slow tick. Seed the codes
+    # declared in the policy file at boot — runtime mutation is still
+    # forbidden per P0-9.
+    if policy is not None:
+        try:
+            await _seed_watchlist_from_policy(
+                application.state.watchlist, policy
+            )
+        except Exception as exc:
+            log.warning("watchlist_seed_failed", error=str(exc))
+
     analysis_scheduler = AnalysisScheduler(
         watchlist=application.state.watchlist,
         services=services,
