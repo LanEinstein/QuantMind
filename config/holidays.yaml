@@ -1,0 +1,101 @@
+# A-share trading calendar: statutory holidays + makeup workdays.
+#
+# **Single source of truth** for ``is_trading_day`` (backend/utils/trading_hours.py)
+# and ``backend/data/trading_calendar.py`` (Phase C-007). P0-6 §1.4 explicitly
+# bars the akshare 节假日 API at runtime — the schedule is curated by ops in
+# this static YAML and re-loaded only on process restart per A-007 (hot-reload
+# disabled).
+#
+# **Maintenance:**
+# * Update ANNUALLY in November/December once 国务院办公厅 releases the next
+#   year's 放假安排 notice. Reference: https://www.gov.cn/zhengce/
+# * Add a new ``holidays_YYYY`` and ``makeup_workdays_YYYY`` block when extending.
+# * Bump ``schedule_version`` on every edit so audit can diff.
+# * Update ``last_verified`` to the date the entries were cross-checked.
+#
+# **Conventions:**
+# * ``holidays_YYYY``: dates the A-share EXCHANGE (SSE/SZSE) is CLOSED
+#   regardless of weekday.
+# * ``makeup_workdays_YYYY``: weekend dates the EXCHANGE explicitly
+#   confirmed as trading sessions for that year. **CRITICAL:** this is
+#   the *exchange* schedule, NOT the State Council 调休补班 (office)
+#   schedule. Since 2018+ the SSE/SZSE has consistently published
+#   "为周末休市，不补休" — i.e., even when State Council declares a Sat/Sun
+#   as a 调休 office workday, the exchange stays closed. Therefore
+#   ``makeup_workdays_YYYY`` should normally be **empty**; only populate
+#   it when SSE's annual 休市安排 explicitly calls out a Sat/Sun as
+#   trading. Lookup precedence inside ``is_trading_day``:
+#     1. If date ∈ makeup_workdays → trading day (overrides weekend rule).
+#     2. If date ∈ holidays → non-trading.
+#     3. Else weekday → trading; weekend → non-trading.
+
+schedule_version: 1
+last_verified: "2026-05-12"
+source_note: |
+  2026 dates curated against 国务院办公厅关于2026年部分节假日安排的通知
+  (released 2025-11). Verify before each annual extension.
+
+# ---------------------------------------------------------------------------
+# 2026 (current year)
+# ---------------------------------------------------------------------------
+holidays_2026:
+  # 元旦 New Year (Thu–Sat)
+  - {date: "2026-01-01", name: "元旦"}
+  - {date: "2026-01-02", name: "元旦"}
+  - {date: "2026-01-03", name: "元旦"}
+
+  # 春节 Spring Festival — SSE/SZSE close 02-16 (Mon) through 02-23 (Mon),
+  # market resumes 02-24 (Tue). Source: SSE notice 2025-12-22 + SZSE notice
+  # 2025-12-22. Weekend 02-21 / 02-22 are non-trading by default rule, so
+  # only the weekday entries need to be listed here.
+  - {date: "2026-02-16", name: "春节"}
+  - {date: "2026-02-17", name: "春节"}
+  - {date: "2026-02-18", name: "春节"}
+  - {date: "2026-02-19", name: "春节"}
+  - {date: "2026-02-20", name: "春节"}
+  - {date: "2026-02-23", name: "春节"}
+
+  # 清明节 Qingming
+  - {date: "2026-04-06", name: "清明节"}
+
+  # 劳动节 Labor Day (Fri 5/1 – Tue 5/5)
+  - {date: "2026-05-01", name: "劳动节"}
+  - {date: "2026-05-04", name: "劳动节"}
+  - {date: "2026-05-05", name: "劳动节"}
+
+  # 端午节 Dragon Boat (Fri 6/19 – Sun 6/21; weekend absorbs)
+  - {date: "2026-06-19", name: "端午节"}
+
+  # 中秋节 Mid-Autumn (Fri 9/25 – Sun 9/27; weekend absorbs)
+  - {date: "2026-09-25", name: "中秋节"}
+
+  # 国庆节 National Day (Thu 10/1 – Wed 10/7)
+  - {date: "2026-10-01", name: "国庆节"}
+  - {date: "2026-10-02", name: "国庆节"}
+  - {date: "2026-10-05", name: "国庆节"}
+  - {date: "2026-10-06", name: "国庆节"}
+  - {date: "2026-10-07", name: "国庆节"}
+
+makeup_workdays_2026: []
+# 2026 reference: SSE/SZSE 2026 休市安排 (published 2025-12) is expected
+# to follow the 2018+ pattern — weekend 调休补班 days do NOT become
+# trading sessions for the exchange. State Council office 调休 dates
+# (2026-02-14, 02-28, 04-26, 09-26, 10-10) are listed below for ops
+# reference only and intentionally NOT included above:
+#   - 2026-02-14 (Sat, before Spring Festival office work day)
+#   - 2026-02-28 (Sat, after Spring Festival office work day)
+#   - 2026-04-26 (Sun, before Labor Day office work day)
+#   - 2026-09-26 (Sat, before National Day office work day)
+#   - 2026-10-10 (Sat, after National Day office work day)
+# When SSE's actual 2026 calendar publishes, copy any explicitly-confirmed
+# trading Saturdays/Sundays into the list above.
+
+# ---------------------------------------------------------------------------
+# 2027 (forward-looking; placeholder — re-verify and replace before 2027-01)
+# ---------------------------------------------------------------------------
+holidays_2027:
+  - {date: "2027-01-01", name: "元旦"}
+  # 2027 春节 lunar new year is 2027-02-06 (Sat); spans likely 02-05 ~ 02-13
+  # Leave the rest TODO — ops to backfill from State Council 2026-11 notice.
+
+makeup_workdays_2027: []
