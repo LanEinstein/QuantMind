@@ -138,36 +138,49 @@ async def _init_trading_layer(application: FastAPI) -> None:
     log.info("trading_layer_initialized")
 
 
-_MANDATORY_ETF_NAMES: dict[str, str] = {
-    "510300": "沪深300 ETF",
-    "510500": "中证500 ETF",
-    "159949": "创业板50 ETF",
-}
-
-
 async def _seed_watchlist_from_policy(
     watchlist_service: WatchlistService, policy: WatchlistPolicy
 ) -> None:
-    """Idempotently upsert every code in the policy into Mongo.
+    """Reconcile Mongo watchlist with the policy (add missing + soft-delete stale).
 
-    Reads ``policy.{fast,slow}.default_codes`` plus ``policy.overrides``
-    keys and ensures each code has an ``active=True`` row. For the three
-    mandatory ETFs we know the display name; everything else stores the
-    code as the name placeholder until C-002 lands a code→name registry.
+    Reads the union of ``policy.{fast,slow}.default_codes`` and
+    ``policy.overrides`` as the canonical universe. Codes present in
+    Mongo but absent from the policy are soft-deleted (``active=False``)
+    so a policy rotation cannot leave stale rows that
+    :func:`assign_category` would silently route to the default bucket.
+
+    Display names for the mandatory ETFs come from
+    ``policy.required_etfs`` (single source of truth — P0-9 §1.2); any
+    individual code without a known display name falls back to the code
+    itself until a later phase wires in a stock_metadata registry.
     """
-    seen: set[str] = set()
-    for bucket in (policy.fast, policy.slow):
-        for code in bucket.default_codes:
-            seen.add(code)
-    for code in policy.overrides:
-        seen.add(code)
+    etf_names = {e.code: e.name for e in policy.required_etfs}
+    canonical = policy.all_watchlist_codes()
 
-    for code in sorted(seen):
-        name = _MANDATORY_ETF_NAMES.get(code, code)
+    # Reactivate / upsert every code the policy declares.
+    for code in sorted(canonical):
+        name = etf_names.get(code, code)
         await watchlist_service.add_stock(code, name)
 
-    if seen:
-        log.info("watchlist_seeded", count=len(seen), codes=sorted(seen))
+    # Soft-delete any currently-active code that is no longer in the
+    # policy — protects against post-rotation drift (codex C-002 P1).
+    active_rows = await watchlist_service.list_stocks()
+    active_codes = {
+        row["stock_code"]
+        for row in active_rows
+        if isinstance(row.get("stock_code"), str)
+    }
+    stale = active_codes - canonical
+    for code in sorted(stale):
+        await watchlist_service.remove_stock(code)
+
+    if canonical or stale:
+        log.info(
+            "watchlist_seeded",
+            count=len(canonical),
+            codes=sorted(canonical),
+            deactivated=sorted(stale),
+        )
 
 
 async def _init_analysis_scheduler(application: FastAPI) -> None:

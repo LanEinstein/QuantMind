@@ -1,30 +1,31 @@
-"""Fast/Slow watchlist categorisation policy (Phase 5B-T02).
+"""P0-9 locked watchlist policy: schema + loader + pure assignment helpers.
 
-A single immutable :class:`WatchlistPolicy` describes both buckets:
+The single :class:`WatchlistPolicy` aggregate captures everything the
+P0-9 decision locked: the 13-code universe split into 10 individual
+stocks (沪主 4 / 深主 3 / 创业板 3) plus 3 mandatory ETFs
+(510300 / 510500 / 159949), the fast/slow scheduling cadence, the
+5-instruction daily cap (traditional 4 + event 1, with a 14:30 slide
+rule), the four exclusion thresholds enforced as the
+``InstructionPlanBuilder`` fifth early-return, and the strict long-only
+direction policy.
 
-* ``fast`` runs intraday on a 4-tick cron with a tighter pipeline
-  (``max_debate_rounds=1``, ~480s timeout) for short-horizon names.
-* ``slow`` runs once per trading day with a deeper pipeline
-  (``max_debate_rounds=2``, ~900s timeout) for long-horizon names.
+Every field is frozen and runtime-immutable. The legacy
+``update_override`` / ``save_policy`` helpers were removed in C-002
+because the decision (P0-9 §1.3 + P0-7 §1.4) requires changes to go
+through ``git diff`` + amendment + process restart — there is no
+sanctioned in-process mutation path.
 
-The policy is loaded from ``config/watchlist_policy.yaml`` (template in
-SSoT §2.7) and consumed by :class:`backend.data.analysis_scheduler.
-AnalysisScheduler`. The YAML is the contract; this module only
-validates and exposes it as a frozen dataclass so the scheduler can
-hand each cron job its own pipeline knobs without touching disk.
+The loader rejects v1 YAML loudly: missing ``policy_version: 2`` or any
+P0-9 section raises :class:`WatchlistPolicyError` at boot rather than
+silently dropping locked invariants.
 
-Why a separate module instead of inlining into the scheduler:
-- ``assign_category`` is pure-function logic worth unit testing in
-  isolation (overrides win, default fallback, fast vs slow precedence).
-- The API endpoint that mutates per-code overrides reuses the loader
-  to round-trip the file safely.
-- Follows the same pattern Phase 5A established for ``cost_guard`` —
-  extract small services out of the scheduler so each piece is
-  independently testable.
+``assign_category`` / ``partition_watchlist`` remain pure functions so
+the scheduler can categorise a watchlist tick without touching disk.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -37,27 +38,55 @@ log = structlog.get_logger(component="watchlist_policy")
 Category = Literal["fast", "slow"]
 _VALID_CATEGORIES: tuple[Category, ...] = ("fast", "slow")
 
+# P0-9 §1.2 mandatory ETF triplet — locked by code.
+MANDATORY_ETF_CODES: frozenset[str] = frozenset({"510300", "510500", "159949"})
+
+# P0-9 §4.1 forbidden InstructionSide values — locked exact set.
+FORBIDDEN_SIDES: frozenset[str] = frozenset(
+    {"SHORT", "COVER", "MARGIN_BUY", "REVERSE_REPO", "ETF_SUBSCRIBE", "ETF_REDEEM"}
+)
+
+# P0-9 §1.1 composition lock — total 13 = 4+3+3+3.
+LOCKED_COMPOSITION: dict[str, int] = {
+    "sh_main": 4,
+    "sz_main": 3,
+    "chuangye": 3,
+    "etf": 3,
+}
+LOCKED_TOTAL_CODES: int = 13
+
+# P0-9 §3.1 cap-allocation lock (also mirrors P0-7 max_daily_new=5).
+LOCKED_TOTAL_DAILY_CAP: int = 5
+LOCKED_TRADITIONAL_CAP: int = 4
+LOCKED_EVENT_CAP: int = 1
+LOCKED_RESERVED_CAP_RELEASE_TIME: str = "14:30"
+
+# P0-9 §2.1 exclusion-rule thresholds — locked exactly. A YAML edit
+# that drifts any of these values without a corresponding code change
+# would silently widen / narrow which candidates the InstructionPlan
+# builder rejects. Requiring lock-step changes (both this constant
+# AND the YAML must move together) forces the amendment + git-diff
+# discipline the decision demands (§2.4).
+LOCKED_EXCLUSION_RULES: dict[str, int | float] = {
+    "ipo_min_trading_days": 30,
+    "sub_new_min_trading_days": 180,
+    "min_avg_amount_20d_yuan": 200_000_000,
+    "max_unit_price_yuan": 500.0,
+}
+
 
 class WatchlistPolicyError(ValueError):
-    """Raised when ``watchlist_policy.yaml`` fails validation."""
+    """Raised when ``watchlist_policy.yaml`` fails P0-9 validation."""
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses (all frozen — runtime-immutable per P0-9 §1.3)
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class BucketConfig:
-    """Per-bucket cron + pipeline knobs.
-
-    Both buckets share the same shape — what differs is the values
-    (cron cadence, debate depth, timeout). Storing them as one
-    dataclass keeps the schema honest: the loader cannot accidentally
-    load a partial bucket.
-
-    ``pipeline`` is RESERVED for Phase 5B-T03 / Phase 5C: it carries
-    an opaque identifier that future routing logic will use to pick
-    a graph variant (e.g. ``fast_pipeline`` may skip Stage-2 debate).
-    The scheduler currently only consumes ``max_debate_rounds`` and
-    ``pipeline_timeout_seconds`` — keep the YAML values stable so
-    later phases can wire it up without a config break.
-    """
+    """Per-bucket cron + pipeline knobs (fast or slow)."""
 
     cron: str
     pipeline: str
@@ -67,39 +96,115 @@ class BucketConfig:
 
 
 @dataclass(frozen=True)
+class WatchlistComposition:
+    """Locked board distribution for the 13-code universe."""
+
+    sh_main: int = 4
+    sz_main: int = 3
+    chuangye: int = 3
+    etf: int = 3
+    total_codes: int = LOCKED_TOTAL_CODES
+    default_category: Category = "slow"
+
+
+@dataclass(frozen=True)
+class RequiredETF:
+    """One mandatory ETF (locked by code)."""
+
+    code: str
+    name: str
+    tracking: str
+
+
+@dataclass(frozen=True)
+class ExclusionRules:
+    """Four exclusion thresholds enforced in InstructionPlanBuilder 5th early-return."""
+
+    ipo_min_trading_days: int = 30
+    sub_new_min_trading_days: int = 180
+    min_avg_amount_20d_yuan: int = 200_000_000
+    max_unit_price_yuan: float = 500.0
+
+
+@dataclass(frozen=True)
+class CapAllocation:
+    """Daily 5-instruction cap split between traditional and event paths."""
+
+    total_daily_cap: int = LOCKED_TOTAL_DAILY_CAP
+    traditional_path_default_cap: int = LOCKED_TRADITIONAL_CAP
+    event_path_reserved_cap: int = LOCKED_EVENT_CAP
+    reserved_cap_release_time: str = "14:30"
+
+
+@dataclass(frozen=True)
+class DirectionPolicy:
+    """Long-only side restrictions + ETF arbitrage P1 reservation."""
+
+    long_only: bool = True
+    forbidden_sides: frozenset[str] = field(default_factory=lambda: FORBIDDEN_SIDES)
+    etf_arbitrage_enabled: bool = False
+
+
+def _default_required_etfs() -> tuple[RequiredETF, ...]:
+    return (
+        RequiredETF(code="510300", name="沪深300 ETF", tracking="沪深300指数"),
+        RequiredETF(code="510500", name="中证500 ETF", tracking="中证500指数"),
+        RequiredETF(code="159949", name="创业板50 ETF", tracking="创业板50指数"),
+    )
+
+
+@dataclass(frozen=True)
 class WatchlistPolicy:
-    """Immutable view of ``watchlist_policy.yaml``.
+    """Aggregate P0-9 policy view.
 
-    ``overrides`` maps stock_code → category and wins over
-    ``default_category``. ``policy_version`` lets future schema bumps
-    be detected before silently misreading old YAML.
-
-    The two ``*_default_set`` frozensets are derived caches built at
-    construction (in :func:`load_policy`) so per-tick membership
-    checks in :func:`assign_category` stay O(1) even if the YAML
-    grows long lists of default codes.
+    ``fast_default_set`` / ``slow_default_set`` are derived O(1) lookup
+    caches built by :func:`load_policy` so per-tick partitioning stays
+    cheap regardless of list length.
     """
 
     fast: BucketConfig
     slow: BucketConfig
     overrides: dict[str, Category] = field(default_factory=dict)
     default_category: Category = "slow"
-    policy_version: int = 1
+    policy_version: int = 2
     last_updated: str | None = None
+    locked_decision: str = "P0-9"
+    composition: WatchlistComposition = field(default_factory=WatchlistComposition)
+    required_etfs: tuple[RequiredETF, ...] = field(
+        default_factory=_default_required_etfs
+    )
+    exclusion_rules: ExclusionRules = field(default_factory=ExclusionRules)
+    cap_allocation: CapAllocation = field(default_factory=CapAllocation)
+    direction_policy: DirectionPolicy = field(default_factory=DirectionPolicy)
     fast_default_set: frozenset[str] = field(default_factory=frozenset)
     slow_default_set: frozenset[str] = field(default_factory=frozenset)
 
     def cron_for(self, category: Category) -> str:
-        """Return the cron string for ``fast`` or ``slow``."""
         return self.fast.cron if category == "fast" else self.slow.cron
 
     def bucket_for(self, category: Category) -> BucketConfig:
-        """Return the BucketConfig for ``fast`` or ``slow``."""
         return self.fast if category == "fast" else self.slow
+
+    def all_watchlist_codes(self) -> frozenset[str]:
+        """Union of every code mentioned in fast / slow / overrides.
+
+        Used by callers (boot seed, exit-check helper) that need a single
+        canonical view of the active universe without re-implementing
+        the resolution rule. Codes only appearing in ``overrides`` still
+        count — they bind to a bucket but may not be in either
+        ``default_codes`` list yet (e.g. owner-pick rotation in progress).
+        """
+        return frozenset(self.fast.default_codes).union(
+            self.slow.default_codes, self.overrides.keys()
+        )
+
+
+# ---------------------------------------------------------------------------
+# Loader — strict v2 validation
+# ---------------------------------------------------------------------------
 
 
 def _coerce_bucket(name: str, raw: Any) -> BucketConfig:
-    """Validate one bucket subdocument into a BucketConfig."""
     if not isinstance(raw, dict):
         raise WatchlistPolicyError(
             f"watchlist_policy.{name} must be a mapping, got {type(raw).__name__}"
@@ -139,12 +244,6 @@ def _coerce_bucket(name: str, raw: Any) -> BucketConfig:
 
 
 def _coerce_overrides(raw: Any) -> dict[str, Category]:
-    """Validate the ``overrides`` mapping.
-
-    Stock codes are normalised to strings (YAML may parse pure-numeric
-    codes like ``600519`` as ints). Category strings are checked against
-    the literal set so a typo (``"fas"``) fails loudly at load time.
-    """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -173,17 +272,263 @@ def _coerce_default(raw: Any) -> Category:
     return raw  # type: ignore[return-value]
 
 
-def load_policy(path: str | Path) -> WatchlistPolicy:
-    """Load and validate ``watchlist_policy.yaml`` into a WatchlistPolicy.
+def _coerce_composition(raw: Any) -> WatchlistComposition:
+    if not isinstance(raw, dict):
+        raise WatchlistPolicyError(
+            f"watchlist_policy.watchlist must be a mapping, got {type(raw).__name__}"
+        )
+    total = raw.get("total_codes")
+    if total != LOCKED_TOTAL_CODES:
+        raise WatchlistPolicyError(
+            f"watchlist_policy.watchlist.total_codes must equal {LOCKED_TOTAL_CODES}, "
+            f"got {total!r}"
+        )
+    comp_raw = raw.get("composition")
+    if not isinstance(comp_raw, dict):
+        raise WatchlistPolicyError(
+            "watchlist_policy.watchlist.composition must be a mapping"
+        )
+    for board, expected in LOCKED_COMPOSITION.items():
+        got = comp_raw.get(board)
+        if got != expected:
+            raise WatchlistPolicyError(
+                f"watchlist_policy.watchlist.composition.{board} must equal "
+                f"{expected}, got {got!r}"
+            )
+    extra = set(comp_raw) - set(LOCKED_COMPOSITION)
+    if extra:
+        raise WatchlistPolicyError(
+            f"watchlist_policy.watchlist.composition has unexpected boards: "
+            f"{sorted(extra)}"
+        )
+    default_category = _coerce_default(raw.get("default_category"))
+    return WatchlistComposition(
+        sh_main=LOCKED_COMPOSITION["sh_main"],
+        sz_main=LOCKED_COMPOSITION["sz_main"],
+        chuangye=LOCKED_COMPOSITION["chuangye"],
+        etf=LOCKED_COMPOSITION["etf"],
+        total_codes=LOCKED_TOTAL_CODES,
+        default_category=default_category,
+    )
 
-    Performs structural validation up front so a malformed file fails
-    on startup rather than at the first cron firing. Codes that appear
-    in BOTH ``fast.default_codes`` and ``slow.default_codes`` are
-    rejected — a code can only belong to one bucket.
+
+def _coerce_required_etfs(raw: Any) -> tuple[RequiredETF, ...]:
+    if not isinstance(raw, list):
+        raise WatchlistPolicyError(
+            "watchlist_policy.required_etfs must be a list of 3 mandatory ETFs"
+        )
+    if len(raw) != len(MANDATORY_ETF_CODES):
+        raise WatchlistPolicyError(
+            f"watchlist_policy.required_etfs must have exactly "
+            f"{len(MANDATORY_ETF_CODES)} entries, got {len(raw)}"
+        )
+    etfs: list[RequiredETF] = []
+    codes: list[str] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise WatchlistPolicyError(
+                f"watchlist_policy.required_etfs[{idx}] must be a mapping"
+            )
+        for key in ("code", "name", "tracking"):
+            if key not in entry:
+                raise WatchlistPolicyError(
+                    f"watchlist_policy.required_etfs[{idx}] missing key: {key}"
+                )
+        code = str(entry["code"])
+        codes.append(code)
+        etfs.append(
+            RequiredETF(
+                code=code,
+                name=str(entry["name"]),
+                tracking=str(entry["tracking"]),
+            )
+        )
+    code_set = set(codes)
+    if code_set != MANDATORY_ETF_CODES:
+        raise WatchlistPolicyError(
+            "watchlist_policy.required_etfs must contain exactly "
+            f"{sorted(MANDATORY_ETF_CODES)}, got {sorted(code_set)}"
+        )
+    return tuple(etfs)
+
+
+def _coerce_exclusion_rules(raw: Any) -> ExclusionRules:
+    if not isinstance(raw, dict):
+        raise WatchlistPolicyError(
+            "watchlist_policy.exclusion_rules must be a mapping"
+        )
+    required = (
+        "ipo_min_trading_days",
+        "sub_new_min_trading_days",
+        "min_avg_amount_20d_yuan",
+        "max_unit_price_yuan",
+    )
+    missing = [k for k in required if k not in raw]
+    if missing:
+        raise WatchlistPolicyError(
+            f"watchlist_policy.exclusion_rules missing keys: {missing}"
+        )
+    ipo = raw["ipo_min_trading_days"]
+    sub = raw["sub_new_min_trading_days"]
+    amount = raw["min_avg_amount_20d_yuan"]
+    price = raw["max_unit_price_yuan"]
+    if ipo != LOCKED_EXCLUSION_RULES["ipo_min_trading_days"]:
+        raise WatchlistPolicyError(
+            "exclusion_rules.ipo_min_trading_days must equal "
+            f"{LOCKED_EXCLUSION_RULES['ipo_min_trading_days']} "
+            f"(P0-9 §2.1 locked), got {ipo!r}"
+        )
+    if sub != LOCKED_EXCLUSION_RULES["sub_new_min_trading_days"]:
+        raise WatchlistPolicyError(
+            "exclusion_rules.sub_new_min_trading_days must equal "
+            f"{LOCKED_EXCLUSION_RULES['sub_new_min_trading_days']} "
+            f"(P0-9 §2.1 locked), got {sub!r}"
+        )
+    if amount != LOCKED_EXCLUSION_RULES["min_avg_amount_20d_yuan"]:
+        raise WatchlistPolicyError(
+            "exclusion_rules.min_avg_amount_20d_yuan must equal "
+            f"{LOCKED_EXCLUSION_RULES['min_avg_amount_20d_yuan']} "
+            f"(P0-9 §2.1 locked), got {amount!r}"
+        )
+    # Compare as float so YAML int (500) and float (500.0) both work,
+    # but reject any other numeric drift like 499.99 or 501.
+    locked_price = float(LOCKED_EXCLUSION_RULES["max_unit_price_yuan"])
+    if not isinstance(price, int | float) or float(price) != locked_price:
+        raise WatchlistPolicyError(
+            "exclusion_rules.max_unit_price_yuan must equal "
+            f"{locked_price} (P0-9 §2.1 locked), got {price!r}"
+        )
+    return ExclusionRules(
+        ipo_min_trading_days=ipo,
+        sub_new_min_trading_days=sub,
+        min_avg_amount_20d_yuan=amount,
+        max_unit_price_yuan=float(price),
+    )
+
+
+_RELEASE_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _coerce_cap_allocation(raw: Any) -> CapAllocation:
+    if not isinstance(raw, dict):
+        raise WatchlistPolicyError(
+            "watchlist_policy.cap_allocation must be a mapping"
+        )
+    required = (
+        "total_daily_cap",
+        "traditional_path_default_cap",
+        "event_path_reserved_cap",
+        "reserved_cap_release_time",
+    )
+    missing = [k for k in required if k not in raw]
+    if missing:
+        raise WatchlistPolicyError(
+            f"watchlist_policy.cap_allocation missing keys: {missing}"
+        )
+    total = raw["total_daily_cap"]
+    traditional = raw["traditional_path_default_cap"]
+    event = raw["event_path_reserved_cap"]
+    release = raw["reserved_cap_release_time"]
+    if total != LOCKED_TOTAL_DAILY_CAP:
+        raise WatchlistPolicyError(
+            f"cap_allocation.total_daily_cap must equal "
+            f"{LOCKED_TOTAL_DAILY_CAP} (mirrors P0-7 max_daily_new), got {total!r}"
+        )
+    if traditional != LOCKED_TRADITIONAL_CAP:
+        raise WatchlistPolicyError(
+            f"cap_allocation.traditional_path_default_cap must equal "
+            f"{LOCKED_TRADITIONAL_CAP}, got {traditional!r}"
+        )
+    if event != LOCKED_EVENT_CAP:
+        raise WatchlistPolicyError(
+            f"cap_allocation.event_path_reserved_cap must equal "
+            f"{LOCKED_EVENT_CAP}, got {event!r}"
+        )
+    if traditional + event != total:
+        raise WatchlistPolicyError(
+            "cap_allocation: traditional + event cap must equal total"
+        )
+    if not isinstance(release, str) or not _RELEASE_TIME_RE.match(release):
+        raise WatchlistPolicyError(
+            f"cap_allocation.reserved_cap_release_time must be HH:MM (24h), "
+            f"got {release!r}"
+        )
+    if release != LOCKED_RESERVED_CAP_RELEASE_TIME:
+        raise WatchlistPolicyError(
+            "cap_allocation.reserved_cap_release_time must equal "
+            f"{LOCKED_RESERVED_CAP_RELEASE_TIME!r} "
+            "(P0-9 §3.1 14:30 slide rule locked), "
+            f"got {release!r}"
+        )
+    return CapAllocation(
+        total_daily_cap=total,
+        traditional_path_default_cap=traditional,
+        event_path_reserved_cap=event,
+        reserved_cap_release_time=release,
+    )
+
+
+def _coerce_direction_policy(raw: Any) -> DirectionPolicy:
+    if not isinstance(raw, dict):
+        raise WatchlistPolicyError(
+            "watchlist_policy.direction_policy must be a mapping"
+        )
+    long_only = raw.get("long_only")
+    if long_only is not True:
+        raise WatchlistPolicyError(
+            "direction_policy.long_only must be true (P0-9 §4.1 strict long-only)"
+        )
+    forbidden_raw = raw.get("forbidden_sides")
+    if not isinstance(forbidden_raw, list):
+        raise WatchlistPolicyError(
+            "direction_policy.forbidden_sides must be a list"
+        )
+    forbidden = frozenset(str(s) for s in forbidden_raw)
+    if forbidden != FORBIDDEN_SIDES:
+        raise WatchlistPolicyError(
+            "direction_policy.forbidden_sides must equal "
+            f"{sorted(FORBIDDEN_SIDES)}, got {sorted(forbidden)}"
+        )
+    etf_arb = raw.get("etf_arbitrage_enabled")
+    if etf_arb is not False:
+        raise WatchlistPolicyError(
+            "direction_policy.etf_arbitrage_enabled must be false "
+            "(P0-9 §4.4 永锁 — 启用走 amendment)"
+        )
+    return DirectionPolicy(
+        long_only=True,
+        forbidden_sides=FORBIDDEN_SIDES,
+        etf_arbitrage_enabled=False,
+    )
+
+
+def _validate_constraints_block(raw: Any) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise WatchlistPolicyError(
+            "watchlist_policy.constraints must be a mapping when present"
+        )
+    expectations = {
+        "watchlist_size_must_equal": LOCKED_TOTAL_CODES,
+        "watchlist_etf_count_must_equal": LOCKED_COMPOSITION["etf"],
+        "total_daily_cap_must_equal_p0_7": LOCKED_TOTAL_DAILY_CAP,
+        "long_only_must_be_true": True,
+    }
+    for key, expected in expectations.items():
+        if key in raw and raw[key] != expected:
+            raise WatchlistPolicyError(
+                f"watchlist_policy.constraints.{key} drifted from locked value "
+                f"{expected!r} (got {raw[key]!r}) — fix YAML or open amendment"
+            )
+
+
+def load_policy(path: str | Path) -> WatchlistPolicy:
+    """Load and validate ``watchlist_policy.yaml`` against P0-9 §5 schema.
 
     Raises:
-        FileNotFoundError: If ``path`` does not exist.
-        WatchlistPolicyError: If the YAML schema is invalid.
+        FileNotFoundError: ``path`` does not exist.
+        WatchlistPolicyError: any P0-9 invariant is violated.
     """
     p = Path(path)
     if not p.exists():
@@ -193,9 +538,6 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
         with p.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
     except yaml.YAMLError as exc:
-        # Wrap PyYAML's internal exception so callers (main lifespan,
-        # API handlers) can catch a single project-defined error type
-        # instead of importing yaml just for the failure mode.
         raise WatchlistPolicyError(
             f"watchlist_policy.yaml is not valid YAML: {exc}"
         ) from exc
@@ -205,10 +547,33 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
             f"watchlist_policy.yaml root must be a mapping, got {type(raw).__name__}"
         )
 
-    if "fast" not in raw or "slow" not in raw:
+    version_raw = raw.get("policy_version")
+    if version_raw != 2:
         raise WatchlistPolicyError(
-            "watchlist_policy.yaml must define both 'fast' and 'slow' buckets"
+            "watchlist_policy.policy_version must be 2 (P0-9 v2 schema). "
+            f"Got {version_raw!r} — v1 schema is no longer accepted."
         )
+
+    locked_decision = raw.get("locked_decision")
+    if locked_decision != "P0-9":
+        raise WatchlistPolicyError(
+            "watchlist_policy.locked_decision must equal 'P0-9', "
+            f"got {locked_decision!r}"
+        )
+
+    for required_section in (
+        "fast",
+        "slow",
+        "watchlist",
+        "required_etfs",
+        "exclusion_rules",
+        "cap_allocation",
+        "direction_policy",
+    ):
+        if required_section not in raw:
+            raise WatchlistPolicyError(
+                f"watchlist_policy.yaml missing required section: {required_section}"
+            )
 
     fast = _coerce_bucket("fast", raw["fast"])
     slow = _coerce_bucket("slow", raw["slow"])
@@ -220,14 +585,47 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
             f"{sorted(overlap)}"
         )
 
-    overrides = _coerce_overrides(raw.get("overrides"))
-    default_category = _coerce_default(raw.get("default_category"))
+    composition = _coerce_composition(raw["watchlist"])
+    required_etfs = _coerce_required_etfs(raw["required_etfs"])
+    exclusion_rules = _coerce_exclusion_rules(raw["exclusion_rules"])
+    cap_allocation = _coerce_cap_allocation(raw["cap_allocation"])
+    direction_policy = _coerce_direction_policy(raw["direction_policy"])
 
-    version_raw = raw.get("policy_version", 1)
-    if not isinstance(version_raw, int):
+    # Mandatory ETFs must already be seeded in slow.default_codes (P0-9 §1.2
+    # locks them as passive long-horizon holdings — fast bucket would force
+    # an intraday cadence that adds no value for index ETFs).
+    seeded_etfs = MANDATORY_ETF_CODES & set(slow.default_codes)
+    missing_etfs = MANDATORY_ETF_CODES - seeded_etfs
+    if missing_etfs:
         raise WatchlistPolicyError(
-            "watchlist_policy.policy_version must be an int"
+            f"mandatory ETFs not in slow.default_codes: {sorted(missing_etfs)} "
+            "(P0-9 §1.2 lock — they must be in the watchlist)"
         )
+    # Overrides can re-bucket the ETFs but only across the {fast, slow}
+    # set — the YAML loader for overrides already constrains values; no
+    # extra check needed.
+
+    overrides = _coerce_overrides(raw.get("overrides"))
+    # Overrides must reference codes actually in the watchlist; an
+    # override pointing at a code that does not appear in either
+    # default_codes list is a silent drift (the cron would run a code
+    # that is not in any user-controlled list).
+    union_codes = set(fast.default_codes) | set(slow.default_codes)
+    dangling = set(overrides.keys()) - union_codes
+    if dangling:
+        raise WatchlistPolicyError(
+            f"overrides reference codes outside default_codes: {sorted(dangling)}"
+        )
+
+    # Total unique codes across the policy cannot exceed the 13-code lock.
+    total_in_policy = len(union_codes)
+    if total_in_policy > LOCKED_TOTAL_CODES:
+        raise WatchlistPolicyError(
+            f"total unique codes in fast/slow default_codes is "
+            f"{total_in_policy}, exceeds locked maximum {LOCKED_TOTAL_CODES}"
+        )
+
+    _validate_constraints_block(raw.get("constraints"))
 
     last_updated = raw.get("last_updated")
     if last_updated is not None and not isinstance(last_updated, str):
@@ -237,9 +635,15 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
         fast=fast,
         slow=slow,
         overrides=overrides,
-        default_category=default_category,
-        policy_version=version_raw,
+        default_category=composition.default_category,
+        policy_version=2,
         last_updated=last_updated,
+        locked_decision="P0-9",
+        composition=composition,
+        required_etfs=required_etfs,
+        exclusion_rules=exclusion_rules,
+        cap_allocation=cap_allocation,
+        direction_policy=direction_policy,
         fast_default_set=frozenset(fast.default_codes),
         slow_default_set=frozenset(slow.default_codes),
     )
@@ -249,25 +653,25 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
         fast_default_count=len(fast.default_codes),
         slow_default_count=len(slow.default_codes),
         overrides_count=len(overrides),
-        version=version_raw,
+        total_codes_provisioned=total_in_policy,
+        total_codes_target=LOCKED_TOTAL_CODES,
     )
     return policy
 
 
-_NO_OVERRIDE: Category | None = None
+# ---------------------------------------------------------------------------
+# Pure assignment helpers (still used by AnalysisScheduler each tick)
+# ---------------------------------------------------------------------------
 
 
 def assign_category(code: str, policy: WatchlistPolicy) -> Category:
-    """Return ``'fast'`` or ``'slow'`` for a single stock code.
+    """Return ``'fast'`` or ``'slow'`` for ``code``.
 
     Resolution order (first match wins):
       1. ``policy.overrides[code]``
-      2. ``code in policy.fast_default_set``  → fast
-      3. ``code in policy.slow_default_set``  → slow
+      2. ``code in policy.fast_default_set`` → fast
+      3. ``code in policy.slow_default_set`` → slow
       4. ``policy.default_category``
-
-    Uses ``dict.get`` (single hash) and frozenset membership (O(1))
-    so a per-tick partition over a large watchlist stays cheap.
     """
     override = policy.overrides.get(code)
     if override is not None:
@@ -282,11 +686,7 @@ def assign_category(code: str, policy: WatchlistPolicy) -> Category:
 def partition_watchlist(
     codes: list[str], policy: WatchlistPolicy
 ) -> tuple[list[str], list[str]]:
-    """Split ``codes`` into ``(fast_codes, slow_codes)`` lists.
-
-    Order is preserved so downstream logging and rate-limiting stays
-    deterministic across runs.
-    """
+    """Split ``codes`` into ``(fast_codes, slow_codes)`` preserving input order."""
     fast_codes: list[str] = []
     slow_codes: list[str] = []
     for code in codes:
@@ -297,67 +697,29 @@ def partition_watchlist(
     return fast_codes, slow_codes
 
 
-def update_override(
-    policy: WatchlistPolicy, code: str, category: Category | None
-) -> WatchlistPolicy:
-    """Return a new policy with ``code`` set to ``category`` (or removed).
-
-    Pure function — does NOT touch disk. Callers that want persistence
-    should follow with :func:`save_policy`. Passing ``category=None``
-    removes any existing override for ``code`` so it falls back to the
-    default rules.
-    """
-    if category is not None and category not in _VALID_CATEGORIES:
-        raise WatchlistPolicyError(
-            f"category must be 'fast', 'slow', or None; got {category!r}"
-        )
-    new_overrides = dict(policy.overrides)
-    if category is None:
-        new_overrides.pop(code, None)
-    else:
-        new_overrides[code] = category
-    return WatchlistPolicy(
-        fast=policy.fast,
-        slow=policy.slow,
-        overrides=new_overrides,
-        default_category=policy.default_category,
-        policy_version=policy.policy_version,
-        last_updated=policy.last_updated,
-        fast_default_set=policy.fast_default_set,
-        slow_default_set=policy.slow_default_set,
-    )
-
-
-def save_policy(policy: WatchlistPolicy, path: str | Path) -> None:
-    """Persist ``policy`` back to ``path`` as YAML.
-
-    Round-trip safe: ``load_policy(save_policy(p))`` yields an equal
-    policy. Comments in the source file are NOT preserved (PyYAML
-    limitation) — operators editing the file by hand should expect the
-    canonical re-emission.
-    """
-    p = Path(path)
-    payload: dict[str, Any] = {
-        "fast": _bucket_to_dict(policy.fast),
-        "slow": _bucket_to_dict(policy.slow),
-        "overrides": dict(policy.overrides),
-        "default_category": policy.default_category,
-        "policy_version": policy.policy_version,
-    }
-    if policy.last_updated is not None:
-        payload["last_updated"] = policy.last_updated
-
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
-    tmp.replace(p)
-
-
-def _bucket_to_dict(bucket: BucketConfig) -> dict[str, Any]:
-    return {
-        "cron": bucket.cron,
-        "pipeline": bucket.pipeline,
-        "max_debate_rounds": bucket.max_debate_rounds,
-        "pipeline_timeout_seconds": bucket.pipeline_timeout_seconds,
-        "default_codes": list(bucket.default_codes),
-    }
+# P0-9 §1.3 forbids runtime mutation; there is intentionally no
+# public ``update_override`` / ``save_policy`` here — rebuild via
+# load_policy after editing the YAML on disk + process restart.
+__all__ = [
+    "BucketConfig",
+    "CapAllocation",
+    "Category",
+    "DirectionPolicy",
+    "ExclusionRules",
+    "FORBIDDEN_SIDES",
+    "LOCKED_COMPOSITION",
+    "LOCKED_EVENT_CAP",
+    "LOCKED_EXCLUSION_RULES",
+    "LOCKED_RESERVED_CAP_RELEASE_TIME",
+    "LOCKED_TOTAL_CODES",
+    "LOCKED_TOTAL_DAILY_CAP",
+    "LOCKED_TRADITIONAL_CAP",
+    "MANDATORY_ETF_CODES",
+    "RequiredETF",
+    "WatchlistComposition",
+    "WatchlistPolicy",
+    "WatchlistPolicyError",
+    "assign_category",
+    "load_policy",
+    "partition_watchlist",
+]

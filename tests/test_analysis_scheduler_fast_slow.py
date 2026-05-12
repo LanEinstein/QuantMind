@@ -22,22 +22,74 @@ from backend.services.watchlist_policy import (
 )
 
 YAML_TEMPLATE = """
+policy_version: 2
+locked_decision: P0-9
+last_updated: 2026-05-12
+
 fast:
   cron: "0 9,11,13,15 * * mon-fri"
   pipeline: fast_pipeline
   max_debate_rounds: 1
   pipeline_timeout_seconds: 480
   default_codes: ["600519"]
+
 slow:
   cron: "0 9 * * mon-fri"
   pipeline: slow_pipeline
   max_debate_rounds: 2
   pipeline_timeout_seconds: 900
-  default_codes: ["000858"]
+  default_codes:
+    - "000858"
+    - "601318"
+    - "510300"
+    - "510500"
+    - "159949"
+
 overrides:
   "601318": slow
-default_category: slow
-policy_version: 1
+
+watchlist:
+  total_codes: 13
+  composition:
+    sh_main: 4
+    sz_main: 3
+    chuangye: 3
+    etf: 3
+  default_category: slow
+
+required_etfs:
+  - code: "510300"
+    name: "沪深300 ETF"
+    tracking: "沪深300指数"
+  - code: "510500"
+    name: "中证500 ETF"
+    tracking: "中证500指数"
+  - code: "159949"
+    name: "创业板50 ETF"
+    tracking: "创业板50指数"
+
+exclusion_rules:
+  ipo_min_trading_days: 30
+  sub_new_min_trading_days: 180
+  min_avg_amount_20d_yuan: 200000000
+  max_unit_price_yuan: 500.0
+
+cap_allocation:
+  total_daily_cap: 5
+  traditional_path_default_cap: 4
+  event_path_reserved_cap: 1
+  reserved_cap_release_time: "14:30"
+
+direction_policy:
+  long_only: true
+  forbidden_sides:
+    - SHORT
+    - COVER
+    - MARGIN_BUY
+    - REVERSE_REPO
+    - ETF_SUBSCRIBE
+    - ETF_REDEEM
+  etf_arbitrage_enabled: false
 """
 
 
@@ -134,9 +186,15 @@ class TestPolicyAccessors:
     def test_update_policy_swaps_in_memory(
         self, scheduler_with_policy: AnalysisScheduler, policy: WatchlistPolicy
     ) -> None:
-        from backend.services.watchlist_policy import update_override
+        # P0-9 forbids runtime mutation via API, but the scheduler's
+        # internal ``update_policy`` swap is still exercised here to
+        # cover the in-memory snapshot semantics. We build the
+        # replacement policy by constructing a fresh frozen instance
+        # (no ``update_override`` helper exists — that path was removed
+        # in C-002 to enforce runtime-immutable).
+        from dataclasses import replace
 
-        new = update_override(policy, "600519", "slow")
+        new = replace(policy, overrides={**policy.overrides, "600519": "slow"})
         scheduler_with_policy.update_policy(new)
         assert scheduler_with_policy.policy is new
 

@@ -5,6 +5,11 @@ P0-9 locks the watchlist universe at 13 codes (4 SH main + 3 SZ main +
 mutation. Phase A redline: every POST/PUT/PATCH/DELETE handler in this
 module has been destructively deleted so the universe is immutable
 between deploys.
+
+The serialiser exposes every locked section (composition, required
+ETFs, exclusion rules, cap allocation, direction policy) so the
+frontend / audit tooling can verify the active configuration without
+re-reading the YAML.
 """
 
 from __future__ import annotations
@@ -56,6 +61,9 @@ async def list_watchlist(request: Request) -> dict[str, Any]:
 
 def _serialize_policy(policy: WatchlistPolicy) -> dict[str, Any]:
     return {
+        "policy_version": policy.policy_version,
+        "locked_decision": policy.locked_decision,
+        "last_updated": policy.last_updated,
         "fast": {
             "cron": policy.fast.cron,
             "pipeline": policy.fast.pipeline,
@@ -70,10 +78,51 @@ def _serialize_policy(policy: WatchlistPolicy) -> dict[str, Any]:
             "pipeline_timeout_seconds": policy.slow.pipeline_timeout_seconds,
             "default_codes": list(policy.slow.default_codes),
         },
+        "watchlist": {
+            "total_codes": policy.composition.total_codes,
+            "composition": {
+                "sh_main": policy.composition.sh_main,
+                "sz_main": policy.composition.sz_main,
+                "chuangye": policy.composition.chuangye,
+                "etf": policy.composition.etf,
+            },
+            "default_category": policy.composition.default_category,
+        },
+        "required_etfs": [
+            {"code": e.code, "name": e.name, "tracking": e.tracking}
+            for e in policy.required_etfs
+        ],
+        "exclusion_rules": {
+            "ipo_min_trading_days": policy.exclusion_rules.ipo_min_trading_days,
+            "sub_new_min_trading_days": (
+                policy.exclusion_rules.sub_new_min_trading_days
+            ),
+            "min_avg_amount_20d_yuan": (
+                policy.exclusion_rules.min_avg_amount_20d_yuan
+            ),
+            "max_unit_price_yuan": policy.exclusion_rules.max_unit_price_yuan,
+        },
+        "cap_allocation": {
+            "total_daily_cap": policy.cap_allocation.total_daily_cap,
+            "traditional_path_default_cap": (
+                policy.cap_allocation.traditional_path_default_cap
+            ),
+            "event_path_reserved_cap": (
+                policy.cap_allocation.event_path_reserved_cap
+            ),
+            "reserved_cap_release_time": (
+                policy.cap_allocation.reserved_cap_release_time
+            ),
+        },
+        "direction_policy": {
+            "long_only": policy.direction_policy.long_only,
+            "forbidden_sides": sorted(policy.direction_policy.forbidden_sides),
+            "etf_arbitrage_enabled": (
+                policy.direction_policy.etf_arbitrage_enabled
+            ),
+        },
         "overrides": dict(policy.overrides),
         "default_category": policy.default_category,
-        "policy_version": policy.policy_version,
-        "last_updated": policy.last_updated,
     }
 
 
@@ -87,7 +136,7 @@ def _get_policy(request: Request) -> WatchlistPolicy:
 
 @router.get("/api/watchlist/policy")
 async def get_watchlist_policy(request: Request) -> dict[str, Any]:
-    """Return the active Fast/Slow policy + per-code resolution.
+    """Return the active P0-9 policy + per-code resolution.
 
     The ``assignments`` map is computed live so callers can see the
     effective bucket for each watchlist stock without re-implementing
