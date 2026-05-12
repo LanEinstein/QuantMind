@@ -47,7 +47,7 @@ SSoT = `docs/plan.html`(61 任务,十一阶段 S/A-H/I/X)。红线条文 → 对
 - 注释 / commit 英文;UI 文档中文;public function 必须 type hints + docstring(WHY 而非 WHAT)。
 - 不可变结构优先(frozen dataclass / NamedTuple / Pydantic frozen);文件 200-400 行典型 / 800 上限;函数 <50 行;嵌套 <4 层。
 - 测试金字塔 + ruff 全绿才允许 commit;非 risk >70%,risk >95%。**测试通过 ≠ 闭环可用**(audit 反面教材 1139 绿但 RiskEngine 不接订单;断言要覆盖被谁调用、贯穿到哪)。
-- Codex review hard gate:major 5 轮 R1-R5、minor R1+R3 两轮,输出 `docs/reviews/{task_id}-r{N}-{topic}.md`。
+- Codex review hard gate:**任何 commit 前**(全量 pytest+ruff+前端+redline-check 全绿之后)至少跑 1 个 `/codex-review` cycle 并解决 CRITICAL/HIGH;major 5 轮 R1-R5、minor R1+R3 两轮、single-task 1 cycle 最低门槛,输出 `docs/reviews/{task_id}-r{N}-{topic}.md`。绿测试 ≠ 提交安全(497f683 测试 1282 全绿但 codex 仍找 5 issue 含 1 个 audit TTL 隐性 P0)。
 - fail-closed for data corruption / fail-open for infra glitches;完整升级路径优先,不为省工作量妥协可用性。
 
 ## 4. 重要文档

@@ -689,6 +689,21 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
             <td>测试未跑或失败不得标 done;commit 留空不得标 done。</td>
           </tr>
           <tr>
+            <td>提交前(强制 / 通用)</td>
+            <td>
+              全量本地验证全绿(<code>pytest -q --cov=backend --cov-fail-under=70</code> + <code>pytest -q backend/risk --cov-fail-under=95</code> + 前端 <code>type-check</code>/<code>vitest</code>/<code>build</code> + <code>scripts/redline-check.sh</code> + <code>ruff</code>)之后, <strong>必须</strong>对未提交 diff 跑至少 1 个 <code>/codex-review</code> cycle;
+              CRITICAL/HIGH 全解决, MEDIUM 修复或写入 <code>docs/reviews/{task-id}-backlog.md</code> 并注明延迟原因, 再 <code>git commit</code>。
+              major feature(P*-T* 或多任务一次切入)继续走 [[feedback_codex_review_gate]] 的 5 轮 R1-R5;single-task commit 走最少 1 cycle;两者不重复。
+              例外仅限:纯文档 commit 且不动 <code>docs/decisions/</code>;<code>docs/plan.html</code> 仅状态/commit/SESSION_LOG 翻新;Codex CLI 验证不可用时(commit body 必须显式声明)。
+            </td>
+            <td>
+              红树或在 codex 未跑前 commit = 违规;CRITICAL/HIGH 未解决 commit = 违规;
+              session 必须把 codex cycle 数 + 处理结果写入 <code>SESSION_LOG.actions</code>。
+              历史依据:session #5 (497f683) pytest 1282 全绿 + ruff 全绿但 codex cycle 1 仍找出 5 issue 含 1 个隐性 P0(audit Mongo timestamp ISO 序列化破坏 180d TTL);
+              session #4 (61c18db) 1039 全绿但 codex 找到 watchlist 删除写端点后无种子路径致调度器空跑。
+            </td>
+          </tr>
+          <tr>
             <td>会话结束</td>
             <td>在 <code>SESSION_LOG</code> 顶部追加一条:date / session / owner / state_in / actions / commit / next;<code>修订记录</code> 同步追加一行。</td>
             <td>无 SESSION_LOG 条目的 commit 视为孤儿提交。</td>
@@ -707,6 +722,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-12 session #6 protocol-codex-review-pre-commit: 应用户要求新增"提交前(强制 / 通用)"协议行 — 任何 commit 前(全量本地验证全绿之后)至少跑 1 个 <code>/codex-review</code> cycle, CRITICAL/HIGH 全解决 + MEDIUM 修复或写 backlog, 然后才允许 <code>git commit</code>。例外仅限纯文档 / 仅 SSoT 状态翻新 / Codex CLI 不可用且 commit body 显式声明。同步把 CLAUDE.md §3 "Codex review hard gate" 一行扩成"任何 commit 前最低 1 cycle + major 5 轮 + minor 2 轮"显式三档。memory 写 <code>feedback_codex_review_before_every_commit.md</code> 并索引到 MEMORY.md。本次协议变更属"纯文档不动 decisions"例外, 不跑 codex。</li>
         <li>2026-05-11 session #5 phase-b-core-models: 一次性合入 B-001..B-005 全 5 个 P0 任务到 commit 497f683 — InstructionPlan strict schema(101 tests) + decision_ledger 唯一 correlation graph(20 tests) + ExecutionReport 9 锁定正则 + 状态机 17 transition 16:00 冻结(45 tests) + ReconciliationTicket 5 form parser + threshold + 7 transition state machine(40 tests) + AuditEvent 40 enum 值 5 类 + Mongo/JSONL dual-write 180d TTL fail-open(36 tests)。/codex-review 跑 3 轮(cycle 1 评审找出 5 issue 全部修复 → cycle 2 回归评审确认 5/5 RESOLVED 但发现 fix #2 引入新 CRITICAL: 默认 motor BSON 解码返回 naive UTC datetime,后续 append_event 比较会 TypeError → fix 6 加 _attach_utc 递归 UTC 化 + _FakeMongoServiceWithBson 模拟回归测试 → cycle 3 最终复核 Codex 上游连续两次 1000s 超时,降级为本地回归测试 + 纯函数复审证据)。最终门禁:pytest 1282 passed(基线 1140 → +142 新测试)+ ruff clean(所有 Phase B 文件)+ scripts/redline-check.sh 全绿(新增 P0-8 evidence_id 前缀扫描)+ frontend vue-tsc + vitest 80 passed。Phase C/D 开放。</li>
         <li>2026-05-11 session #4 phase-a-codex-review: /codex-review 3 轮(1 评审 + 1 修复评审 + 1 最终复核)对 4256baa 全面查问;cycle 1 暴露 1 P1(watchlist 删除写端点后 fresh Mongo 无种子 → 调度器空跑)+ 2 P2(AccountBanner 错渲染 run_mode + 孤儿 _apply_config_updates F821);cycle 2 修复后 codex 又发现新 F821(seed helper 用 Any 未导入)+ 强约束(13 码 P0-9 完整断言);cycle 3 PARTIAL 关闭(认定 P0-9 余 10 码本就 C-002 owner 决策 deferred 合理 + AccountBanner v-if 改严)。最终 commit 61c18db,加 backend.main._seed_watchlist_from_policy 启动期幂等播种(读 policy.{fast,slow}.default_codes + overrides)+ config/watchlist_policy.yaml 写死 3 mandatory ETF + Portfolio.vue 并发 fetchStatus + AccountBanner 双 store gate + 顺手修 api/risk.py 既有 ruff E501/UP017。门禁:pytest 1039 + vitest 80 + ruff + type-check + redline-check 全绿。</li>
         <li>2026-05-11 session #3 phase-a-cleanup: Phase A 全 7 任务一次性破坏式删除并合入 commit 4256baa(A-001..A-007 全 done)。删除 8 个测试文件、7 个源码文件(authorization.py / approval_queue.py / ApprovalQueue.vue / useSSE.ts 等);新增 backend/services/run_mode.py + backend/utils/trading_hours.py + scripts/redline-check.sh。零写入端点遗留(两条 Phase B/F 允许写入路径在 B-001/F-004 落地);前端全部转只读;loopback-only 三处生效;hot-reload 全禁用;shadow_baseline 启动期 assert + redline 静态守门;backend.utils.trading_hours 关 P0-10 风控隔离遗留违规。门禁:pytest 1039 passed 83.76%(risk 98.2%)+ vitest 80 passed + type-check + build + redline 全绿。Phase B 开放。</li>
