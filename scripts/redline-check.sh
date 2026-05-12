@@ -136,6 +136,88 @@ check "backend/risk does not import llm/agents/mirofish/data"      1 \
   --include='*.py' backend/risk/
 
 # ----------------------------------------------------------------------
+# P0-8 §2 redline 8 / P1-2.B §2 redline 8 — data-quality boundary
+# (data_quality.py / staleness.py / divergence.py / suspension.py never
+# import backend.llm / backend.agents / backend.risk / backend.mirofish).
+# MiroFish health hook is wired through a Protocol so no concrete
+# import is required (P1-2.B §2 redline 8).
+#
+# Uses Python's ``ast`` module so the guard catches every import form
+# — dotted, package-level, relative, and multiline ``from backend
+# import (\n llm,\n)`` shapes that line-oriented grep would miss.
+# ----------------------------------------------------------------------
+echo
+yellow "[P0-8] data-quality boundary"
+BOUNDARY_OUT="$(python3 - <<'PY'
+import ast, sys
+from pathlib import Path
+
+FILES = [
+    "backend/data/data_quality.py",
+    "backend/data/staleness.py",
+    "backend/data/divergence.py",
+    "backend/data/suspension.py",
+]
+FORBIDDEN = {"llm", "agents", "risk", "mirofish"}
+
+bad: list[str] = []
+for path in FILES:
+    p = Path(path)
+    if not p.exists():
+        continue
+    try:
+        tree = ast.parse(p.read_text())
+    except SyntaxError as exc:
+        bad.append(f"{path}: parse error: {exc}")
+        continue
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".") if mod else []
+            # from backend.llm[.x] import ...
+            if parts[:1] == ["backend"] and len(parts) >= 2 and parts[1] in FORBIDDEN:
+                bad.append(f"{path}:{node.lineno}: from {mod} import ...")
+            # from backend import llm
+            if mod == "backend":
+                for alias in node.names:
+                    if alias.name in FORBIDDEN:
+                        bad.append(
+                            f"{path}:{node.lineno}: from backend import {alias.name}"
+                        )
+            # from ..llm import X  (relative)
+            if node.level and parts and parts[0] in FORBIDDEN:
+                bad.append(
+                    f"{path}:{node.lineno}: from {'.' * node.level}{mod} import ..."
+                )
+            # from .. import llm  (relative)
+            if node.level and not mod:
+                for alias in node.names:
+                    if alias.name in FORBIDDEN:
+                        bad.append(
+                            f"{path}:{node.lineno}: from {'.' * node.level} import {alias.name}"
+                        )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                if parts[:1] == ["backend"] and len(parts) >= 2 and parts[1] in FORBIDDEN:
+                    bad.append(f"{path}:{node.lineno}: import {alias.name}")
+
+if bad:
+    for line in bad:
+        print(line)
+    sys.exit(1)
+PY
+)"
+BOUNDARY_RC=$?
+if [ $BOUNDARY_RC -eq 0 ]; then
+  green "  ok    data_quality / staleness / divergence / suspension isolated"
+else
+  red "  FAIL  data-quality boundary imports llm/agents/risk/mirofish"
+  printf '%s\n' "$BOUNDARY_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ----------------------------------------------------------------------
 # A-007 — shadow_baseline isolation
 # ----------------------------------------------------------------------
 echo
