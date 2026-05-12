@@ -8,10 +8,10 @@ SSoT = `docs/plan.html`(61 任务,十一阶段 S/A-H/I/X)。红线条文 → 对
 
 详细表格见 `docs/plan.html#protocol`,本节冲突以 plan.html 为准。
 
-1. **开始前调查**:`grep` `docs/plan.html` 的 `#session-log` + `status: "doing"`/`status: "blocked"`,定位上次停在哪、在途任务。
-2. **认领任务**:改源码 `TASKS` 状态 `todo`→`doing` + 填 `session_date: "YYYY-MM-DD"`;依赖未完成改 `blocked` + `notes` 写 `blocked_by:`。
-3. **完成任务**:状态改 `done` + 回填 `commit:`(真实 hash 7 位) + `notes:`(What+Why 1-2 句)。
-4. **结束 session**:`SESSION_LOG` 顶部追加 `{date, session, owner, state_in, actions, commit, next}`;"修订记录"加一行。
+1. **开始前调查**:`grep` `docs/plan.html` 的 `#session-log` + `status: "doing"`/`status: "blocked"`,定位上次停在哪、在途任务。**确定本次活动 Phase**(最早一个含 `status="todo"` 的字母 Phase)以及该 Phase 内所有 `depends` 已满足的任务集 — **本次 session = 该 Phase 全套未阻塞任务,不是单子任务**(2026-05-12 用户锁定)。
+2. **认领任务**:把该 Phase 当前可做的所有任务 `TASKS` 状态 `todo`→`doing` + 填 `session_date: "YYYY-MM-DD"`;依赖未完成改 `blocked` + `notes` 写 `blocked_by:`。
+3. **完成任务**:每个任务自己一次 feature commit 后,状态改 `done` + 回填 `commit:`(真实 hash 7 位) + `notes:`(What+Why 1-2 句)。一个 commit / 一个任务,git 历史按任务粒度可读。
+4. **结束 session**(Phase 全部 done 或确实无法继续后才结束):一次性 docs-only commit 把 `SESSION_LOG` 顶部追加一条覆盖整个 Phase 的 `{date, session: "#N phase-X full", owner, state_in, actions(每任务 + commit hash 枚举), commit, next}`;"修订记录"加一行。**不要**每个任务都跟一次 docs-only commit。
 5. **改决策边界**:先新增 `docs/decisions/*-amendment-YYYY-MM-DD-{原因}.md`,再改代码;无 amendment 的行为差异 = 违规。
 
 > 报告"完成"前:SSoT 必须已改 ✅ + 真实 commit hash + 报告里写改了什么。只改 localStorage 不算项目进度。
@@ -47,7 +47,7 @@ SSoT = `docs/plan.html`(61 任务,十一阶段 S/A-H/I/X)。红线条文 → 对
 - 注释 / commit 英文;UI 文档中文;public function 必须 type hints + docstring(WHY 而非 WHAT)。
 - 不可变结构优先(frozen dataclass / NamedTuple / Pydantic frozen);文件 200-400 行典型 / 800 上限;函数 <50 行;嵌套 <4 层。
 - 测试金字塔 + ruff 全绿才允许 commit;非 risk >70%,risk >95%。**测试通过 ≠ 闭环可用**(audit 反面教材 1139 绿但 RiskEngine 不接订单;断言要覆盖被谁调用、贯穿到哪)。
-- Codex review hard gate:**任何 commit 前**(全量 pytest+ruff+前端+redline-check 全绿之后)至少跑 1 个 `/codex-review` cycle 并解决 CRITICAL/HIGH;major 5 轮 R1-R5、minor R1+R3 两轮、single-task 1 cycle 最低门槛,输出 `docs/reviews/{task_id}-r{N}-{topic}.md`。绿测试 ≠ 提交安全(497f683 测试 1282 全绿但 codex 仍找 5 issue 含 1 个 audit TTL 隐性 P0)。
+- Codex review = **手动调用,绝不自动**(2026-05-12 用户锁定):commit 前的本地门禁 = pytest + ruff + redline-check + 前端 type-check + vitest 全绿,**不**包括 codex;Claude 绝不主动跑 `/codex-review` / `codex review --uncommitted` / `codex exec` / `scripts/run-codex-review.sh`。用户显式说"跑 codex"/"/codex-review" 时再跑;那时仍按 codex-review skill 流程跑(1 cycle 起步,major 用户可指定 5 轮 R1-R5,输出 `docs/reviews/{task_id}-codex-review-summary.md`)。绿测试 ≠ 完美但够提交;codex 留给用户主动质检整 Phase 的批量改动。
 - fail-closed for data corruption / fail-open for infra glitches;完整升级路径优先,不为省工作量妥协可用性。
 
 ## 4. 重要文档

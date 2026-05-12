@@ -675,38 +675,32 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         <tbody>
           <tr>
             <td>会话开始</td>
-            <td>第一件事 <code>grep</code> <code>#session-log</code> 与 <code>status="doing"</code>, 写明上次停在哪、下一步做什么。</td>
-            <td>未先调查就动手 = 违规;退回重做。</td>
+            <td>第一件事 <code>grep</code> <code>#session-log</code> 与 <code>status="doing"</code>, 写明上次停在哪;**确定本次活动 Phase** = 最早一个含 <code>status="todo"</code> 的字母 Phase, 并列出该 Phase 内 <code>depends</code> 已满足的任务集 — 本次 session 一次性完成该 Phase 所有可做任务, **不再按单子任务粒度切 session**(2026-05-12 用户锁定)。</td>
+            <td>未先调查就动手 = 违规;只挑一个任务做完就收工 = 违规(除非用户显式要求 single-task 或剩余任务过大需要拆分,且在 SESSION_LOG 说明)。</td>
           </tr>
           <tr>
             <td>认领任务</td>
-            <td>把任务源码状态从 <code>todo</code> 改为 <code>doing</code>, 同步填写 <code>session_date</code>;若依赖未完成改 <code>blocked</code> + 在 <code>notes</code> 写明 blocked_by。</td>
+            <td>把活动 Phase 内所有可做任务源码状态从 <code>todo</code> 改为 <code>doing</code>, 同步填写 <code>session_date</code>;若依赖未完成改 <code>blocked</code> + 在 <code>notes</code> 写明 blocked_by。</td>
             <td>只改 localStorage 不算项目进度;必须改源码 <code>TASKS</code>。</td>
           </tr>
           <tr>
             <td>完成任务</td>
-            <td>源码状态改 <code>done</code>, 回填 <code>commit</code>(真实 hash 7 位)<code>session_date</code> <code>notes</code>(1-2 句 What+Why);触发"修订记录"追加。</td>
+            <td>每个任务一次独立 feature commit, 状态改 <code>done</code>, 回填真实 7 位 <code>commit</code> hash + <code>session_date</code> + <code>notes</code>(1-2 句 What+Why);docs-only "状态/commit 翻新" 不在每任务后立即跟, 留到 session 结束统一一次。</td>
             <td>测试未跑或失败不得标 done;commit 留空不得标 done。</td>
           </tr>
           <tr>
-            <td>提交前(强制 / 通用)</td>
+            <td>提交前本地门禁</td>
             <td>
-              全量本地验证全绿(<code>pytest -q --cov=backend --cov-fail-under=70</code> + <code>pytest -q backend/risk --cov-fail-under=95</code> + 前端 <code>type-check</code>/<code>vitest</code>/<code>build</code> + <code>scripts/redline-check.sh</code> + <code>ruff</code>)之后, <strong>必须</strong>对未提交 diff 跑至少 1 个 <code>/codex-review</code> cycle;
-              CRITICAL/HIGH 全解决, MEDIUM 修复或写入 <code>docs/reviews/{task-id}-backlog.md</code> 并注明延迟原因, 再 <code>git commit</code>。
-              major feature(P*-T* 或多任务一次切入)继续走 [[feedback_codex_review_gate]] 的 5 轮 R1-R5;single-task commit 走最少 1 cycle;两者不重复。
-              例外仅限:纯文档 commit 且不动 <code>docs/decisions/</code>;<code>docs/plan.html</code> 仅状态/commit/SESSION_LOG 翻新;Codex CLI 验证不可用时(commit body 必须显式声明)。
+              每个 feature commit 前, 全量本地验证全绿(<code>pytest -q --cov=backend --cov-fail-under=70</code> + <code>pytest -q backend/risk --cov-fail-under=95</code> + 前端 <code>type-check</code>/<code>vitest</code> + <code>scripts/redline-check.sh</code> + <code>ruff</code> 触动文件); 全绿即可 commit。
+              <strong>Codex review 改手动调用</strong>(2026-05-12 用户锁定): Claude 绝不主动跑 <code>/codex-review</code> / <code>codex review --uncommitted</code> / <code>codex exec</code>; 仅当用户显式要求"跑 codex" / "/codex-review" 时才跑, 那时按 codex-review skill 流程跑(默认 1 cycle, 用户可指定 major-feature 5 轮 R1-R5; 输出 <code>docs/reviews/{task-id}-codex-review-summary.md</code>)。
+              旧"任何 commit 前 codex 至少 1 cycle 强制"协议作废, 见 <code>~/.claude/projects/-home-ps-papers-QuantMind/memory/feedback_codex_review_manual_invocation.md</code>。
             </td>
-            <td>
-              红树或在 codex 未跑前 commit = 违规;CRITICAL/HIGH 未解决 commit = 违规;
-              session 必须把 codex cycle 数 + 处理结果写入 <code>SESSION_LOG.actions</code>。
-              历史依据:session #5 (497f683) pytest 1282 全绿 + ruff 全绿但 codex cycle 1 仍找出 5 issue 含 1 个隐性 P0(audit Mongo timestamp ISO 序列化破坏 180d TTL);
-              session #4 (61c18db) 1039 全绿但 codex 找到 watchlist 删除写端点后无种子路径致调度器空跑。
-            </td>
+            <td>本地门禁红色 commit = 违规; SESSION_LOG <code>actions</code> 说明 codex 是否被用户调用(没有就写 "codex: manual gate, not run this session")。</td>
           </tr>
           <tr>
             <td>会话结束</td>
-            <td>在 <code>SESSION_LOG</code> 顶部追加一条:date / session / owner / state_in / actions / commit / next;<code>修订记录</code> 同步追加一行。</td>
-            <td>无 SESSION_LOG 条目的 commit 视为孤儿提交。</td>
+            <td>整个 Phase 全部 done 后(或确实无法继续后), 一次性 docs-only commit 在 <code>SESSION_LOG</code> 顶部追加一条覆盖整个 Phase 的条目: <code>session: "#N phase-X full"</code> / <code>actions</code> 枚举每任务及其 commit hash / <code>next</code> 指下个 Phase 第一个可做任务; <code>修订记录</code> 同步追加一行。<strong>不要</strong>每个任务都跟一次 docs-only commit。</td>
+            <td>无 SESSION_LOG 条目的 commit 视为孤儿提交; 中途 docs-only 翻新 = 违反新协议。</td>
           </tr>
           <tr>
             <td>改决策边界</td>
