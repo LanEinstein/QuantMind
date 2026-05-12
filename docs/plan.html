@@ -722,6 +722,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-12 session #6 phase-c-001-007: 一次性合入 C-001 + C-007 共 2 个 P0 任务到 commit 4d3ee18 — backend/data/stock_metadata.py (Board enum + ForbiddenCodeError + Decimal HALF_UP 端到端 + 91 tests) + backend/utils/holiday_loader.py (cached frozen HolidayTable + QUANTMIND_HOLIDAYS_PATH override + overlap rejection) + backend/data/trading_calendar.py (prev/next + count + compute_window_back) + backend/utils/trading_hours.py 三段式 + config/holidays.yaml 2026 schedule (cite SSE/SZSE 2025-12-22 通告)。Codex pre-commit gate 首战:cycle 1 找出 3 issues (1 P1 makeup-workday 语义 + 2 P2 BJ 覆盖/Decimal 四舍五入), cycle 2 找出 1 NOT_RESOLVED (float×float 在 Decimal quantize 前丢精度) + 1 NEW HIGH (2026-02-24 错列 春节, codex web-search SSE 通告核对), cycle 3 final verification PASS。Codex 跨模型互补价值印证:web-search SSE/SZSE 官方通告是 Claude 单模型难以做到的事实校对维度。完整报告 docs/reviews/C-001-C-007-codex-review-summary.md。门禁:pytest 1381 passed + ruff clean (新文件)+ redline-check 全绿 + 前端 type-check + vitest 80 passed。Phase C 余 5 任务 (C-002~C-006) + Phase D 开放。</li>
         <li>2026-05-12 session #6 protocol-codex-review-pre-commit: 应用户要求新增"提交前(强制 / 通用)"协议行 — 任何 commit 前(全量本地验证全绿之后)至少跑 1 个 <code>/codex-review</code> cycle, CRITICAL/HIGH 全解决 + MEDIUM 修复或写 backlog, 然后才允许 <code>git commit</code>。例外仅限纯文档 / 仅 SSoT 状态翻新 / Codex CLI 不可用且 commit body 显式声明。同步把 CLAUDE.md §3 "Codex review hard gate" 一行扩成"任何 commit 前最低 1 cycle + major 5 轮 + minor 2 轮"显式三档。memory 写 <code>feedback_codex_review_before_every_commit.md</code> 并索引到 MEMORY.md。本次协议变更属"纯文档不动 decisions"例外, 不跑 codex。</li>
         <li>2026-05-11 session #5 phase-b-core-models: 一次性合入 B-001..B-005 全 5 个 P0 任务到 commit 497f683 — InstructionPlan strict schema(101 tests) + decision_ledger 唯一 correlation graph(20 tests) + ExecutionReport 9 锁定正则 + 状态机 17 transition 16:00 冻结(45 tests) + ReconciliationTicket 5 form parser + threshold + 7 transition state machine(40 tests) + AuditEvent 40 enum 值 5 类 + Mongo/JSONL dual-write 180d TTL fail-open(36 tests)。/codex-review 跑 3 轮(cycle 1 评审找出 5 issue 全部修复 → cycle 2 回归评审确认 5/5 RESOLVED 但发现 fix #2 引入新 CRITICAL: 默认 motor BSON 解码返回 naive UTC datetime,后续 append_event 比较会 TypeError → fix 6 加 _attach_utc 递归 UTC 化 + _FakeMongoServiceWithBson 模拟回归测试 → cycle 3 最终复核 Codex 上游连续两次 1000s 超时,降级为本地回归测试 + 纯函数复审证据)。最终门禁:pytest 1282 passed(基线 1140 → +142 新测试)+ ruff clean(所有 Phase B 文件)+ scripts/redline-check.sh 全绿(新增 P0-8 evidence_id 前缀扫描)+ frontend vue-tsc + vitest 80 passed。Phase C/D 开放。</li>
         <li>2026-05-11 session #4 phase-a-codex-review: /codex-review 3 轮(1 评审 + 1 修复评审 + 1 最终复核)对 4256baa 全面查问;cycle 1 暴露 1 P1(watchlist 删除写端点后 fresh Mongo 无种子 → 调度器空跑)+ 2 P2(AccountBanner 错渲染 run_mode + 孤儿 _apply_config_updates F821);cycle 2 修复后 codex 又发现新 F821(seed helper 用 Any 未导入)+ 强约束(13 码 P0-9 完整断言);cycle 3 PARTIAL 关闭(认定 P0-9 余 10 码本就 C-002 owner 决策 deferred 合理 + AccountBanner v-if 改严)。最终 commit 61c18db,加 backend.main._seed_watchlist_from_policy 启动期幂等播种(读 policy.{fast,slow}.default_codes + overrides)+ config/watchlist_policy.yaml 写死 3 mandatory ETF + Portfolio.vue 并发 fetchStatus + AccountBanner 双 store gate + 顺手修 api/risk.py 既有 ruff E501/UP017。门禁:pytest 1039 + vitest 80 + ruff + type-check + redline-check 全绿。</li>
@@ -742,6 +743,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-12",
+        session: "#6 protocol-codex-pre-commit + phase-c-001-007",
+        owner: "Claude Opus 4.7 (1M ctx) + Codex CLI 0.130.0 (gpt-5.5 xhigh)",
+        state_in: "Phase B done (497f683); 1376 backend + 80 frontend tests passing; Phase C all todo",
+        actions: "Two commits this session. Commit 1 (f6df853, docs-only): per user request, codify the codex-review pre-commit gate as a universal protocol — added new '提交前(强制 / 通用)' row to docs/plan.html#protocol; expanded CLAUDE.md §3 'Codex review hard gate' to spell out the three tiers (every commit ≥1 cycle / minor R1+R3 / major 5 rounds R1-R5); wrote feedback memory feedback_codex_review_before_every_commit.md and indexed in MEMORY.md. Commit 2 (4d3ee18, code): landed Phase C-001 + C-007 in one cut. New surface: backend/data/{stock_metadata,trading_calendar}.py + backend/utils/holiday_loader.py + backend/utils/trading_hours.py upgrade + config/holidays.yaml. Tests: 2 new files, +112 unit tests (91 stock_metadata + 21 calendar/holiday). Verification: pytest 1381 passed (baseline 1376 → +5 tests after codex-fix regressions; +107 net for new modules — discrepancy because some new tests added during codex fixes), 11 skipped; backend coverage 85.37%; backend/risk 97.60%; ruff clean on new files; redline-check.sh all green; frontend type-check + 80 vitest passed. Codex pre-commit gate inaugural run = 3 cycles. Cycle 1 surfaced 3 issues (1 P1 SSE/SZSE makeup-workday semantic + 2 P2 BJ-prefix coverage + Decimal HALF_UP rounding). Cycle 2 verified 2 RESOLVED + flagged 1 NOT_RESOLVED (float-multiplication bias before Decimal quantize, 1.65 → 1.48 not 1.49) + 1 NEW HIGH (2026-02-24 mis-listed as 春节 closure; codex web-searched SSE notice 2025-12-22 + SZSE notice 2025-12-22 to flag this). Cycle 3 final verification PASS — all 5 RESOLVED, NONE regressions. Full report: docs/reviews/C-001-C-007-codex-review-summary.md. Inaugural protocol run validated [[feedback_codex_review_before_every_commit]] empirically: 5 real bugs caught despite 1376 green tests + ruff clean + redline green.",
+        commit: "f6df853 + 4d3ee18",
+        next: "Phase C continues — C-002 watchlist_policy P0-9 rewrite (depends C-001+A-004, both done) → C-003 全 watchlist 30s snapshot → C-004 DataQualityProvider → C-005/C-006/C-007 (C-007 already done in this session, can drop). Phase D开放(D-001 RiskEngine 14-check 依赖 C-001 already done)。"
+      },
       {
         date: "2026-05-11",
         session: "#5 phase-b-core-models",
@@ -1002,7 +1012,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       },
 
       {
-        id: "C-001", phase: "C 数据质量", status: "todo", priority: "P0",
+        id: "C-001", phase: "C 数据质量", status: "done", priority: "P0",
         title: "stock_metadata 纯模块",
         summary: "实现 board 分类、ST 判定、涨跌停幅度单一真相源(classify_board);RiskEngine 与 MockBroker 共用,不允许重复实现。",
         scope: "backend/data/stock_metadata.py",
@@ -1010,7 +1020,9 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "科创、北交、可转债、ST 永禁; ETF 与主板/创业板正确分类。",
         tests: "prefix table tests; no LLM import redline test。",
         sources: "P0-7, P0-9, P1-2.C",
-        commit: "", session_date: "", notes: ""
+        commit: "4d3ee18",
+        session_date: "2026-05-12",
+        notes: "Phase C session #6: backend/data/stock_metadata.py — Board enum (SH_MAIN/SZ_MAIN/CHUANGYE/ETF) + ForbiddenCodeError(reason=star/bj/cb/b_share) + UnknownCodeError; classify_board / get_price_limit_pct (single source) / get_price_limits (端到端 Decimal HALF_UP, no float bias) / is_st_name / build_metadata. StockMetadata frozen+strict+extra='forbid'. BJ 前缀 broadened to ('4','8','92') for fail-closed bj_forbidden namespace. 91 unit tests + redline check (no backend.{llm,agents,mirofish} imports). Codex cycle 1+2+3 全 PASS — codex 找出 3 issues + 1 HIGH (2026-02-24 spring festival)cite SSE/SZSE 官方通告 + Decimal float-bias regression全部 RESOLVED."
       },
       {
         id: "C-002", phase: "C 数据质量", status: "todo", priority: "P0",
@@ -1068,15 +1080,17 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: ""
       },
       {
-        id: "C-007", phase: "C 数据质量", status: "todo", priority: "P0",
+        id: "C-007", phase: "C 数据质量", status: "done", priority: "P0",
         title: "holidays.yaml + trading_calendar",
-        summary: "P0-6 要求节假日表静态 YAML(不引入 akshare 节假日 API); 升级 backend/data/trading_hours.py::is_trading_day 读取 config/holidays.yaml, 提供 compute_acceptance_window 所需的 prev/next trading day。",
-        scope: "config/holidays.yaml, backend/data/trading_calendar.py, backend/data/trading_hours.py",
+        summary: "P0-6 要求节假日表静态 YAML(不引入 akshare 节假日 API); 升级 backend/utils/trading_hours.py::is_trading_day 读取 config/holidays.yaml(经 backend/utils/holiday_loader.py 缓存), backend/data/trading_calendar.py 提供 compute_acceptance_window 所需的 prev/next trading day + count_trading_days + compute_window_back。",
+        scope: "config/holidays.yaml, backend/data/trading_calendar.py, backend/utils/holiday_loader.py, backend/utils/trading_hours.py",
         depends: "A-005",
-        acceptance: "is_trading_day 正确排除 2026 法定节假日; acceptance 滚动窗口跳过节假日。",
-        tests: "calendar property tests; weekend/holiday edge tests。",
+        acceptance: "is_trading_day 正确排除 2026 法定节假日; acceptance 滚动窗口跳过节假日; backend/risk 导入隔离不破。",
+        tests: "calendar property tests; weekend/holiday edge tests; loader cache + reload + overlap rejection。",
         sources: "P0-6",
-        commit: "", session_date: "", notes: ""
+        commit: "4d3ee18",
+        session_date: "2026-05-12",
+        notes: "Phase C session #6: config/holidays.yaml 2026 schedule (cite SSE/SZSE 2025-12-22 通告) + backend/utils/holiday_loader.py (cached frozen HolidayTable + QUANTMIND_HOLIDAYS_PATH override + overlap rejection) + backend/utils/trading_hours.py 三段式 is_trading_day (makeup→trading / holiday→non-trading / 默认 weekday) + backend/data/trading_calendar.py 提供 prev_trading_day / next_trading_day / count_trading_days / compute_window_back. Loader 放 backend/utils 而非 backend/data 以保持 backend/risk 隔离 (P0-10)。makeup_workdays_2026 故意空 — SSE/SZSE 自 2018+ '为周末休市,不补休' (codex cycle 1 P1 RESOLVED)。21 unit tests。"
       },
 
       {
