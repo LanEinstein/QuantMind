@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -12,6 +13,7 @@ from backend.models.market import (
     IndexQuote,
     NewsArticle,
     StockQuote,
+    WatchlistMarketSnapshot,
 )
 
 if TYPE_CHECKING:
@@ -53,6 +55,22 @@ class MongoDBService:
         await market.create_index(
             [("code", ASCENDING), ("timestamp", DESCENDING)],
             unique=True,
+            background=True,
+        )
+
+        # watchlist_market_snapshots — per-stock 30s tick (C-003 / P0-8 §1.1).
+        # Unique key (code, snapshot_at) makes the bulk-upsert idempotent
+        # against retried 30s ticks. The (snapshot_at DESC) standalone
+        # index backs the latest-tick / windowed missing-rate reads from
+        # DataQualityProvider without a collection scan.
+        watchlist_snapshots = self._db["watchlist_market_snapshots"]
+        await watchlist_snapshots.create_index(
+            [("code", ASCENDING), ("snapshot_at", DESCENDING)],
+            unique=True,
+            background=True,
+        )
+        await watchlist_snapshots.create_index(
+            [("snapshot_at", DESCENDING)],
             background=True,
         )
 
@@ -276,6 +294,61 @@ class MongoDBService:
             return result.upserted_count + getattr(result, "modified_count", 0)
         except Exception as exc:
             self._log.warning("save_market_snapshot_failed", error=str(exc))
+            return 0
+
+    async def save_watchlist_snapshot(
+        self, snapshots: list[WatchlistMarketSnapshot]
+    ) -> int:
+        """Bulk upsert watchlist 30s snapshots (C-003 / P0-8 §1.1).
+
+        Keyed by ``(code, snapshot_at)`` so a retried scheduler tick
+        (e.g. APScheduler missfire grace re-fire) is idempotent. Returns
+        the combined upserted + modified count. Failures are logged and
+        swallowed — the scheduler's outer ``try`` already absorbs the
+        return value, and the 30s cadence will retry on the next tick;
+        re-raising would risk crashing the AsyncIOScheduler loop
+        (P0-8 §2 mandates fail-open for transient infra glitches).
+        """
+        if not snapshots:
+            return 0
+
+        coll = self._db["watchlist_market_snapshots"]
+        ops = [
+            UpdateOne(
+                {"code": s.code, "snapshot_at": s.snapshot_at},
+                {"$set": s.model_dump()},
+                upsert=True,
+            )
+            for s in snapshots
+        ]
+
+        try:
+            result = await coll.bulk_write(ops, ordered=False)
+            return result.upserted_count + getattr(result, "modified_count", 0)
+        except Exception as exc:
+            self._log.warning("save_watchlist_snapshot_failed", error=str(exc))
+            return 0
+
+    async def count_watchlist_snapshots_in_window(
+        self, start: datetime, end: datetime
+    ) -> int:
+        """Count rows persisted to ``watchlist_market_snapshots`` in [start, end).
+
+        Backs :func:`backend.data.missing_rate.compute_window_missing_rate`
+        without forcing callers to write their own aggregation pipeline.
+        Returns 0 on any driver error so the acceptance scorer can
+        fall through to the fail-closed degraded branch instead of
+        crashing the report.
+        """
+        coll = self._db["watchlist_market_snapshots"]
+        try:
+            return await coll.count_documents(
+                {"snapshot_at": {"$gte": start, "$lt": end}}
+            )
+        except Exception as exc:
+            self._log.warning(
+                "count_watchlist_snapshots_failed", error=str(exc)
+            )
             return 0
 
     async def save_kline(self, code: str, df: pd.DataFrame) -> int:

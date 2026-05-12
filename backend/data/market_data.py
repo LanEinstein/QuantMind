@@ -12,8 +12,10 @@ from backend.data.config import DataSourcesConfig
 from backend.models.market import (
     CapitalFlowData,
     IndexQuote,
+    QuoteSource,
     SectorQuote,
     StockQuote,
+    WatchlistMarketSnapshot,
 )
 
 log = structlog.get_logger(component="market_data")
@@ -87,6 +89,22 @@ def _fetch_stock_akshare(code: str) -> pd.DataFrame:
 
     df = akshare.stock_zh_a_spot_em()
     return df[df["代码"] == code]
+
+
+def _fetch_stock_list_akshare(codes: list[str]) -> pd.DataFrame:
+    """Fallback: fetch real-time quotes for multiple stocks from akshare.
+
+    ``stock_zh_a_spot_em`` returns the full A-share spot table in one
+    shot, so multi-code support is just an :py:meth:`pandas.DataFrame.isin`
+    filter. Single-row helpers like :func:`_fetch_stock_akshare` use
+    ``==`` against a single string, which would silently produce an
+    empty frame when called with a comma-joined multi-code string —
+    that bug masked watchlist outages until Codex review caught it.
+    """
+    import akshare
+
+    df = akshare.stock_zh_a_spot_em()
+    return df[df["代码"].isin(codes)]
 
 
 def _fetch_stock_list_adata(codes: list[str]) -> pd.DataFrame:
@@ -304,6 +322,98 @@ class MarketDataService:
         if "stock_code" in df.columns:
             return [_adata_stock_row_to_quote(row) for _, row in df.iterrows()]
         return [_akshare_stock_row_to_quote(row) for _, row in df.iterrows()]
+
+    async def get_watchlist_snapshot(
+        self, codes: list[str], snapshot_at: datetime
+    ) -> list[WatchlistMarketSnapshot]:
+        """Return per-stock 30s snapshot for the active watchlist (C-003).
+
+        Mirrors :meth:`get_stock_list_realtime` but tags each row with the
+        leg that actually produced it (``adata`` primary or ``akshare``
+        fallback) so DataQualityProvider's divergence / staleness checks
+        can distinguish data origin. Empty ``codes`` short-circuits to
+        ``[]`` so the scheduler does not call the upstream fetchers when
+        the watchlist is briefly empty (e.g. boot before seed).
+
+        Treats *both* an exception **and** an empty frame from the
+        primary leg as a primary failure so the akshare fallback fires
+        whenever adata cannot keep the watchlist alive (Codex review
+        Cycle 1 [P2]). Only when both legs return empty does the method
+        return ``[]``; only when both legs raise does it surface
+        :class:`DataFetchError`.
+        """
+        if not codes:
+            return []
+
+        source: QuoteSource = "adata"
+        primary_exc: Exception | None = None
+        try:
+            df = await asyncio.to_thread(_fetch_stock_list_adata, codes)
+        except Exception as exc:
+            self._log.warning(
+                "watchlist_snapshot_adata_failed", error=str(exc)
+            )
+            df = None
+            primary_exc = exc
+
+        # An empty adata frame during trading hours is also a primary
+        # failure — the watchlist is non-empty here, so fall through to
+        # akshare instead of returning [] and starving DataQualityProvider.
+        if df is None or df.empty:
+            source = "akshare"
+            try:
+                df = await asyncio.to_thread(_fetch_stock_list_akshare, codes)
+            except Exception as exc:
+                # Only raise when BOTH legs failed exceptionally — a
+                # primary empty + fallback exception still counts as an
+                # outage because no rows can be produced this tick.
+                self._log.error(
+                    "watchlist_snapshot_both_failed",
+                    primary_error=str(primary_exc) if primary_exc else "empty",
+                    fallback_error=str(exc),
+                )
+                raise DataFetchError(
+                    "Both adata and akshare failed for watchlist snapshot"
+                ) from exc
+
+        if df is None or df.empty:
+            return []
+
+        # Trust the column shape over the source flag for tagging — an
+        # adata-shape frame after the fallback fired (vendor edge case)
+        # should still be tagged ``adata`` for traceability.
+        if "stock_code" in df.columns:
+            quotes = [_adata_stock_row_to_quote(row) for _, row in df.iterrows()]
+            actual_source: QuoteSource = "adata"
+        else:
+            quotes = [_akshare_stock_row_to_quote(row) for _, row in df.iterrows()]
+            actual_source = "akshare"
+
+        # When we explicitly took the akshare branch above the column
+        # shape will already be akshare-shape; the override below is a
+        # safety net for the (rare) case where a partial frame slips
+        # through with mixed shape.
+        if source == "akshare":
+            actual_source = "akshare"
+
+        return [
+            WatchlistMarketSnapshot(
+                code=q.code,
+                name=q.name,
+                price=q.price,
+                open=q.open,
+                high=q.high,
+                low=q.low,
+                prev_close=q.prev_close,
+                change_pct=q.change_pct,
+                volume=q.volume,
+                amount=q.amount,
+                turnover_rate=q.turnover_rate,
+                source=actual_source,
+                snapshot_at=snapshot_at,
+            )
+            for q in quotes
+        ]
 
     async def get_sector_overview(self) -> list[SectorQuote]:
         """Get sector performance overview."""

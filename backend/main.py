@@ -63,18 +63,9 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     history_data = HistoryDataService(config)
     news_crawler = NewsCrawlerService(config)
 
-    # Scheduler
-    scheduler = DataScheduler(
-        market_data=market_data,
-        news_crawler=news_crawler,
-        mongodb=mongodb_service,
-        redis_client=redis_pool,  # type: ignore[arg-type]
-        market_interval_seconds=config.market_data.refresh_interval_seconds,
-        news_interval_seconds=config.news.refresh_interval_seconds,
-    )
-    await scheduler.start()
-
-    # Watchlist service
+    # Watchlist service — constructed before the scheduler so the 30s
+    # watchlist snapshot job (C-003) can read the active universe from
+    # the same instance the API + AnalysisScheduler use.
     from backend.data.watchlist import WatchlistService
 
     watchlist_service = WatchlistService(db)
@@ -82,6 +73,18 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         await watchlist_service.initialize()
     except Exception as exc:
         log.warning("watchlist_init_failed", error=str(exc))
+
+    # Scheduler
+    scheduler = DataScheduler(
+        market_data=market_data,
+        news_crawler=news_crawler,
+        mongodb=mongodb_service,
+        redis_client=redis_pool,  # type: ignore[arg-type]
+        watchlist=watchlist_service,
+        market_interval_seconds=config.market_data.refresh_interval_seconds,
+        news_interval_seconds=config.news.refresh_interval_seconds,
+    )
+    await scheduler.start()
 
     # Store on app state
     application.state.mongo_client = mongo_client

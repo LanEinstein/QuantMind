@@ -32,8 +32,10 @@ from backend.models.market import (
     FinancialData,
     IndexQuote,
     NewsArticle,
+    QuoteSource,
     SectorQuote,
     StockQuote,
+    WatchlistMarketSnapshot,
 )
 from backend.models.reconciliation import (
     CASH_TOLERANCE_CNY,
@@ -74,12 +76,14 @@ __all__ = [
     "MockBrokerSnapshot",
     "NewsArticle",
     "PositionSummary",
+    "QuoteSource",
     "ReconciliationTicket",
     "ReconciliationTicketStatus",
     "ReportedPosition",
     "RiskCheckSummary",
     "SectorQuote",
     "StockQuote",
+    "WatchlistMarketSnapshot",
     "parse_evidence_prefix",
     "validate_evidence_id",
 ]

@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest
 
-from backend.data.scheduler import DataScheduler
+from backend.data.scheduler import (
+    QUOTE_CACHE_KEY_PREFIX,
+    QUOTE_CACHE_TTL_SECONDS,
+    DataScheduler,
+)
+from backend.models.market import WatchlistMarketSnapshot
+
+
+def _sample_snapshot(code: str = "600519") -> WatchlistMarketSnapshot:
+    return WatchlistMarketSnapshot(
+        code=code,
+        name="贵州茅台",
+        price=1800.0,
+        open=1790.0,
+        high=1810.0,
+        low=1785.0,
+        prev_close=1795.0,
+        change_pct=0.28,
+        volume=5_000_000.0,
+        amount=9_000_000_000.0,
+        turnover_rate=0.63,
+        source="adata",
+        snapshot_at=datetime(2026, 5, 12, 6, 0, tzinfo=UTC),
+    )
 
 
 @pytest.fixture()
@@ -18,6 +42,7 @@ def mock_deps() -> dict[str, AsyncMock]:
         "news_crawler": AsyncMock(),
         "mongodb": AsyncMock(),
         "redis_client": AsyncMock(),
+        "watchlist": AsyncMock(),
     }
 
 
@@ -28,6 +53,7 @@ def scheduler(mock_deps: dict[str, AsyncMock]) -> DataScheduler:
         news_crawler=mock_deps["news_crawler"],
         mongodb=mock_deps["mongodb"],
         redis_client=mock_deps["redis_client"],
+        watchlist=mock_deps["watchlist"],
         market_interval_seconds=30,
         news_interval_seconds=300,
     )
@@ -63,11 +89,133 @@ class TestDataScheduler:
         self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
     ) -> None:
         mock_deps["market_data"].get_index_realtime.return_value = []
+        mock_deps["watchlist"].list_stocks.return_value = []
         with patch(
             "backend.data.scheduler.is_trading_hours", return_value=True
         ):
             await scheduler._run_market_job()
         mock_deps["market_data"].get_index_realtime.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_market_job_full_watchlist_snapshot(
+        self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        """C-003: full watchlist tick persists + caches per-stock snapshots."""
+        mock_deps["market_data"].get_index_realtime.return_value = []
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519", "stock_name": "贵州茅台", "active": True},
+            {"stock_code": "510300", "stock_name": "沪深300 ETF", "active": True},
+        ]
+        sample = [_sample_snapshot("600519"), _sample_snapshot("510300")]
+        mock_deps["market_data"].get_watchlist_snapshot = AsyncMock(
+            return_value=sample
+        )
+        mock_deps["mongodb"].save_watchlist_snapshot = AsyncMock(return_value=2)
+
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            await scheduler._run_market_job()
+
+        mock_deps["market_data"].get_watchlist_snapshot.assert_called_once()
+        call_args = mock_deps["market_data"].get_watchlist_snapshot.call_args
+        assert call_args.args[0] == ["600519", "510300"]
+        mock_deps["mongodb"].save_watchlist_snapshot.assert_called_once_with(
+            sample
+        )
+        # Per-stock Redis cache with TTL=120s
+        assert mock_deps["redis_client"].set.call_count == 2
+        call0 = mock_deps["redis_client"].set.call_args_list[0]
+        assert call0.args[0] == f"{QUOTE_CACHE_KEY_PREFIX}600519"
+        assert call0.kwargs.get("ex") == QUOTE_CACHE_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_market_job_skips_when_watchlist_empty(
+        self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        """Empty active watchlist must not call get_watchlist_snapshot."""
+        mock_deps["market_data"].get_index_realtime.return_value = []
+        mock_deps["watchlist"].list_stocks.return_value = []
+        mock_deps["market_data"].get_watchlist_snapshot = AsyncMock()
+
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            await scheduler._run_market_job()
+
+        mock_deps["market_data"].get_watchlist_snapshot.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_market_job_swallows_watchlist_fetch_failure(
+        self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        """Vendor brown-out must NOT crash the scheduler loop."""
+        mock_deps["market_data"].get_index_realtime.return_value = []
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519", "stock_name": "贵州茅台", "active": True},
+        ]
+        mock_deps["market_data"].get_watchlist_snapshot = AsyncMock(
+            side_effect=RuntimeError("vendor outage")
+        )
+        mock_deps["mongodb"].save_watchlist_snapshot = AsyncMock()
+
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            await scheduler._run_market_job()
+
+        mock_deps["mongodb"].save_watchlist_snapshot.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_market_job_no_redis_no_cache(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=None,
+            watchlist=mock_deps["watchlist"],
+        )
+        mock_deps["market_data"].get_index_realtime.return_value = []
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519", "stock_name": "贵州茅台", "active": True},
+        ]
+        sample = [_sample_snapshot("600519")]
+        mock_deps["market_data"].get_watchlist_snapshot = AsyncMock(
+            return_value=sample
+        )
+        mock_deps["mongodb"].save_watchlist_snapshot = AsyncMock(return_value=1)
+
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            await s._run_market_job()
+
+        mock_deps["mongodb"].save_watchlist_snapshot.assert_called_once()
+        # No Redis client → no caching call should have been attempted
+        mock_deps["redis_client"].set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_market_job_no_watchlist_wired_skips_snapshot(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            watchlist=None,
+        )
+        mock_deps["market_data"].get_index_realtime.return_value = []
+        mock_deps["market_data"].get_watchlist_snapshot = AsyncMock()
+
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            await s._run_market_job()
+
+        mock_deps["market_data"].get_watchlist_snapshot.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_news_job_runs(

@@ -14,6 +14,7 @@ from backend.models.market import (
     NewsArticle,
     SectorQuote,
     StockQuote,
+    WatchlistMarketSnapshot,
 )
 
 # -- IndexQuote --
@@ -257,3 +258,74 @@ class TestNewsArticle:
             stock_codes=("600519",),
         )
         assert isinstance(article.stock_codes, tuple)
+
+
+# -- WatchlistMarketSnapshot --
+
+
+def _valid_snapshot_kwargs() -> dict[str, object]:
+    return {
+        "code": "600519",
+        "name": "贵州茅台",
+        "price": 1800.0,
+        "open": 1790.0,
+        "high": 1810.0,
+        "low": 1785.0,
+        "prev_close": 1795.0,
+        "change_pct": 0.28,
+        "volume": 5_000_000.0,
+        "amount": 9_000_000_000.0,
+        "turnover_rate": 0.63,
+        "source": "adata",
+        "snapshot_at": datetime(2026, 5, 12, 6, 0, tzinfo=UTC),
+    }
+
+
+class TestWatchlistMarketSnapshot:
+    """C-003: frozen + strict + extra='forbid' lockdown."""
+
+    def test_create_valid(self) -> None:
+        snap = WatchlistMarketSnapshot(**_valid_snapshot_kwargs())
+        assert snap.code == "600519"
+        assert snap.source == "adata"
+        assert snap.snapshot_at == datetime(2026, 5, 12, 6, 0, tzinfo=UTC)
+
+    def test_is_frozen(self) -> None:
+        snap = WatchlistMarketSnapshot(**_valid_snapshot_kwargs())
+        with pytest.raises(ValidationError):
+            snap.price = 9999.0  # type: ignore[misc]
+
+    def test_extra_field_forbidden(self) -> None:
+        kwargs = _valid_snapshot_kwargs()
+        kwargs["extra_llm_field"] = "should never reach here"
+        with pytest.raises(ValidationError):
+            WatchlistMarketSnapshot(**kwargs)  # type: ignore[arg-type]
+
+    def test_strict_rejects_string_for_float(self) -> None:
+        """strict=True must reject string-coerced numbers from upstream."""
+        kwargs = _valid_snapshot_kwargs()
+        kwargs["price"] = "1800.0"
+        with pytest.raises(ValidationError):
+            WatchlistMarketSnapshot(**kwargs)  # type: ignore[arg-type]
+
+    def test_code_must_be_six_digits(self) -> None:
+        kwargs = _valid_snapshot_kwargs()
+        kwargs["code"] = "abc"
+        with pytest.raises(ValidationError):
+            WatchlistMarketSnapshot(**kwargs)  # type: ignore[arg-type]
+        kwargs["code"] = "60051"
+        with pytest.raises(ValidationError):
+            WatchlistMarketSnapshot(**kwargs)  # type: ignore[arg-type]
+
+    def test_source_literal_set(self) -> None:
+        for src in ("adata", "akshare", "unknown"):
+            kwargs = _valid_snapshot_kwargs()
+            kwargs["source"] = src
+            snap = WatchlistMarketSnapshot(**kwargs)
+            assert snap.source == src
+
+    def test_invalid_source_rejected(self) -> None:
+        kwargs = _valid_snapshot_kwargs()
+        kwargs["source"] = "bloomberg"
+        with pytest.raises(ValidationError):
+            WatchlistMarketSnapshot(**kwargs)  # type: ignore[arg-type]

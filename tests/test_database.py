@@ -13,6 +13,7 @@ from backend.models.market import (
     IndexQuote,
     NewsArticle,
     StockQuote,
+    WatchlistMarketSnapshot,
 )
 
 
@@ -78,6 +79,27 @@ def _sample_stock_quote() -> StockQuote:
         amount=9_000_000_000.0,
         turnover_rate=0.63,
         timestamp=datetime(2026, 3, 22, 10, 30, tzinfo=UTC),
+    )
+
+
+def _sample_watchlist_snapshot(
+    code: str = "600519",
+    snapshot_at: datetime | None = None,
+) -> WatchlistMarketSnapshot:
+    return WatchlistMarketSnapshot(
+        code=code,
+        name="贵州茅台",
+        price=1800.0,
+        open=1790.0,
+        high=1810.0,
+        low=1785.0,
+        prev_close=1795.0,
+        change_pct=0.28,
+        volume=5_000_000.0,
+        amount=9_000_000_000.0,
+        turnover_rate=0.63,
+        source="adata",
+        snapshot_at=snapshot_at or datetime(2026, 5, 12, 6, 0, tzinfo=UTC),
     )
 
 
@@ -160,6 +182,91 @@ class TestSaveMarketSnapshot:
     async def test_empty_list(self, service: MongoDBService) -> None:
         count = await service.save_market_snapshot([])
         assert count == 0
+
+
+class TestWatchlistSnapshotIndexes:
+    """C-003: watchlist_market_snapshots collection index lock."""
+
+    @pytest.mark.asyncio
+    async def test_creates_unique_and_window_indexes(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        await service.initialize()
+        coll = mock_db["watchlist_market_snapshots"]
+        all_calls = coll.create_index.call_args_list
+
+        # Required: unique (code, snapshot_at DESC) for idempotent bulk upsert
+        assert any(
+            call.args[0] == [("code", 1), ("snapshot_at", -1)]
+            and call.kwargs.get("unique") is True
+            for call in all_calls
+        ), "watchlist_market_snapshots.(code, snapshot_at) unique missing"
+
+        # Required: standalone (snapshot_at DESC) for window scans
+        assert any(
+            call.args[0] == [("snapshot_at", -1)]
+            and call.kwargs.get("unique") is not True
+            for call in all_calls
+        ), "watchlist_market_snapshots.snapshot_at scan index missing"
+
+
+class TestSaveWatchlistSnapshot:
+    """Tests for save_watchlist_snapshot bulk upsert."""
+
+    @pytest.mark.asyncio
+    async def test_saves_snapshots(self, service: MongoDBService) -> None:
+        snapshots = [
+            _sample_watchlist_snapshot("600519"),
+            _sample_watchlist_snapshot("510300"),
+        ]
+        count = await service.save_watchlist_snapshot(snapshots)
+        assert isinstance(count, int)
+
+    @pytest.mark.asyncio
+    async def test_empty_list_short_circuits(
+        self, service: MongoDBService
+    ) -> None:
+        count = await service.save_watchlist_snapshot([])
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_swallows_bulk_write_failure(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        coll = mock_db["watchlist_market_snapshots"]
+        coll.bulk_write = AsyncMock(side_effect=RuntimeError("mongo down"))
+        count = await service.save_watchlist_snapshot(
+            [_sample_watchlist_snapshot()]
+        )
+        assert count == 0
+
+
+class TestCountWatchlistSnapshotsInWindow:
+    """Backs missing-rate windowed scoring."""
+
+    @pytest.mark.asyncio
+    async def test_returns_count(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        coll = mock_db["watchlist_market_snapshots"]
+        coll.count_documents = AsyncMock(return_value=42)
+        start = datetime(2026, 5, 12, 1, 30, tzinfo=UTC)
+        end = datetime(2026, 5, 12, 7, 0, tzinfo=UTC)
+        assert (
+            await service.count_watchlist_snapshots_in_window(start, end) == 42
+        )
+
+    @pytest.mark.asyncio
+    async def test_swallows_driver_error(
+        self, service: MongoDBService, mock_db: MagicMock
+    ) -> None:
+        coll = mock_db["watchlist_market_snapshots"]
+        coll.count_documents = AsyncMock(side_effect=RuntimeError("oops"))
+        start = datetime(2026, 5, 12, 1, 30, tzinfo=UTC)
+        end = datetime(2026, 5, 12, 7, 0, tzinfo=UTC)
+        assert await service.count_watchlist_snapshots_in_window(
+            start, end
+        ) == 0
 
 
 class TestSaveNews:
