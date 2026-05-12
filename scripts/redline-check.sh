@@ -294,6 +294,240 @@ check "LLMRouter._maybe_reload_config removed"                      1 \
   'def _maybe_reload_config' \
   --include='router.py' backend/llm/
 
+# ----------------------------------------------------------------------
+# P0-7 — RiskConfig immutability & boundary
+# ----------------------------------------------------------------------
+echo
+yellow "[P0-7] RiskConfig immutability"
+# 1. backend/api/risk/* must remain GET-only (already covered by the
+#    global P1-5 write-endpoint allowlist above, but lock the risk
+#    surface explicitly so a future allowlist relaxation never
+#    re-opens it).
+RISK_WRITE="$(grep -nE '@(router|app)\.(post|put|patch|delete)\(' \
+  backend/api/risk.py backend/api/risk_*.py 2>/dev/null || true)"
+# backend/api/risk.py is a single file (not a package directory); the
+# additional ``risk_*.py`` glob captures any future sibling risk modules
+# (e.g. ``risk_proposals.py``) without re-introducing a directory-shaped
+# false negative. Codex cycle 1 P3.
+if [ -z "$RISK_WRITE" ]; then
+  green "  ok    backend/api/risk*.py has no write endpoints"
+else
+  red "  FAIL  backend/api/risk*.py has write endpoint(s):"
+  printf '%s\n' "$RISK_WRITE" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# 2. RiskConfig submodels must stay frozen=True (lock down the
+#    immutability invariant that powers redline 1 / redline 16).
+RISK_FROZEN_OUT="$(python3 - <<'PY'
+import ast
+import pathlib
+import sys
+
+path = pathlib.Path("backend/broker/models.py")
+tree = ast.parse(path.read_text(encoding="utf-8"))
+
+required = {
+    "RiskConfig",
+    "PositionLimitsConfig",
+    "CircuitBreakerConfig",
+    "UniverseConfig",
+    "StopLossConfig",
+}
+findings: list[str] = []
+
+for node in ast.walk(tree):
+    if not isinstance(node, ast.ClassDef):
+        continue
+    if node.name not in required:
+        continue
+    frozen_seen = False
+    for stmt in node.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        targets = {t.id for t in stmt.targets if isinstance(t, ast.Name)}
+        if "model_config" not in targets:
+            continue
+        if not isinstance(stmt.value, ast.Call):
+            continue
+        for kw in stmt.value.keywords:
+            if (
+                kw.arg == "frozen"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+            ):
+                frozen_seen = True
+                break
+    if not frozen_seen:
+        findings.append(f"{node.name} missing frozen=True")
+
+if findings:
+    print("\n".join(findings))
+    sys.exit(1)
+PY
+)"
+RISK_FROZEN_EXIT=$?
+if [ "$RISK_FROZEN_EXIT" -eq 0 ]; then
+  green "  ok    Risk submodels declare ConfigDict(frozen=True)"
+else
+  red "  FAIL  Risk submodels missing frozen=True:"
+  printf '%s\n' "$RISK_FROZEN_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# 3. backend/agents + backend/llm + backend/mirofish must not import
+#    RiskConfig / submodels (P0-7 §2 redline 1 / redline 11). Use Python's
+#    ``ast`` so the guard catches every import shape — dotted, parenthesised
+#    multiline, relative — that line-oriented grep would miss
+#    (codex cycle 3 P2).
+RISK_IMPORT_OUT="$(python3 - <<'PY'
+import ast
+import pathlib
+import sys
+
+FORBIDDEN_NAMES = {
+    "RiskConfig",
+    "PositionLimitsConfig",
+    "StopLossConfig",
+    "CircuitBreakerConfig",
+    "UniverseConfig",
+}
+# Any of these module roots — including submodules like
+# ``backend.risk.engine`` — may not re-export RiskConfig sub-types into
+# LLM/agent/mirofish code. The check folds equivalent shapes (``from M
+# import X`` / ``from M.sub import X`` / ``import M``) so a forbidden
+# leak via re-export cannot slip through unnoticed.
+RESTRICTED_PREFIXES = ("backend.broker.models", "backend.risk")
+SEARCH_ROOTS = ("backend/agents", "backend/llm", "backend/mirofish")
+
+
+def _is_restricted_module(mod: str) -> bool:
+    return any(
+        mod == p or mod.startswith(p + ".")
+        for p in RESTRICTED_PREFIXES
+    )
+
+
+findings: list[str] = []
+seen: set[tuple[str, int, str]] = set()
+
+
+def _record(path: pathlib.Path, line: int, msg: str) -> None:
+    key = (str(path), line, msg)
+    if key in seen:
+        return
+    seen.add(key)
+    findings.append(f"{path}:{line}: {msg}")
+
+
+for root in SEARCH_ROOTS:
+    base = pathlib.Path(root)
+    if not base.exists():
+        continue
+    for path in base.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if not _is_restricted_module(mod):
+                    continue
+                for alias in node.names:
+                    if alias.name in FORBIDDEN_NAMES:
+                        _record(
+                            path, node.lineno,
+                            f"from {mod} import {alias.name}",
+                        )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if _is_restricted_module(alias.name):
+                        _record(
+                            path, node.lineno,
+                            f"import {alias.name}",
+                        )
+
+if findings:
+    print("\n".join(findings))
+    sys.exit(1)
+PY
+)"
+RISK_IMPORT_EXIT=$?
+if [ "$RISK_IMPORT_EXIT" -eq 0 ]; then
+  green "  ok    backend/agents+llm+mirofish do not import RiskConfig"
+else
+  red "  FAIL  RiskConfig leaked into LLM/agent/mirofish layer:"
+  printf '%s\n' "$RISK_IMPORT_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# 4. config/risk.yaml must declare the P0-7 conservative trio + halt
+#    quartet + universe whitelist as locked values. Any divergence
+#    requires a P0-7 amendment + this guard update.
+RISK_YAML_OUT="$(python3 - <<'PY'
+import pathlib
+import sys
+
+import yaml
+
+path = pathlib.Path("config/risk.yaml")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+required = {
+    ("position_limits", "max_single_stock_pct"): 0.15,
+    ("position_limits", "max_total_position_pct"): 0.70,
+    ("position_limits", "max_single_instruction_amount"): 50000,
+    ("position_limits", "max_daily_new_instructions"): 5,
+    ("circuit_breaker", "daily_loss_limit_pct"): 0.05,
+    ("circuit_breaker", "consecutive_loss_count"): 3,
+    ("circuit_breaker", "cooldown_minutes"): 60,
+    ("circuit_breaker", "apply_to_sell_orders"): False,
+    ("universe", "forbidden_st"): True,
+    ("universe", "forbid_buy_at_limit_up"): True,
+    ("universe", "forbid_sell_at_limit_down"): True,
+}
+findings: list[str] = []
+for (section, key), expected in required.items():
+    actual = data.get(section, {}).get(key)
+    if actual != expected:
+        findings.append(f"{section}.{key} = {actual!r} (expected {expected!r})")
+
+allowed_boards = data.get("universe", {}).get("allowed_boards")
+if list(allowed_boards or ()) != ["sh_main", "sz_main", "chuangye", "etf"]:
+    findings.append(
+        f"universe.allowed_boards = {allowed_boards!r} "
+        '(expected ["sh_main","sz_main","chuangye","etf"])'
+    )
+
+# Lock the per-board limit-up/down pct table — a silent edit (e.g.
+# ``sh_main: 0.99``) would defeat check 2/12 without triggering the
+# rest of the redline scan. Codex cycle 2 P2.
+expected_price_limit = {
+    "sh_main": 0.10, "sz_main": 0.10,
+    "chuangye": 0.20, "etf": 0.10,
+}
+actual_price_limit = (data.get("universe") or {}).get("price_limit_pct_by_board") or {}
+if dict(actual_price_limit) != expected_price_limit:
+    findings.append(
+        f"universe.price_limit_pct_by_board = {dict(actual_price_limit)!r} "
+        f"(expected {expected_price_limit!r})"
+    )
+
+if findings:
+    print("\n".join(findings))
+    sys.exit(1)
+PY
+)"
+RISK_YAML_EXIT=$?
+if [ "$RISK_YAML_EXIT" -eq 0 ]; then
+  green "  ok    config/risk.yaml matches P0-7 locked values"
+else
+  red "  FAIL  config/risk.yaml diverges from P0-7 lock:"
+  printf '%s\n' "$RISK_YAML_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

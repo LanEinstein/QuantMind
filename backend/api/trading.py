@@ -75,8 +75,11 @@ def _enrich_position(
 
     # Stop-loss computation
     sl_pct = risk_config.stop_loss.single_stock_pct if risk_config else 0.08
+    # P0-7 locked max_single_stock_pct at 0.15 (was 0.20). Keep the
+    # fallback in sync so dev-mode (no risk_config in app.state) does
+    # not silently relax the cap.
     max_single_pct = (
-        risk_config.position_limits.max_single_stock_pct if risk_config else 0.20
+        risk_config.position_limits.max_single_stock_pct if risk_config else 0.15
     )
 
     stop_loss_line = round(cost * (1 - sl_pct), 2) if cost > 0 else 0.0

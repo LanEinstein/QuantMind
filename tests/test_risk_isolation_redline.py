@@ -31,12 +31,15 @@ import sys
 import backend.risk.engine  # noqa: F401
 import backend.risk.circuit_breaker  # noqa: F401
 import backend.risk.stop_loss  # noqa: F401
+import backend.risk.daily_state  # noqa: F401
+import backend.risk.stock_meta  # noqa: F401
 
 forbidden_prefixes = (
     "backend.llm",
     "backend.agents",
     "backend.mirofish",
     "backend.services",
+    "backend.data",
 )
 hits = sorted(
     name

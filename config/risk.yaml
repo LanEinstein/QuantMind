@@ -1,18 +1,41 @@
-# Risk engine parameters (hardcoded enforcement, no LLM dependency)
+# Risk engine parameters — P0-7 LOCKED.
+#
+# Runtime immutable: any change requires (a) git diff against this file,
+# (b) a paired ``docs/decisions/P0-7-amendment-<date>-<reason>.md``, and
+# (c) a process restart. Hot-reload / setattr / monkey-patching is a
+# redline violation (P0-7 §2 redline 2). LLM agents may propose changes
+# via ``risk_parameter_proposals`` but cannot mutate this file directly
+# (P0-7 §2 redline 11).
 
 position_limits:
-  max_single_stock_pct: 0.20      # Max 20% of portfolio in one stock
-  max_sector_pct: 0.40            # Max 40% of portfolio in one sector
-  max_total_positions: 10         # Max concurrent positions
-  price_deviation_limit: 0.05    # Max +-5% deviation from prev_close
-  volume_lot_size: 100           # A-share minimum lot size
+  max_single_stock_pct: 0.15            # Conservative trio #1 (P0-7)
+  max_sector_pct: 0.40                  # P1 sector check; field kept for parity
+  max_total_positions: 10               # Concurrent distinct positions
+  price_deviation_limit: 0.05           # Fallback only — board table below wins
+  volume_lot_size: 100                  # A-share min lot
+  max_total_position_pct: 0.70          # Conservative trio #2 (P0-7)
+  max_single_instruction_amount: 50000  # Conservative trio #3 (RMB, P0-7)
+  max_daily_new_instructions: 5         # BUY+SELL combined; HOLD not counted
 
 stop_loss:
-  single_stock_pct: 0.08          # Stop loss at -8% per stock
-  portfolio_daily_pct: 0.05       # Portfolio daily drawdown limit -5%
-  trailing_stop_pct: 0.10         # Trailing stop at -10% from peak
+  single_stock_pct: 0.08
+  portfolio_daily_pct: 0.05
+  trailing_stop_pct: 0.10
 
 circuit_breaker:
-  daily_loss_limit_pct: 0.05      # Halt trading after -5% portfolio loss
-  consecutive_loss_count: 3       # Halt after 3 consecutive losing trades
-  cooldown_minutes: 60            # Cooldown period after circuit break
+  daily_loss_limit_pct: 0.05            # -5% daily portfolio drawdown halt
+  consecutive_loss_count: 3             # 3 consecutive losing FILLED trades
+  cooldown_minutes: 60                  # Halt window
+  halt_priority_order: ["daily_loss", "consecutive_loss"]
+  apply_to_sell_orders: false           # SELL bypasses halt (anti-trap; P0-7 §4.6)
+
+universe:
+  allowed_boards: ["sh_main", "sz_main", "chuangye", "etf"]
+  forbidden_st: true
+  forbid_buy_at_limit_up: true
+  forbid_sell_at_limit_down: true
+  price_limit_pct_by_board:
+    sh_main: 0.10
+    sz_main: 0.10
+    chuangye: 0.20
+    etf: 0.10

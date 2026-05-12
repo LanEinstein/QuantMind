@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -170,15 +171,18 @@ def load_broker_config(yaml_path: str | Path) -> BrokerConfig:
 
 
 class PositionLimitsConfig(BaseModel):
-    """Position limit parameters."""
+    """Position limit parameters (P0-7 locked; runtime immutable)."""
 
     model_config = ConfigDict(frozen=True)
 
-    max_single_stock_pct: float = 0.20
-    max_sector_pct: float = 0.40
-    max_total_positions: int = 10
-    price_deviation_limit: float = 0.05
-    volume_lot_size: int = 100
+    max_single_stock_pct: float = Field(default=0.15, ge=0.0, le=1.0)
+    max_sector_pct: float = Field(default=0.40, ge=0.0, le=1.0)
+    max_total_positions: int = Field(default=10, ge=1)
+    price_deviation_limit: float = Field(default=0.05, ge=0.0, le=1.0)
+    volume_lot_size: int = Field(default=100, ge=1)
+    max_total_position_pct: float = Field(default=0.70, ge=0.0, le=1.0)
+    max_single_instruction_amount: float = Field(default=50_000.0, gt=0.0)
+    max_daily_new_instructions: int = Field(default=5, ge=1)
 
 
 class StopLossConfig(BaseModel):
@@ -192,23 +196,88 @@ class StopLossConfig(BaseModel):
 
 
 class CircuitBreakerConfig(BaseModel):
-    """Circuit breaker parameters."""
+    """Circuit breaker parameters (P0-7 locked; runtime immutable)."""
 
     model_config = ConfigDict(frozen=True)
 
-    daily_loss_limit_pct: float = 0.05
-    consecutive_loss_count: int = 3
-    cooldown_minutes: int = 60
+    daily_loss_limit_pct: float = Field(default=0.05, ge=0.0, le=1.0)
+    consecutive_loss_count: int = Field(default=3, ge=1)
+    cooldown_minutes: int = Field(default=60, ge=1)
+    halt_priority_order: tuple[str, ...] = Field(
+        default=("daily_loss", "consecutive_loss"),
+    )
+    apply_to_sell_orders: bool = Field(default=False)
+
+
+class UniverseConfig(BaseModel):
+    """Universe whitelist + price-limit gating (P0-7 locked; runtime immutable).
+
+    Why a separate sub-config: keeps board-keyed price-limit table next to the
+    universe rules that consume it (check 11/12), so amending one of them
+    cannot silently desync the other.
+
+    ``price_limit_pct_by_board`` is wrapped in a ``MappingProxyType`` after
+    validation so ``frozen=True`` is not bypassed by per-key mutation
+    (``cfg.universe.price_limit_pct_by_board["sh_main"] = 0.99``). Codex
+    cycle 1 P1.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    allowed_boards: tuple[str, ...] = Field(
+        default=("sh_main", "sz_main", "chuangye", "etf"),
+    )
+    forbidden_st: bool = Field(default=True)
+    forbid_buy_at_limit_up: bool = Field(default=True)
+    forbid_sell_at_limit_down: bool = Field(default=True)
+    price_limit_pct_by_board: dict[str, float] = Field(
+        default_factory=lambda: {
+            "sh_main": 0.10,
+            "sz_main": 0.10,
+            "chuangye": 0.20,
+            "etf": 0.10,
+        },
+    )
+
+    @model_validator(mode="after")
+    def _seal_price_limit_map(self) -> UniverseConfig:
+        current = self.price_limit_pct_by_board
+        if isinstance(current, MappingProxyType):
+            return self
+        # ``frozen=True`` blocks normal attribute assignment, so use
+        # ``object.__setattr__`` to swap in the read-only proxy. The
+        # MappingProxyType satisfies ``Mapping[str, float]`` for read
+        # access (``cfg["sh_main"]``) while raising TypeError on any
+        # mutation — keeping the P0-7 §2 redline 1 runtime-immutability
+        # guarantee intact.
+        object.__setattr__(
+            self,
+            "price_limit_pct_by_board",
+            MappingProxyType(dict(current)),
+        )
+        return self
+
+    @field_serializer("price_limit_pct_by_board")
+    def _serialize_price_limit_map(
+        self, value: Any,
+    ) -> dict[str, float]:
+        # Pydantic v2 cannot natively serialize ``MappingProxyType`` —
+        # ``model_dump(mode="json")`` would raise
+        # ``PydanticSerializationError``. Convert back to a plain dict
+        # on the way out; the proxy still blocks mutation while in-
+        # memory. Codex cycle 2 P2.
+        return dict(value)
 
 
 class RiskConfig(BaseModel):
-    """Complete risk engine configuration from risk.yaml."""
+    """Complete risk engine configuration from risk.yaml (P0-7 locked)."""
 
     model_config = ConfigDict(frozen=True)
 
     position_limits: PositionLimitsConfig
     stop_loss: StopLossConfig
     circuit_breaker: CircuitBreakerConfig
+    universe: UniverseConfig = Field(default_factory=UniverseConfig)
 
 
 def load_risk_config(yaml_path: str | Path) -> RiskConfig:

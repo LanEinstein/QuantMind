@@ -74,11 +74,13 @@ async def _build_radar_data(request: Request) -> dict[str, Any]:
     risk_config = getattr(request.app.state, "risk_config", None)
     registry = getattr(request.app.state, "broker_registry", None)
 
-    # Defaults from config or fallbacks
-    total_position_limit = 80
-    single_stock_limit = 20
+    # Defaults from config or fallbacks. P0-7 locked the conservative
+    # trio at 15% / 70% / 50k — values below are the fallbacks for when
+    # ``risk_config`` is not yet wired into ``app.state``.
+    total_position_limit = 70
+    single_stock_limit = 15
     sector_limit = 40
-    daily_loss_limit = 3
+    daily_loss_limit = 5
     stock_count_limit = 10
 
     if risk_config is not None:
@@ -90,7 +92,9 @@ async def _build_radar_data(request: Request) -> dict[str, Any]:
             risk_config.circuit_breaker.daily_loss_limit_pct * 100
         )
         stock_count_limit = risk_config.position_limits.max_total_positions
-        total_position_limit = 80  # Not in config, use default
+        total_position_limit = int(
+            risk_config.position_limits.max_total_position_pct * 100
+        )
 
     # Read actual positions from broker
     total_position_pct = 0.0
@@ -138,7 +142,9 @@ def _config_to_response(risk_config: Any) -> dict[str, Any]:
     """Convert backend RiskConfig to frontend-expected shape."""
     return {
         "single_stock_limit": risk_config.position_limits.max_single_stock_pct * 100,
-        "total_position_limit": 80,  # Not in yaml, hardcoded default
+        "total_position_limit": (
+            risk_config.position_limits.max_total_position_pct * 100
+        ),
         "stop_loss_threshold": -(risk_config.stop_loss.single_stock_pct * 100),
         "circuit_breaker_threshold": -(
             risk_config.circuit_breaker.daily_loss_limit_pct * 100

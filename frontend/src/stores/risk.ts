@@ -154,26 +154,30 @@ function mockRiskStatus(): RiskStatus {
 }
 
 function mockRadarData(): RiskRadarData {
+  // Limits mirror the P0-7 lock (single 15 / total 70 / daily-loss 5);
+  // pct samples sit just under each limit so the offline mock still
+  // produces a credible radar shape.
   return {
-    total_position_pct: 78,
-    total_position_limit: 80,
-    max_single_stock_pct: 15,
-    max_single_stock_limit: 20,
+    total_position_pct: 65,
+    total_position_limit: 70,
+    max_single_stock_pct: 12,
+    max_single_stock_limit: 15,
     industry_concentration_pct: 35,
     industry_concentration_limit: 40,
     daily_loss_pct: 0.5,
-    daily_loss_limit: 3,
+    daily_loss_limit: 5,
     stock_count: 4,
     stock_count_limit: 10,
   }
 }
 
 function mockRiskConfig(): RiskConfig {
+  // P0-7 locked: single 15 / total 70 / daily-loss -5 / consecutive 3.
   return {
-    single_stock_limit: 20,
-    total_position_limit: 80,
+    single_stock_limit: 15,
+    total_position_limit: 70,
     stop_loss_threshold: -8,
-    circuit_breaker_threshold: -3,
+    circuit_breaker_threshold: -5,
     llm_timeout_seconds: 30,
     llm_max_consecutive_failures: 3,
     price_deviation_limit: 5,

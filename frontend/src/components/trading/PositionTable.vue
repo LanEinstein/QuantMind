@@ -113,8 +113,10 @@ function distanceClass(distance: number): string {
 }
 
 function positionColor(pct: number): string {
-  if (pct > 0.20) return '#ff1744'
-  if (pct > 0.15) return '#ffd600'
+  // P0-7 single-stock hard cap = 0.15. Keep this gauge in sync with the
+  // enforced limit; previously the red threshold was 0.20 (pre-P0-7).
+  if (pct > 0.15) return '#ff1744'
+  if (pct > 0.10) return '#ffd600'
   return '#448aff'
 }
 

@@ -43,10 +43,10 @@
         <!-- Position weight vs limit -->
         <div class="detail-row">
           <span class="detail-label">仓位占比</span>
-          <span class="detail-val">{{ (position.position_pct * 100).toFixed(1) }}% / 20%</span>
+          <span class="detail-val">{{ (position.position_pct * 100).toFixed(1) }}% / 15%</span>
         </div>
         <el-progress
-          :percentage="Math.min(Math.round(position.position_pct * 500), 100)"
+          :percentage="Math.min(Math.round((position.position_pct / 0.15) * 100), 100)"
           :stroke-width="12"
           :text-inside="true"
           :format="() => (position!.position_pct * 100).toFixed(1) + '%'"
@@ -123,9 +123,13 @@ const gaugePct = computed(() => {
 })
 
 const positionColor = computed(() => {
+  // P0-7 single-stock hard cap = 0.15; redline-check.sh locks the YAML.
+  // Mirror that here so the gauge color flips to red the moment an
+  // existing position drifts past the enforced cap (e.g. from intraday
+  // MTM growth) rather than at the obsolete 20% threshold.
   const pct = props.position?.position_pct ?? 0
-  if (pct > 0.20) return '#ff1744'
-  if (pct > 0.15) return '#ffd600'
+  if (pct > 0.15) return '#ff1744'
+  if (pct > 0.10) return '#ffd600'
   return '#448aff'
 })
 
