@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from backend.data.database import MongoDBService
+from backend.data.database import (
+    MongoDBService,
+    ReplicaSetUnavailableError,
+)
 from backend.models.market import (
     FinancialData,
     IndexQuote,
@@ -306,3 +309,81 @@ class TestQueryNews:
     async def test_query_with_stock_code(self, service: MongoDBService) -> None:
         result = await service.query_news(limit=10, stock_code="600519")
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# E-001 — Mongo single-node replica-set boot fence
+# ---------------------------------------------------------------------------
+
+
+def _replica_set_db(hello_response: dict | Exception) -> MagicMock:
+    """Build a minimal mock motor DB whose admin.command returns hello_response.
+
+    Accepts either a dict (success path) or an Exception instance (the
+    probe should reraise as ReplicaSetUnavailableError).
+    """
+    admin = MagicMock()
+    if isinstance(hello_response, Exception):
+        admin.command = AsyncMock(side_effect=hello_response)
+    else:
+        admin.command = AsyncMock(return_value=hello_response)
+    client = MagicMock()
+    client.admin = admin
+    db = MagicMock()
+    db.client = client
+    return db
+
+
+class TestReplicaSetFence:
+    """E-001 acceptance: hello.setName drives BrokerScheduler boot."""
+
+    @pytest.mark.asyncio
+    async def test_is_replica_set_true_when_setname_present(self) -> None:
+        db = _replica_set_db({"setName": "rs0", "ismaster": True})
+        service = MongoDBService(db)
+        assert await service.is_replica_set() is True
+
+    @pytest.mark.asyncio
+    async def test_is_replica_set_false_for_standalone(self) -> None:
+        # Standalone mongod returns hello without a setName key.
+        db = _replica_set_db({"ismaster": True, "msg": "isdbgrid"})
+        service = MongoDBService(db)
+        assert await service.is_replica_set() is False
+
+    @pytest.mark.asyncio
+    async def test_is_replica_set_false_when_command_fails(self) -> None:
+        db = _replica_set_db(ConnectionError("no route to host"))
+        service = MongoDBService(db)
+        assert await service.is_replica_set() is False
+
+    @pytest.mark.asyncio
+    async def test_assert_replica_set_returns_setname(self) -> None:
+        db = _replica_set_db({"setName": "rs0"})
+        service = MongoDBService(db)
+        assert await service.assert_replica_set() == "rs0"
+
+    @pytest.mark.asyncio
+    async def test_assert_replica_set_raises_on_standalone(self) -> None:
+        db = _replica_set_db({"ismaster": True})
+        service = MongoDBService(db)
+        with pytest.raises(ReplicaSetUnavailableError, match="not a replica-set"):
+            await service.assert_replica_set()
+
+    @pytest.mark.asyncio
+    async def test_assert_replica_set_raises_on_probe_failure(self) -> None:
+        db = _replica_set_db(RuntimeError("boom"))
+        service = MongoDBService(db)
+        with pytest.raises(ReplicaSetUnavailableError, match="hello probe failed"):
+            await service.assert_replica_set()
+
+    @pytest.mark.asyncio
+    async def test_assert_replica_set_raises_when_setname_empty_string(
+        self,
+    ) -> None:
+        # Defensive: an empty setName must NOT pass — Mongo never returns
+        # an empty string in practice, but a misbehaving proxy could,
+        # and the boot fence should refuse to start the scheduler.
+        db = _replica_set_db({"setName": ""})
+        service = MongoDBService(db)
+        with pytest.raises(ReplicaSetUnavailableError):
+            await service.assert_replica_set()

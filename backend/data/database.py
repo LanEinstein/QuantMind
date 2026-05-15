@@ -23,6 +23,18 @@ log = structlog.get_logger(component="database")
 
 QuoteType = IndexQuote | StockQuote
 
+
+class ReplicaSetUnavailableError(RuntimeError):
+    """Raised when Mongo is not configured as a replica-set member.
+
+    Multi-document transactions used by broker_events / broker_snapshots
+    (E-002) require the connected Mongo node to be part of a replica
+    set. Starting the BrokerScheduler against a standalone deployment
+    would silently break the delta+snapshot recovery invariant, so the
+    boot probe surfaces this as a fail-closed startup error
+    (P1-2.A §2 red line 4).
+    """
+
 _LEDGER_CORRELATION_FIELDS: frozenset[str] = frozenset(
     {
         "instruction_id",
@@ -48,6 +60,53 @@ class MongoDBService:
         """Initialize with a motor AsyncIOMotorDatabase instance."""
         self._db = db
         self._log = log
+
+    # ------------------------------------------------------------------
+    # Replica-set boot probe (E-001 / P1-2.A)
+    # ------------------------------------------------------------------
+
+    async def is_replica_set(self) -> bool:
+        """Return ``True`` when the connected Mongo node is in a replica set.
+
+        Runs the ``hello`` admin command and inspects ``setName``. We
+        avoid raising here because callers (BrokerScheduler boot,
+        readiness probes) want a boolean answer. The fail-closed
+        wrapper is :meth:`assert_replica_set`.
+        """
+        try:
+            info = await self._db.client.admin.command("hello")
+        except Exception as exc:  # noqa: BLE001 — boot probe must classify any error
+            self._log.warning("mongo_hello_failed", error=str(exc))
+            return False
+        set_name = info.get("setName") if isinstance(info, dict) else None
+        return bool(set_name)
+
+    async def assert_replica_set(self) -> str:
+        """Fail-closed boot fence: require a replica-set member.
+
+        Returns the ``setName`` on success; raises
+        :class:`ReplicaSetUnavailableError` when the node is standalone
+        or unreachable. The BrokerScheduler / EOD pipeline use this on
+        startup so a misconfigured deployment cannot silently lose the
+        transactional guarantees promised by P1-2.A.
+        """
+        try:
+            info = await self._db.client.admin.command("hello")
+        except Exception as exc:  # noqa: BLE001 — boot fence escalates *all* errors
+            raise ReplicaSetUnavailableError(
+                f"mongo hello probe failed: {exc!r} — broker persistence "
+                "requires a single-node replica set; see deploy/README.md "
+                "§1.1 for rs.initiate() instructions"
+            ) from exc
+        set_name = info.get("setName") if isinstance(info, dict) else None
+        if not set_name:
+            raise ReplicaSetUnavailableError(
+                "mongo node is not a replica-set member — broker_events / "
+                "broker_snapshots require multi-document transactions. "
+                "Run `mongosh --eval 'rs.initiate()'` once per "
+                "deploy/README.md §1.1 then restart the backend."
+            )
+        return str(set_name)
 
     async def initialize(self) -> None:
         """Create indexes on all collections."""

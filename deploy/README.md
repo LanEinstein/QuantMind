@@ -29,6 +29,36 @@ docker compose up -d
 docker compose ps
 ```
 
+#### 1.1 初始化单节点 replica set（E-001 / P1-2.A，**首次启动必做一次**）
+
+MongoDB 容器现在以 `--replSet rs0` 启动，但裸节点状态需要手动 `rs.initiate()`
+一次才能写入 `broker_events` / `broker_snapshots` 的 multi-document 事务。
+后端启动期 `MongoDBService.assert_replica_set()` 在 `setName` 缺失时
+fail-closed（`ReplicaSetUnavailableError`），所以这一步漏了 BrokerScheduler
+不会起。
+
+```bash
+# 等待容器 healthy
+docker compose exec mongodb mongosh --quiet --eval 'db.adminCommand("ping")'
+
+# 一次性 rs.initiate()。命令幂等：第二次执行返回 AlreadyInitialized=23，
+# 可以忽略。replica set 状态存于 mongodb_data 卷，docker compose down -v
+# 之后才需要重新执行。
+docker compose exec mongodb mongosh --quiet --eval '
+  try { rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]}); }
+  catch (e) { if (e.codeName !== "AlreadyInitialized") throw e; }
+  rs.status().set
+'
+
+# 验证：应输出 "rs0"
+docker compose exec mongodb mongosh --quiet --eval 'db.hello().setName'
+```
+
+如果以裸节点（无 `--replSet`）方式跑过 Mongo 一次，`mongodb_data` 卷里残留的
+local DB 会让 `rs.initiate()` 报 `IllegalOperation`。把卷清掉重来：
+`docker compose down && docker volume rm quantmind_mongodb_data && docker compose up -d`，
+随后重跑本节命令。
+
 ### 2. 私有 LLM env 文件（chmod 600）
 
 ```bash

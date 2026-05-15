@@ -7,10 +7,24 @@ services:
     # let any host on the network read/write the trading database.
     ports:
       - "127.0.0.1:27017:27017"
+    # Single-node replica set (E-001 / P1-2.A). broker_events +
+    # broker_snapshots writes use multi-document transactions which
+    # require Mongo to be running as a replica set member. The
+    # application-side fence in MongoDBService.assert_replica_set raises
+    # a fail-closed error on boot if ``hello.setName`` is missing, so
+    # ``rs.initiate()`` must be run once per deploy/README.md §1.1
+    # before the BrokerScheduler will start.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongodb_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      # Bootstrap-aware: a plain ping passes during the brief window
+      # between container start and ``rs.initiate()``. The replica-set
+      # gate lives in the application boot probe — keeping the docker
+      # healthcheck lenient avoids the chicken-and-egg deadlock where
+      # Mongo would be unhealthy until initialised but cannot be
+      # initialised until healthy.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
