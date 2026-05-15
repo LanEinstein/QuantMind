@@ -329,6 +329,51 @@ class MongoDBService:
             background=True,
         )
 
+        # broker_events — append-only delta rows for the MockBroker
+        # single mirror (E-002 / P1-2.A). The recovery loader reads by
+        # sequence and tails the (sequence > snapshot.last_event_sequence)
+        # query; the unique index on ``sequence`` prevents duplicate
+        # writes from racing transactions even with the per-transaction
+        # max() guard in BrokerEventStore.append.
+        broker_events = self._db["broker_events"]
+        await broker_events.create_index(
+            [("sequence", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await broker_events.create_index(
+            [("event_type", ASCENDING), ("sequence", ASCENDING)],
+            background=True,
+        )
+        await broker_events.create_index(
+            [("order_id", ASCENDING)],
+            sparse=True,
+            background=True,
+        )
+        await broker_events.create_index(
+            [("correlation_id", ASCENDING)],
+            sparse=True,
+            background=True,
+        )
+
+        # broker_snapshots — EOD checkpoint rows. Recovery reads by
+        # last_event_sequence DESC; snapshot_id is unique so a botched
+        # double-write at EOD cannot create a phantom row.
+        broker_snapshots = self._db["broker_snapshots"]
+        await broker_snapshots.create_index(
+            [("last_event_sequence", DESCENDING)],
+            background=True,
+        )
+        await broker_snapshots.create_index(
+            [("snapshot_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await broker_snapshots.create_index(
+            [("trade_date", DESCENDING)],
+            background=True,
+        )
+
         self._log.info("mongodb_indexes_created")
 
     async def save_market_snapshot(
