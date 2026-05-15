@@ -1,0 +1,436 @@
+"""Appliers — bridge user reports + reconciliation tickets to MockBroker.
+
+E-004 / P1-2.A red line: direct mutation of MockBroker's ``_cash`` /
+``_positions`` / ``_trades`` from outside the broker is forbidden.
+Every external state change must flow through one of these classes:
+
+* :class:`ExecutionReportApplier` — consumes a parsed
+  :class:`ExecutionReport` (user said "FILLED 200 shares of 600519 @
+  1800.5"), applies a delta to MockBroker, and writes a
+  :class:`backend.broker.persistence.events.BrokerEvent` of type
+  ``EXECUTION_REPORT_APPLIED`` so the recovery loader can replay the
+  delta on the next boot.
+* :class:`ReconciliationApplier` — consumes a resolved
+  :class:`ReconciliationTicket` and rewrites the MockBroker mirror to
+  match either the user-reported or amended snapshot, emitting a
+  ``RECONCILIATION_RESET`` event with the new snapshot embedded.
+
+Both appliers write a corresponding :class:`AuditEvent` (Category 1
+"two write-endpoint invocations") so the audit trail surfaces every
+out-of-band state change.
+
+LLM red line: this module never imports
+``backend.{llm,agents,mirofish}``. The appliers are pure-Python state
+transitions over already-validated DTOs; the parsers (P0-4 / P0-5) own
+the LLM-safe gating upstream.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+import structlog
+
+from backend.audit.models import AuditActor, AuditEventType, AuditOutcome
+from backend.audit.store import AuditStore
+from backend.broker.mock_broker import MockBroker
+from backend.broker.persistence.events import BrokerEventType
+from backend.broker.persistence.store import BrokerEventStore
+from backend.models.execution import (
+    ExecutionReport,
+    ExecutionReportKind,
+)
+from backend.models.reconciliation import (
+    ReconciliationTicket,
+    ReconciliationTicketStatus,
+    ReportedPosition,
+)
+
+log = structlog.get_logger(component="broker.appliers")
+
+
+# ---------------------------------------------------------------------------
+# Result envelope
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """Summary of what the applier changed (for audit + tests).
+
+    ``cash_delta`` is the net cash change in CNY (positive = inflow).
+    ``positions_delta`` describes per-stock position changes — empty
+    tuple for UNFILLED reports or RESOLVED_SYSTEM_AS_TRUTH tickets.
+    ``broker_event_sequence`` is the sequence of the BrokerEvent row
+    written by the applier (None when the applier was a no-op).
+    """
+
+    cash_delta: float
+    positions_delta: tuple[dict[str, Any], ...]
+    broker_event_sequence: int | None
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# ExecutionReportApplier — user said "FILLED / PARTIAL / UNFILLED"
+# ---------------------------------------------------------------------------
+
+
+class ExecutionReportApplier:
+    """Apply a parsed ExecutionReport to the MockBroker mirror.
+
+    Caller responsibilities (the orchestrator in B-003 / Phase F):
+
+    1. Validate the ExecutionReport against the InstructionPlan
+       (state machine transitions, AMBIGUOUS rejection paths) BEFORE
+       calling the applier. The applier itself assumes the report is
+       authoritative and consistent with the plan.
+    2. Pass the InstructionSide so the applier can decide BUY vs SELL
+       cash flow direction without re-deriving it from the parsed
+       Chinese text.
+
+    Idempotency: the applier writes one BrokerEvent per call; replay
+    via the recovery loader will reproduce the same final state.
+    Calling twice for the same report would double-apply the delta —
+    the orchestrator dedupes via ``report.report_id`` upstream
+    (B-003 dedupe layer).
+    """
+
+    def __init__(
+        self,
+        broker: MockBroker,
+        event_store: BrokerEventStore,
+        audit_store: AuditStore,
+    ) -> None:
+        self._broker = broker
+        self._events = event_store
+        self._audit = audit_store
+
+    async def apply(
+        self,
+        report: ExecutionReport,
+        *,
+        side_is_buy: bool,
+    ) -> ApplyResult:
+        """Apply ``report`` to the broker mirror.
+
+        Returns an :class:`ApplyResult` summarising the delta. The
+        FILLED / PARTIAL paths mutate the broker through
+        :meth:`MockBroker.apply_external_fill` (the only legitimate
+        external-write entry on the broker); UNFILLED is a no-op apart
+        from the audit + event trail.
+        """
+        kind = report.kind
+
+        if kind is ExecutionReportKind.UNFILLED:
+            return await self._apply_unfilled(report)
+
+        # FILLED / PARTIAL share the apply path — only the volume +
+        # remain_volume differ at this layer.
+        return await self._apply_fill(report, side_is_buy=side_is_buy)
+
+    async def _apply_fill(
+        self,
+        report: ExecutionReport,
+        *,
+        side_is_buy: bool,
+    ) -> ApplyResult:
+        # P0-4 §1.2 guarantees these fields are present for FILLED /
+        # PARTIAL — the ExecutionReport model_validator enforces it.
+        assert report.stock_code is not None
+        assert report.filled_volume is not None
+        assert report.fill_price is not None
+        assert report.fee is not None or report.kind is ExecutionReportKind.PARTIAL
+
+        fee = float(report.fee) if report.fee is not None else 0.0
+
+        applied = await self._broker.apply_external_fill(
+            order_id_hint=report.instruction_id,
+            code=report.stock_code,
+            volume=int(report.filled_volume),
+            fill_price=float(report.fill_price),
+            fee=fee,
+            side_is_buy=side_is_buy,
+            traded_at=report.parsed_at,
+            report_id=report.report_id,
+            kind=report.kind.value,
+        )
+
+        # Compose the BrokerEvent payload — the recovery loader expects
+        # cash_delta + positions_delta keys for EXECUTION_REPORT_APPLIED.
+        payload: dict[str, Any] = {
+            "report_id": report.report_id,
+            "instruction_id": report.instruction_id,
+            "kind": report.kind.value,
+            "prefix": report.prefix.value,
+            "channel": report.channel.value,
+            "stock_code": report.stock_code,
+            "volume": int(report.filled_volume),
+            "fill_price": float(report.fill_price),
+            "fee": fee,
+            "side_is_buy": side_is_buy,
+            "cash_delta": applied["cash_delta"],
+            "positions_delta": applied["positions_delta"],
+        }
+        event = await self._events.append(
+            event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
+            occurred_at=report.parsed_at,
+            order_id=applied.get("order_id"),
+            trade_id=applied.get("trade_id"),
+            correlation_id=report.instruction_id,
+            payload=payload,
+        )
+        await self._audit.write(
+            event_type=AuditEventType.EXECUTION_REPORT_SUBMITTED,
+            actor=(
+                AuditActor.FEISHU_USER
+                if report.channel.value == "FEISHU"
+                else AuditActor.FRONTEND_USER
+            ),
+            resource_type="instruction_plan",
+            resource_id=report.instruction_id,
+            payload={
+                "report_id": report.report_id,
+                "kind": report.kind.value,
+                "channel": report.channel.value,
+                "stock_code": report.stock_code,
+                "filled_volume": int(report.filled_volume),
+                "fill_price": float(report.fill_price),
+                "fee": fee,
+                "broker_event_sequence": event.sequence,
+            },
+            outcome=AuditOutcome.SUCCESS,
+            correlation_id=report.instruction_id,
+            reason_namespace="execution_report_apply",
+            timestamp=report.parsed_at,
+        )
+
+        return ApplyResult(
+            cash_delta=applied["cash_delta"],
+            positions_delta=tuple(applied["positions_delta"]),
+            broker_event_sequence=event.sequence,
+            reason="execution_report_applied",
+        )
+
+    async def _apply_unfilled(self, report: ExecutionReport) -> ApplyResult:
+        await self._audit.write(
+            event_type=AuditEventType.EXECUTION_REPORT_SUBMITTED,
+            actor=(
+                AuditActor.FEISHU_USER
+                if report.channel.value == "FEISHU"
+                else AuditActor.FRONTEND_USER
+            ),
+            resource_type="instruction_plan",
+            resource_id=report.instruction_id,
+            payload={
+                "report_id": report.report_id,
+                "kind": report.kind.value,
+                "channel": report.channel.value,
+                "reason": report.reason or "",
+            },
+            outcome=AuditOutcome.SUCCESS,
+            correlation_id=report.instruction_id,
+            reason_namespace="execution_report_apply",
+            timestamp=report.parsed_at,
+        )
+        return ApplyResult(
+            cash_delta=0.0,
+            positions_delta=(),
+            broker_event_sequence=None,
+            reason="execution_report_unfilled",
+        )
+
+
+# ---------------------------------------------------------------------------
+# ReconciliationApplier — full-state rewrites only via reset_to_snapshot
+# ---------------------------------------------------------------------------
+
+
+# Lightweight protocol-style type so the applier's lookup map stays
+# typed without dragging the full DailyReconciliation model into this
+# module's public surface. Duck-typed: the applier only reads
+# ``reported_cash`` and ``reported_positions``.
+ReconciliationLookup = Any
+
+
+class ReconciliationApplier:
+    """Apply a resolved ReconciliationTicket to the MockBroker mirror.
+
+    Three resolution paths:
+
+    * ``RESOLVED_USER_AS_TRUTH`` — overwrite the broker mirror with the
+      user-reported cash + positions.
+    * ``RESOLVED_AMENDED`` — overwrite the broker mirror with
+      ``ticket.amended_snapshot`` (operator-curated truth).
+    * ``RESOLVED_SYSTEM_AS_TRUTH`` — no broker state change; the system
+      was already right.
+
+    Direct mutation of ``_cash`` / ``_positions`` is forbidden — the
+    only entry that rewrites the mirror is
+    :meth:`MockBroker.reset_to_snapshot`. The applier also emits a
+    ``RECONCILIATION_RESET`` BrokerEvent so the recovery loader can
+    replay the rewrite deterministically.
+    """
+
+    def __init__(
+        self,
+        broker: MockBroker,
+        event_store: BrokerEventStore,
+        audit_store: AuditStore,
+        daily_reconciliations: dict[str, ReconciliationLookup] | None = None,
+    ) -> None:
+        self._broker = broker
+        self._events = event_store
+        self._audit = audit_store
+        # Maps trade_date → DailyReconciliation for the user-as-truth
+        # path. Production wiring loads this from Mongo; tests inject.
+        self._daily = daily_reconciliations or {}
+
+    async def reset_to_snapshot(
+        self,
+        ticket: ReconciliationTicket,
+        *,
+        actor: AuditActor = AuditActor.FRONTEND_USER,
+        now: datetime | None = None,
+    ) -> ApplyResult:
+        """Apply ``ticket``'s resolution to the broker mirror.
+
+        Args:
+            ticket: a RESOLVED_* ticket (OPEN/EXPIRED raise).
+            actor: the audit actor — FRONTEND_USER by default since the
+                resolution decision arrives from the UI; CLI tools can
+                pass :attr:`AuditActor.CLI`.
+            now: timestamp for the BrokerEvent + audit row; defaults to
+                ``ticket.resolved_at`` when set.
+
+        Returns:
+            :class:`ApplyResult` describing the rewrite (the deltas
+            here are absolute target values, not deltas — recovery
+            applies them as a snapshot rewrite, not a delta).
+        """
+        if ticket.status not in {
+            ReconciliationTicketStatus.RESOLVED_USER_AS_TRUTH,
+            ReconciliationTicketStatus.RESOLVED_SYSTEM_AS_TRUTH,
+            ReconciliationTicketStatus.RESOLVED_AMENDED,
+        }:
+            raise ValueError(
+                f"reset_to_snapshot requires a RESOLVED_* ticket; got "
+                f"{ticket.status.value}"
+            )
+
+        timestamp = now or ticket.resolved_at or datetime.utcnow()
+
+        if ticket.status is ReconciliationTicketStatus.RESOLVED_SYSTEM_AS_TRUTH:
+            return await self._record_system_as_truth(ticket, actor, timestamp)
+
+        if ticket.status is ReconciliationTicketStatus.RESOLVED_AMENDED:
+            snapshot = ticket.amended_snapshot
+            assert snapshot is not None  # schema-validated
+            target_cash = snapshot.cash
+            target_positions = snapshot.positions
+            reason = "reset_to_amended_snapshot"
+        else:
+            # RESOLVED_USER_AS_TRUTH — look up the user-reported snapshot.
+            daily = self._daily.get(ticket.trade_date)
+            if daily is None:
+                raise ValueError(
+                    f"reset_to_snapshot RESOLVED_USER_AS_TRUTH requires "
+                    f"the DailyReconciliation for trade_date "
+                    f"{ticket.trade_date!r} to be registered on the applier"
+                )
+            target_cash = daily.reported_cash
+            target_positions = daily.reported_positions
+            reason = "reset_to_user_snapshot"
+
+        applied = await self._broker.reset_to_snapshot(
+            cash=target_cash,
+            positions=target_positions,
+            reset_at=timestamp,
+            reason=reason,
+        )
+
+        payload: dict[str, Any] = {
+            "ticket_id": ticket.ticket_id,
+            "trade_date": ticket.trade_date,
+            "ticket_status": ticket.status.value,
+            "cash": float(target_cash),
+            "positions": [
+                {
+                    "code": pos.code,
+                    "volume": int(pos.volume),
+                    "today_bought_volume": 0,
+                    "cost_price": float(pos.cost_price),
+                }
+                for pos in target_positions
+            ],
+        }
+        event = await self._events.append(
+            event_type=BrokerEventType.RECONCILIATION_RESET,
+            occurred_at=timestamp,
+            correlation_id=ticket.ticket_id,
+            payload=payload,
+        )
+        await self._audit.write(
+            event_type=AuditEventType.RECONCILIATION_TICKET_DECIDED,
+            actor=actor,
+            resource_type="reconciliation_ticket",
+            resource_id=ticket.ticket_id,
+            payload={
+                "ticket_id": ticket.ticket_id,
+                "trade_date": ticket.trade_date,
+                "ticket_status": ticket.status.value,
+                "broker_event_sequence": event.sequence,
+                "cash_after": float(target_cash),
+                "positions_after_count": len(target_positions),
+            },
+            outcome=AuditOutcome.SUCCESS,
+            correlation_id=ticket.ticket_id,
+            reason_namespace="reconciliation_reset",
+            timestamp=timestamp,
+        )
+
+        return ApplyResult(
+            cash_delta=applied["cash_delta"],
+            positions_delta=tuple(applied["positions_delta"]),
+            broker_event_sequence=event.sequence,
+            reason=reason,
+        )
+
+    async def _record_system_as_truth(
+        self,
+        ticket: ReconciliationTicket,
+        actor: AuditActor,
+        timestamp: datetime,
+    ) -> ApplyResult:
+        """No state change — only the audit row."""
+        await self._audit.write(
+            event_type=AuditEventType.RECONCILIATION_TICKET_DECIDED,
+            actor=actor,
+            resource_type="reconciliation_ticket",
+            resource_id=ticket.ticket_id,
+            payload={
+                "ticket_id": ticket.ticket_id,
+                "trade_date": ticket.trade_date,
+                "ticket_status": ticket.status.value,
+            },
+            outcome=AuditOutcome.SUCCESS,
+            correlation_id=ticket.ticket_id,
+            reason_namespace="reconciliation_reset",
+            timestamp=timestamp,
+        )
+        return ApplyResult(
+            cash_delta=0.0,
+            positions_delta=(),
+            broker_event_sequence=None,
+            reason="reset_skipped_system_as_truth",
+        )
+
+
+__all__ = [
+    "ApplyResult",
+    "ExecutionReportApplier",
+    "ReconciliationApplier",
+    "ReportedPosition",
+]

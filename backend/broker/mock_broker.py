@@ -535,3 +535,210 @@ class MockBroker(IBroker):
             for pos in self._positions.values():
                 pos.today_bought_volume = 0
             self._log.info("day_advanced")
+
+    # ------------------------------------------------------------------
+    # External-write entries (E-004 / P1-2.A red line)
+    # ------------------------------------------------------------------
+
+    async def apply_external_fill(
+        self,
+        *,
+        order_id_hint: str,
+        code: str,
+        volume: int,
+        fill_price: float,
+        fee: float,
+        side_is_buy: bool,
+        traded_at: datetime,
+        report_id: str,
+        kind: str,
+    ) -> dict:
+        """Apply a user-reported fill to the broker mirror.
+
+        Called exclusively by :class:`backend.broker.appliers
+        .ExecutionReportApplier`; direct mutation of ``_cash`` /
+        ``_positions`` / ``_trades`` from outside the broker is a red
+        line (P1-2.A §2 redline 1).
+
+        The fee is applied as commission on the synthesized Trade — the
+        exchange-side breakdown (stamp tax / transfer fee) is captured
+        inside ``fee`` because the user's Feishu reply does not always
+        itemise. The applier-side breakdown is therefore "fee" only;
+        the canonical per-board cost model only runs on broker-routed
+        fills.
+
+        Returns a dict with the keys
+        ``order_id``, ``trade_id``, ``cash_delta``, ``positions_delta``
+        so the applier can include the deltas in its BrokerEvent payload.
+        """
+        if volume <= 0:
+            raise ValueError(f"apply_external_fill volume {volume} must be > 0")
+        if fill_price <= 0:
+            raise ValueError(
+                f"apply_external_fill fill_price {fill_price} must be > 0"
+            )
+        async with self._lock:
+            order_id = f"ext-{uuid.uuid4().hex[:8]}"
+            trade_id = uuid.uuid4().hex[:12]
+            amount = round(fill_price * volume, 2)
+            direction = (
+                OrderDirection.BUY if side_is_buy else OrderDirection.SELL
+            )
+
+            if side_is_buy:
+                net = round(amount + fee, 2)
+                cash_delta = -net
+                self._cash -= net
+                self._apply_buy(code, fill_price, volume)
+                positions_delta = [
+                    {
+                        "code": code,
+                        "volume_delta": volume,
+                        "cost_price": fill_price,
+                    }
+                ]
+            else:
+                net = round(amount - fee, 2)
+                if net < 0:
+                    raise ValueError(
+                        f"apply_external_fill SELL fee {fee} exceeds gross "
+                        f"{amount}; reject upstream"
+                    )
+                cash_delta = net
+                pos = self._positions.get(code)
+                if pos is None or pos.volume < volume:
+                    raise ValueError(
+                        f"apply_external_fill SELL {volume}@{code} but "
+                        f"available volume is {pos.volume if pos else 0}"
+                    )
+                self._apply_sell(code, volume)
+                self._cash += net
+                positions_delta = [
+                    {
+                        "code": code,
+                        "volume_delta": -volume,
+                        "cost_price": fill_price,
+                    }
+                ]
+
+            trade = Trade(
+                trade_id=trade_id,
+                order_id=order_id,
+                code=code,
+                price=fill_price,
+                volume=volume,
+                amount=amount,
+                direction=direction,
+                commission=fee,
+                stamp_tax=0.0,
+                slippage_cost=0.0,
+                transfer_fee=0.0,
+                net_amount=net,
+                traded_at=traded_at,
+            )
+            self._trades.append(trade)
+
+            # Record a synthetic order so /api/trades + UI can show it.
+            order = _MutableOrder(
+                order_id=order_id,
+                code=code,
+                price=fill_price,
+                volume=volume,
+                direction=direction,
+                order_type=OrderType.LIMIT,
+                status=OrderStatus.FILLED,
+                filled_volume=volume,
+                avg_fill_price=fill_price,
+                created_at=traded_at,
+                updated_at=traded_at,
+            )
+            self._orders[order_id] = order
+
+            self._log.info(
+                "external_fill_applied",
+                report_id=report_id,
+                instruction_id=order_id_hint,
+                kind=kind,
+                code=code,
+                volume=volume,
+                fill_price=fill_price,
+                cash_delta=cash_delta,
+            )
+            return {
+                "order_id": order_id,
+                "trade_id": trade_id,
+                "cash_delta": cash_delta,
+                "positions_delta": positions_delta,
+            }
+
+    async def reset_to_snapshot(
+        self,
+        *,
+        cash: float,
+        positions: tuple,
+        reset_at: datetime,
+        reason: str,
+    ) -> dict:
+        """Overwrite the broker mirror with a target snapshot.
+
+        Called exclusively by :class:`backend.broker.appliers
+        .ReconciliationApplier` (or the mode-switch lifecycle in
+        D-005). ``positions`` is an iterable of objects exposing
+        ``code`` / ``volume`` / ``cost_price`` — both
+        :class:`backend.models.reconciliation.ReportedPosition` and
+        :class:`backend.broker.persistence.snapshots.BrokerSnapshotPosition`
+        satisfy this duck type.
+
+        Returns a dict describing the delta against the prior state so
+        the applier can include it in the BrokerEvent payload.
+        """
+        async with self._lock:
+            prior_cash = self._cash
+            prior_positions = {
+                code: pos.volume for code, pos in self._positions.items()
+            }
+
+            self._cash = float(cash)
+            self._frozen_cash = 0.0
+            self._positions.clear()
+            for pos in positions:
+                if pos.volume <= 0:
+                    continue
+                self._positions[pos.code] = _MutablePosition(
+                    code=pos.code,
+                    volume=int(pos.volume),
+                    today_bought_volume=0,
+                    cost_price=float(pos.cost_price),
+                )
+
+            new_positions = {
+                code: pos.volume for code, pos in self._positions.items()
+            }
+            positions_delta = []
+            for code in sorted(set(prior_positions) | set(new_positions)):
+                delta = new_positions.get(code, 0) - prior_positions.get(code, 0)
+                if delta == 0:
+                    continue
+                positions_delta.append(
+                    {
+                        "code": code,
+                        "volume_delta": delta,
+                        "cost_price": (
+                            self._positions[code].cost_price
+                            if code in self._positions
+                            else 0.0
+                        ),
+                    }
+                )
+
+            self._log.info(
+                "broker_reset_to_snapshot",
+                reason=reason,
+                reset_at=reset_at.isoformat(),
+                cash=cash,
+                positions=len(self._positions),
+            )
+            return {
+                "cash_delta": round(self._cash - prior_cash, 2),
+                "positions_delta": positions_delta,
+            }
