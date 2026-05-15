@@ -356,6 +356,20 @@ class MongoDBService:
             background=True,
         )
 
+        # equity_points — 30s intraday MTM rows (E-006 / P1-2.B §1.1).
+        # Acceptance + Performance UIs scan by trade_date / snapshot_at;
+        # unique (snapshot_at) keeps a retried 30s tick idempotent.
+        equity_points = self._db["equity_points"]
+        await equity_points.create_index(
+            [("snapshot_at", DESCENDING)],
+            unique=True,
+            background=True,
+        )
+        await equity_points.create_index(
+            [("trade_date", DESCENDING), ("snapshot_at", DESCENDING)],
+            background=True,
+        )
+
         # broker_snapshots — EOD checkpoint rows. Recovery reads by
         # last_event_sequence DESC; snapshot_id is unique so a botched
         # double-write at EOD cannot create a phantom row.
