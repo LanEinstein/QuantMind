@@ -229,11 +229,24 @@ async def get_instruction_plan_detail(
 
     try:
         builder = await repo.builder_early_returns(instruction_id)
-    except Exception:
+    except Exception as exc:
+        # Log to differentiate "no rows" from "probe broken" — silently
+        # returning an empty list would look like a clean Builder pass to
+        # operators (codex cycle 1 P2).
+        log.warning(
+            "instruction_plan_builder_rows_probe_failed",
+            error=str(exc),
+            instruction_id=instruction_id,
+        )
         builder = []
     try:
         broker = await repo.broker_at_fill(instruction_id)
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "instruction_plan_broker_probe_failed",
+            error=str(exc),
+            instruction_id=instruction_id,
+        )
         broker = None
 
     risk_rows = _risk_engine_rows(plan)

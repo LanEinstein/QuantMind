@@ -100,6 +100,25 @@ describe('useSystemStatusStore', () => {
     expect(store.loading).toBe(false)
   })
 
+  it('on fetch failure resets sources to unavailable (codex cycle 1 P2)', async () => {
+    // Seed an all-active state first
+    mockedApi.getFreezeSources.mockResolvedValueOnce(_allActivePayload)
+    const store = useSystemStatusStore()
+    await store.fetchFreezeSources()
+    expect(store.anyActive).toBe(true)
+
+    // Now simulate a backend outage on the next poll
+    mockedApi.getFreezeSources.mockRejectedValueOnce(new Error('network down'))
+    await store.fetchFreezeSources()
+
+    // The StatusBar must visibly degrade — not stay all-green.
+    expect(store.anyActive).toBe(false)
+    expect(store.anyUnavailable).toBe(true)
+    for (const source of store.sources) {
+      expect(source.status).toBe('unavailable')
+    }
+  })
+
   it('sourceByName returns the freeze source for each locked name', async () => {
     mockedApi.getFreezeSources.mockResolvedValueOnce(_allActivePayload)
     const store = useSystemStatusStore()

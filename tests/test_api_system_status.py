@@ -22,6 +22,7 @@ from httpx import ASGITransport, AsyncClient
 from backend.api.system_status import FREEZE_SOURCE_NAMES
 from backend.broker.models import CircuitBreakerConfig
 from backend.broker.scheduler import EodPipelineFreezeState
+from backend.data.data_quality import DataQualityState
 from backend.main import app
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.services.mode_router import ModeSwitchState
@@ -31,6 +32,7 @@ _STATE_KEYS = (
     "reconciliation_ticket_state",
     "circuit_breaker",
     "last_data_quality_state",
+    "last_data_quality_code",
     "eod_pipeline_freeze_state",
     "broker_scheduler",
 )
@@ -234,6 +236,46 @@ class TestDataQualityActive:
         assert dq["active"] is True
         assert dq["code"] == "600519"
         assert dq["reason"] == "primary_quote_stale_8s>5s"
+
+    @pytest.mark.asyncio
+    async def test_real_data_quality_state_uses_property_dispatch(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        """Regression: codex cycle 1 P1 — the real DataQualityState
+        exposes ``is_acceptable_for_buy_sell`` / ``degradation_reason``
+        as ``@property``. The probe used to call them as methods and
+        always raised ``'bool' object is not callable``, silently
+        downgrading the source to unavailable in production.
+        """
+        # Build a real DataQualityState with quote_staleness_breach so the
+        # production gate returns False — same path operators trigger via
+        # the C-004 evaluator.
+        state = DataQualityState(
+            quote_unavailable=False,
+            quote_staleness_breach=True,
+            quote_divergence_breach=False,
+            minimum_freshness_breach=False,
+            news_outage_breach=False,
+            mirofish_unavailable=False,
+            watchlist_snapshot_outage=False,
+            primary_quote_age_seconds=8,
+            backup_quote_age_seconds=3,
+            news_sources_alive_count=5,
+        )
+        app.state.last_data_quality_state = state
+        app.state.last_data_quality_code = "600519"
+
+        resp = await client.get("/api/system-status/freeze-sources")
+        body = resp.json()
+        dq = next(
+            s for s in body["data"]["sources"] if s["name"] == "data_quality"
+        )
+        assert dq["status"] == "ok"
+        assert dq["active"] is True
+        assert dq["code"] == "600519"
+        # degradation_reason fires because quote_staleness_breach is True
+        assert dq["reason"] is not None and "stale" in dq["reason"]
 
 
 class TestEodPipelineActive:

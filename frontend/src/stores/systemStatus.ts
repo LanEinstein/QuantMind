@@ -48,6 +48,12 @@ export const useSystemStatusStore = defineStore('systemStatus', () => {
       timestamp.value = payload.timestamp
     } catch (err: unknown) {
       error.value = err instanceof Error ? err.message : 'failed to load freeze sources'
+      // Reset the five sources to unavailable so the StatusBar visibly
+      // degrades during a backend outage instead of leaving the last
+      // all-green snapshot on screen (codex cycle 1 P2).
+      sources.value = _defaultSources()
+      anyActive.value = false
+      anyUnavailable.value = true
     } finally {
       loading.value = false
     }

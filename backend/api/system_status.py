@@ -44,6 +44,25 @@ FREEZE_SOURCE_NAMES: tuple[str, ...] = (
 )
 
 
+def _resolve(obj: Any, attr_name: str, default: Any) -> Any:
+    """Read ``attr_name`` from ``obj`` whether it is a property or method.
+
+    Production state classes (e.g. :class:`backend.data.data_quality
+    .DataQualityState`) expose breach predicates as ``@property``;
+    lightweight test stubs may implement them as plain methods. Without
+    this helper the probe would call the property's bool result like a
+    method and raise ``'bool' object is not callable`` (codex cycle 1
+    P1). Returns ``default`` on missing attribute / probe failure.
+    """
+    val = getattr(obj, attr_name, default)
+    if callable(val):
+        try:
+            return val()
+        except Exception:
+            return default
+    return val
+
+
 def _ok(data: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "data": data, "error": None}
 
@@ -98,9 +117,12 @@ def _reconciliation_ticket_probe(request: Request) -> dict[str, Any]:
             "ticket_id": None,
         }
     try:
-        active = bool(getattr(state, "has_open_ticket", lambda: False)())
-        ticket_id = getattr(state, "open_ticket_id", lambda: None)()
-        reason = getattr(state, "reason", lambda: None)() if active else None
+        # Use ``_resolve`` to accept both ``@property`` and method shapes
+        # on whichever ticket-state object Phase F wires up (codex cycle
+        # 1 P1 generalised).
+        active = bool(_resolve(state, "has_open_ticket", False))
+        ticket_id = _resolve(state, "open_ticket_id", None)
+        reason = _resolve(state, "reason", None) if active else None
         return {
             "name": "reconciliation_ticket",
             "active": active,
@@ -179,14 +201,22 @@ def _data_quality_probe(request: Request) -> dict[str, Any]:
             "code": None,
         }
     try:
-        is_acceptable = bool(
-            getattr(last_state, "is_acceptable_for_buy_sell", lambda: True)()
-        )
+        # The real ``DataQualityState`` (backend/data/data_quality.py) exposes
+        # these as ``@property`` while test stubs may implement them as
+        # methods. ``_resolve`` accepts both shapes (codex cycle 1 P1).
+        is_acceptable = bool(_resolve(last_state, "is_acceptable_for_buy_sell", True))
         active = not is_acceptable
         reason: str | None = None
         if active:
-            reason = getattr(last_state, "degradation_reason", lambda: None)()
+            reason = _resolve(last_state, "degradation_reason", None)
+        # Production ``DataQualityState`` does not carry the stock_code (it
+        # is the lookup key), so callers wishing to surface it should set
+        # ``app.state.last_data_quality_code`` alongside the state. We read
+        # both so the test stubs that attach ``stock_code`` directly keep
+        # working.
         code = getattr(last_state, "stock_code", None)
+        if code is None:
+            code = getattr(request.app.state, "last_data_quality_code", None)
         return {
             "name": "data_quality",
             "active": active,
@@ -220,15 +250,15 @@ def _eod_pipeline_probe(request: Request) -> dict[str, Any]:
             "trade_date": None,
         }
     try:
-        active = bool(getattr(freeze_state, "is_active", lambda: False)())
-        reason = getattr(freeze_state, "reason", lambda: None)() if active else None
-        raised_at = getattr(freeze_state, "raised_at", lambda: None)()
+        active = bool(_resolve(freeze_state, "is_active", False))
+        reason = _resolve(freeze_state, "reason", None) if active else None
+        raised_at = _resolve(freeze_state, "raised_at", None)
         raised_at_iso = (
             raised_at.astimezone(UTC).isoformat()
             if isinstance(raised_at, datetime)
             else None
         )
-        trade_date = getattr(freeze_state, "raised_for_trade_date", lambda: None)()
+        trade_date = _resolve(freeze_state, "raised_for_trade_date", None)
         return {
             "name": "eod_pipeline",
             "active": active,
