@@ -63,6 +63,26 @@
           {{ row.commission.toFixed(2) }}
         </template>
       </el-table-column>
+      <el-table-column prop="stamp_tax" label="印花税" width="80" align="right">
+        <template #default="{ row }">
+          {{ row.stamp_tax.toFixed(2) }}
+        </template>
+      </el-table-column>
+      <el-table-column
+        prop="transfer_fee"
+        label="过户费(深 0.00341%)"
+        width="170"
+        align="right"
+      >
+        <template #default="{ row }">
+          {{ (row.transfer_fee ?? 0).toFixed(4) }}
+        </template>
+      </el-table-column>
+      <el-table-column prop="slippage_cost" label="滑点" width="80" align="right">
+        <template #default="{ row }">
+          {{ row.slippage_cost.toFixed(2) }}
+        </template>
+      </el-table-column>
       <template #empty>
         <el-empty description="暂无成交记录" :image-size="60" />
       </template>

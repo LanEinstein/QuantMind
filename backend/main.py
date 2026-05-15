@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from backend.services.watchlist_policy import WatchlistPolicy
 
 from backend.api.analysis import router as analysis_router
+from backend.api.equity_points import router as equity_points_router
 from backend.api.health import router as health_router
 from backend.api.instruction_plans import router as instruction_plans_router
 from backend.api.market import router as market_router
@@ -405,6 +406,7 @@ app.include_router(health_router)
 app.include_router(monitoring_router)
 app.include_router(system_status_router)
 app.include_router(instruction_plans_router)
+app.include_router(equity_points_router)
 app.include_router(websocket_router)
 
 

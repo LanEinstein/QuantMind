@@ -60,6 +60,8 @@ export interface TradeItem {
   readonly commission: number
   readonly stamp_tax: number
   readonly slippage_cost: number
+  /** P1-2.C SZ 0.00341% double-sided 过户费 (non-destructive; defaults 0 on SH-only). */
+  readonly transfer_fee?: number
   readonly net_amount: number
   readonly traded_at: string
 }
