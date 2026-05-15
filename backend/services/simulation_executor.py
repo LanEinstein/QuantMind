@@ -163,29 +163,52 @@ class SimulationExecutor:
         last_trade = trades[-1] if trades else None
         trade_id = last_trade.trade_id if last_trade else None
 
-        # Persist a BROKER_FILLED event in the broker_events store so
-        # recovery can replay the fill on the next boot. The event_type
-        # is the higher-level ORDER_FILLED — payload mirrors what
-        # MockBroker.apply_external_fill would have written.
+        # Persist BOTH ORDER_PLACED and ORDER_FILLED atomically so
+        # recovery sees the same lifecycle MockBroker.place_order
+        # took live: PLACED freezes cash on BUY → FILLED settles it.
+        # daily_state_assembler counts ORDER_PLACED + EXECUTION_REPORT_APPLIED
+        # so the simulation route must surface as a PLACED event to be
+        # included in the P0-7 §1.4 daily cap.
         if last_trade is not None:
-            await self._events.append(
-                event_type=BrokerEventType.ORDER_FILLED,
-                occurred_at=timestamp,
-                order_id=order_result.order_id,
-                trade_id=trade_id,
-                correlation_id=plan.instruction_id,
-                payload={
-                    "code": last_trade.code,
-                    "volume": last_trade.volume,
-                    "fill_price": last_trade.price,
-                    "direction": last_trade.direction.value,
-                    "commission": last_trade.commission,
-                    "stamp_tax": last_trade.stamp_tax,
-                    "transfer_fee": last_trade.transfer_fee,
-                    "frozen_amount": last_trade.net_amount
-                    if last_trade.direction is OrderDirection.BUY
-                    else 0.0,
-                },
+            frozen_amount = (
+                last_trade.net_amount
+                if last_trade.direction is OrderDirection.BUY
+                else 0.0
+            )
+            await self._events.append_many(
+                [
+                    (
+                        BrokerEventType.ORDER_PLACED,
+                        timestamp,
+                        order_result.order_id,
+                        None,
+                        plan.instruction_id,
+                        {
+                            "code": last_trade.code,
+                            "direction": last_trade.direction.value,
+                            "volume": last_trade.volume,
+                            "limit_price": plan.limit_price,
+                            "frozen_amount": frozen_amount,
+                        },
+                    ),
+                    (
+                        BrokerEventType.ORDER_FILLED,
+                        timestamp,
+                        order_result.order_id,
+                        trade_id,
+                        plan.instruction_id,
+                        {
+                            "code": last_trade.code,
+                            "volume": last_trade.volume,
+                            "fill_price": last_trade.price,
+                            "direction": last_trade.direction.value,
+                            "commission": last_trade.commission,
+                            "stamp_tax": last_trade.stamp_tax,
+                            "transfer_fee": last_trade.transfer_fee,
+                            "frozen_amount": frozen_amount,
+                        },
+                    ),
+                ]
             )
 
         filled_plan = _transition(

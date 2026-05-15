@@ -260,10 +260,17 @@ class MockBroker(IBroker):
         try:
             current = await self._market_meta.get_current_price(code, now=now)
         except StaleQuoteError:
-            # Live quote unavailable — fall back to prev_close-based gate
-            # but never to cost_price. Better to bounce the order than
-            # silently fill at a stale level.
-            current = prev_close
+            # Live quote unavailable — reject the order with the locked
+            # reason so audit can attribute. Falling back to prev_close
+            # silently would defeat the at-fill recheck purpose: the
+            # whole point of this gate is to bounce orders against
+            # current price drift between Builder check 12 and the fill
+            # moment (codex P2; P1-2.B §2 redline 6 forbids cost_price /
+            # stale-cache fallback for live decisions).
+            return (
+                f"Order rejected: {PRICE_LIMIT_VIOLATION_REASON} "
+                f"(live quote unavailable; cost_price fallback forbidden)"
+            )
         pct = get_price_limit_pct(board)
         upper = round(prev_close * (1.0 + pct), 2)
         lower = round(prev_close * (1.0 - pct), 2)

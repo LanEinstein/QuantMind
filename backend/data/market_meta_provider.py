@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 import structlog
@@ -173,7 +173,11 @@ class MongoBackedMarketMetaProvider:
     async def get_current_price(
         self, code: str, *, now: datetime | None = None
     ) -> float:
-        ref = now or datetime.utcnow()  # naive but used only for delta
+        # Normalise the reference time to UTC-aware so the subtraction
+        # below cannot raise TypeError when the caller passes a tz-aware
+        # ``now`` (Shanghai or UTC) and the Mongo / Redis timestamp comes
+        # back as tz-aware or naive — codex P2.
+        ref = _to_utc(now or datetime.now(UTC))
 
         if self._redis is not None:
             raw = await self._redis.get(f"quote:{code}")
@@ -189,8 +193,10 @@ class MongoBackedMarketMetaProvider:
             price = doc.get("price")
             if ts is None or price is None:
                 continue
-            age = (ref - ts).total_seconds() if isinstance(ts, datetime) else 1e9
-            if age <= self._mongo_window:
+            if not isinstance(ts, datetime):
+                continue
+            age = (ref - _to_utc(ts)).total_seconds()
+            if 0 <= age <= self._mongo_window:
                 return float(price)
             break
 
@@ -211,6 +217,10 @@ def _parse_redis_quote(
     we parse defensively because a typo in the producer would otherwise
     cause the broker to fail silently. Returns ``None`` on parse error
     or stale timestamp; the caller then falls through to Mongo.
+
+    Both ``ref`` and the parsed ``ts`` are converted to UTC-aware
+    datetimes before subtraction so a mix of tz-aware and naive
+    timestamps cannot raise TypeError (codex P2).
     """
     try:
         if isinstance(raw, bytes):
@@ -218,16 +228,26 @@ def _parse_redis_quote(
         payload = json.loads(raw)
         price = float(payload["price"])
         ts_raw = payload["timestamp"]
-        ts = datetime.fromisoformat(ts_raw)
-        if ts.tzinfo is not None:
-            ts = ts.replace(tzinfo=None)
+        ts = _to_utc(datetime.fromisoformat(ts_raw))
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("redis_quote_parse_failed", error=str(exc))
         return None
-    age = (ref - ts).total_seconds()
+    age = (_to_utc(ref) - ts).total_seconds()
     if age < 0 or age > window_seconds:
         return None
     return price
+
+
+def _to_utc(value: datetime) -> datetime:
+    """Coerce ``value`` to a UTC-aware datetime.
+
+    Naive timestamps are assumed to be UTC (matches the legacy
+    DataScheduler convention). Tz-aware values are converted via
+    ``astimezone(UTC)``.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 __all__ = [

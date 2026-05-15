@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol, runtime_checkable
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -41,6 +42,20 @@ from backend.audit.store import AuditStore
 from backend.broker.mock_broker import MockBroker
 from backend.broker.persistence.events import BrokerEventType
 from backend.broker.persistence.store import BrokerEventStore
+
+
+@runtime_checkable
+class _AcceptanceGate(Protocol):
+    """Narrow protocol for the P0-6 §2 redline 5 acceptance gate.
+
+    ModeRouter must consult this before switching to ``feishu_interactive``;
+    the env-var ``FEISHU_INTERACTIVE_ENABLED`` alone is NOT a valid
+    sanction. Production passes
+    :class:`backend.services.acceptance_report.AcceptanceService`;
+    tests pass an in-memory stub that returns the boolean directly.
+    """
+
+    async def can_switch_to_feishu_on(self) -> bool: ...
 
 log = structlog.get_logger(component="services.mode_router")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -110,6 +125,18 @@ FEISHU_INTERACTIVE = "feishu_interactive"
 VALID_MODES = frozenset({SIMULATION_AUTO, FEISHU_INTERACTIVE})
 
 
+class AcceptanceGateMissingError(RuntimeError):
+    """Raised when ModeRouter is asked to enter feishu_interactive but no
+    AcceptanceService gate was injected. P0-6 §2 redline 5 — no env-var
+    bypass."""
+
+
+class AcceptanceGateRejectedError(RuntimeError):
+    """Raised when ``can_switch_to_feishu_on()`` returned False. The
+    operator must wait for the 45-trading-day acceptance window to
+    clear or accept the most recent report."""
+
+
 @dataclass(frozen=True)
 class ModeSwitchResult:
     """Summary of a mode-switch lifecycle round-trip."""
@@ -132,6 +159,7 @@ class ModeRouter:
         audit_store: AuditStore,
         mode_state: ModeSwitchState | None = None,
         initial_mode: str = SIMULATION_AUTO,
+        acceptance_gate: _AcceptanceGate | None = None,
     ) -> None:
         if initial_mode not in VALID_MODES:
             raise ValueError(f"unknown run mode {initial_mode!r}")
@@ -140,6 +168,7 @@ class ModeRouter:
         self._audit = audit_store
         self._mode_state = mode_state or ModeSwitchState()
         self._current_mode = initial_mode
+        self._acceptance_gate = acceptance_gate
 
     @property
     def mode_state(self) -> ModeSwitchState:
@@ -172,6 +201,27 @@ class ModeRouter:
             raise ValueError(
                 f"mode switch noop: already in {self._current_mode!r}"
             )
+
+        # P0-6 §2 redline 5 — switching to feishu_interactive requires
+        # the AcceptanceService gate to return True. Env-var bypass is
+        # explicitly forbidden (codex P1). The gate is optional in
+        # constructor so existing tests + simulation-only environments
+        # keep working; production wiring always injects it.
+        if to_mode == FEISHU_INTERACTIVE:
+            if self._acceptance_gate is None:
+                raise AcceptanceGateMissingError(
+                    "Cannot switch to feishu_interactive: no acceptance "
+                    "gate wired. P0-6 §2 redline 5 forbids env-var "
+                    "bypass; AcceptanceService must be injected."
+                )
+            sanctioned = await self._acceptance_gate.can_switch_to_feishu_on()
+            if not sanctioned:
+                raise AcceptanceGateRejectedError(
+                    "Cannot switch to feishu_interactive: the latest "
+                    "AcceptanceReport is not PASS. The 45-trading-day "
+                    "8-metric gate (P0-6 §1) must clear before the "
+                    "human-in-loop overlay is sanctioned."
+                )
 
         from_mode = self._current_mode
 
@@ -283,6 +333,8 @@ __all__ = [
     "FEISHU_INTERACTIVE",
     "SIMULATION_AUTO",
     "VALID_MODES",
+    "AcceptanceGateMissingError",
+    "AcceptanceGateRejectedError",
     "ModeRouter",
     "ModeSwitchResult",
     "ModeSwitchState",

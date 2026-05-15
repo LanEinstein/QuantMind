@@ -35,6 +35,8 @@ from backend.services.ledger import (
 from backend.services.mode_router import (
     FEISHU_INTERACTIVE,
     SIMULATION_AUTO,
+    AcceptanceGateMissingError,
+    AcceptanceGateRejectedError,
     ModeRouter,
     ModeSwitchState,
 )
@@ -42,6 +44,16 @@ from backend.services.simulation_executor import (
     ROUTE_FROZEN_REASON,
     SimulationExecutor,
 )
+
+
+class _PassingAcceptanceGate:
+    """Test stub that mimics AcceptanceService.can_switch_to_feishu_on."""
+
+    def __init__(self, sanctioned: bool = True) -> None:
+        self._sanctioned = sanctioned
+
+    async def can_switch_to_feishu_on(self) -> bool:
+        return self._sanctioned
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -329,6 +341,7 @@ class TestModeRouter:
         router = ModeRouter(
             broker=broker, event_store=event_store, audit_store=audit_store,
             initial_mode=SIMULATION_AUTO,
+            acceptance_gate=_PassingAcceptanceGate(sanctioned=True),
         )
 
         # Seed broker with some state
@@ -437,3 +450,81 @@ class TestModeRouter:
         # FRONTEND_USER/FEISHU_USER for evolution events; SimulationExecutor
         # rejection uses SYSTEM which is unaffected)
         assert AuditActor.SYSTEM.value == "system"
+
+    @pytest.mark.asyncio
+    async def test_switch_to_feishu_without_gate_raises(
+        self, tmp_path: Path
+    ) -> None:
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=1_000_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 9, 30, tzinfo=SHANGHAI),
+        )
+        client = _FakeClient()
+        event_store = BrokerEventStore(client, _FakeCollection())
+        audit_store = AuditStore(
+            InMemoryAuditCollection(), jsonl_path=tmp_path / "audit.jsonl"
+        )
+        router = ModeRouter(
+            broker=broker, event_store=event_store, audit_store=audit_store,
+            initial_mode=SIMULATION_AUTO,
+            # No acceptance_gate injected — codex P1 fix requires this
+            # to fail-closed when switching to feishu_interactive.
+        )
+        with pytest.raises(AcceptanceGateMissingError):
+            await router.switch_mode(
+                to_mode=FEISHU_INTERACTIVE,
+                reason="bypass attempt", initiated_by="cli",
+                when=dt.datetime(2026, 5, 15, 16, 0, tzinfo=SHANGHAI),
+            )
+
+    @pytest.mark.asyncio
+    async def test_switch_to_feishu_with_failing_gate_raises(
+        self, tmp_path: Path
+    ) -> None:
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=1_000_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 9, 30, tzinfo=SHANGHAI),
+        )
+        client = _FakeClient()
+        event_store = BrokerEventStore(client, _FakeCollection())
+        audit_store = AuditStore(
+            InMemoryAuditCollection(), jsonl_path=tmp_path / "audit.jsonl"
+        )
+        router = ModeRouter(
+            broker=broker, event_store=event_store, audit_store=audit_store,
+            initial_mode=SIMULATION_AUTO,
+            acceptance_gate=_PassingAcceptanceGate(sanctioned=False),
+        )
+        with pytest.raises(AcceptanceGateRejectedError):
+            await router.switch_mode(
+                to_mode=FEISHU_INTERACTIVE,
+                reason="acceptance not yet PASS", initiated_by="cli",
+                when=dt.datetime(2026, 5, 15, 16, 0, tzinfo=SHANGHAI),
+            )
+
+    @pytest.mark.asyncio
+    async def test_switch_back_to_simulation_no_gate_required(
+        self, tmp_path: Path
+    ) -> None:
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=1_000_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 9, 30, tzinfo=SHANGHAI),
+        )
+        client = _FakeClient()
+        event_store = BrokerEventStore(client, _FakeCollection())
+        audit_store = AuditStore(
+            InMemoryAuditCollection(), jsonl_path=tmp_path / "audit.jsonl"
+        )
+        # Start in feishu_interactive (operator emergency rollback path).
+        router = ModeRouter(
+            broker=broker, event_store=event_store, audit_store=audit_store,
+            initial_mode=FEISHU_INTERACTIVE,
+            # acceptance gate not needed when switching BACK to
+            # simulation_auto (always sanctioned).
+        )
+        result = await router.switch_mode(
+            to_mode=SIMULATION_AUTO,
+            reason="emergency rollback", initiated_by="cli",
+            when=dt.datetime(2026, 5, 15, 16, 0, tzinfo=SHANGHAI),
+        )
+        assert result.to_mode == SIMULATION_AUTO

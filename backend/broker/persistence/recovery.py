@@ -208,16 +208,20 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
         return
 
     if event.event_type is BrokerEventType.EXECUTION_REPORT_APPLIED:
-        # Generic delta carrier — payload['cash_delta'] /
-        # payload['positions_delta'] adjust the rolling state. The
-        # ExecutionReportApplier (E-004) chooses one of the structured
-        # deltas; recovery applies whichever is set.
+        # Generic delta carrier. payload['positions_delta'] entries
+        # carry the FILL price (cost_price field) — recovery must
+        # compute a weighted average for positive deltas (add-on
+        # buys) and leave cost basis unchanged for negative deltas
+        # (sells / reductions) so the rebuild matches the live
+        # broker's _apply_buy averaging. Setting pos.cost_price
+        # directly from the fill price would diverge on add-on
+        # buys (codex P1).
         cash_delta = float(payload.get("cash_delta", 0.0))
         state.cash += cash_delta
         for delta in payload.get("positions_delta", []) or []:
             code = str(delta["code"])
             volume_delta = int(delta.get("volume_delta", 0))
-            cost_price = delta.get("cost_price")
+            fill_price = delta.get("cost_price")
             pos = state.positions.get(code)
             if pos is None:
                 if volume_delta <= 0:
@@ -226,12 +230,24 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                     code=code,
                     volume=volume_delta,
                     today_bought_volume=0,
-                    cost_price=float(cost_price) if cost_price is not None else 0.0,
+                    cost_price=(
+                        float(fill_price) if fill_price is not None else 0.0
+                    ),
                 )
             else:
-                pos.volume += volume_delta
-                if cost_price is not None:
-                    pos.cost_price = float(cost_price)
+                if volume_delta > 0 and fill_price is not None:
+                    # Weighted average mirrors MockBroker._apply_buy.
+                    total_cost = (
+                        pos.cost_price * pos.volume
+                        + float(fill_price) * volume_delta
+                    )
+                    new_volume = pos.volume + volume_delta
+                    pos.cost_price = (
+                        total_cost / new_volume if new_volume > 0 else 0.0
+                    )
+                    pos.volume = new_volume
+                else:
+                    pos.volume += volume_delta
                 if pos.volume <= 0:
                     state.positions.pop(code, None)
         return
