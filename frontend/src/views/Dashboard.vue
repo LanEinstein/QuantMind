@@ -87,9 +87,7 @@
         </el-card>
       </div>
     </div>
-
-    <!-- Status Bar (persistent) -->
-    <StatusBar :status="store.systemStatus" :ws-connected="wsConnected" />
+    <!-- G-002: status bar moved to AppShell.vue (global) -->
   </div>
 </template>
 
@@ -101,10 +99,10 @@ import MarketChart from '@/components/charts/MarketChart.vue'
 import SectorHeatmap from '@/components/charts/SectorHeatmap.vue'
 import CapitalFlowChart from '@/components/charts/CapitalFlowChart.vue'
 import NewsFeed from '@/components/common/NewsFeed.vue'
-import StatusBar from '@/components/common/StatusBar.vue'
 
 const store = useMarketStore()
 const { connected: wsConnected, connect } = useWebSocket()
+void wsConnected
 
 // Market stats percentages
 const total = computed(() => {

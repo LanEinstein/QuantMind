@@ -56,21 +56,62 @@
     </aside>
 
     <main class="app-main">
-      <slot />
+      <div class="app-content">
+        <slot />
+      </div>
+      <footer class="app-status-bar">
+        <FreezeSourceBar :sources="systemStatusStore.sources" />
+        <span class="status-spacer" />
+        <span class="status-time">
+          {{ statusBarTimestamp }}
+        </span>
+      </footer>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { NAV_GROUPS, SETTINGS_ENTRIES } from '@/router/menu'
 import { useFocusMode } from '@/composables/useFocusMode'
+import { useSystemStatusStore } from '@/stores/systemStatus'
+import FreezeSourceBar from '@/components/common/FreezeSourceBar.vue'
 
 const route = useRoute()
 const { active: focusMode, toggle: toggleFocusMode } = useFocusMode()
 
 const activeRoute = computed<string>(() => route.path)
+
+const systemStatusStore = useSystemStatusStore()
+const { timestamp } = storeToRefs(systemStatusStore)
+
+const statusBarTimestamp = computed(() => {
+  if (!timestamp.value) return '加载中…'
+  try {
+    return new Date(timestamp.value).toLocaleTimeString('zh-CN', { hour12: false })
+  } catch {
+    return timestamp.value
+  }
+})
+
+const POLL_INTERVAL_MS = 10_000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  systemStatusStore.fetchFreezeSources()
+  pollTimer = setInterval(() => {
+    systemStatusStore.fetchFreezeSources()
+  }, POLL_INTERVAL_MS)
+})
+
+onBeforeUnmount(() => {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 </script>
 
 <style lang="scss" scoped>
@@ -178,5 +219,34 @@ const activeRoute = computed<string>(() => route.path)
   flex-direction: column;
   overflow: hidden;
   background: $bg-primary;
+}
+
+.app-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-status-bar {
+  height: $status-bar-height;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: $bg-status-bar;
+  border-top: 1px solid $border-color;
+  font-size: 12px;
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-time {
+  color: $text-muted;
+  font-family: 'Roboto Mono', monospace;
 }
 </style>

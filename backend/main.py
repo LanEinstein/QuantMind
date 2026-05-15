@@ -22,6 +22,7 @@ from backend.api.performance import router as performance_router
 from backend.api.risk import router as risk_router
 from backend.api.settings import router as settings_router
 from backend.api.simulation import router as simulation_router
+from backend.api.system_status import router as system_status_router
 from backend.api.trading import router as trading_router
 from backend.api.watchlist import router as watchlist_router
 from backend.api.websocket import router as websocket_router
@@ -401,6 +402,7 @@ app.include_router(performance_router)
 app.include_router(watchlist_router)
 app.include_router(health_router)
 app.include_router(monitoring_router)
+app.include_router(system_status_router)
 app.include_router(websocket_router)
 
 
