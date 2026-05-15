@@ -45,7 +45,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from zoneinfo import ZoneInfo
@@ -54,6 +54,15 @@ import structlog
 
 from backend.audit.models import AuditActor, AuditEventType, AuditOutcome
 from backend.audit.store import AuditStore
+from backend.broker.models import (
+    AccountInfo,
+    Order,
+    OrderDirection,
+    OrderStatus,
+    OrderType,
+    Position,
+    ValidationResult,
+)
 from backend.data.data_quality import DataQualityState
 from backend.data.stock_metadata import (
     ForbiddenCodeError,
@@ -61,12 +70,24 @@ from backend.data.stock_metadata import (
     classify_board,
     is_st_name,
 )
-from backend.models.instruction import InstructionSide
+from backend.models.instruction import (
+    DataSnapshot,
+    InstructionPlan,
+    InstructionSide,
+    InstructionStatus,
+    PositionSummary,
+    RiskCheckSummary,
+)
 from backend.models.reconciliation import (
     ReconciliationTicket,
     ReconciliationTicketStatus,
 )
 from backend.risk.circuit_breaker import CircuitBreaker
+from backend.risk.daily_state import DailyTradingState
+from backend.risk.engine import RiskEngine
+from backend.risk.stock_meta import StockMetadata as RiskStockMetadata
+from backend.services.fund_manager_output import FundManagerOutput
+from backend.services.instruction_plan import make_instruction_id
 from backend.services.watchlist_policy import WatchlistPolicy
 
 log = structlog.get_logger(component="services.instruction_plan_builder")
@@ -696,20 +717,635 @@ class InstructionPlanBuilder:
             timestamp=candidate.now,
         )
 
+    # =====================================================================
+    # D-004 — FundManagerOutput → InstructionPlan + 4-Agent gate
+    # =====================================================================
+
+    async def assemble_plan(
+        self,
+        *,
+        fund_manager_output: FundManagerOutput,
+        mandatory_records: MandatoryAgentRecords,
+        context: AssemblyContext,
+    ) -> BuilderResult:
+        """Assemble an InstructionPlan from a fund_manager output (P0-10 + P0-3).
+
+        Pipeline (locked order):
+
+        1. **4-Agent gate** — every mandatory record id (fundamental,
+           technical, risk_officer, fund_manager) must be present, and
+           ``debate_round_count >= 1`` must hold. Either fail emits a
+           BUILDER_EARLY_RETURN audit event with
+           ``reason_namespace='missing_mandatory_agent'`` /
+           ``'debate_bypass'`` and returns :class:`BuilderDegrade` —
+           NO InstructionPlan is constructed because the schema
+           constraint ``debate_round_count >= 1`` would not be
+           satisfiable for the bypass path.
+        2. **Forced-HOLD on parse failure** — when
+           ``fund_manager_output.parse_ok=False``, the LLM emitted a
+           synthetic placeholder; P0-3 §2 redline 6 mandates HOLD. The
+           Builder constructs a HOLD plan with ``status=VALIDATED``
+           and ``invalidation_summary='LLM parse failure → HOLD'`` so
+           the ledger surfaces the degrade reason without losing the
+           audit trail.
+        3. **HOLD recommendation** — fund_manager said HOLD: emit
+           HOLD InstructionPlan (no early-returns / no risk engine —
+           HOLD never trades; CLAUDE.md §2.7 keeps HOLD off the freeze
+           paths).
+        4. **BUY/SELL recommendation** — runs the five early-return
+           chain (D-003) followed by RiskEngine 14-check; on engine
+           reject the Builder emits a REJECTED InstructionPlan with
+           ``rejection_reason`` from ValidationResult; on engine pass
+           emits a VALIDATED BUY/SELL InstructionPlan.
+
+        P0-10 schema/lint dual gate is enforced structurally:
+        ``FundManagerOutput`` only exposes
+        ``side`` / ``proposal_text`` / ``parse_ok``; the Builder
+        derives ``volume`` / ``limit_price`` / ``status`` /
+        ``risk_summary`` / ``valid_until`` itself from non-LLM inputs.
+        Any future attempt to plumb a numeric field through the LLM
+        contract fails Pydantic validation at import time because the
+        ``FundManagerOutput.model_config`` is frozen + strict +
+        ``extra='forbid'``.
+
+        Returns:
+            ``BuilderEarlyReturn`` (one of the 5 D-003 freeze sources
+            — only for BUY/SELL),
+            ``BuilderDegrade`` (4-Agent gate fail),
+            or ``BuilderPlan`` (carrying the constructed
+            InstructionPlan: HOLD VALIDATED, BUY/SELL VALIDATED, or
+            BUY/SELL REJECTED).
+        """
+
+        # 1. 4-agent gate ---------------------------------------------------
+        gate = _check_mandatory_agents(mandatory_records, context.debate_round_count)
+        if gate is not None:
+            await self._record_degrade_audit(gate, context)
+            return gate
+
+        # 2. Forced HOLD on parse failure ----------------------------------
+        if not fund_manager_output.parse_ok:
+            plan = self._build_hold_plan(
+                context,
+                invalidation_summary=("LLM parse failure → HOLD (P0-3 §2 redline 6)"),
+                status=InstructionStatus.VALIDATED,
+                rejection_reason=None,
+            )
+            return BuilderPlan(plan=plan, fund_manager_output=fund_manager_output)
+
+        # 3. HOLD recommendation -------------------------------------------
+        if fund_manager_output.side is InstructionSide.HOLD:
+            plan = self._build_hold_plan(
+                context,
+                invalidation_summary=context.invalidation_summary,
+                status=InstructionStatus.VALIDATED,
+                rejection_reason=None,
+            )
+            return BuilderPlan(plan=plan, fund_manager_output=fund_manager_output)
+
+        # 4. BUY/SELL — run 5 early-returns then 14-check -----------------
+        candidate = CandidateInputs(
+            stock_code=context.stock_code,
+            stock_name=context.stock_name,
+            side=fund_manager_output.side,
+            now=context.now,
+            open_tickets=context.open_tickets,
+            circuit_breaker=context.circuit_breaker,
+            data_quality=context.data_quality,
+            watchlist_policy=context.watchlist_policy,
+            watchlist_signal=context.watchlist_signal,
+        )
+        early = await self.evaluate_candidate(candidate)
+        if isinstance(early, BuilderEarlyReturn):
+            return early
+
+        # All freeze gates clear → run 14-check.
+        order = _derive_pending_order(
+            stock_code=context.stock_code,
+            side=fund_manager_output.side,
+            volume=context.proposed_volume,
+            limit_price=context.proposed_limit_price,
+            now=context.now,
+        )
+        engine_result = context.risk_engine.validate_order(
+            order,
+            context.account,
+            context.positions,
+            prev_close=context.prev_close,
+            now=context.now,
+            daily_state=context.daily_state,
+            stock_meta=context.stock_meta,
+        )
+
+        risk_summary = _build_risk_summary(engine_result)
+        if not engine_result.passed:
+            plan = self._build_buy_sell_plan(
+                context,
+                fund_manager_output,
+                risk_summary,
+                status=InstructionStatus.REJECTED,
+                rejection_reason=(
+                    f"{engine_result.rule_name}: {engine_result.message}"
+                )[:256],
+            )
+        else:
+            plan = self._build_buy_sell_plan(
+                context,
+                fund_manager_output,
+                risk_summary,
+                status=InstructionStatus.VALIDATED,
+                rejection_reason=None,
+            )
+        return BuilderPlan(plan=plan, fund_manager_output=fund_manager_output)
+
+    # ---------------------------------------------------------------------
+    # Plan factories — Builder writes volume / price / risk_summary /
+    # status / valid_until itself; LLM never reaches these fields.
+    # ---------------------------------------------------------------------
+
+    def _build_hold_plan(
+        self,
+        context: AssemblyContext,
+        *,
+        invalidation_summary: str,
+        status: InstructionStatus,
+        rejection_reason: str | None,
+    ) -> InstructionPlan:
+        """Construct a HOLD InstructionPlan with stub 14-entry risk_summary."""
+        instruction_id = make_instruction_id(
+            context.now, context.stock_code, InstructionSide.HOLD, context.seq
+        )
+        return InstructionPlan(
+            instruction_id=instruction_id,
+            created_at=context.now,
+            valid_until=_derive_valid_until(context.now),
+            trade_date=_derive_trade_date(context.now),
+            stock_code=context.stock_code,
+            stock_name=context.stock_name,
+            side=InstructionSide.HOLD,
+            volume=None,
+            limit_price=None,
+            data_snapshot=context.data_snapshot,
+            evidence_ids=context.evidence_ids,
+            position_summary=None,
+            risk_summary=_HOLD_RISK_SUMMARY,
+            risk_validation_id=context.risk_validation_id,
+            signal_id=context.signal_id,
+            analysis_record_id=context.analysis_record_id,
+            debate_round_count=context.debate_round_count,
+            invalidation_summary=invalidation_summary,
+            status=status,
+            rejection_reason=rejection_reason,
+        )
+
+    def _build_buy_sell_plan(
+        self,
+        context: AssemblyContext,
+        fund_manager_output: FundManagerOutput,
+        risk_summary: tuple[RiskCheckSummary, ...],
+        *,
+        status: InstructionStatus,
+        rejection_reason: str | None,
+    ) -> InstructionPlan:
+        """Construct a BUY/SELL InstructionPlan from non-LLM inputs only."""
+        side = fund_manager_output.side
+        instruction_id = make_instruction_id(
+            context.now, context.stock_code, side, context.seq
+        )
+        position_summary = _derive_position_summary(
+            account=context.account,
+            positions=context.positions,
+            order_code=context.stock_code,
+            order_volume=context.proposed_volume,
+            order_price=context.proposed_limit_price,
+            side=side,
+        )
+        return InstructionPlan(
+            instruction_id=instruction_id,
+            created_at=context.now,
+            valid_until=_derive_valid_until(context.now),
+            trade_date=_derive_trade_date(context.now),
+            stock_code=context.stock_code,
+            stock_name=context.stock_name,
+            side=side,
+            volume=context.proposed_volume,
+            limit_price=context.proposed_limit_price,
+            data_snapshot=context.data_snapshot,
+            evidence_ids=context.evidence_ids,
+            position_summary=position_summary,
+            risk_summary=risk_summary,
+            risk_validation_id=context.risk_validation_id,
+            signal_id=context.signal_id,
+            analysis_record_id=context.analysis_record_id,
+            debate_round_count=context.debate_round_count,
+            invalidation_summary=context.invalidation_summary,
+            status=status,
+            rejection_reason=rejection_reason,
+        )
+
+    async def _record_degrade_audit(
+        self,
+        degrade: BuilderDegrade,
+        context: AssemblyContext,
+    ) -> None:
+        """Persist a BUILDER_EARLY_RETURN audit event for the 4-agent gate fail."""
+        log.warning(
+            "builder_degrade",
+            reason_namespace=degrade.reason_namespace,
+            stock_code=context.stock_code,
+            message=degrade.message,
+        )
+        payload: dict[str, str | int | float | bool | None] = {
+            "stock_code": context.stock_code,
+            "stock_name": context.stock_name,
+            "evaluated_at": context.now.astimezone(_SH).isoformat(),
+        }
+        payload.update(degrade.payload)
+        await self._audit.write(
+            event_type=_AUDIT_EVENT_TYPE,
+            actor=AuditActor.SYSTEM,
+            resource_type="instruction_plan_candidate",
+            resource_id=context.stock_code,
+            payload=payload,
+            outcome=AuditOutcome.BLOCKED,
+            reason_namespace=degrade.reason_namespace,
+            timestamp=context.now,
+        )
+
+
+# ---------------------------------------------------------------------------
+# D-004 — Result envelopes / inputs / pure helpers
+# ---------------------------------------------------------------------------
+
+
+# 4-agent gate reason namespaces (extend the D-003 set).
+REASON_MISSING_AGENT = "missing_mandatory_agent"
+REASON_DEBATE_BYPASS = "debate_bypass"
+
+
+@dataclass(frozen=True)
+class MandatoryAgentRecords:
+    """The four agent record ids that MUST be present per P0-10.
+
+    Each id is the AnalysisRecord step id captured by the collector
+    (``backend/agents/collector.py``). Empty strings mean "agent did
+    not produce a record" — the gate then degrades to HOLD.
+
+    Attributes:
+        fundamental_analyst_record_id: P0-10 mandatory agent #1.
+        technical_analyst_record_id: P0-10 mandatory agent #2.
+        risk_officer_record_id: P0-10 mandatory agent #3.
+        fund_manager_record_id: P0-10 mandatory agent #4 (sole BUY/SELL/HOLD
+            proposer per CLAUDE.md §2.3).
+    """
+
+    fundamental_analyst_record_id: str
+    technical_analyst_record_id: str
+    risk_officer_record_id: str
+    fund_manager_record_id: str
+
+    def missing(self) -> tuple[str, ...]:
+        """Return the names of the agents whose record id is empty."""
+        out: list[str] = []
+        if not self.fundamental_analyst_record_id:
+            out.append("fundamental_analyst")
+        if not self.technical_analyst_record_id:
+            out.append("technical_analyst")
+        if not self.risk_officer_record_id:
+            out.append("risk_officer")
+        if not self.fund_manager_record_id:
+            out.append("fund_manager")
+        return tuple(out)
+
+
+@dataclass(frozen=True)
+class AssemblyContext:
+    """Bundle of every input the assemble_plan pipeline consumes.
+
+    Frozen so the pipeline cannot mutate caller-owned state. Most
+    fields are forwarded directly into either RiskEngine (account,
+    positions, prev_close, daily_state, stock_meta) or InstructionPlan
+    (data_snapshot, evidence_ids, *_id, debate_round_count,
+    invalidation_summary). The proposed_volume / proposed_limit_price
+    pair comes from a future PositionSizer service — for D-004 the
+    caller supplies them; D-003 assertions about LLM-writable fields
+    are still respected because these numbers come from a non-LLM
+    code path.
+    """
+
+    stock_code: str
+    stock_name: str
+    now: datetime
+
+    # Five-early-return inputs (D-003)
+    open_tickets: tuple[ReconciliationTicket, ...]
+    circuit_breaker: CircuitBreaker
+    data_quality: DataQualityState
+    watchlist_policy: WatchlistPolicy
+    watchlist_signal: WatchlistMarketSignal
+
+    # 14-check inputs (D-001)
+    risk_engine: RiskEngine
+    account: AccountInfo
+    positions: tuple[Position, ...]
+    prev_close: float | None
+    daily_state: DailyTradingState | None
+    stock_meta: RiskStockMetadata | None
+
+    # Position-sizer outputs (Builder consumes; LLM never sees)
+    proposed_volume: int
+    proposed_limit_price: float
+
+    # Correlation / persistence handles
+    seq: int
+    signal_id: str
+    analysis_record_id: str
+    risk_validation_id: str
+
+    # Plan body (non-LLM-derived)
+    debate_round_count: int
+    evidence_ids: tuple[str, ...]
+    data_snapshot: DataSnapshot
+    invalidation_summary: str
+
+
+@dataclass(frozen=True)
+class BuilderDegrade:
+    """4-Agent gate fail — system-level degrade, no plan emitted.
+
+    Attributes:
+        reason_namespace: ``missing_mandatory_agent`` or
+            ``debate_bypass`` — stable audit grep key.
+        message: short human-readable reason.
+        payload: structured diagnostic detail (which agents were
+            missing, the debate count, etc.).
+    """
+
+    reason_namespace: str
+    message: str
+    payload: dict[str, str | int | float | bool | None] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BuilderPlan:
+    """Successful assemble_plan outcome — a constructed InstructionPlan.
+
+    Carries the FundManagerOutput alongside the plan so downstream
+    consumers (decision_ledger writer, ModeRouter) can correlate the
+    LLM-side inputs with the Builder-side outputs without re-reading
+    the agent record store.
+    """
+
+    plan: InstructionPlan
+    fund_manager_output: FundManagerOutput
+
+
+# Update the public union to include the new D-004 result types.
+BuilderResult = BuilderEarlyReturn | BuilderProceed | BuilderDegrade | BuilderPlan
+
+
+# Locked rule names for the 14-entry risk_summary stub on HOLD plans
+# (also the canonical names for the 14-check engine output, mirrored
+# in :mod:`backend.risk.engine`). The order MUST match the engine's
+# check-list — InstructionPlan.risk_summary is a tuple, so position
+# carries semantic meaning for the front-end Reason drawer.
+_RULE_NAMES_14: tuple[str, ...] = (
+    "code_validity",
+    "price_reasonability",
+    "volume_validity",
+    "fund_sufficiency",
+    "position_limit",
+    "total_position_limit",
+    "trading_time",
+    "total_position_pct",
+    "single_instruction_amount",
+    "daily_new_instruction_count",
+    "universe_whitelist",
+    "limit_up_down_block",
+    "daily_loss_halt",
+    "consecutive_loss_halt",
+)
+
+
+_HOLD_RISK_SUMMARY: tuple[RiskCheckSummary, ...] = tuple(
+    RiskCheckSummary(rule_name=name, passed=None, message="not evaluated (HOLD plan)")
+    for name in _RULE_NAMES_14
+)
+
+
+def _check_mandatory_agents(
+    records: MandatoryAgentRecords,
+    debate_round_count: int,
+) -> BuilderDegrade | None:
+    """4-Agent gate: every mandatory record present + debate >= 1.
+
+    Returns ``None`` on pass, otherwise a :class:`BuilderDegrade` with
+    the precise failure reason. Missing agents short-circuit ahead of
+    debate-bypass so the audit reason is unambiguous when both fire.
+    """
+    missing = records.missing()
+    if missing:
+        return BuilderDegrade(
+            reason_namespace=REASON_MISSING_AGENT,
+            message=("mandatory agents missing: " + ", ".join(missing)),
+            payload={
+                "missing_agents": ",".join(missing),
+                "debate_round_count": debate_round_count,
+            },
+        )
+    if debate_round_count < 1:
+        return BuilderDegrade(
+            reason_namespace=REASON_DEBATE_BYPASS,
+            message=f"debate_round_count={debate_round_count} < 1",
+            payload={"debate_round_count": debate_round_count},
+        )
+    return None
+
+
+def _build_risk_summary(
+    result: ValidationResult,
+) -> tuple[RiskCheckSummary, ...]:
+    """Translate a single :class:`ValidationResult` into 14 RiskCheckSummary rows.
+
+    The RiskEngine 14-check returns the first failing result (or PASS
+    overall). The Builder fans this into a 14-entry tuple suitable for
+    :pyattr:`InstructionPlan.risk_summary`:
+
+    * On engine PASS: every rule is ``passed=True`` with empty message.
+    * On engine REJECT: rules before the failing one are recorded as
+      ``passed=True``, the failing rule as ``passed=False`` with the
+      engine's message, and rules after as ``passed=None`` (not
+      evaluated due to short-circuit).
+
+    This shape lets the front-end Engine tab in the Reason drawer
+    (P1-5 §1.5) show the precise rule that tripped without re-running
+    the engine.
+    """
+
+    if result.passed:
+        return tuple(
+            RiskCheckSummary(rule_name=name, passed=True, message="")
+            for name in _RULE_NAMES_14
+        )
+
+    out: list[RiskCheckSummary] = []
+    seen_failure = False
+    for name in _RULE_NAMES_14:
+        if name == result.rule_name and not seen_failure:
+            out.append(
+                RiskCheckSummary(
+                    rule_name=name,
+                    passed=False,
+                    message=(result.message or "")[:256],
+                )
+            )
+            seen_failure = True
+        elif not seen_failure:
+            out.append(RiskCheckSummary(rule_name=name, passed=True, message=""))
+        else:
+            out.append(
+                RiskCheckSummary(
+                    rule_name=name,
+                    passed=None,
+                    message="not evaluated (engine short-circuit)",
+                )
+            )
+    if not seen_failure:
+        # ``rule_name`` outside the canonical 14 — keep the failure
+        # visible by appending it to the last slot. Should never happen
+        # in production (RiskEngine always picks from the canonical
+        # list); the guard keeps test diagnostics meaningful.
+        out[-1] = RiskCheckSummary(
+            rule_name=result.rule_name or "unknown",
+            passed=False,
+            message=(result.message or "")[:256],
+        )
+    return tuple(out)
+
+
+def _derive_pending_order(
+    *,
+    stock_code: str,
+    side: InstructionSide,
+    volume: int,
+    limit_price: float,
+    now: datetime,
+) -> Order:
+    """Build a PENDING limit Order from Builder-side inputs."""
+    direction = (
+        OrderDirection.BUY if side is InstructionSide.BUY else OrderDirection.SELL
+    )
+    return Order(
+        order_id=f"draft-{stock_code}-{int(now.timestamp())}",
+        code=stock_code,
+        price=limit_price,
+        volume=volume,
+        direction=direction,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.PENDING,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _derive_position_summary(
+    *,
+    account: AccountInfo,
+    positions: tuple[Position, ...],
+    order_code: str,
+    order_volume: int,
+    order_price: float,
+    side: InstructionSide,
+) -> PositionSummary:
+    """Compute pre/post position pcts + cash deltas for InstructionPlan.
+
+    Mirrors the exposure algorithm in RiskEngine checks 5/8 so the
+    saved summary matches what the engine actually evaluated.
+    Calculations are pure: no IO, no LLM, only the inputs above.
+    """
+    if account.total_assets <= 0:
+        # The InstructionPlan schema requires both pcts in [0, 1]; we
+        # cannot construct a meaningful summary with zero NAV. Caller
+        # should never reach here in practice (RiskEngine check 8
+        # rejects the order earlier).
+        raise ValueError(
+            "AccountInfo.total_assets must be > 0 to derive PositionSummary"
+        )
+
+    existing = next((p for p in positions if p.code == order_code), None)
+    pre_position_value = existing.market_value if existing is not None else 0.0
+    pre_position_pct = max(0.0, min(1.0, pre_position_value / account.total_assets))
+    other_value = sum(p.market_value for p in positions if p.code != order_code)
+    pre_total_pct = max(
+        0.0,
+        min(1.0, (pre_position_value + other_value) / account.total_assets),
+    )
+
+    order_value = order_volume * order_price
+    if side is InstructionSide.BUY:
+        post_position_value = pre_position_value + order_value
+        post_cash = max(0.0, account.available_cash - order_value)
+    else:  # SELL
+        post_position_value = max(0.0, pre_position_value - order_value)
+        post_cash = account.available_cash + order_value
+
+    post_position_pct = max(0.0, min(1.0, post_position_value / account.total_assets))
+    post_total_pct = max(
+        0.0,
+        min(1.0, (post_position_value + other_value) / account.total_assets),
+    )
+    return PositionSummary(
+        pre_position_pct=pre_position_pct,
+        post_position_pct=post_position_pct,
+        pre_total_position_pct=pre_total_pct,
+        post_total_position_pct=post_total_pct,
+        pre_cash=max(0.0, account.available_cash),
+        post_cash=post_cash,
+    )
+
+
+_VALID_UNTIL_HORIZON = timedelta(minutes=5)
+
+
+def _derive_valid_until(now: datetime) -> datetime:
+    """valid_until = now + 5 min, clamped to 14:55 Asia/Shanghai (P0-3 §1.4).
+
+    If ``now`` is already at/after the 14:55 cutoff the function returns
+    the cutoff itself so the InstructionPlan schema validator rejects
+    the plan with a clear "valid_until <= created_at" message. The
+    Builder caller is expected to short-circuit before this point in
+    production (the trading-hours check lives upstream).
+    """
+    local = now.astimezone(_SH)
+    cutoff = local.replace(hour=14, minute=55, second=0, microsecond=0)
+    proposed = local + _VALID_UNTIL_HORIZON
+    return min(proposed, cutoff)
+
+
+def _derive_trade_date(now: datetime) -> str:
+    """trade_date = now's Asia/Shanghai date in YYYY-MM-DD form."""
+    return now.astimezone(_SH).strftime("%Y-%m-%d")
+
 
 __all__ = [
     "REASON_CIRCUIT_BREAKER",
     "REASON_DATA_QUALITY",
+    "REASON_DEBATE_BYPASS",
+    "REASON_MISSING_AGENT",
     "REASON_MODE_SWITCH",
     "REASON_TICKET_OPEN",
     "REASON_WATCHLIST",
     "WATCHLIST_SUB_REASONS",
+    "AssemblyContext",
+    "BuilderDegrade",
     "BuilderEarlyReturn",
+    "BuilderPlan",
     "BuilderProceed",
     "BuilderResult",
     "CandidateInputs",
     "FreezeSource",
     "InstructionPlanBuilder",
+    "MandatoryAgentRecords",
     "ModeSwitchProbe",
     "WatchlistMarketSignal",
     "check_circuit_breaker",
