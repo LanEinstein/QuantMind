@@ -4,10 +4,23 @@ active: mock  # mock / qmt / vnpy
 
 mock:
   initial_capital: 1000000
-  commission_rate: 0.0003         # 0.03%
-  stamp_tax_rate: 0.001           # 0.1% (sell only)
-  slippage_bps: 2                 # 2 basis points
-  min_commission: 5.0             # Min 5 CNY per trade
+  commission_rate: 0.0003          # 0.03%
+  stamp_tax_rate: 0.001            # 0.1% (sell only)
+  slippage_bps: 2                  # Legacy fallback when board lookup misses
+  min_commission: 5.0              # Min 5 CNY per trade
+
+  # P1-2.C / E-003 — board-tiered slippage. All four entries are
+  # required at runtime (BrokerConfig validator rejects missing keys);
+  # change requires a P1-2.C amendment doc + restart, NO hot-reload.
+  slippage_bps_by_board:
+    sh_main: 1.5
+    sz_main: 1.5
+    chuangye: 3.5
+    etf: 1.5
+
+  # SZ-side 0.00341% transfer fee toggle. Default on; flip to false
+  # only via amendment for backtests against pre-2022 trading rules.
+  enable_transfer_fee: true
 
 qmt:
   enabled: false

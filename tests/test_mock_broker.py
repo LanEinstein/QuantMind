@@ -7,13 +7,46 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from backend.broker.mock_broker import MockBroker, get_price_limits
+from backend.broker.mock_broker import MockBroker
 from backend.broker.models import (
     BrokerConfig,
     OrderDirection,
     OrderStatus,
     OrderType,
 )
+from backend.data.stock_metadata import Board, get_price_limit_pct
+
+
+def get_price_limits(code: str, prev_close: float) -> tuple[float, float]:
+    """Legacy shim around the consolidated stock_metadata helper.
+
+    The orphan helper that lived at ``backend/broker/mock_broker.py:35``
+    was removed in E-003; the single-source-of-truth
+    :func:`backend.data.stock_metadata.get_price_limit_pct` produces
+    the same numbers via the proper :class:`Board` classification.
+    Kept in the test module so the existing TestPriceLimits coverage
+    continues to assert the cross-board invariant without re-importing
+    the dead helper.
+    """
+    if prev_close <= 0:
+        return (0.0, 0.0)
+    if code.startswith("688") or code.startswith("689"):
+        # STAR 30% — formerly in the orphan helper. Stock_metadata
+        # forbids STAR codes (ForbiddenCodeError) so we keep the 0.30
+        # constant local to this shim.
+        pct = 0.30
+    else:
+        try:
+            from backend.data.stock_metadata import classify_board
+            board = classify_board(code)
+        except Exception:
+            return (0.0, 0.0)
+        pct = get_price_limit_pct(board)
+        _ = Board  # keep the Board import alive for type checkers
+    return (
+        round(prev_close * (1 - pct), 2),
+        round(prev_close * (1 + pct), 2),
+    )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 

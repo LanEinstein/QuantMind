@@ -1,4 +1,26 @@
-"""MockBroker — full A-share simulation trading engine."""
+"""MockBroker — full A-share simulation trading engine.
+
+P1-2.C / E-003 enhancements:
+
+* **ALL_OR_NONE** — every place_order either fills the full requested
+  volume or returns REJECTED; partial-fill semantics live exclusively on
+  the user-reported execution-report path (ExecutionReportApplier).
+* **At-fill price-limit recheck** — even after the InstructionPlanBuilder
+  early-returns and RiskEngine 14-check clear the order, the MockBroker
+  re-verifies against the live quote at fill time using the injected
+  :class:`MarketMetaProvider`. A breach raises with the locked reason
+  ``price_limit_violation_at_fill`` (distinct from RiskEngine's
+  ``limit_up_block`` / ``limit_down_block`` so audit can attribute the
+  exact gate that bounced the order).
+* **Board-tiered slippage + Shenzhen transfer fee** — all cost math
+  delegated to :mod:`backend.broker.cost_calculator` so the friction
+  model is unit-testable in isolation.
+* **MarketMetaProvider injection** — replaces the orphan helper
+  ``get_price_limits()`` that lived at module-level pre-E-003. The new
+  provider centralises prev_close + live-price lookups behind a
+  two-tier Redis→Mongo fallback (no cost_price fallback per P1-2.B
+  §2 red line 6).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +32,7 @@ from datetime import datetime
 
 import structlog
 
+from backend.broker.cost_calculator import OrderCostBreakdown, calculate_cost
 from backend.broker.interface import IBroker
 from backend.broker.models import (
     AccountInfo,
@@ -22,64 +45,28 @@ from backend.broker.models import (
     Position,
     Trade,
 )
+from backend.data.market_meta_provider import (
+    MarketMetaProvider,
+    StaleQuoteError,
+)
+from backend.data.stock_metadata import (
+    Board,
+    ForbiddenCodeError,
+    UnknownCodeError,
+    classify_board,
+    get_price_limit_pct,
+)
 from backend.utils.trading_hours import SHANGHAI, is_trading_hours
 
 log = structlog.get_logger(component="mock_broker")
 
-
-# ---------------------------------------------------------------------------
-# Pure helper functions
-# ---------------------------------------------------------------------------
-
-
-def get_price_limits(code: str, prev_close: float) -> tuple[float, float]:
-    """Get price limits (涨跌停) for a stock based on board type.
-
-    Args:
-        code: 6-digit stock code.
-        prev_close: Previous trading day's close price.
-
-    Returns:
-        (lower_limit, upper_limit) rounded to 2 decimal places.
-    """
-    if prev_close <= 0:
-        return (0.0, 0.0)
-
-    # Check most specific prefixes first
-    if code.startswith("688"):
-        pct = 0.30  # STAR market 科创板
-    elif code.startswith("300"):
-        pct = 0.20  # ChiNext 创业板
-    else:
-        pct = 0.10  # Main board
-
-    return (
-        round(prev_close * (1 - pct), 2),
-        round(prev_close * (1 + pct), 2),
-    )
-
-
-def _calc_commission(
-    amount: float, rate: float, min_commission: float
-) -> float:
-    return round(max(amount * rate, min_commission), 2)
-
-
-def _calc_stamp_tax(
-    amount: float, direction: OrderDirection, rate: float
-) -> float:
-    if direction == OrderDirection.SELL:
-        return round(amount * rate, 2)
-    return 0.0
-
-
-def _apply_slippage(
-    price: float, direction: OrderDirection, bps: int
-) -> float:
-    factor = bps / 10_000
-    if direction == OrderDirection.BUY:
-        return round(price * (1 + factor), 2)
-    return round(price * (1 - factor), 2)
+PRICE_LIMIT_VIOLATION_REASON = "price_limit_violation_at_fill"
+"""Locked rejection reason emitted when the MockBroker's at-fill
+price-limit recheck fires. Distinct from the RiskEngine reasons
+``limit_up_block`` / ``limit_down_block`` so audit can attribute the
+exact tripwire that bounced the order. Mirrored by
+:data:`backend.audit.models.AuditEventType
+.MOCKBROKER_PRICE_LIMIT_VIOLATION_AT_FILL`."""
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +119,7 @@ class MockBroker(IBroker):
         self,
         config: BrokerConfig,
         now_func: Callable[[], datetime] | None = None,
+        market_meta: MarketMetaProvider | None = None,
     ) -> None:
         self._config = config
         self._now = now_func or (lambda: datetime.now(tz=SHANGHAI))
@@ -142,6 +130,7 @@ class MockBroker(IBroker):
         self._positions: dict[str, _MutablePosition] = {}
         self._trades: list[Trade] = []
         self._lock = asyncio.Lock()
+        self._market_meta = market_meta
         self._log = log
 
     async def place_order(
@@ -152,13 +141,43 @@ class MockBroker(IBroker):
         direction: OrderDirection,
         order_type: OrderType,
     ) -> OrderResult:
-        """Place and immediately attempt to fill an order."""
+        """Place an order. ALL_OR_NONE: fills fully or rejects.
+
+        Pipeline (locked under ``self._lock``):
+
+        1. Pre-flight validate (trading hours / volume / cash / T+1).
+        2. Classify the board so the cost model + at-fill recheck can
+           reason about price limits and SZ transfer fee.
+        3. Run :func:`calculate_cost` to derive the per-fill economics
+           (slippage-adjusted fill price + friction breakdown).
+        4. At-fill price-limit recheck via :class:`MarketMetaProvider`
+           when one is wired up; raise reason
+           ``price_limit_violation_at_fill`` on breach (distinct from
+           RiskEngine reasons for audit attribution).
+        5. Freeze cash (BUY) and apply the fill atomically.
+        """
         async with self._lock:
             now = self._now()
             order_id = uuid.uuid4().hex[:12]
 
-            # Validate
-            valid, msg = self._validate(code, price, volume, direction, now)
+            try:
+                board = classify_board(code)
+            except (ForbiddenCodeError, UnknownCodeError) as exc:
+                msg = f"Order rejected: {exc}"
+                order = _MutableOrder(
+                    order_id=order_id, code=code, price=price,
+                    volume=volume, direction=direction,
+                    order_type=order_type, status=OrderStatus.REJECTED,
+                    reject_reason=msg, created_at=now, updated_at=now,
+                )
+                self._orders[order_id] = order
+                return OrderResult(
+                    order_id=order_id, success=False, message=msg
+                )
+
+            valid, msg = self._validate(
+                code, price, volume, direction, now, board
+            )
             if not valid:
                 order = _MutableOrder(
                     order_id=order_id, code=code, price=price,
@@ -171,38 +190,100 @@ class MockBroker(IBroker):
                     order_id=order_id, success=False, message=msg
                 )
 
-            # Create order
+            # Compute friction now so the BUY freeze is exact (the prior
+            # implementation under-froze on commission floor).
+            cost = calculate_cost(
+                code=code, board=board, order_price=price,
+                volume=volume, direction=direction, config=self._config,
+            )
+
+            # At-fill price-limit recheck (P1-2.C §1.2).
+            limit_check = await self._recheck_price_limit(
+                code, board, cost.fill_price, direction, now
+            )
+            if limit_check is not None:
+                order = _MutableOrder(
+                    order_id=order_id, code=code, price=price,
+                    volume=volume, direction=direction,
+                    order_type=order_type, status=OrderStatus.REJECTED,
+                    reject_reason=limit_check, created_at=now, updated_at=now,
+                )
+                self._orders[order_id] = order
+                return OrderResult(
+                    order_id=order_id, success=False, message=limit_check
+                )
+
             order = _MutableOrder(
                 order_id=order_id, code=code, price=price,
                 volume=volume, direction=direction,
                 order_type=order_type, created_at=now, updated_at=now,
             )
 
-            # Freeze cash for BUY
+            # Freeze cash for BUY using the exact precomputed net_amount.
             if direction == OrderDirection.BUY:
-                estimated = (
-                    price * volume * (1 + self._config.slippage_bps / 10_000)
-                    + _calc_commission(
-                        price * volume, self._config.commission_rate,
-                        self._config.min_commission,
-                    )
-                )
-                order.frozen_amount = estimated
-                self._cash -= estimated
-                self._frozen_cash += estimated
+                order.frozen_amount = cost.net_amount
+                self._cash -= cost.net_amount
+                self._frozen_cash += cost.net_amount
 
-            # Fill immediately
-            self._fill_order(order, now)
+            self._fill_order(order, cost, now)
             self._orders[order_id] = order
 
             self._log.info(
                 "order_placed",
-                order_id=order_id, code=code,
+                order_id=order_id, code=code, board=board.value,
                 direction=direction, status=order.status,
             )
             return OrderResult(
                 order_id=order_id, success=True, message="Order filled"
             )
+
+    async def _recheck_price_limit(
+        self,
+        code: str,
+        board: Board,
+        fill_price: float,
+        direction: OrderDirection,
+        now: datetime,
+    ) -> str | None:
+        """Return a reject reason if the at-fill recheck fires, else None.
+
+        ``MarketMetaProvider`` may be absent (legacy test paths); in that
+        case the recheck is a no-op so existing fixtures still pass.
+        Production wiring always injects the provider via
+        :class:`BrokerRegistry`.
+        """
+        if self._market_meta is None:
+            return None
+        prev_close = await self._market_meta.get_prev_close(code)
+        if prev_close is None or prev_close <= 0:
+            return None
+        try:
+            current = await self._market_meta.get_current_price(code, now=now)
+        except StaleQuoteError:
+            # Live quote unavailable — fall back to prev_close-based gate
+            # but never to cost_price. Better to bounce the order than
+            # silently fill at a stale level.
+            current = prev_close
+        pct = get_price_limit_pct(board)
+        upper = round(prev_close * (1.0 + pct), 2)
+        lower = round(prev_close * (1.0 - pct), 2)
+        if direction is OrderDirection.BUY and (
+            fill_price >= upper or current >= upper
+        ):
+            return (
+                f"Order rejected: {PRICE_LIMIT_VIOLATION_REASON} "
+                f"(BUY at fill_price={fill_price} hits limit-up "
+                f"{upper}; prev_close={prev_close})"
+            )
+        if direction is OrderDirection.SELL and (
+            fill_price <= lower or current <= lower
+        ):
+            return (
+                f"Order rejected: {PRICE_LIMIT_VIOLATION_REASON} "
+                f"(SELL at fill_price={fill_price} hits limit-down "
+                f"{lower}; prev_close={prev_close})"
+            )
+        return None
 
     def _validate(
         self,
@@ -211,8 +292,9 @@ class MockBroker(IBroker):
         volume: int,
         direction: OrderDirection,
         now: datetime,
+        board: Board,
     ) -> tuple[bool, str]:
-        """Pre-trade validation checks."""
+        """Pre-trade validation checks (ALL_OR_NONE preflight)."""
         if not is_trading_hours(now):
             return False, "Order rejected: outside trading hours"
 
@@ -227,16 +309,19 @@ class MockBroker(IBroker):
             return False, "Order rejected: price must be positive"
 
         if direction == OrderDirection.BUY:
-            cost = price * volume * (1 + self._config.slippage_bps / 10_000)
-            fee = _calc_commission(
-                price * volume, self._config.commission_rate,
-                self._config.min_commission,
+            # Probe the cost model so the affordability check matches
+            # what the fill path will actually charge (slippage-adjusted
+            # fill price + commission floor + SZ transfer fee).
+            probe = calculate_cost(
+                code=code, board=board, order_price=price,
+                volume=volume, direction=direction, config=self._config,
             )
-            if self._cash < cost + fee:
+            if self._cash < probe.net_amount:
                 return (
                     False,
                     f"Order rejected: insufficient funds "
-                    f"(need {cost + fee:.2f}, available {self._cash:.2f})",
+                    f"(need {probe.net_amount:.2f}, "
+                    f"available {self._cash:.2f})",
                 )
         else:
             pos = self._positions.get(code)
@@ -252,58 +337,59 @@ class MockBroker(IBroker):
 
         return True, ""
 
-    def _fill_order(self, order: _MutableOrder, now: datetime) -> None:
-        """Fill an order immediately at the order price with slippage."""
-        fill_price = _apply_slippage(
-            order.price, order.direction, self._config.slippage_bps
-        )
-        amount = fill_price * order.volume
-        commission = _calc_commission(
-            amount, self._config.commission_rate, self._config.min_commission
-        )
-        stamp_tax = _calc_stamp_tax(
-            amount, order.direction, self._config.stamp_tax_rate
-        )
-        slippage_cost = round(
-            abs(fill_price - order.price) * order.volume, 2
-        )
+    def _fill_order(
+        self,
+        order: _MutableOrder,
+        cost: OrderCostBreakdown,
+        now: datetime,
+    ) -> None:
+        """Fill an order ALL_OR_NONE using the pre-computed cost breakdown.
 
-        # Update order
+        ``cost`` was computed by :func:`calculate_cost` in
+        :meth:`place_order` and includes slippage / commission floor /
+        stamp tax / SZ transfer fee. We do NOT recompute here so the
+        affordability check and the fill see identical numbers.
+        """
+        fill_price = cost.fill_price
+        gross = cost.gross_amount
+        commission = cost.commission
+        stamp_tax = cost.stamp_tax
+        transfer_fee = cost.transfer_fee
+        slippage_cost = cost.slippage_cost
+
         order.status = OrderStatus.FILLED
         order.filled_volume = order.volume
         order.avg_fill_price = fill_price
         order.updated_at = now
 
-        # Create trade
-        if order.direction == OrderDirection.BUY:
-            net_amount = amount + commission
-        else:
-            net_amount = amount - commission - stamp_tax
-
+        # net_amount on the trade row is the cash-out for BUY / cash-in
+        # for SELL — the cost_calculator already encodes the sign-free
+        # value. Trade.net_amount must always be >= 0 per schema.
         trade = Trade(
             trade_id=uuid.uuid4().hex[:12],
             order_id=order.order_id,
             code=order.code,
             price=fill_price,
             volume=order.volume,
-            amount=amount,
+            amount=gross,
             direction=order.direction,
             commission=commission,
             stamp_tax=stamp_tax,
             slippage_cost=slippage_cost,
-            net_amount=net_amount,
+            transfer_fee=transfer_fee,
+            net_amount=cost.net_amount,
             traded_at=now,
         )
         self._trades.append(trade)
 
-        # Update position
         if order.direction == OrderDirection.BUY:
             self._apply_buy(order.code, fill_price, order.volume)
-            # Settle cash: unfreeze and deduct actual cost
+            # Frozen amount equals net_amount (set in place_order) — so
+            # delta is always 0 here. The defensive arithmetic is kept
+            # to make a future divergence noisy rather than silent.
             self._frozen_cash -= order.frozen_amount
-            actual_cost = amount + commission
-            delta = order.frozen_amount - actual_cost
-            self._cash += delta  # return over-frozen amount
+            delta = order.frozen_amount - cost.net_amount
+            self._cash += delta
             if self._cash < -0.01:
                 self._log.error(
                     "cash_underflow_detected", cash=self._cash, delta=delta
@@ -311,7 +397,7 @@ class MockBroker(IBroker):
                 self._cash = 0.0
         else:
             self._apply_sell(order.code, order.volume)
-            self._cash += net_amount
+            self._cash += cost.net_amount
 
     def _apply_buy(
         self, code: str, fill_price: float, volume: int

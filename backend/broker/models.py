@@ -102,9 +102,17 @@ class AccountInfo(BaseModel):
 
 
 class Trade(BaseModel):
-    """Immutable record of an executed trade."""
+    """Immutable record of an executed trade.
 
-    model_config = ConfigDict(frozen=True)
+    P1-2.C upgrades the model to ``strict=True`` + ``extra='forbid'``
+    so a future caller smuggling in a new field (e.g. an LLM-derived
+    note) fails at validation. ``transfer_fee`` is non-destructively
+    appended for the Shenzhen 0.00341% double-sided 过户费; legacy rows
+    without the field default to 0.0 which matches the pre-P1-2.C
+    behaviour on Shanghai-only trades.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     trade_id: str
     order_id: str
@@ -116,6 +124,7 @@ class Trade(BaseModel):
     commission: float
     stamp_tax: float
     slippage_cost: float
+    transfer_fee: float = 0.0
     net_amount: float
     traded_at: datetime
 
@@ -136,15 +145,87 @@ class ValidationResult(BaseModel):
 
 
 class BrokerConfig(BaseModel):
-    """MockBroker configuration loaded from broker.yaml."""
+    """MockBroker configuration loaded from broker.yaml.
 
-    model_config = ConfigDict(frozen=True)
+    P1-2.C added ``slippage_bps_by_board`` (board-tiered slippage; the
+    legacy scalar ``slippage_bps`` is kept as a fallback for any
+    classify-failure path). The map is sealed with
+    :class:`MappingProxyType` after construction so per-key mutation
+    cannot bypass ``frozen=True`` — same pattern as
+    :class:`UniverseConfig.price_limit_pct_by_board`.
+
+    P1-2.C also upgrades the model to ``strict=True`` + ``extra='forbid'``;
+    typos in the YAML or a new field flowing from a future code path
+    now fail at validation rather than silently degrading the broker.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     initial_capital: float = 1_000_000.0
     commission_rate: float = 0.0003
     stamp_tax_rate: float = 0.001
     slippage_bps: int = 2
+    """Fallback scalar used when ``slippage_bps_by_board`` does not
+    cover the order's board. Kept for backward compatibility with the
+    pre-P1-2.C single-bps model; production must populate the per-board
+    table for accurate fills."""
+
+    slippage_bps_by_board: dict[str, float] = Field(
+        default_factory=lambda: {
+            "sh_main": 1.5,
+            "sz_main": 1.5,
+            "chuangye": 3.5,
+            "etf": 1.5,
+        },
+    )
+    """Board-tiered slippage basis points (P1-2.C §1.3). Locked values:
+    sh_main / sz_main / etf at 1.5 bp, ChiNext at 3.5 bp. Runtime
+    mutation is blocked by the post-construction MappingProxyType seal
+    + P0-7 §2 redline 1 (hot-reload disabled); changes require a paired
+    amendment doc + restart."""
+
     min_commission: float = 5.0
+    enable_transfer_fee: bool = True
+    """Master toggle for the Shenzhen-board 0.00341% 过户费. Default on;
+    setting to False (via an amendment doc, never runtime) reverts to
+    the pre-2022 model for backtesting purposes."""
+
+    @model_validator(mode="after")
+    def _seal_slippage_map(self) -> BrokerConfig:
+        current = self.slippage_bps_by_board
+        if isinstance(current, MappingProxyType):
+            return self
+        # Validate that the four locked boards are all present — silent
+        # default-injection would mask a YAML typo that drops one board.
+        required = {"sh_main", "sz_main", "chuangye", "etf"}
+        missing = required - current.keys()
+        if missing:
+            raise ValueError(
+                f"slippage_bps_by_board missing required boards: "
+                f"{sorted(missing)}"
+            )
+        for board, bps in current.items():
+            if not isinstance(bps, (int, float)) or bps < 0:
+                raise ValueError(
+                    f"slippage_bps_by_board[{board!r}] = {bps!r} must be "
+                    "a non-negative number"
+                )
+        object.__setattr__(
+            self,
+            "slippage_bps_by_board",
+            MappingProxyType(dict(current)),
+        )
+        return self
+
+    @field_serializer("slippage_bps_by_board")
+    def _serialize_slippage_map(self, value: Any) -> dict[str, float]:
+        """Convert MappingProxyType back to dict for JSON dump.
+
+        Same pattern as UniverseConfig — Pydantic v2 cannot natively
+        serialize ``MappingProxyType``; codex review caught this on
+        UniverseConfig and the analogue applies here.
+        """
+        return dict(value)
 
 
 def load_broker_config(yaml_path: str | Path) -> BrokerConfig:
