@@ -52,14 +52,17 @@ def _resolve(obj: Any, attr_name: str, default: Any) -> Any:
     lightweight test stubs may implement them as plain methods. Without
     this helper the probe would call the property's bool result like a
     method and raise ``'bool' object is not callable`` (codex cycle 1
-    P1). Returns ``default`` on missing attribute / probe failure.
+    P1).
+
+    A missing attribute returns ``default``. A *method-style* attribute
+    that raises is **re-raised** so the outer probe-level try/except
+    can degrade the freeze source to ``status="unavailable"`` (codex
+    cycle 2 P2). Silently swallowing the exception here would let a
+    broken probe look healthy.
     """
     val = getattr(obj, attr_name, default)
     if callable(val):
-        try:
-            return val()
-        except Exception:
-            return default
+        return val()
     return val
 
 

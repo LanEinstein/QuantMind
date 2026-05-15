@@ -358,6 +358,36 @@ class TestProbeFailureIsolation:
         assert cb["status"] == "unavailable"
         assert cb["active"] is False
 
+    @pytest.mark.asyncio
+    async def test_method_style_attribute_exception_marks_unavailable(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        """Regression: codex cycle 2 P2 — earlier _resolve would catch
+        the method-style exception and return the default, making a
+        broken probe look healthy. _resolve must propagate the
+        exception so the outer probe-level try/except degrades the
+        source to unavailable.
+        """
+        class _BrokenQuality:
+            def is_acceptable_for_buy_sell(self) -> bool:
+                raise RuntimeError("intentional failure inside method")
+
+            def degradation_reason(self) -> str | None:  # pragma: no cover
+                return None
+
+        app.state.last_data_quality_state = _BrokenQuality()
+        resp = await client.get("/api/system-status/freeze-sources")
+        body = resp.json()
+        dq = next(
+            s for s in body["data"]["sources"] if s["name"] == "data_quality"
+        )
+        assert dq["status"] == "unavailable", (
+            "A method that raises must surface as unavailable, not silently "
+            "default to True (codex cycle 2 P2)"
+        )
+        assert dq["active"] is False
+
 
 class TestLockedSourceNames:
     def test_freeze_source_names_tuple_is_locked(self) -> None:
