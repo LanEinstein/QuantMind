@@ -1312,7 +1312,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: ""
       },
       {
-        id: "F-002", phase: "F 飞书闭环", status: "todo", priority: "P0",
+        id: "F-002", phase: "F 飞书闭环", status: "blocked", priority: "P0",
         title: "飞书指令 renderer",
         summary: "唯一纯文本模板由后端渲染, LLM 严禁拼接消息文本(防 prompt injection);所有飞书消息必经 renderer。",
         scope: "backend/integrations/feishu/renderer.py",
@@ -1320,10 +1320,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "消息包含 instruction_id、股数、价格、有效期、风险、回报模板;snapshot 锁定。",
         tests: "golden template tests; snapshot tests。",
         sources: "P0-2, P0-3",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-001 (owner-provided 飞书自建应用凭证 pending per P1-6 §1.1 deferred until feishu_interactive enable-1-week)."
       },
       {
-        id: "F-003", phase: "F 飞书闭环", status: "todo", priority: "P0",
+        id: "F-003", phase: "F 飞书闭环", status: "blocked", priority: "P0",
         title: "长连接接收与去重",
         summary: "通过 lark-oapi WebSocket 接收 im.message.receive_v1, event_id/message_id 去重, 零公网入站, 3s 内 ack。",
         scope: "backend/integrations/feishu/events.py, backend/integrations/feishu/dedupe.py",
@@ -1331,10 +1331,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "HTTPS 回调不启用; 自定义 webhook 不接收回报。",
         tests: "mock event tests; dedupe idempotency tests。",
         sources: "P0-2, P0-4",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-001 (lark-oapi WS init requires 飞书 app credentials; pending owner)."
       },
       {
-        id: "F-004", phase: "F 飞书闭环", status: "todo", priority: "P0",
+        id: "F-004", phase: "F 飞书闭环", status: "blocked", priority: "P0",
         title: "回报解析、追问与澄清",
         summary: "飞书主路径和前端备用路径共用 ExecutionReportParser 与 Applier(单一真相源), AMBIGUOUS 自动发预写死澄清五模板;严禁备用 webhook 发澄清。",
         scope: "backend/api/execution_reports.py, backend/integrations/feishu/parser.py, backend/execution/regex_patterns.py",
@@ -1342,10 +1342,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "解析失败不改 MockBroker; 30 分钟追问和 valid_until EXPIRED 生效;EXECUTION_REPORT_PARSE_FAILED audit 必写。",
         tests: "parser matrix; chase timer tests; same parser for frontend path。",
         sources: "P0-4, P1-5, P1-6-amendment-27",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-003 → F-001 (clarification 飞书 messages need WS path live)."
       },
       {
-        id: "F-005", phase: "F 飞书闭环", status: "todo", priority: "P0",
+        id: "F-005", phase: "F 飞书闭环", status: "blocked", priority: "P0",
         title: "日终对账闭环",
         summary: "16:00 主动发对账请求(RECON-{YYYYMMDD}-{seq}), 用户差异/采纳/更正严格解析, ticket 冻结买卖路由。",
         scope: "backend/integrations/feishu/reconciliation.py, backend/api/reconciliation.py",
@@ -1353,10 +1353,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "现金 1 元、股数 0%、成本价 0.01 元阈值生效。",
         tests: "reconciliation parser; ticket decision endpoint; freeze integration。",
         sources: "P0-5",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-002 → F-001 (16:00 system-initiated reconciliation routes through 飞书 renderer)."
       },
       {
-        id: "F-006", phase: "F 飞书闭环", status: "todo", priority: "P1",
+        id: "F-006", phase: "F 飞书闭环", status: "blocked", priority: "P1",
         title: "备用 webhook 告警边界",
         summary: "FEISHU_CUSTOM_BOT_WEBHOOK_URL 只能发系统告警, 绝不发买卖指令、对账请求或澄清;Alerter dedup_15min 防轰炸。",
         scope: "backend/monitoring/alerter.py, backend/integrations/feishu/alerting.py",
@@ -1364,11 +1364,11 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "告警类型白名单清晰; webhook URL 永不入日志。",
         tests: "alert routing tests; secret redaction tests。",
         sources: "P0-2, P1-7, P2-4",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-001 (alerter 公用 飞书 6 凭证池) + H-003 (cost-budget breach 是主要告警源)."
       },
 
       {
-        id: "G-001", phase: "G 前端工作台", status: "todo", priority: "P1",
+        id: "G-001", phase: "G 前端工作台", status: "doing", priority: "P1",
         title: "应用壳与四分组菜单",
         summary: "替换当前 7 大页面平铺菜单, 建立 运行状态 / 决策与指令 / 账本与成交 / 复盘与验收 四分组 + 设置只读折叠;Vite host 强制 127.0.0.1;Simulation.vue 保留代码但不进 P1-5 菜单。",
         scope: "frontend/src/router/index.ts, frontend/src/App.vue, layout components",
@@ -1376,7 +1376,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "Simulation.vue 保留代码但不进 P1-5 菜单。",
         tests: "type-check; router tests; visual smoke。",
         sources: "P1-5",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: ""
       },
       {
         id: "G-002", phase: "G 前端工作台", status: "todo", priority: "P1",
@@ -1412,7 +1412,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: ""
       },
       {
-        id: "G-005", phase: "G 前端工作台", status: "todo", priority: "P1",
+        id: "G-005", phase: "G 前端工作台", status: "blocked", priority: "P1",
         title: "用户回报录入页",
         summary: "前端备用通道, 5 模板表单 + JS 正则镜像预览(与后端 backend/execution/regex_patterns.py 单一真相源一致, 单元测试断言), 提交到同一后端 parser; 镜像不一致即前端 fail-closed 阻止提交。",
         scope: "frontend/src/views/ExecutionReportEntry.vue, backend/api/execution_reports.py",
@@ -1420,10 +1420,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "JS 预览和后端 parser 输出一致; 仅 POST /api/execution-reports。",
         tests: "shared fixture tests; e2e submit ambiguous/happy path。",
         sources: "P1-5, P0-4",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-004 → F-003 → F-001 (frontend fallback path shares parser with 飞书 main path)."
       },
       {
-        id: "G-006", phase: "G 前端工作台", status: "todo", priority: "P1",
+        id: "G-006", phase: "G 前端工作台", status: "blocked", priority: "P1",
         title: "对账裁定页",
         summary: "OPEN/EXPIRED ticket 列表、差异明细和三选一裁定(对账采纳:用户回报 / 对账采纳:系统镜像 / 对账更正)。",
         scope: "frontend/src/views/ReconciliationCenter.vue, backend/api/reconciliation.py",
@@ -1431,7 +1431,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "仅 POST /api/reconciliation-tickets/{ticket_id}/decide。",
         tests: "component tests; e2e decision path。",
         sources: "P1-5, P0-5",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-005 → F-002 → F-001 (对账 ticket workflow originates from 飞书 16:00 cron)."
       },
       {
         id: "G-007", phase: "G 前端工作台", status: "todo", priority: "P1",
@@ -1445,7 +1445,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: ""
       },
       {
-        id: "G-008", phase: "G 前端工作台", status: "todo", priority: "P2",
+        id: "G-008", phase: "G 前端工作台", status: "blocked", priority: "P2",
         title: "Phase B 收尾 4 页",
         summary: "Agent 辩论、数据质量、飞书消息历史、成本拆解面板在核心 schema 稳定后补齐;成本面板 5min polling, backend/api/cost.py 严禁 POST/PUT/PATCH/DELETE。",
         scope: "frontend/src/views/*, backend/api/data_quality.py, backend/api/feishu.py, backend/api/cost.py",
@@ -1453,10 +1453,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "全部 GET only; 成本页面 5min polling 或 WS cost_update。",
         tests: "vitest; selected Playwright flows。",
         sources: "P1-5, P1-7",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: H-003 (cost API source) + F-003 (飞书 message history)."
       },
       {
-        id: "G-009", phase: "G 前端工作台", status: "todo", priority: "P1",
+        id: "G-009", phase: "G 前端工作台", status: "blocked", priority: "P1",
         title: "WebSocket 12 类消息升级",
         summary: "WS 单通道扩展到 12 类:保留 6(index_update/signal/news/status/position_update/circuit_breaker_update)+ 新增 8(instruction_plan_update/broker_event/equity_point_update/data_quality_breach/freeze_source_update/ticket_update/acceptance_report_ready/feishu_message_received)+ 删 2(auth_mode_change/approval_update);SSE 仅 LLM 流式。",
         scope: "backend/api/websocket.py, frontend/src/composables/useWebSocket.ts",
@@ -1464,7 +1464,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "12 类消息在 useWebSocket 类型联合中精确出现; auth_mode_change / approval_update grep 为空。",
         tests: "ws contract tests; redline grep tests。",
         sources: "P1-5 红线 4",
-        commit: "", session_date: "", notes: ""
+        commit: "", session_date: "2026-05-15", notes: "blocked_by: F-003 (feishu_message_received message kind originates from 飞书 long-connection event path)."
       },
 
       {

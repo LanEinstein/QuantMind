@@ -63,7 +63,7 @@ function onTabChange(tab: string | number) {
 <style lang="scss" scoped>
 .settings-layout {
   padding: $gap-md $gap-lg;
-  min-height: calc(100vh - $status-bar-height);
+  min-height: 100%;
 }
 
 .settings-header {

@@ -1,15 +1,17 @@
 <template>
-  <router-view v-slot="{ Component }">
-    <transition name="fade" mode="out-in">
-      <keep-alive :include="['Dashboard']">
-        <component :is="Component" />
-      </keep-alive>
-    </transition>
-  </router-view>
+  <AppShell>
+    <router-view v-slot="{ Component }">
+      <transition name="fade" mode="out-in">
+        <keep-alive :include="['Dashboard']">
+          <component :is="Component" />
+        </keep-alive>
+      </transition>
+    </router-view>
+  </AppShell>
 </template>
 
 <script setup lang="ts">
-// App root — dark theme applied in main.ts
+import AppShell from '@/components/layout/AppShell.vue'
 </script>
 
 <style lang="scss">

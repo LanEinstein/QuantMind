@@ -228,7 +228,7 @@ onMounted(() => {
 .debate-layout {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: $bg-primary;
 }
 
