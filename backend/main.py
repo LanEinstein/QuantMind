@@ -366,6 +366,24 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     application.state.feishu_client = FeishuClient.from_env()
 
+    # Feishu OpenAPI alerter (F-006 / P0-2-amendment-2026-05-16). Routes
+    # every system alert to FEISHU_ALERT_CHAT_ID via the self-built app
+    # API. Falls back to no_client mode when the overlay is off; in
+    # that case alerts log + audit but never reach Feishu (the legacy
+    # ALERT_WEBHOOK_URL path was retired by the amendment).
+    application.state.feishu_alerter = None
+    if application.state.feishu_client is not None:
+        from backend.integrations.feishu.alerter import FeishuAlerter
+        from backend.integrations.feishu.renderer import MessageRenderer
+
+        alert_chat = os.environ.get("FEISHU_ALERT_CHAT_ID", "").strip()
+        if alert_chat:
+            application.state.feishu_alerter = FeishuAlerter(
+                feishu=application.state.feishu_client,
+                renderer=MessageRenderer(),
+                alert_chat_id=alert_chat,
+            )
+
     # Feishu long-connection receiver (F-003). Only starts when the
     # overlay is active; the consumer handler (F-004 parser) lands in
     # the same Phase F session — until then we register a stub that
