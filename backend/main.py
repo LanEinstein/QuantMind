@@ -357,6 +357,15 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     application.state.alerter = Alerter()
 
+    # Feishu OpenAPI client (F-001). ``from_env`` returns ``None`` when
+    # FEISHU_INTERACTIVE_ENABLED is falsy, which is the simulation_auto
+    # baseline — downstream code (Alerter F-006, renderer F-002, long
+    # connection F-003) must tolerate ``None`` until the overlay is
+    # turned on.
+    from backend.integrations.feishu.client import FeishuClient
+
+    application.state.feishu_client = FeishuClient.from_env()
+
     await _init_data_layer(application, redis_pool)
 
     # Trading subsystem
