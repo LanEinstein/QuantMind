@@ -52,6 +52,10 @@ from backend.services.reconciliation_parser import (
     ReconciliationReplyKind,
     parse_reconciliation_reply,
 )
+from backend.services.reconciliation_state_machine import (
+    InvalidTicketTransitionError,
+    transition_ticket,
+)
 from backend.services.reconciliation_threshold import detect_deviations
 
 log = logging.getLogger("backend.integrations.feishu.reconciliation")
@@ -86,6 +90,22 @@ class DailyReconciliationStore(Protocol):
     async def get(
         self, trade_date: str
     ) -> DailyReconciliation | None: ...
+
+
+class SnapshotLookup(Protocol):
+    """Resolve ``expected_snapshot_id`` → :class:`MockBrokerSnapshot`.
+
+    The ticket's ``deviation_report`` only carries the *stringified*
+    expected values for human review; running the threshold check on a
+    MISMATCH reply needs the original snapshot with typed positions.
+    Returning ``None`` means the snapshot was lost (Mongo corruption,
+    GC race) — the orchestrator must fail-closed rather than compare
+    against an empty snapshot (codex review session #14 P2-2).
+    """
+
+    async def get(
+        self, expected_snapshot_id: str
+    ) -> MockBrokerSnapshot | None: ...
 
 
 # === Public DTOs ====================================================
@@ -150,6 +170,7 @@ class ReconciliationOrchestrator:
         daily_store: DailyReconciliationStore,
         applier: ReconciliationApplier,
         decision_chat_id: str,
+        snapshot_lookup: SnapshotLookup | None = None,
         now: callable | None = None,  # type: ignore[type-arg]
     ) -> None:
         if not decision_chat_id:
@@ -160,6 +181,7 @@ class ReconciliationOrchestrator:
         self._daily = daily_store
         self._applier = applier
         self._chat_id = decision_chat_id
+        self._snapshot_lookup = snapshot_lookup
         self._now = now or _default_now
 
     # -- 1. Initiate (16:00 cron entry) -------------------------------
@@ -242,6 +264,7 @@ class ReconciliationOrchestrator:
         *,
         resolution: ReconciliationTicketStatus,
         amended_snapshot: MockBrokerSnapshot | None = None,
+        resolution_message_id: str | None = None,
         actor_detail: str | None = None,
     ) -> DecisionResult:
         """Apply a ticket decision via the broker applier.
@@ -250,6 +273,18 @@ class ReconciliationOrchestrator:
         caller is responsible for authentication + ticket existence
         (the orchestrator surfaces a clear error if the ticket is
         missing).
+
+        Ordering (P0-5 §2 red line — freeze cannot clear before broker
+        is reconciled):
+
+        1. Build the candidate RESOLVED_* ticket via
+           :func:`transition_ticket` (single source of truth for state
+           transitions — direct ``model_copy`` is forbidden).
+        2. Call :meth:`ReconciliationApplier.reset_to_snapshot` to
+           rewrite the MockBroker mirror.
+        3. **Only after** the applier succeeds, persist the resolved
+           ticket. If the applier raises, the ticket stays OPEN /
+           EXPIRED and the freeze remains active — fail-closed.
         """
         if resolution not in {
             ReconciliationTicketStatus.RESOLVED_USER_AS_TRUTH,
@@ -263,32 +298,37 @@ class ReconciliationOrchestrator:
         ticket = await self._tickets.get(ticket_id)
         if ticket is None:
             raise KeyError(f"unknown ticket_id {ticket_id!r}")
-        if ticket.status not in {
-            ReconciliationTicketStatus.OPEN,
-            ReconciliationTicketStatus.EXPIRED,
-        }:
+
+        now = self._now()
+        try:
+            resolved = transition_ticket(
+                ticket,
+                resolution,
+                at=now,
+                resolution_message_id=(
+                    resolution_message_id or f"recon-resolved-{ticket_id}"
+                ),
+                amended_snapshot=amended_snapshot,
+            )
+        except InvalidTicketTransitionError as exc:
             raise ValueError(
                 f"ticket {ticket_id} is already in terminal state "
                 f"{ticket.status.value}"
-            )
+            ) from exc
 
-        now = self._now()
-        update: dict[str, object] = {
-            "status": resolution,
-            "resolved_at": now,
-        }
-        if resolution is ReconciliationTicketStatus.RESOLVED_AMENDED:
-            if amended_snapshot is None:
-                raise ValueError(
-                    "RESOLVED_AMENDED decision requires amended_snapshot"
-                )
-            update["amended_snapshot"] = amended_snapshot
-        resolved = ticket.model_copy(update=update)
-        await self._tickets.save(resolved)
-
+        # Apply BEFORE save — if the applier raises (Mongo down,
+        # checksum mismatch, etc.) the ticket remains OPEN/EXPIRED and
+        # the freeze stays active. The caller surfaces the exception.
         apply_result = await self._applier.reset_to_snapshot(
             resolved, now=now
         )
+
+        # Applier succeeded — now persist the resolved ticket. A repo
+        # write failure here is the worst case (broker reconciled but
+        # ticket still appears OPEN); the next 16:00 cron will fail
+        # with a stale OPEN ticket and the operator can decide again.
+        # We accept that risk in exchange for fail-closed broker safety.
+        await self._tickets.save(resolved)
 
         # Post-decision summary back to the decision chat.
         send_result: SendMessageResult | None = None
@@ -351,7 +391,49 @@ class ReconciliationOrchestrator:
             )
         daily = _reply_to_daily(reply, ticket)
         await self._daily.save(daily)
-        deviation = detect_deviations(_snapshot_from_ticket(ticket), daily)
+
+        # P2-2 fail-closed: a MISMATCH reply needs the ORIGINAL
+        # MockBrokerSnapshot (typed positions) to re-run
+        # detect_deviations. Reconstructing from the ticket's
+        # deviation_report strings would yield an empty positions
+        # tuple — the resulting deviation report would falsely flag
+        # every reported position as an "unexpected extra". Surface
+        # the missing snapshot to the caller so the operator sees
+        # the corruption instead of trusting a wrong deviation report.
+        deviation: DeviationReport | None = None
+        if self._snapshot_lookup is None:
+            log.warning(
+                "reconciliation_mismatch_no_snapshot_lookup "
+                "ticket_id=%s — deviation re-check skipped",
+                ticket.ticket_id,
+            )
+            return ReplyOutcome(
+                handled=True,
+                kind=reply.kind,
+                ticket_id=ticket.ticket_id,
+                ticket_status=ticket.status,
+                deviation_report=None,
+                parse_error="snapshot_lookup_unavailable",
+            )
+        snapshot = await self._snapshot_lookup.get(
+            ticket.expected_snapshot_id
+        )
+        if snapshot is None:
+            log.warning(
+                "reconciliation_mismatch_snapshot_not_found "
+                "ticket_id=%s expected_snapshot_id=%s",
+                ticket.ticket_id,
+                ticket.expected_snapshot_id,
+            )
+            return ReplyOutcome(
+                handled=True,
+                kind=reply.kind,
+                ticket_id=ticket.ticket_id,
+                ticket_status=ticket.status,
+                deviation_report=None,
+                parse_error="expected_snapshot_missing",
+            )
+        deviation = detect_deviations(snapshot, daily)
         log.info(
             "reconciliation_mismatch_recorded ticket_id=%s overall_passed=%s",
             ticket.ticket_id,
@@ -461,36 +543,6 @@ def _reply_to_daily(
     )
 
 
-def _snapshot_from_ticket(
-    ticket: ReconciliationTicket,
-) -> MockBrokerSnapshot:
-    """Use ticket's deviation_report.expected fields to reconstruct the
-    snapshot we sent.
-
-    The original snapshot lives in Mongo by ``expected_snapshot_id``; we
-    keep this helper synchronous + dependency-free for unit tests by
-    re-deriving from the deviation_report's expected strings.
-    """
-    # The orchestrator's caller (Mongo-backed F-005 wiring) will replace
-    # this helper with a real lookup. For tests that drive
-    # _handle_mismatch directly, the deviation_report carries the
-    # expected cash + per-stock figures so we can reconstruct.
-    cash = 0.0
-    for d in ticket.deviation_report.deviations:
-        if d.field == "cash":
-            cash = float(d.expected)
-
-    # We only need a coarse snapshot for downstream deviation re-check;
-    # the orchestrator does NOT mutate broker state on the MISMATCH
-    # path — it only records the user mirror + recomputes the deviation
-    # report for surface in the UI.
-    return MockBrokerSnapshot(
-        cash=cash,
-        positions=tuple(),
-        snapshot_at=ticket.created_at,
-    )
-
-
 def _position_deltas(apply_result: ApplyResult) -> dict[str, int]:
     """Coerce ApplyResult.positions_delta tuple into a {code: delta}
     map for the renderer."""
@@ -505,6 +557,7 @@ def _position_deltas(apply_result: ApplyResult) -> dict[str, int]:
 
 __all__ = [
     "DailyReconciliationStore",
+    "SnapshotLookup",
     "DecisionResult",
     "InitiationResult",
     "ReconciliationOrchestrator",

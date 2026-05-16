@@ -108,12 +108,23 @@ class _RecordingFeishu:
 # -----------------------------------------------------------------------------
 
 
+class _InMemorySnapshotLookup:
+    def __init__(self) -> None:
+        self.snapshots: dict[str, MockBrokerSnapshot] = {}
+
+    async def get(
+        self, expected_snapshot_id: str
+    ) -> MockBrokerSnapshot | None:
+        return self.snapshots.get(expected_snapshot_id)
+
+
 def _build_orchestrator(
     *,
     feishu: _RecordingFeishu | None = None,
     tickets: _InMemoryTicketRepo | None = None,
     daily: _InMemoryDailyStore | None = None,
     applier: _RecordingApplier | None = None,
+    snapshot_lookup: _InMemorySnapshotLookup | None = None,
     now: datetime | None = None,
 ) -> tuple[
     ReconciliationOrchestrator,
@@ -134,6 +145,7 @@ def _build_orchestrator(
         daily_store=daily_obj,  # type: ignore[arg-type]
         applier=applier_obj,  # type: ignore[arg-type]
         decision_chat_id=_VALID_CHAT,
+        snapshot_lookup=snapshot_lookup,  # type: ignore[arg-type]
         now=lambda: fixed_now,
     )
     return orchestrator, feishu_obj, tickets_obj, daily_obj, applier_obj
@@ -298,8 +310,13 @@ class TestReplyHandling:
     @pytest.mark.asyncio
     async def test_mismatch_records_daily_and_deviation(self) -> None:
         tickets = _InMemoryTicketRepo()
-        tickets.tickets[_TICKET_ID] = _open_ticket()
-        orchestrator, _, _, daily, _ = _build_orchestrator(tickets=tickets)
+        ticket = _open_ticket()
+        tickets.tickets[_TICKET_ID] = ticket
+        snapshot_lookup = _InMemorySnapshotLookup()
+        snapshot_lookup.snapshots[ticket.expected_snapshot_id] = _snapshot()
+        orchestrator, _, _, daily, _ = _build_orchestrator(
+            tickets=tickets, snapshot_lookup=snapshot_lookup
+        )
         outcome = await orchestrator.handle_reply(
             f"对账差异 {_TICKET_ID} 现金 199999.50 持仓 510300 1000股 成本 3.85"
         )
@@ -308,6 +325,43 @@ class TestReplyHandling:
         assert outcome.deviation_report is not None
         # DailyReconciliation persisted for the trade_date.
         assert daily.dailies["2026-05-16"].reported_cash == 199999.50
+
+    @pytest.mark.asyncio
+    async def test_mismatch_without_snapshot_lookup_fails_closed(
+        self,
+    ) -> None:
+        """P2-2: comparing against an empty reconstructed snapshot would
+        falsely report every reported position as 'unexpected extra'.
+        Without a real snapshot lookup the orchestrator must NOT
+        produce a deviation_report."""
+        tickets = _InMemoryTicketRepo()
+        tickets.tickets[_TICKET_ID] = _open_ticket()
+        orchestrator, _, _, daily, _ = _build_orchestrator(
+            tickets=tickets, snapshot_lookup=None
+        )
+        outcome = await orchestrator.handle_reply(
+            f"对账差异 {_TICKET_ID} 现金 199999.50 持仓 510300 1000股 成本 3.85"
+        )
+        assert outcome.handled is True
+        assert outcome.deviation_report is None
+        assert outcome.parse_error == "snapshot_lookup_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_mismatch_with_missing_snapshot_fails_closed(self) -> None:
+        """P2-2: snapshot lookup configured but the snapshot id is
+        missing (lost / corrupted) — same fail-closed posture."""
+        tickets = _InMemoryTicketRepo()
+        tickets.tickets[_TICKET_ID] = _open_ticket()
+        snapshot_lookup = _InMemorySnapshotLookup()  # empty
+        orchestrator, _, _, _, _ = _build_orchestrator(
+            tickets=tickets, snapshot_lookup=snapshot_lookup
+        )
+        outcome = await orchestrator.handle_reply(
+            f"对账差异 {_TICKET_ID} 现金 199999.50 持仓 510300 1000股 成本 3.85"
+        )
+        assert outcome.handled is True
+        assert outcome.deviation_report is None
+        assert outcome.parse_error == "expected_snapshot_missing"
 
     @pytest.mark.asyncio
     async def test_amend_decides_ticket_resolved_amended(self) -> None:

@@ -77,35 +77,52 @@ regex = '''oc_[A-Za-z0-9]{32}'''
 keywords = ["FEISHU_ALERT_CHAT_ID", "feishu_alert_chat_id", "oc_"]
 
 # --- Allowlist -------------------------------------------------------
+#
+# Tight allowlist — codex review session #14 P1-4: a broad
+# ``docs/.*\.md`` allowlist would silently shadow a real ``sk-...`` /
+# ``cli_...`` accidentally pasted into an incident document. Two
+# narrow controls only:
+#
+# 1. Regex allowlist for OBVIOUSLY non-real placeholder shapes (repeated
+#    letters that cannot form a real credential). A real credential
+#    would never be a single-character run.
+# 2. Path allowlist limited to files that ONLY reference credential
+#    NAMES (never values) — gated by file content shape, not directory.
+#
+# Anything not in either bucket is scanned normally. If a future incident
+# doc legitimately quotes a redacted value, add a one-line file-specific
+# entry — never a directory glob.
 
 [allowlist]
-description = "Sample/test values used by docs and unit tests"
+description = "Sample/test values with characters that cannot form real credentials"
 regexes = [
-    # ``cli_`` followed by literal ``a`` repeats — clearly a unit test value.
+    # ``cli_`` + literal ``a`` repeats — every credential char identical
+    # is impossible from any provider's randomness.
     '''cli_a{16}''',
-    # ``oc_`` followed by literal ``f`` repeats — unit test value.
-    '''oc_f{32}''',
-    # 32-char unit test placeholders ``xxxx...`` / ``aaaa...``.
-    '''[xa]{32}''',
-    # ``sk-AAAA...`` / ``sk-BBBB...`` test fixtures.
-    '''sk-[AB]{16,}''',
-    # Markdown / docstring callout: ``${FEISHU_APP_ID}`` templated refs
-    # used inside README / decision docs / amendment text.
+    # ``oc_`` + single-letter repeats (unit-test chat id fixtures:
+    # _VALID_CHAT uses ``f``; _ALERT_CHAT uses ``a``; _DECISION_CHAT
+    # uses ``d``). Any real chat_id mixes alnum so cannot match.
+    '''oc_[fadbcv]{32}''',
+    # 32-char placeholders that are a single repeated letter.
+    '''x{32}''',
+    '''a{32}''',
+    '''e{32}''',
+    '''v{32}''',
+    # ``sk-`` + single-letter run (test fixture only).
+    '''sk-A{16,}''',
+    '''sk-B{16,}''',
+    # Markdown / docstring callout: ``${FEISHU_APP_ID}`` templated refs.
     '''\$\{[A-Z_]+\}''',
 ]
 paths = [
-    # Plan docs, decision records, runbooks reference the credential
-    # names but never carry real values. ``.env.example`` carries only
-    # docstring callouts (P1-6 §1.1 — secrets_validator scans .env).
-    '''docs/.*\.html''',
-    '''docs/.*\.md''',
-    '''docs/decisions/.*''',
-    '''docs/runbook/.*''',
-    '''docs/reviews/.*''',
-    '''CLAUDE.md''',
-    '''.env.example''',
-    # The validator itself + test fixtures.
+    # The validator + test source intentionally references credential
+    # names. The .gitleaks.toml itself must be allowlisted to prevent
+    # self-flagging on the rule regexes.
     '''backend/services/secrets_validator\.py''',
     '''tests/test_secrets_validator\.py''',
-    '''.gitleaks\.toml''',
+    '''\.gitleaks\.toml''',
+    # .env.example only carries comments documenting which env vars to
+    # set in ~/.bashrc — no assignments (also enforced by
+    # scripts/redline-check.sh).
+    '''\.env\.example''',
 ]

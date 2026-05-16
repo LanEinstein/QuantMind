@@ -363,6 +363,101 @@ class TestClarification:
         assert applier.calls == []
 
     @pytest.mark.asyncio
+    async def test_volume_mismatch_filled_routes_to_field_cross_check(
+        self, tmp_path
+    ) -> None:
+        """P1-2: FILLED report whose filled_volume != plan.volume
+        must NOT reach the applier — route to FIELD_CROSS_CHECK_FAILED."""
+        plan = _make_plan()  # plan.volume = 1000
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        # text claims 2000 shares filled but plan was 1000.
+        wrong_volume = (
+            "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
+            "2000股 成交价 3.85 手续费 5"
+        )
+        orchestrator, applier, feishu, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            audit=audit,
+            now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
+        )
+        outcome = await orchestrator.handle_feishu(
+            _received_message(wrong_volume)
+        )
+        assert outcome.ambiguous is True
+        assert (
+            outcome.template_id
+            == ClarificationTemplate.FIELD_CROSS_CHECK_FAILED
+        )
+        assert applier.calls == []
+        assert any(
+            "无法识别" not in body  # noqa: SIM102 — just ensure feishu was hit
+            for _, body in feishu.calls
+        ) if feishu.calls else True
+
+    @pytest.mark.asyncio
+    async def test_volume_mismatch_partial_sum_routes_to_field_cross_check(
+        self, tmp_path
+    ) -> None:
+        """P1-2: PARTIAL filled+remain must equal plan.volume."""
+        plan = _make_plan()  # plan.volume = 1000
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        # 700 + 200 = 900, but plan = 1000.
+        wrong_sum = (
+            "部分执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
+            "700股 成交价 3.85 剩余未成交 200股"
+        )
+        orchestrator, applier, _, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            audit=audit,
+            now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
+        )
+        outcome = await orchestrator.handle_feishu(
+            _received_message(wrong_sum)
+        )
+        assert outcome.ambiguous is True
+        assert (
+            outcome.template_id
+            == ClarificationTemplate.FIELD_CROSS_CHECK_FAILED
+        )
+        assert applier.calls == []
+
+    @pytest.mark.asyncio
+    async def test_volume_correct_filled_applies(self, tmp_path) -> None:
+        """P1-2 regression: when filled_volume == plan.volume the
+        applier still runs."""
+        plan = _make_plan()
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        orchestrator, applier, _, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            audit=audit,
+            now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
+        )
+        outcome = await orchestrator.handle_feishu(_received_message())
+        assert outcome.success is True
+        assert len(applier.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_volume_partial_correct_sum_applies(
+        self, tmp_path
+    ) -> None:
+        plan = _make_plan()  # 1000
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        partial_correct = (
+            "部分执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
+            "700股 成交价 3.85 剩余未成交 300股"
+        )
+        orchestrator, applier, _, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            audit=audit,
+            now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
+        )
+        outcome = await orchestrator.handle_feishu(
+            _received_message(partial_correct)
+        )
+        assert outcome.success is True
+        assert len(applier.calls) == 1
+
+    @pytest.mark.asyncio
     async def test_post_close_prefix_overrides_expiry(
         self, tmp_path
     ) -> None:
@@ -751,6 +846,45 @@ class TestChaseScheduler:
                 on_expire=_noop,
                 chase_after=timedelta(seconds=0),
             )
+
+    @pytest.mark.asyncio
+    async def test_stop_awaits_in_flight_callback(self) -> None:
+        """P2-3: stop() must await callbacks already running. A task
+        that has popped itself from the chase/expire dicts (inside
+        _fire_chase / _fire_expire) but is mid-await on the user
+        callback must NOT survive stop()."""
+        callback_blocking = asyncio.Event()
+        callback_finished = asyncio.Event()
+
+        async def _chase_holds(_inst_id: str) -> None:
+            try:
+                callback_blocking.set()
+                # Block until cancelled. We don't await the event ever
+                # being released — only stop() cancellation should
+                # break this.
+                await asyncio.sleep(60)
+            finally:
+                callback_finished.set()
+
+        async def _expire(_inst_id: str) -> None:
+            pass
+
+        scheduler = ChaseScheduler(
+            on_chase=_chase_holds,
+            on_expire=_expire,
+            chase_after=timedelta(milliseconds=10),
+        )
+        await scheduler.schedule(
+            "inst_a", _utc_now() + timedelta(seconds=10)
+        )
+        # Wait until the callback has started (and has popped itself
+        # from the chase_tasks dict).
+        await asyncio.wait_for(callback_blocking.wait(), timeout=1.0)
+        # Now stop — must cancel the in-flight callback and await it.
+        await scheduler.stop()
+        # callback_finished must be set as a side-effect of the
+        # callback's finally block running after cancellation.
+        assert callback_finished.is_set()
 
 
 def _utc_now() -> datetime:

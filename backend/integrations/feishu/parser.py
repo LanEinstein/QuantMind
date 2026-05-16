@@ -38,12 +38,58 @@ from backend.integrations.feishu.renderer import (
     ClarificationTemplate,
     MessageRenderer,
 )
-from backend.models.execution import ExecutionReport, ExecutionReportChannel
+from backend.models.execution import (
+    ExecutionReport,
+    ExecutionReportChannel,
+    ExecutionReportKind,
+)
 from backend.models.instruction import InstructionPlan, InstructionSide
 from backend.services.execution_report_parser import (
     ExecutionReportParseError,
     parse_execution_report,
 )
+
+_VOLUME_LOT_SIZE = 100
+
+
+def _cross_check_volume(
+    report: ExecutionReport, plan: InstructionPlan
+) -> str | None:
+    """Return a reason tag when the report's volumes don't match the plan.
+
+    Reasons (mirror the parser's ``ExecutionReportParseError.reason`` set
+    so the audit row uses the same vocabulary):
+
+    * ``volume_mismatch_filled`` — FILLED with filled_volume != plan.volume.
+    * ``volume_mismatch_partial_sum`` — PARTIAL with filled+remain != plan.volume.
+    * ``volume_lot_violation`` — any volume not a multiple of 100.
+
+    ``None`` means the report passes the volume cross-check. UNFILLED
+    reports carry no volume by schema, so always pass here.
+    """
+    if report.kind is ExecutionReportKind.UNFILLED:
+        return None
+    if plan.volume is None:
+        # HOLD plan should never reach this point (HOLD is not
+        # routable), but fail-closed if it ever did.
+        return "field_cross_check_failed"
+
+    if report.kind is ExecutionReportKind.FILLED:
+        if report.filled_volume != plan.volume:
+            return "volume_mismatch_filled"
+        if report.filled_volume % _VOLUME_LOT_SIZE != 0:
+            return "volume_lot_violation"
+    elif report.kind is ExecutionReportKind.PARTIAL:
+        filled = report.filled_volume or 0
+        remain = report.remain_volume or 0
+        if filled + remain != plan.volume:
+            return "volume_mismatch_partial_sum"
+        if (
+            filled % _VOLUME_LOT_SIZE != 0
+            or remain % _VOLUME_LOT_SIZE != 0
+        ):
+            return "volume_lot_violation"
+    return None
 
 log = logging.getLogger("backend.integrations.feishu.parser")
 
@@ -202,6 +248,25 @@ class ExecutionReportOrchestrator:
                 target_chat_id=target_chat_id,
             )
 
+        # P0-4 §1.1 cross-check — volume against plan. The
+        # ExecutionReport model validator already enforced
+        # side_zh ↔ instruction_id side and stock_code ↔ instruction_id
+        # code; the plan's stock_code is encoded in the
+        # instruction_id segment so we only need to verify totals here.
+        # A FILLED report whose filled_volume != plan.volume, or a
+        # PARTIAL whose filled+remain != plan.volume, is a field
+        # cross-check failure that must route to the
+        # FIELD_CROSS_CHECK_FAILED clarification template — NOT apply
+        # to MockBroker (P0-4 §1.1.1 / red line).
+        cross_check_error = _cross_check_volume(report, plan)
+        if cross_check_error is not None:
+            return await self._handle_volume_mismatch(
+                report=report,
+                plan=plan,
+                cross_check_error=cross_check_error,
+                target_chat_id=target_chat_id,
+            )
+
         # P0-3 §1.4 — expired instructions cannot apply unless the
         # report carries the 盘后补录 prefix. The parser preserves the
         # prefix on the report.
@@ -291,6 +356,36 @@ class ExecutionReportOrchestrator:
         await self._audit_parse_failure(
             channel=report.channel,
             reason="unknown_instruction_id",
+            raw_text=report.raw_text,
+            instruction_id=report.instruction_id,
+        )
+        send_result = await self._send_clarification(
+            template=template,
+            instruction_id=report.instruction_id,
+            raw_text=report.raw_text,
+            target_chat_id=target_chat_id,
+        )
+        return ParseOutcome(
+            success=False,
+            ambiguous=True,
+            instruction_id=report.instruction_id,
+            template_id=template,
+            apply_result=None,
+            send_result=send_result,
+        )
+
+    async def _handle_volume_mismatch(
+        self,
+        *,
+        report: ExecutionReport,
+        plan: InstructionPlan,  # noqa: ARG002 — included for parity
+        cross_check_error: str,
+        target_chat_id: str | None,
+    ) -> ParseOutcome:
+        template = ClarificationTemplate.FIELD_CROSS_CHECK_FAILED
+        await self._audit_parse_failure(
+            channel=report.channel,
+            reason=cross_check_error,
             raw_text=report.raw_text,
             instruction_id=report.instruction_id,
         )

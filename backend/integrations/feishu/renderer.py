@@ -180,9 +180,11 @@ class MessageRenderer:
         body = _CLARIFICATION_BODIES[template]
         excerpt_block = ""
         if raw_text_excerpt:
-            excerpt_block = (
-                f"\n原始文本节选: {_truncate(raw_text_excerpt, 80)}"
-            )
+            # P2-1: normalise to single-line printable text BEFORE
+            # truncating so an embedded newline cannot smuggle a fake
+            # 【QuantMind ...】 header into the body.
+            safe_excerpt = _truncate(_single_line(raw_text_excerpt), 80)
+            excerpt_block = f"\n原始文本节选: {safe_excerpt}"
         id_block = ""
         if instruction_id:
             id_block = f"\n指令编号: {instruction_id}"
@@ -298,9 +300,12 @@ class MessageRenderer:
         """
         if not message:
             raise ValueError("alert message must not be empty")
-        # Strip control characters so a bad alerter call cannot inject
-        # newlines that fake an Instruction or Reconciliation header.
-        sanitized = _strip_controls(message)
+        # P2-1: alerts must NEVER contain literal newlines — every
+        # newline would risk spoofing a 【QuantMind ...】 header. Even
+        # though _strip_controls preserved newlines, _single_line
+        # actively collapses them so an alerter caller cannot inject
+        # a fake reconciliation / instruction line.
+        sanitized = _single_line(message)
         return "\n".join(
             [
                 f"【QuantMind 告警 / {severity.upper()}】",
@@ -370,6 +375,31 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)] + "…"
+
+
+def _single_line(text: str) -> str:
+    """Collapse every newline / control character to a single space.
+
+    Used before interpolating operator-controlled free text into the
+    template body. Without this normalisation a malicious user could
+    embed a literal ``\\n【QuantMind 指令】xxx`` inside their raw text
+    and have it render as if a new top-level message header started
+    mid-body (codex review session #14 P2-1).
+    """
+    import unicodedata as _u
+
+    out: list[str] = []
+    for ch in text:
+        if ch in {"\n", "\r", "\t", "\v", "\f"}:
+            out.append(" ")
+        elif _u.category(ch).startswith("C"):
+            # Drop other C-category control codepoints entirely.
+            continue
+        else:
+            out.append(ch)
+    # Collapse runs of whitespace to a single space — keeps the body
+    # visually clean and prevents wide spacing tricks.
+    return " ".join("".join(out).split())
 
 
 def _strip_controls(text: str) -> str:

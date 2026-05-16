@@ -384,36 +384,40 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 alert_chat_id=alert_chat,
             )
 
-    # Feishu long-connection receiver (F-003). Only starts when the
-    # overlay is active; the consumer handler (F-004 parser) lands in
-    # the same Phase F session — until then we register a stub that
-    # logs receipt without applying anything (parse_ok=False ≡ HOLD per
-    # P0-3 §1.3.1, and applier wiring happens in F-004).
+    # Feishu long-connection receiver (F-003). The receiver only starts
+    # once the F-004 ExecutionReportOrchestrator + F-005
+    # ReconciliationOrchestrator are wired with Mongo-backed Repository
+    # implementations (deferred to Phase I-001 integration). Until
+    # then, starting the receiver in feishu_interactive mode would
+    # silently drop inbound messages — the WS layer would ack while no
+    # downstream handler exists.
+    #
+    # Fail-closed: if FEISHU_INTERACTIVE_ENABLED=true but the
+    # orchestrator wiring has not landed, refuse to start so the
+    # operator sees the misconfiguration loudly. simulation_auto stays
+    # untouched (feishu_client is None there).
     application.state.feishu_event_receiver = None
+    application.state.execution_report_orchestrator = None
+    application.state.reconciliation_orchestrator = None
     if application.state.feishu_client is not None:
-        from backend.integrations.feishu.dedupe import RedisEventDedupe
-        from backend.integrations.feishu.events import (
-            FeishuEventReceiver,
-            ReceivedMessage,
+        # I-001 wiring debt: until ExecutionReportOrchestrator +
+        # ReconciliationOrchestrator are constructed with Mongo-backed
+        # Repository implementations, refuse to enable the long
+        # connection rather than silently drop messages. The
+        # acceptance gate (P0-6 §2 红线 5) prevents the operator
+        # reaching this branch without going through 45 trading days
+        # of PASS metrics, so this guard is a last-line check.
+        raise SystemExit(
+            "Refusing to start: FEISHU_INTERACTIVE_ENABLED=true but the "
+            "F-004 ExecutionReportOrchestrator and F-005 "
+            "ReconciliationOrchestrator are not yet wired with "
+            "Mongo-backed Repository implementations. The long "
+            "connection would receive messages without a downstream "
+            "handler, silently dropping execution reports and "
+            "reconciliation replies. Land the I-001 integration "
+            "(InstructionPlan + ReconciliationTicket Mongo repos + "
+            "decision chat id) before re-enabling the overlay."
         )
-
-        async def _stub_handler(message: ReceivedMessage) -> None:
-            log.info(
-                "feishu_event_received_stub",
-                event_id=message.event_id,
-                message_id=message.message_id,
-            )
-
-        receiver = FeishuEventReceiver(
-            app_id=os.environ["FEISHU_APP_ID"].strip(),
-            app_secret=os.environ["FEISHU_APP_SECRET"].strip(),
-            verify_token=os.environ["FEISHU_VERIFY_TOKEN"].strip(),
-            encrypt_key=os.environ["FEISHU_ENCRYPT_KEY"].strip(),
-            dedupe=RedisEventDedupe(redis_pool),
-            handler=_stub_handler,
-        )
-        await receiver.start()
-        application.state.feishu_event_receiver = receiver
 
     await _init_data_layer(application, redis_pool)
 
