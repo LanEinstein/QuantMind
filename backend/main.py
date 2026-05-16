@@ -366,6 +366,37 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     application.state.feishu_client = FeishuClient.from_env()
 
+    # Feishu long-connection receiver (F-003). Only starts when the
+    # overlay is active; the consumer handler (F-004 parser) lands in
+    # the same Phase F session — until then we register a stub that
+    # logs receipt without applying anything (parse_ok=False ≡ HOLD per
+    # P0-3 §1.3.1, and applier wiring happens in F-004).
+    application.state.feishu_event_receiver = None
+    if application.state.feishu_client is not None:
+        from backend.integrations.feishu.dedupe import RedisEventDedupe
+        from backend.integrations.feishu.events import (
+            FeishuEventReceiver,
+            ReceivedMessage,
+        )
+
+        async def _stub_handler(message: ReceivedMessage) -> None:
+            log.info(
+                "feishu_event_received_stub",
+                event_id=message.event_id,
+                message_id=message.message_id,
+            )
+
+        receiver = FeishuEventReceiver(
+            app_id=os.environ["FEISHU_APP_ID"].strip(),
+            app_secret=os.environ["FEISHU_APP_SECRET"].strip(),
+            verify_token=os.environ["FEISHU_VERIFY_TOKEN"].strip(),
+            encrypt_key=os.environ["FEISHU_ENCRYPT_KEY"].strip(),
+            dedupe=RedisEventDedupe(redis_pool),
+            handler=_stub_handler,
+        )
+        await receiver.start()
+        application.state.feishu_event_receiver = receiver
+
     await _init_data_layer(application, redis_pool)
 
     # Trading subsystem
@@ -393,6 +424,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     if hasattr(application.state, "analysis_stream_hub"):
         await application.state.analysis_stream_hub.shutdown()
+
+    if (
+        hasattr(application.state, "feishu_event_receiver")
+        and application.state.feishu_event_receiver is not None
+    ):
+        await application.state.feishu_event_receiver.stop()
 
     await _shutdown_data_layer(application)
     await router.close()
