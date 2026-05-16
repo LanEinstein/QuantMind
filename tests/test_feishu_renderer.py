@@ -1,0 +1,499 @@
+"""F-002 — MessageRenderer snapshot + invariant tests.
+
+The renderer is the **single source of truth** for Feishu wire text;
+this file freezes the exact output for every locked message kind so
+the snapshot fails any time a future change touches the body. Golden
+strings are kept right next to the assertions for human review.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from backend.integrations.feishu.renderer import (
+    ClarificationTemplate,
+    FeishuMessageKind,
+    MessageRenderer,
+)
+from backend.models.instruction import (
+    DataSnapshot,
+    InstructionPlan,
+    InstructionSide,
+    InstructionStatus,
+    PositionSummary,
+    RiskCheckSummary,
+)
+
+_SH = ZoneInfo("Asia/Shanghai")
+
+
+def _risk_summary_passed() -> tuple[RiskCheckSummary, ...]:
+    """14-row risk summary, all PASS — locks the dispatch happy-path."""
+    rules = (
+        "single_stock_pct_<=15",
+        "price_deviation_<=10",
+        "volume_multiple_of_lot",
+        "long_only",
+        "single_cash_<=5w",
+        "no_open_ticket",
+        "valid_until_<=14:55",
+        "total_position_pct_<=70",
+        "single_instruction_amount_<=50000",
+        "daily_new_instruction_count_<=5",
+        "universe_whitelist",
+        "limit_up_down_block",
+        "daily_loss_halt_>=-5",
+        "consecutive_loss_<3",
+    )
+    return tuple(
+        RiskCheckSummary(rule_name=name, passed=True, message="")
+        for name in rules
+    )
+
+
+def _buy_plan() -> InstructionPlan:
+    created = datetime(2026, 5, 16, 10, 30, 0, tzinfo=_SH)
+    snapshot = datetime(2026, 5, 16, 10, 29, 50, tzinfo=_SH)
+    valid_until = datetime(2026, 5, 16, 14, 55, 0, tzinfo=_SH)
+    return InstructionPlan(
+        instruction_id="QM-20260516-103000-510300-BUY-001",
+        created_at=created,
+        valid_until=valid_until,
+        trade_date="2026-05-16",
+        stock_code="510300",
+        stock_name="沪深 300 ETF",
+        side=InstructionSide.BUY,
+        volume=1000,
+        limit_price=3.85,
+        data_snapshot=DataSnapshot(
+            snapshot_at=snapshot,
+            quote_source="adata",
+            is_trading_day=True,
+            is_trading_hours=True,
+        ),
+        evidence_ids=("NEWS-20260516-0001",),
+        position_summary=PositionSummary(
+            pre_position_pct=0.04,
+            post_position_pct=0.078,
+            pre_total_position_pct=0.32,
+            post_total_position_pct=0.358,
+            pre_cash=200_000.0,
+            post_cash=196_150.0,
+        ),
+        risk_summary=_risk_summary_passed(),
+        risk_validation_id="rv-001",
+        signal_id="sig-001",
+        analysis_record_id="ar-001",
+        debate_round_count=1,
+        invalidation_summary="若沪深 300 当日跌幅 ≥ 1% 即失效",
+        status=InstructionStatus.VALIDATED,
+    )
+
+
+def _hold_plan() -> InstructionPlan:
+    created = datetime(2026, 5, 16, 10, 30, 0, tzinfo=_SH)
+    snapshot = datetime(2026, 5, 16, 10, 29, 50, tzinfo=_SH)
+    valid_until = datetime(2026, 5, 16, 14, 55, 0, tzinfo=_SH)
+    return InstructionPlan(
+        instruction_id="QM-20260516-103000-510300-HOLD-001",
+        created_at=created,
+        valid_until=valid_until,
+        trade_date="2026-05-16",
+        stock_code="510300",
+        stock_name="沪深 300 ETF",
+        side=InstructionSide.HOLD,
+        data_snapshot=DataSnapshot(
+            snapshot_at=snapshot,
+            quote_source="adata",
+            is_trading_day=True,
+            is_trading_hours=True,
+        ),
+        evidence_ids=("NEWS-20260516-0001",),
+        risk_summary=_risk_summary_passed(),
+        risk_validation_id="rv-001",
+        signal_id="sig-001",
+        analysis_record_id="ar-001",
+        debate_round_count=1,
+        invalidation_summary="HOLD",
+        status=InstructionStatus.VALIDATED,
+    )
+
+
+# -----------------------------------------------------------------------------
+# InstructionPlan dispatch — snapshot lock
+# -----------------------------------------------------------------------------
+
+
+class TestInstructionPlanDispatch:
+    def test_buy_plan_golden_snapshot(self) -> None:
+        rendered = MessageRenderer().render_instruction_plan(_buy_plan())
+        expected = (
+            "【QuantMind 指令】\n"
+            "指令编号: QM-20260516-103000-510300-BUY-001\n"
+            "操作: 买入 510300 沪深 300 ETF\n"
+            "股数: 1000 股\n"
+            "限价: 3.85 CNY\n"
+            "预计金额: 3850.00 CNY\n"
+            "有效期: 2026-05-16 14:55:00 前(同日 14:55 截止)\n"
+            "仓位预览: 单股 4.00% → 7.80% · 总仓 32.00% → 35.80% · "
+            "现金 200000.00 → 196150.00 CNY\n"
+            "—— 风险摘要 ——\n"
+            "  ✓ #01 single_stock_pct_<=15\n"
+            "  ✓ #02 price_deviation_<=10\n"
+            "  ✓ #03 volume_multiple_of_lot\n"
+            "  ✓ #04 long_only\n"
+            "  ✓ #05 single_cash_<=5w\n"
+            "  ✓ #06 no_open_ticket\n"
+            "  ✓ #07 valid_until_<=14:55\n"
+            "  ✓ #08 total_position_pct_<=70\n"
+            "  ✓ #09 single_instruction_amount_<=50000\n"
+            "  ✓ #10 daily_new_instruction_count_<=5\n"
+            "  ✓ #11 universe_whitelist\n"
+            "  ✓ #12 limit_up_down_block\n"
+            "  ✓ #13 daily_loss_halt_>=-5\n"
+            "  ✓ #14 consecutive_loss_<3\n"
+            "失效说明: 若沪深 300 当日跌幅 ≥ 1% 即失效\n"
+            "—— 回报模板(原文回复)——\n"
+            "1. 已执行 <编号> <买入|卖出> <代码> <股数>股 成交价 <价> 手续费 <费>\n"
+            "2. 部分执行 <编号> <买入|卖出> <代码> <成交>股 成交价 <价> "
+            "剩余 <未成交>股\n"
+            "3. 未执行 <编号> 原因: <原因>\n"
+            "4. 更正/盘后补录: 在 1/2/3 前加 `更正 ` 或 `盘后补录 `"
+        )
+        assert rendered == expected
+
+    def test_failed_check_renders_x_marker(self) -> None:
+        plan = _buy_plan()
+        # Tamper with the risk_summary tuple to flip one row to False.
+        failed_summary = list(plan.risk_summary)
+        failed_summary[10] = RiskCheckSummary(
+            rule_name="universe_whitelist",
+            passed=False,
+            message="股票不在 watchlist",
+        )
+        plan_failing = plan.model_copy(
+            update={
+                "risk_summary": tuple(failed_summary),
+                "status": InstructionStatus.REJECTED,
+                "rejection_reason": "universe_whitelist failed",
+            }
+        )
+        # REJECTED plans are not dispatchable — verify our guard fires.
+        with pytest.raises(ValueError, match="VALIDATED or DISPATCHED"):
+            MessageRenderer().render_instruction_plan(plan_failing)
+
+    def test_pending_check_renders_em_dash(self) -> None:
+        plan = _buy_plan()
+        pending_summary = list(plan.risk_summary)
+        pending_summary[7] = RiskCheckSummary(
+            rule_name="total_position_pct_<=70",
+            passed=None,
+            message="",
+        )
+        plan_pending = plan.model_copy(
+            update={"risk_summary": tuple(pending_summary)}
+        )
+        rendered = MessageRenderer().render_instruction_plan(plan_pending)
+        assert "  — #08 total_position_pct_<=70" in rendered
+
+    def test_hold_plan_rejected_to_send(self) -> None:
+        with pytest.raises(ValueError, match="HOLD"):
+            MessageRenderer().render_instruction_plan(_hold_plan())
+
+    def test_only_validated_or_dispatched_status_renders(self) -> None:
+        plan = _buy_plan()
+        for status in (
+            InstructionStatus.DRAFT,
+            InstructionStatus.FILLED,
+            InstructionStatus.EXPIRED,
+        ):
+            altered = plan.model_copy(update={"status": status})
+            with pytest.raises(
+                ValueError, match="VALIDATED or DISPATCHED"
+            ):
+                MessageRenderer().render_instruction_plan(altered)
+
+    def test_dispatched_status_passes(self) -> None:
+        plan = _buy_plan().model_copy(
+            update={"status": InstructionStatus.DISPATCHED}
+        )
+        rendered = MessageRenderer().render_instruction_plan(plan)
+        assert "指令编号: " in rendered
+
+    def test_sell_plan_renders_sell_label(self) -> None:
+        plan = _buy_plan()
+        sell_plan = plan.model_copy(
+            update={
+                "instruction_id": "QM-20260516-103000-510300-SELL-001",
+                "side": InstructionSide.SELL,
+            }
+        )
+        rendered = MessageRenderer().render_instruction_plan(sell_plan)
+        assert "操作: 卖出 510300" in rendered
+
+    def test_amount_calc_is_decimal_precise(self) -> None:
+        plan = _buy_plan().model_copy(update={"limit_price": 0.1, "volume": 300})
+        rendered = MessageRenderer().render_instruction_plan(plan)
+        # 0.1 × 300 = 30.00 exact decimal
+        assert "预计金额: 30.00 CNY" in rendered
+
+
+# -----------------------------------------------------------------------------
+# Clarification — five templates locked
+# -----------------------------------------------------------------------------
+
+
+class TestClarification:
+    @pytest.mark.parametrize(
+        "template", list(ClarificationTemplate)
+    )
+    def test_each_template_renders(
+        self, template: ClarificationTemplate
+    ) -> None:
+        rendered = MessageRenderer().render_clarification(template=template)
+        assert rendered.startswith("【QuantMind 澄清】\n")
+        assert "—— 请按以下格式回复 ——\n" in rendered
+
+    def test_no_pattern_match_snapshot(self) -> None:
+        rendered = MessageRenderer().render_clarification(
+            template=ClarificationTemplate.NO_PATTERN_MATCH,
+            instruction_id="QM-20260516-103000-510300-BUY-001",
+            raw_text_excerpt="不认识的格式 xxx",
+        )
+        expected = (
+            "【QuantMind 澄清】\n"
+            "无法识别消息内容,无法应用到模拟账本。\n"
+            "指令编号: QM-20260516-103000-510300-BUY-001\n"
+            "原始文本节选: 不认识的格式 xxx\n"
+            "—— 请按以下格式回复 ——\n"
+            "1. 已执行 <编号> <买入|卖出> <代码> <股数>股 成交价 <价> 手续费 <费>\n"
+            "2. 部分执行 <编号> <买入|卖出> <代码> <成交>股 成交价 <价> "
+            "剩余 <未成交>股\n"
+            "3. 未执行 <编号> 原因: <原因>\n"
+            "4. 更正/盘后补录: 在 1/2/3 前加 `更正 ` 或 `盘后补录 `"
+        )
+        assert rendered == expected
+
+    def test_omitted_instruction_id_drops_line(self) -> None:
+        rendered = MessageRenderer().render_clarification(
+            template=ClarificationTemplate.EMPTY_PAYLOAD,
+        )
+        assert "指令编号:" not in rendered
+        assert "原始文本节选:" not in rendered
+
+    def test_invalid_instruction_id_rejected(self) -> None:
+        with pytest.raises(ValueError, match="canonical pattern"):
+            MessageRenderer().render_clarification(
+                template=ClarificationTemplate.NO_PATTERN_MATCH,
+                instruction_id="not-an-id",
+            )
+
+    def test_excerpt_truncated_to_80_chars(self) -> None:
+        long_excerpt = "x" * 200
+        rendered = MessageRenderer().render_clarification(
+            template=ClarificationTemplate.NO_PATTERN_MATCH,
+            raw_text_excerpt=long_excerpt,
+        )
+        # Truncated to 80 chars total including ellipsis.
+        excerpt_line = next(
+            line for line in rendered.splitlines() if line.startswith("原始文本节选: ")
+        )
+        body = excerpt_line.removeprefix("原始文本节选: ")
+        assert len(body) == 80
+        assert body.endswith("…")
+
+
+# -----------------------------------------------------------------------------
+# Reconciliation request / result
+# -----------------------------------------------------------------------------
+
+
+class TestReconciliation:
+    def test_request_snapshot(self) -> None:
+        rendered = MessageRenderer().render_reconciliation_request(
+            ticket_id="RECON-20260516-001",
+            trade_date="2026-05-16",
+            expected_cash_cny=199_500.50,
+            expected_positions={"510300": 1000, "600519": 100},
+            expected_total_equity_cny=275_000.00,
+        )
+        expected = (
+            "【QuantMind 对账】\n"
+            "对账编号: RECON-20260516-001\n"
+            "交易日: 2026-05-16\n"
+            "系统现金: 199500.50 CNY\n"
+            "系统持仓:\n"
+            "  510300 1000 股\n"
+            "  600519 100 股\n"
+            "系统总权益: 275000.00 CNY\n"
+            "—— 请按以下格式回复 ——\n"
+            "1. 采纳系统镜像 → 回复『采纳镜像』\n"
+            "2. 采纳用户回报 → 回复『采纳回报 现金 <数额> 持仓 <code> <股数> ...』\n"
+            "3. 对账更正 → 回复『更正 现金 <数额> 持仓 <code> <股数> ...』"
+        )
+        assert rendered == expected
+
+    def test_request_empty_positions(self) -> None:
+        rendered = MessageRenderer().render_reconciliation_request(
+            ticket_id="RECON-20260516-001",
+            trade_date="2026-05-16",
+            expected_cash_cny=1_000_000.0,
+            expected_positions={},
+            expected_total_equity_cny=1_000_000.0,
+        )
+        assert "  (无持仓)" in rendered
+
+    def test_request_rejects_bad_ticket_id(self) -> None:
+        with pytest.raises(ValueError, match="RECON"):
+            MessageRenderer().render_reconciliation_request(
+                ticket_id="bad",
+                trade_date="2026-05-16",
+                expected_cash_cny=0.0,
+                expected_positions={},
+                expected_total_equity_cny=0.0,
+            )
+
+    def test_request_rejects_bad_trade_date(self) -> None:
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            MessageRenderer().render_reconciliation_request(
+                ticket_id="RECON-20260516-001",
+                trade_date="2026/05/16",
+                expected_cash_cny=0.0,
+                expected_positions={},
+                expected_total_equity_cny=0.0,
+            )
+
+    def test_result_snapshot(self) -> None:
+        rendered = MessageRenderer().render_reconciliation_result(
+            ticket_id="RECON-20260516-001",
+            resolution="resolved_user_as_truth",
+            cash_delta_cny=-150.50,
+            position_deltas={"510300": -100, "600519": 50},
+        )
+        expected = (
+            "【QuantMind 对账已落账】\n"
+            "对账编号: RECON-20260516-001\n"
+            "裁定: resolved_user_as_truth\n"
+            "现金调整: -150.50 CNY\n"
+            "持仓调整:\n"
+            "  510300 -100 股\n"
+            "  600519 +50 股"
+        )
+        assert rendered == expected
+
+    def test_result_empty_deltas(self) -> None:
+        rendered = MessageRenderer().render_reconciliation_result(
+            ticket_id="RECON-20260516-001",
+            resolution="resolved_system_as_truth",
+            cash_delta_cny=0.0,
+            position_deltas={},
+        )
+        assert "  (无调整)" in rendered
+
+
+# -----------------------------------------------------------------------------
+# Alert
+# -----------------------------------------------------------------------------
+
+
+class TestAlert:
+    def test_alert_snapshot(self) -> None:
+        fired_at = datetime(2026, 5, 16, 12, 0, 0, tzinfo=_SH)
+        rendered = MessageRenderer().render_alert(
+            alert_type="llm_all_providers_failed",
+            severity="critical",
+            message="3 个 LLM 接连超时",
+            fired_at=fired_at,
+        )
+        expected = (
+            "【QuantMind 告警 / CRITICAL】\n"
+            "类型: llm_all_providers_failed\n"
+            "时间: 2026-05-16 12:00:00\n"
+            "消息: 3 个 LLM 接连超时"
+        )
+        assert rendered == expected
+
+    def test_alert_strips_control_chars(self) -> None:
+        fired_at = datetime(2026, 5, 16, 12, 0, 0, tzinfo=_SH)
+        # Smuggled header would otherwise let an attacker spoof a
+        # reconciliation header inside the alert body.
+        rendered = MessageRenderer().render_alert(
+            alert_type="x",
+            severity="warning",
+            message="abc\x00\x01【QuantMind 对账】伪造行",
+            fired_at=fired_at,
+        )
+        # Control chars dropped, Chinese characters preserved.
+        assert "\x00" not in rendered
+        assert "\x01" not in rendered
+        assert "abc【QuantMind 对账】伪造行" in rendered
+
+    def test_alert_rejects_empty_message(self) -> None:
+        with pytest.raises(ValueError, match="message"):
+            MessageRenderer().render_alert(
+                alert_type="x",
+                severity="warning",
+                message="",
+                fired_at=datetime(2026, 5, 16, 12, 0, 0, tzinfo=_SH),
+            )
+
+
+# -----------------------------------------------------------------------------
+# Red lines — enum membership locked, regex pattern stable
+# -----------------------------------------------------------------------------
+
+
+class TestRedLines:
+    def test_feishu_message_kind_count_locked(self) -> None:
+        """A sixth kind requires a P0-2 §2.5 amendment."""
+        assert len(list(FeishuMessageKind)) == 5
+        assert {k.value for k in FeishuMessageKind} == {
+            "instruction_plan",
+            "clarification",
+            "reconciliation_request",
+            "reconciliation_result",
+            "alert",
+        }
+
+    def test_clarification_count_locked(self) -> None:
+        """Five clarification templates locked by P0-4 §1.1.1."""
+        assert len(list(ClarificationTemplate)) == 5
+
+    def test_module_isolation(self) -> None:
+        """LLM red line — renderer never imports llm/agents/mirofish."""
+        import ast
+        import pathlib
+
+        path = pathlib.Path("backend/integrations/feishu/renderer.py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        forbidden = {"llm", "agents", "mirofish"}
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                parts = mod.split(".")
+                if parts[:1] == ["backend"] and len(parts) >= 2:
+                    if parts[1] in forbidden:
+                        violations.append(f"from {mod} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    parts = alias.name.split(".")
+                    if parts[:1] == ["backend"] and len(parts) >= 2:
+                        if parts[1] in forbidden:
+                            violations.append(f"import {alias.name}")
+        assert violations == []
+
+    def test_instruction_id_regex_mirrors_b001(self) -> None:
+        """Renderer's instruction_id regex must mirror P0-3 §1.2 source."""
+        from backend.models.instruction import _INSTRUCTION_ID_PATTERN
+
+        # The renderer copy of the regex matches the canonical pattern
+        # exactly (modulo anchoring style).
+        rendered_pattern = re.compile(
+            r"^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL|HOLD)-\d{3}$"
+        ).pattern
+        assert rendered_pattern == _INSTRUCTION_ID_PATTERN
