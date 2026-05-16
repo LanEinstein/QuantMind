@@ -1,0 +1,165 @@
+{
+  "_meta": {
+    "purpose": "G-005 shared fixture — backend (PATTERNS_AS_DICT) + frontend (previewExecutionReport) must agree on every sample. Update both sides in the same commit.",
+    "version": 1
+  },
+  "valid": [
+    {
+      "name": "filled_buy",
+      "pattern_id": "FILLED",
+      "raw_text": "已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "side_zh": "买入",
+        "stock_code": "600519",
+        "volume": "100",
+        "fill_price": "1800.5",
+        "fee": "5.4"
+      }
+    },
+    {
+      "name": "filled_sell_integer_price",
+      "pattern_id": "FILLED",
+      "raw_text": "已执行 QM-20260516-100000-300750-SELL-002 卖出 300750 200股 成交价 220 手续费 4",
+      "groups": {
+        "instruction_id": "QM-20260516-100000-300750-SELL-002",
+        "side_zh": "卖出",
+        "stock_code": "300750",
+        "volume": "200",
+        "fill_price": "220",
+        "fee": "4"
+      }
+    },
+    {
+      "name": "partial_buy",
+      "pattern_id": "PARTIAL",
+      "raw_text": "部分执行 QM-20260516-093001-600519-BUY-001 买入 600519 60股 成交价 1800.5 剩余未成交 40股",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "side_zh": "买入",
+        "stock_code": "600519",
+        "filled_volume": "60",
+        "fill_price": "1800.5",
+        "remain_volume": "40"
+      }
+    },
+    {
+      "name": "unfilled_halfwidth_colon",
+      "pattern_id": "UNFILLED",
+      "raw_text": "未执行 QM-20260516-093001-600519-BUY-001 原因:盘中没机会建仓",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "reason": "盘中没机会建仓"
+      }
+    },
+    {
+      "name": "unfilled_fullwidth_colon",
+      "pattern_id": "UNFILLED",
+      "raw_text": "未执行 QM-20260516-093001-600519-BUY-001 原因:涨停封板无法买入",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "reason": "涨停封板无法买入"
+      }
+    },
+    {
+      "name": "amend_filled",
+      "pattern_id": "AMEND_FILLED",
+      "raw_text": "更正 已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "side_zh": "买入",
+        "stock_code": "600519",
+        "volume": "100",
+        "fill_price": "1800.5",
+        "fee": "5.4"
+      }
+    },
+    {
+      "name": "amend_partial",
+      "pattern_id": "AMEND_PARTIAL",
+      "raw_text": "更正 部分执行 QM-20260516-093001-600519-BUY-001 买入 600519 60股 成交价 1800.5 剩余未成交 40股",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "side_zh": "买入",
+        "stock_code": "600519",
+        "filled_volume": "60",
+        "fill_price": "1800.5",
+        "remain_volume": "40"
+      }
+    },
+    {
+      "name": "amend_unfilled",
+      "pattern_id": "AMEND_UNFILLED",
+      "raw_text": "更正 未执行 QM-20260516-093001-600519-BUY-001 原因:券商反馈撤单",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "reason": "券商反馈撤单"
+      }
+    },
+    {
+      "name": "post_close_filled",
+      "pattern_id": "POST_CLOSE_FILLED",
+      "raw_text": "盘后补录 已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "side_zh": "买入",
+        "stock_code": "600519",
+        "volume": "100",
+        "fill_price": "1800.5",
+        "fee": "5.4"
+      }
+    },
+    {
+      "name": "post_close_partial",
+      "pattern_id": "POST_CLOSE_PARTIAL",
+      "raw_text": "盘后补录 部分执行 QM-20260516-093001-600519-BUY-001 买入 600519 60股 成交价 1800.5 剩余未成交 40股",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "side_zh": "买入",
+        "stock_code": "600519",
+        "filled_volume": "60",
+        "fill_price": "1800.5",
+        "remain_volume": "40"
+      }
+    },
+    {
+      "name": "post_close_unfilled",
+      "pattern_id": "POST_CLOSE_UNFILLED",
+      "raw_text": "盘后补录 未执行 QM-20260516-093001-600519-BUY-001 原因:盘后补录原因",
+      "groups": {
+        "instruction_id": "QM-20260516-093001-600519-BUY-001",
+        "reason": "盘后补录原因"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "garbage",
+      "raw_text": "this is not a report"
+    },
+    {
+      "name": "missing_side",
+      "raw_text": "已执行 QM-20260516-093001-600519-BUY-001 600519 100股 成交价 1800.5 手续费 5.4"
+    },
+    {
+      "name": "wrong_code_length",
+      "raw_text": "已执行 QM-20260516-093001-600519-BUY-001 买入 60051 100股 成交价 1800.5 手续费 5.4"
+    },
+    {
+      "name": "negative_price",
+      "raw_text": "已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 -1800.5 手续费 5.4"
+    },
+    {
+      "name": "iid_wrong_action",
+      "raw_text": "已执行 QM-20260516-093001-600519-HOLD-001 买入 600519 100股 成交价 1800.5 手续费 5.4"
+    },
+    {
+      "name": "unknown_prefix",
+      "raw_text": "已撤单 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4"
+    },
+    {
+      "name": "extra_field_appended",
+      "raw_text": "已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4 备注 多余"
+    }
+  ]
+}
