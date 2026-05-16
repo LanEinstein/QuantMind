@@ -34,7 +34,7 @@ SSoT = `docs/plan.html`(61 任务,十一阶段 S/A-H/I/X)。红线条文 → 对
 
 **2.8 验收(P0-6)** 45 交易日滚动 + 静态 `config/holidays.yaml`(不引入 akshare 节假日 API)。5 稳定性 指令完整率 ≥95% / 回报准确率 ≥99% / 数据缺失 ≤1% / LLM 超时 ≤5% / 信号生成 ≥95%;3 策略 最大回撤 ≤8% / PnL ≥0 / 沪深 300 累计超额 ≥0。5 类 P0 系统级中断重置;reconciliation freeze 暂停而非重置。切换 `feishu_on` 必经 `acceptance.can_switch_to_feishu_on()`,严禁 env/CLI 绕过。
 
-**2.9 安全 / 可观测(P1-6)** LLM 3 key + 飞书 6 凭证全 `~/.bashrc`;`.env` 严禁 `LLM_KEY/FEISHU_*` 前缀;启动期 `secrets_validator` fail-fast。fingerprint = SHA256[:8],严禁 plaintext / 末四位;5 类强制轮换 + 12 月 warning。全层 127.0.0.1 only(Backend + Vite + Mongo + Redis + Nginx),远程仅 SSH tunnel;不加本机 auth middleware;httpx 出站 `local_address="0.0.0.0"`(IPv4 only egress)。Mongo `audit_events` TTL 180 天 + JSONL 30 天双写,34 类锁定(类 5 evolution 7 类 actor=SYSTEM/SCHEDULER);LLM 严禁写 audit;调试事件走 `logs/quantmind.jsonl`。gitleaks pre-commit 强制,严禁 `--no-verify`。
+**2.9 安全 / 可观测(P1-6 + P0-2-amendment-2026-05-16)** LLM 3 key + 飞书 5 凭证(`FEISHU_APP_ID`/`FEISHU_APP_SECRET`/`FEISHU_VERIFY_TOKEN`/`FEISHU_ENCRYPT_KEY`/`FEISHU_ALERT_CHAT_ID`)全 `~/.bashrc`;**P0-2 amendment 2026-05-16 锁定:owner 飞书租户禁用 custom-bot,凭证池 6→5,告警通道走自建应用同款 OpenAPI 发到 FEISHU_ALERT_CHAT_ID;`FEISHU_CUSTOM_BOT_*` 永禁存在,出现即 warning + audit**。`.env` 严禁 `LLM_KEY/FEISHU_*/FEISHU_ALERT_*` 前缀;启动期 `secrets_validator` fail-fast。fingerprint = SHA256[:8],严禁 plaintext / 末四位;5 类强制轮换 + 12 月 warning。全层 127.0.0.1 only(Backend + Vite + Mongo + Redis + Nginx),远程仅 SSH tunnel;不加本机 auth middleware;httpx 出站 `local_address="0.0.0.0"`(IPv4 only egress)。Mongo `audit_events` TTL 180 天 + JSONL 30 天双写,34 类锁定(类 5 evolution 7 类 actor=SYSTEM/SCHEDULER);LLM 严禁写 audit;调试事件走 `logs/quantmind.jsonl`。gitleaks pre-commit 强制,严禁 `--no-verify`。
 
 **2.10 成本预算(P1-7)** LLM only:日 ¥20 hard(唯一全 LLM 熔断)+ 月 ¥440 soft(50/80/100% 三节点,100% 不停)+ Kimi 日 ¥4。数据 / 运维不设 ceiling。`cost_guard` + `SoftDegradeManager` 严禁 `import backend.{llm,agents,mirofish,data}`。软触发 ¥14=70% 优先关 Kimi escalation;严禁削减 4 必经 Agent / 降 fast 频次 / 全 deepseek-only。告警仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP / Slack / Discord;Alerter dedup_15min。
 
@@ -76,7 +76,8 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
 grep -rn "from backend\.\(llm\|agents\|mirofish\|data\)" backend/risk/ backend/services/cost_guard.py
 grep -rnE "host\s*[=:]\s*['\"]?0\.0\.0\.0" frontend/vite.config.ts deploy/                       # 必空
 grep -rnE "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.example       # 必空
+grep -rnE "FEISHU_CUSTOM_BOT_(WEBHOOK_URL|SIGN_SECRET)" backend/ tests/ .env* 2>/dev/null      # 必空 (P0-2-amendment-2026-05-16)
 ```
 
 LLM key:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
-飞书:`FEISHU_APP_ID` / `FEISHU_APP_SECRET`(预留 `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY`);备用 `FEISHU_CUSTOM_BOT_WEBHOOK_URL` / `FEISHU_CUSTOM_BOT_SIGN_SECRET`。
+飞书:`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFY_TOKEN` / `FEISHU_ENCRYPT_KEY` / `FEISHU_ALERT_CHAT_ID`(告警群 open_chat_id;P0-2-amendment-2026-05-16 锁定:owner 飞书租户禁用 custom-bot,告警通道走自建应用同款 OpenAPI 不走 webhook;`FEISHU_CUSTOM_BOT_*` 永禁存在)。
