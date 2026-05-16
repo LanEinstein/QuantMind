@@ -20,7 +20,13 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from backend.data.publisher import CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO
+from backend.data.publisher import (
+    CHANNEL_MARKET,
+    CHANNEL_NEWS,
+    CHANNEL_PORTFOLIO,
+    CHANNEL_SYSTEM,
+    SYSTEM_EVENT_TYPES,
+)
 
 log = structlog.get_logger(component="api_websocket")
 
@@ -84,11 +90,9 @@ async def _subscribe_and_forward(redis_client: Any) -> None:
         return
 
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe(CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO)
-    log.info(
-        "ws_redis_subscribed",
-        channels=[CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO],
-    )
+    channels = [CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO, CHANNEL_SYSTEM]
+    await pubsub.subscribe(*channels)
+    log.info("ws_redis_subscribed", channels=channels)
 
     try:
         while True:
@@ -121,7 +125,7 @@ async def _subscribe_and_forward(redis_client: Any) -> None:
     except Exception as exc:
         log.error("ws_redis_subscriber_error", error=str(exc))
     finally:
-        await pubsub.unsubscribe(CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO)
+        await pubsub.unsubscribe(*channels)
         await pubsub.aclose()
 
 
@@ -176,6 +180,19 @@ def _translate_redis_message(
         # Portfolio channel messages are already in {"type": ..., "data": ...}
         # format — forward as-is (single message, no list unwrapping).
         messages.append(json.dumps(data, ensure_ascii=False))
+
+    elif channel == CHANNEL_SYSTEM:
+        # G-009 — system channel carries the 8 new locked event types
+        # (matches frontend WsMessage.type union). Drop anything outside
+        # the allowlist so a misconfigured publisher cannot smuggle a
+        # forbidden message kind through the bridge (defense in depth —
+        # the publisher itself already raises on forbidden types).
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("type"), str)
+            and data["type"] in SYSTEM_EVENT_TYPES
+        ):
+            messages.append(json.dumps(data, ensure_ascii=False))
 
     return messages
 

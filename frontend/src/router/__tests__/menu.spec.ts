@@ -25,16 +25,20 @@ describe('NAV_GROUPS', () => {
     ])
   })
 
-  it('omits Simulation and AgentDebate from the main menu (P1-5 §2 lock)', () => {
+  it('omits Simulation from the main menu (P1-5 §2 lock — visualization deferred)', () => {
     const allPaths = NAV_GROUPS.flatMap((g) => g.entries.map((e) => e.path))
     expect(allPaths).not.toContain('/simulation')
-    expect(allPaths).not.toContain('/agent-debate')
   })
 
-  it('omits G-005 / G-006 routes (blocked on Phase F credentials)', () => {
+  it('exposes AgentDebate in review group (G-008 Phase B 收尾)', () => {
     const allPaths = NAV_GROUPS.flatMap((g) => g.entries.map((e) => e.path))
-    expect(allPaths).not.toContain('/execution-report-entry')
-    expect(allPaths).not.toContain('/reconciliation-center')
+    expect(allPaths).toContain('/agent-debate')
+  })
+
+  it('ledger group contains G-005 + G-006 entries', () => {
+    const ledger = NAV_GROUPS.find((g) => g.id === 'ledger')
+    expect(ledger?.entries.map((e) => e.path)).toContain('/execution-reports')
+    expect(ledger?.entries.map((e) => e.path)).toContain('/reconciliation-center')
   })
 
   it('runtime group contains both Dashboard and SystemStatus', () => {
@@ -50,17 +54,25 @@ describe('NAV_GROUPS', () => {
     expect(decisions?.entries.map((e) => e.path)).toContain('/instruction-plans')
   })
 
-  it('ledger group keeps Portfolio read-only entry', () => {
+  it('ledger group includes Portfolio + execution-reports + reconciliation-center', () => {
     const ledger = NAV_GROUPS.find((g) => g.id === 'ledger')
-    expect(ledger?.entries.map((e) => e.path)).toEqual(['/portfolio'])
+    expect(ledger?.entries.map((e) => e.path)).toEqual([
+      '/portfolio',
+      '/execution-reports',
+      '/reconciliation-center',
+    ])
   })
 
-  it('review group contains Performance, AcceptanceReports, and RiskCenter', () => {
+  it('review group contains all 7 entries (3 core + 4 Phase B 收尾)', () => {
     const review = NAV_GROUPS.find((g) => g.id === 'review')
     expect(review?.entries.map((e) => e.path)).toEqual([
       '/performance',
       '/acceptance-reports',
       '/risk-center',
+      '/agent-debate',
+      '/data-quality',
+      '/feishu-messages',
+      '/cost-breakdown',
     ])
   })
 

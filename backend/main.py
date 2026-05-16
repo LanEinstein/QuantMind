@@ -18,12 +18,16 @@ from backend.api.acceptance import router as acceptance_router
 from backend.api.analysis import router as analysis_router
 from backend.api.audit import router as audit_router
 from backend.api.cost import router as cost_router
+from backend.api.data_quality import router as data_quality_router
 from backend.api.equity_points import router as equity_points_router
+from backend.api.execution_reports import router as execution_reports_router
+from backend.api.feishu import router as feishu_router
 from backend.api.health import router as health_router
 from backend.api.instruction_plans import router as instruction_plans_router
 from backend.api.market import router as market_router
 from backend.api.monitoring import router as monitoring_router
 from backend.api.performance import router as performance_router
+from backend.api.reconciliation import router as reconciliation_router
 from backend.api.risk import router as risk_router
 from backend.api.settings import router as settings_router
 from backend.api.simulation import router as simulation_router
@@ -548,6 +552,10 @@ app.include_router(equity_points_router)
 app.include_router(acceptance_router)
 app.include_router(audit_router)
 app.include_router(cost_router)
+app.include_router(execution_reports_router)
+app.include_router(reconciliation_router)
+app.include_router(data_quality_router)
+app.include_router(feishu_router)
 app.include_router(websocket_router)
 
 

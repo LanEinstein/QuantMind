@@ -65,10 +65,10 @@ else
   printf '%s\n' "$LEGACY_OUT" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 fi
-check "auth_mode_change / approval_update WS types absent"         1 \
-  "auth_mode_change|approval_update" \
-  --include='*.ts' --include='*.vue' --include='*.py' \
-  frontend/src/ backend/
+# NOTE: G-009 message-type allowlist is enforced by a dedicated
+# AST-aware sub-check further below; the strict ``grep -v`` filter
+# excludes the two SSoT declaration sites that have to mention the
+# forbidden strings to keep the allowlist authoritative.
 
 # ----------------------------------------------------------------------
 # P1-5 — write-endpoint guardrails
@@ -630,6 +630,38 @@ if [ "$RISK_YAML_EXIT" -eq 0 ]; then
 else
   red "  FAIL  config/risk.yaml diverges from P0-7 lock:"
   printf '%s\n' "$RISK_YAML_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ----------------------------------------------------------------------
+# G-009 — WebSocket forbidden-message-kind grep (P1-5 §2 红线 4)
+# auth_mode_change / approval_update were removed by G-009; if either
+# reappears in backend or frontend the WS bridge could re-introduce the
+# Phase A authorization matrix or the destructively-removed ApprovalQueue.
+# ----------------------------------------------------------------------
+echo
+yellow "[G-009] WS forbidden message kinds removed"
+# The two SSoT locations that declare the forbidden vocabulary (so the
+# downstream allowlist stays grep-able) are intentional and excluded:
+#   - backend/data/publisher.py FORBIDDEN_WS_TYPES literal
+#   - frontend/src/types/market.ts FORBIDDEN_WS_MESSAGE_TYPES literal
+# Anywhere else (production code, route handlers, stores) referencing
+# the forbidden kinds is a violation.
+G009_BACKEND="$(grep -rnE 'auth_mode_change|approval_update' \
+  --include='*.py' backend/ 2>/dev/null \
+  | grep -vE '^backend/data/publisher\.py:' \
+  || true)"
+G009_FRONTEND="$(grep -rnE 'auth_mode_change|approval_update' \
+  --include='*.ts' --include='*.vue' frontend/src/ 2>/dev/null \
+  | grep -vE '^frontend/src/types/market\.ts:' \
+  | grep -vE '/__tests__/' \
+  || true)"
+if [ -z "$G009_BACKEND" ] && [ -z "$G009_FRONTEND" ]; then
+  green "  ok    auth_mode_change / approval_update absent from live code"
+else
+  red "  FAIL  forbidden WS message kind(s) leaked:"
+  [ -n "$G009_BACKEND" ] && printf '%s\n' "$G009_BACKEND" | sed 's/^/        backend: /'
+  [ -n "$G009_FRONTEND" ] && printf '%s\n' "$G009_FRONTEND" | sed 's/^/        frontend: /'
   FAIL=$((FAIL + 1))
 fi
 

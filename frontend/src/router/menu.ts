@@ -1,14 +1,15 @@
 /**
  * Four-group P1-5 navigation taxonomy.
  *
- * Source of truth for the AppShell sidebar. Routes added to plan but not yet
- * implemented (G-002/G-003/G-007 placeholders) are wired here so subsequent
- * Phase G commits extend the same NAV_GROUPS shape rather than re-flattening.
+ * Source of truth for the AppShell sidebar. Each Phase G task wires its
+ * route here so the menu shape is committed-to in one place.
  *
- * P1-5 §2 redline lock: Simulation.vue + AgentDebate.vue stay in the codebase
- * (Simulation visualization deferred; AgentDebate moved to G-008 Phase B
- * 收尾) but are intentionally absent from this list — direct URLs still work
- * for ad-hoc visits.
+ * P1-5 §2 redline lock: Simulation.vue stays in the codebase but is
+ * intentionally absent from this list (visualization scope deferred to a
+ * later phase) — its direct URL still works for ad-hoc visits.
+ *
+ * G-008 Phase B 收尾 brings 4 follow-on pages into the review group:
+ * Agent 辩论, 数据质量, 飞书消息历史, 成本拆解面板.
  */
 
 export interface NavEntry {
@@ -43,6 +44,8 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     title: '账本与成交',
     entries: [
       { path: '/portfolio', title: '组合(只读)' },
+      { path: '/execution-reports', title: '用户回报录入' },
+      { path: '/reconciliation-center', title: '对账裁定中心' },
     ],
   },
   {
@@ -52,6 +55,10 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { path: '/performance', title: '绩效报告' },
       { path: '/acceptance-reports', title: '验收报告' },
       { path: '/risk-center', title: '风控中心' },
+      { path: '/agent-debate', title: 'Agent 辩论(只读历史)' },
+      { path: '/data-quality', title: '数据质量' },
+      { path: '/feishu-messages', title: '飞书消息历史' },
+      { path: '/cost-breakdown', title: '成本拆解面板' },
     ],
   },
 ]

@@ -31,6 +31,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '组合管理' },
   },
   {
+    path: '/execution-reports',
+    name: 'ExecutionReports',
+    component: () => import('@/views/ExecutionReportEntry.vue'),
+    meta: { title: '用户回报录入' },
+  },
+  {
+    path: '/reconciliation-center',
+    name: 'ReconciliationCenter',
+    component: () => import('@/views/ReconciliationCenter.vue'),
+    meta: { title: '对账裁定中心' },
+  },
+  {
     path: '/performance',
     name: 'Performance',
     component: () => import('@/views/Performance.vue'),
@@ -48,14 +60,31 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RiskCenter.vue'),
     meta: { title: '风控中心' },
   },
-  // P1-5 §2 redline: Simulation.vue + AgentDebate.vue stay in code but
-  // are intentionally absent from AppShell menu (G-008 Phase B 收尾 deferred
-  // for AgentDebate; Simulation visualization scope deferred to later phase).
+  // G-008 — Phase B 收尾 reveals AgentDebate in the main menu (P1-5 §1.1
+  // 4 Phase B-finale pages).
   {
     path: '/agent-debate',
     name: 'AgentDebate',
     component: () => import('@/views/AgentDebate.vue'),
-    meta: { title: 'Agent辩论(只读历史)', hidden: true },
+    meta: { title: 'Agent 辩论(只读历史)' },
+  },
+  {
+    path: '/data-quality',
+    name: 'DataQuality',
+    component: () => import('@/views/DataQuality.vue'),
+    meta: { title: '数据质量' },
+  },
+  {
+    path: '/feishu-messages',
+    name: 'FeishuMessages',
+    component: () => import('@/views/FeishuMessages.vue'),
+    meta: { title: '飞书消息历史' },
+  },
+  {
+    path: '/cost-breakdown',
+    name: 'CostBreakdown',
+    component: () => import('@/views/CostBreakdown.vue'),
+    meta: { title: '成本拆解面板' },
   },
   {
     path: '/simulation',
