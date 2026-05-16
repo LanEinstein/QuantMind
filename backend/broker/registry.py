@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from pydantic import BaseModel, ConfigDict
@@ -62,7 +62,7 @@ class BrokerRegistry:
 
         effective_config = config or self._default_config
         broker = MockBroker(effective_config)
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = datetime.now(tz=UTC).isoformat()
 
         meta = AccountMeta(
             account_id=account_id,

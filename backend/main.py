@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 from backend.api.acceptance import router as acceptance_router
 from backend.api.analysis import router as analysis_router
+from backend.api.audit import router as audit_router
+from backend.api.cost import router as cost_router
 from backend.api.equity_points import router as equity_points_router
 from backend.api.health import router as health_router
 from backend.api.instruction_plans import router as instruction_plans_router
@@ -33,6 +35,29 @@ from backend.llm.router import LLMRouter
 from backend.services.config_service import ConfigService
 
 log = structlog.get_logger()
+
+
+class _LazyAuditCollection:
+    """Audit_events handle that resolves Mongo at call time.
+
+    AuditStore is built before ``_init_data_layer`` runs (so it is
+    available as soon as the lifespan ``yield`` happens), but the Mongo
+    client is created inside ``_init_data_layer``. This wrapper resolves
+    the collection lazily — when Mongo is unwired it raises so AuditStore
+    falls back to its JSONL-only path (per the fail-open invariant).
+    """
+
+    def __init__(self, application: FastAPI) -> None:
+        self._app = application
+
+    async def insert_one(self, document: dict[str, object]) -> object:
+        mongodb = getattr(self._app.state, "mongodb", None)
+        if mongodb is None:
+            raise RuntimeError("audit_events Mongo collection not yet available")
+        db = getattr(mongodb, "_db", None)
+        if db is None:
+            raise RuntimeError("audit_events Mongo db not yet available")
+        return await db["audit_events"].insert_one(document)
 
 
 async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
@@ -264,6 +289,7 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
         mongodb=application.state.mongodb,
         redis_client=getattr(application.state, "redis", None),
         policy=policy,
+        alert_dispatcher=getattr(application.state, "alert_dispatcher", None),
     )
     await analysis_scheduler.start()
     # Re-read the scheduler's policy AFTER start(): a malformed cron in
@@ -345,6 +371,27 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.llm_router = router
     application.state.config_service = ConfigService(redis_client=redis_pool)
 
+    # H-002 — single AuditStore singleton (JSONL primary + Mongo
+    # fail-open). Built before the data layer so anything constructed in
+    # `_init_data_layer` or `_init_trading_layer` can pull the same
+    # instance off app.state. JSONL path comes from the LOG_AUDIT_PATH
+    # env so deploys can tee the file at /var/log if needed; default
+    # `logs/audit.jsonl` is created on first write.
+    from pathlib import Path as _Path
+
+    from backend.audit.store import AuditStore
+
+    audit_jsonl_path = _Path(
+        os.environ.get("LOG_AUDIT_PATH", "logs/audit.jsonl")
+    )
+    application.state.audit_jsonl_path = audit_jsonl_path
+    # The Mongo handle is attached once the data layer initializes; until
+    # then audit writes still land in JSONL via the lazy collection.
+    application.state.audit_store = AuditStore(
+        _LazyAuditCollection(application),
+        jsonl_path=audit_jsonl_path,
+    )
+
     # Live agent-debate SSE hub (A2). Lives in-process; jobs lost on restart
     # are acceptable because the full AnalysisRecord is persisted to MongoDB.
     from backend.services.analysis_stream import AnalysisStreamHub
@@ -383,6 +430,19 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 renderer=MessageRenderer(),
                 alert_chat_id=alert_chat,
             )
+
+    # H-004 — central AlertDispatcher composes AuditStore + FeishuAlerter.
+    # Used by cost_guard (P1-7), scheduler, llm router, and the long
+    # connection monitor; the locked ALERT_MATRIX decides per type
+    # whether the alert flows to Feishu in addition to the audit trail.
+    # Simulation_auto path keeps the dispatcher with feishu_alerter=None
+    # so every alert degrades cleanly to audit-only.
+    from backend.monitoring.alert_dispatcher import AlertDispatcher
+
+    application.state.alert_dispatcher = AlertDispatcher(
+        audit=application.state.audit_store,
+        feishu_alerter=application.state.feishu_alerter,
+    )
 
     # Feishu long-connection receiver (F-003). The receiver only starts
     # once the F-004 ExecutionReportOrchestrator + F-005
@@ -486,6 +546,8 @@ app.include_router(system_status_router)
 app.include_router(instruction_plans_router)
 app.include_router(equity_points_router)
 app.include_router(acceptance_router)
+app.include_router(audit_router)
+app.include_router(cost_router)
 app.include_router(websocket_router)
 
 

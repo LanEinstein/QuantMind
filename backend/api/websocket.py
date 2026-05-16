@@ -205,7 +205,7 @@ async def websocket_market(websocket: WebSocket) -> None:
                     await websocket.send_text(
                         json.dumps({"type": "pong"})
                     )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send a keepalive
                 try:
                     await websocket.send_text(

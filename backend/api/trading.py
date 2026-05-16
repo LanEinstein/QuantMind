@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from backend.broker.models import OrderStatus, RiskConfig
-from backend.data.publisher import publish_portfolio_event
 
 log = structlog.get_logger(component="api_trading")
 
@@ -26,7 +25,7 @@ def _parse_traded_at(value: str | datetime) -> datetime:
     else:
         dt = datetime.fromisoformat(str(value))
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -239,7 +238,7 @@ async def get_trades(
         try:
             start_dt = datetime.fromisoformat(start_date)
             if start_dt.tzinfo is None:
-                start_dt = start_dt.replace(tzinfo=timezone.utc)
+                start_dt = start_dt.replace(tzinfo=UTC)
             result = [
                 t for t in result
                 if _parse_traded_at(t["traded_at"]) >= start_dt
@@ -253,7 +252,7 @@ async def get_trades(
             if end_dt.tzinfo is None:
                 # Date-only input: make inclusive of the entire day
                 end_dt = end_dt.replace(
-                    hour=23, minute=59, second=59, tzinfo=timezone.utc
+                    hour=23, minute=59, second=59, tzinfo=UTC
                 )
             result = [
                 t for t in result

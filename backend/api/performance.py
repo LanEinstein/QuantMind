@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import structlog

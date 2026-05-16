@@ -17,6 +17,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request
 
 from backend.llm.fallback import _utc_date_str
+from backend.monitoring.alert_dispatcher import matrix_summary
 from backend.services.cost_guard import get_budget_state
 
 log = structlog.get_logger(component="api_monitoring")
@@ -347,3 +348,18 @@ async def dashboard(request: Request) -> dict[str, Any]:
         "risk": risk,
     }
     return _ok(payload)
+
+
+@router.get("/api/monitoring/alert-matrix")
+async def alert_matrix() -> dict[str, Any]:
+    """Return the locked alert-type → (audit / feishu) routing matrix.
+
+    Read-only — the matrix is hard-coded in
+    :mod:`backend.monitoring.alert_dispatcher`. Front-end operators use
+    this to render the H-004 "system alerts" page so the routing is
+    visible without grepping the source.
+    """
+    return _ok({
+        "alerts": matrix_summary(),
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+    })
