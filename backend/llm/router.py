@@ -248,6 +248,39 @@ class LLMRouter:
             )
             esc_provider = agent_cfg.routing.escalation_provider  # type: ignore[union-attr]
             esc_model = agent_cfg.routing.escalation_model  # type: ignore[union-attr]
+            # H-003 — when the daily soft ceiling has been breached the
+            # SoftDegradeManager raises a Redis flag that vetoes Kimi
+            # escalation specifically (DeepSeek + Qwen primary still
+            # serve every request). Skip the escalation branch when the
+            # flag is up so the daily ¥20 hard cap stays the *only*
+            # full-LLM circuit breaker (CLAUDE.md §2.10).
+            if (
+                should_esc
+                and esc_provider is not None
+                and esc_model is not None
+                and esc_provider == "kimi"
+                and await self._is_kimi_escalation_blocked()
+            ):
+                self._log.warning(
+                    "kimi_escalation_blocked_by_soft_degrade",
+                    agent_name=agent_name,
+                )
+                return response
+            # H-003 — enforce the Kimi ¥4 daily hard cap before
+            # escalation. Only stops Kimi escalations; DeepSeek + Qwen
+            # primary calls stay alive (P1-7 §1.4). Fail-open: a Redis
+            # hiccup must not crash the escalation flow.
+            if (
+                should_esc
+                and esc_provider == "kimi"
+                and esc_model is not None
+                and await self._kimi_daily_cap_breached()
+            ):
+                self._log.warning(
+                    "kimi_escalation_blocked_by_daily_cap",
+                    agent_name=agent_name,
+                )
+                return response
             if should_esc and esc_provider is not None and esc_model is not None:
                 await track_escalation(
                     self._redis,
@@ -282,6 +315,50 @@ class LLMRouter:
                 )
 
         return response
+
+    async def _is_kimi_escalation_blocked(self) -> bool:
+        """H-003 — peek the SoftDegradeManager Kimi block flag.
+
+        Fail-open: a Redis hiccup must not stop the primary→escalation
+        flow. The block is the secondary defense; the daily ¥20 hard
+        cap (cost_guard.assert_budget_allows) is the dependable layer.
+        Import is lazy so a future tightening of the LLM-layer import
+        graph (CLAUDE.md §2.10 forbids cost_guard importing backend.llm
+        — the reverse is fine) stays trivial to reason about.
+        """
+        if self._redis is None:
+            return False
+        try:
+            from backend.services.soft_degrade_manager import SoftDegradeManager
+
+            mgr = SoftDegradeManager(self._redis)
+            return await mgr.is_kimi_escalation_blocked()
+        except Exception as exc:  # noqa: BLE001 — operator visibility
+            self._log.warning(
+                "kimi_escalation_block_probe_failed", error=str(exc)
+            )
+            return False
+
+    async def _kimi_daily_cap_breached(self) -> bool:
+        """H-003 — peek the Kimi ¥4 daily cap (P1-7 §1.4).
+
+        Fail-open: a Redis hiccup returns False so the escalation flow
+        keeps running on the standard provider path. The daily ¥20
+        hard cap (assert_budget_allows) is the dependable LLM-wide
+        circuit breaker; this only stops the Kimi escalation rung.
+        """
+        if self._redis is None:
+            return False
+        try:
+            from backend.services.cost_guard import get_kimi_budget_state
+
+            state = await get_kimi_budget_state(self._redis)
+            return state.status == "hard_breach"
+        except Exception as exc:  # noqa: BLE001 — operator visibility
+            self._log.warning(
+                "kimi_daily_cap_probe_failed", error=str(exc)
+            )
+            return False
 
     async def _call_provider(
         self,

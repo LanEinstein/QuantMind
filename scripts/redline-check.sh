@@ -633,6 +633,74 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# H-003 / P1-7 — cost_guard + soft_degrade_manager isolation
+# (CLAUDE.md §2.10): the budget guard MUST NOT import backend.{llm,
+# agents,mirofish,data}. Spend data flows through backend.services.
+# cost_probe which is Redis-only.
+# ----------------------------------------------------------------------
+echo
+yellow "[H-003] cost_guard + SoftDegradeManager isolation"
+COST_GUARD_OUT="$(python3 - <<'PY'
+import ast
+import pathlib
+import sys
+
+FILES = [
+    "backend/services/cost_guard.py",
+    "backend/services/soft_degrade_manager.py",
+    "backend/services/cost_probe.py",
+]
+FORBIDDEN = {"llm", "agents", "mirofish", "data"}
+findings: list[str] = []
+
+for path in FILES:
+    p = pathlib.Path(path)
+    if not p.exists():
+        findings.append(f"{path}: missing")
+        continue
+    try:
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        findings.append(f"{path}: parse error: {exc}")
+        continue
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".") if mod else []
+            if parts[:1] == ["backend"] and len(parts) >= 2 and parts[1] in FORBIDDEN:
+                findings.append(f"{path}:{node.lineno}: from {mod} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                if parts[:1] == ["backend"] and len(parts) >= 2 and parts[1] in FORBIDDEN:
+                    findings.append(f"{path}:{node.lineno}: import {alias.name}")
+
+if findings:
+    print("\n".join(findings))
+    sys.exit(1)
+PY
+)"
+COST_GUARD_RC=$?
+if [ $COST_GUARD_RC -eq 0 ]; then
+  green "  ok    cost_guard + soft_degrade_manager + cost_probe pure"
+else
+  red "  FAIL  cost_guard pipeline imports llm/agents/mirofish/data:"
+  printf '%s\n' "$COST_GUARD_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
+# cost API must remain GET-only (P1-5 §2 红线 1).
+COST_WRITE="$(grep -nE '@(router|app)\.(post|put|patch|delete)\(' \
+  backend/api/cost.py 2>/dev/null || true)"
+if [ -z "$COST_WRITE" ]; then
+  green "  ok    backend/api/cost.py has no write endpoints"
+else
+  red "  FAIL  backend/api/cost.py has write endpoint(s):"
+  printf '%s\n' "$COST_WRITE" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

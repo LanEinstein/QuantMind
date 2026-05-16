@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend.llm.cost_tracker import CostSummary
 from backend.services.cost_guard import (
     BudgetState,
     DailyBudgetExceededError,
@@ -18,32 +17,23 @@ from backend.services.cost_guard import (
 )
 
 
-def _summary(total_today: float | None) -> CostSummary:
-    """Build a CostSummary stub mimicking aggregate_costs(days=1) output."""
-    daily_totals: dict[str, float] = (
-        {"2026-05-01": total_today} if total_today is not None else {}
-    )
-    return CostSummary(
-        period="daily",
-        days=1,
-        entries=tuple(),
-        total_cost_rmb=total_today or 0.0,
-        total_requests=0,
-        total_prompt_tokens=0,
-        total_completion_tokens=0,
-        by_agent={},
-        by_provider={},
-        daily_totals=daily_totals,
-    )
+def _summary(total_today: float | None) -> float:
+    """Return a stub spent-today float for the get_daily_spent patch."""
+    return 0.0 if total_today is None else total_today
 
 
 @pytest.fixture()
 def patch_aggregate(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Replace aggregate_costs with a settable AsyncMock."""
+    """Replace get_daily_spent with a settable AsyncMock.
+
+    Post-H-003 cost_guard reads via :func:`backend.services.cost_probe.
+    get_daily_spent` (Redis-only). The legacy patch helper is renamed
+    only for backwards compatibility with the existing test bodies.
+    """
 
     mock = AsyncMock()
     monkeypatch.setattr(
-        "backend.services.cost_guard.aggregate_costs", mock
+        "backend.services.cost_guard.get_daily_spent", mock
     )
     return mock
 

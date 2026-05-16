@@ -53,8 +53,10 @@ from backend.agents.records import AnalysisRecord, AnalysisRunResult
 from backend.services.cost_guard import (
     DailyBudgetExceededError,
     assert_budget_allows,
+    get_monthly_budget_state,
 )
 from backend.services.shadow_runner import schedule_shadow_run
+from backend.services.soft_degrade_manager import SoftDegradeManager
 from backend.services.watchlist_policy import (
     Category,
     WatchlistPolicy,
@@ -93,12 +95,19 @@ class AnalysisScheduler:
         mongodb: MongoDBService,
         redis_client: redis.asyncio.Redis | None,
         policy: WatchlistPolicy | None = None,
+        alert_dispatcher: object | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._services = services
         self._mongodb = mongodb
         self._redis = redis_client
         self._policy = policy
+        # H-003 — optional dispatcher for monthly milestone alerts. Kept
+        # as a duck-typed dependency so the scheduler module does not
+        # import backend.monitoring (which would pull AuditStore +
+        # FeishuAlerter into the data layer). The dispatcher is wired
+        # in main.py and exposed on app.state.
+        self._alert_dispatcher = alert_dispatcher
         self._scheduler: AsyncIOScheduler | None = None
         # Serializes _run_and_persist so a manual API call cannot race
         # against the cron-driven daily loop and double-spend the daily
@@ -461,13 +470,19 @@ class AnalysisScheduler:
         policy: WatchlistPolicy | None = None,
     ) -> TradingSignal | None:
         if self._redis is not None:
+            daily_hard_breached = False
             try:
                 state = await assert_budget_allows(
                     self._redis, agent_name="pipeline"
                 )
             except DailyBudgetExceededError as exc:
+                # H-003 — daily hard breach is the *only* full-LLM
+                # circuit breaker. We still want the monthly milestone
+                # evaluator to run for this tick so a 50/80/100% breach
+                # is not silently swallowed when the daily ceiling fires
+                # on the same tick (codex cycle 3 P3).
+                daily_hard_breached = True
                 await self._persist_cost_skip(stock_code, exc)
-                return None
             except Exception as probe_exc:
                 # A Redis hiccup must NOT block analysis — log and proceed.
                 log.warning(
@@ -477,14 +492,26 @@ class AnalysisScheduler:
                 )
             else:
                 if state.status == "soft_breach":
-                    # Phase 5B will degrade thinking; for now we just
-                    # record the warning so operators can see it.
+                    # H-003 — activate Kimi escalation block so the LLM
+                    # router skips Kimi until the daily bucket rolls
+                    # over. 4 mandatory agents stay running on
+                    # DeepSeek+Qwen (P1-7 §1.5 / CLAUDE.md §2.10).
                     log.warning(
                         "cost_soft_breach_observed",
                         code=stock_code,
                         spent=state.spent_today,
                         soft_ceiling=state.soft_ceiling,
                     )
+                    await self._activate_kimi_escalation_block_safely(
+                        reason="daily_soft_breach"
+                    )
+            # H-003 — emit monthly soft-budget milestone alerts on every
+            # pipeline tick, including the hard-breach branch above.
+            # SETNX inside the manager makes this idempotent across the
+            # calendar month (codex cycle 3 P3).
+            await self._maybe_emit_monthly_milestone_safely()
+            if daily_hard_breached:
+                return None
 
         services, timeout = self._resolve_services_and_timeout(
             category, policy
@@ -656,6 +683,68 @@ class AnalysisScheduler:
                 "save_cost_skip_record_failed",
                 code=stock_code,
                 error=str(persist_exc),
+            )
+
+    async def _activate_kimi_escalation_block_safely(self, *, reason: str) -> None:
+        """H-003 — flip the SoftDegradeManager flag on soft breach.
+
+        Fail-open: Redis hiccups must not stop the pipeline. The block
+        is the secondary defense; the LLM router checks the flag before
+        every Kimi escalation, and the daily TTL clears it at next UTC
+        midnight (with the BrokerScheduler 1st cron as belt-and-braces).
+        """
+        if self._redis is None:
+            return
+        try:
+            mgr = SoftDegradeManager(self._redis)
+            await mgr.activate_kimi_escalation_block(reason=reason)
+        except Exception as exc:  # noqa: BLE001 — operator visibility
+            log.warning(
+                "soft_degrade_block_failed",
+                reason=reason,
+                error=str(exc),
+            )
+
+    async def _maybe_emit_monthly_milestone_safely(self) -> None:
+        """H-003 — fire the monthly soft-budget milestone alert at most once.
+
+        The dispatcher writes an audit row; ``fire_to_feishu`` is False
+        for the three milestones so the alert chat stays quiet (P1-7
+        §1.7). SETNX inside the manager guarantees one fire per
+        ``(month, pct)`` even if many pipelines tick simultaneously.
+        Fail-open: alerter / Redis errors do not block the pipeline.
+        """
+        if self._redis is None or self._alert_dispatcher is None:
+            return
+        try:
+            monthly = await get_monthly_budget_state(self._redis)
+            if monthly.threshold_reached is None:
+                return
+            mgr = SoftDegradeManager(self._redis)
+            transition = await mgr.maybe_fire_monthly_milestone(monthly)
+            if transition is None or not transition.fired:
+                return
+            # Duck-typed dispatcher call so the scheduler stays free of
+            # an explicit AlertDispatcher import (keeps the data layer
+            # cycle-free).
+            await self._alert_dispatcher.fire(  # type: ignore[union-attr]
+                alert_type=transition.alert_type,
+                message=(
+                    f"Monthly soft budget at "
+                    f"{int(transition.fraction * 100)}% "
+                    f"(spent ¥{monthly.spent_month:.2f}"
+                    f" / ¥{monthly.monthly_budget:.2f})"
+                ),
+                payload={
+                    "spent_month": monthly.spent_month,
+                    "monthly_budget": monthly.monthly_budget,
+                    "fraction": transition.fraction,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — operator visibility
+            log.warning(
+                "monthly_milestone_dispatch_failed",
+                error=str(exc),
             )
 
     async def _publish_signal(self, signal_dict: dict[str, Any]) -> None:
