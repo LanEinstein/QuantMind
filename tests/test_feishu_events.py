@@ -288,12 +288,38 @@ class TestEventDispatch:
 
     @pytest.mark.asyncio
     async def test_distinct_events_both_delivered(self) -> None:
+        """Two genuinely distinct messages (distinct event_id AND
+        distinct message_id) both reach the handler."""
         handler = _RecordingHandler()
         receiver = _make_receiver(handler)
-        await receiver._handle_event(_build_event(event_id="ev_a"))  # noqa: SLF001
-        await receiver._handle_event(_build_event(event_id="ev_b"))  # noqa: SLF001
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(event_id="ev_a", message_id="om_a")
+        )
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(event_id="ev_b", message_id="om_b")
+        )
         await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
         assert len(handler.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_dedupe_by_message_id_when_event_id_differs(
+        self,
+    ) -> None:
+        """Cycle 2 P1: a forwarded copy of the same message arrives
+        with a NEW event_id but the SAME message_id. Without
+        message_id dedup the handler would double-apply the execution
+        report. After the fix, the second envelope must be skipped."""
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(event_id="ev_first", message_id="om_dup")
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(event_id="ev_second", message_id="om_dup")
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
 
     @pytest.mark.asyncio
     async def test_non_text_message_skipped(self) -> None:
@@ -411,6 +437,31 @@ class TestLifecycle:
         await receiver.start()
         assert receiver.running is True
         await receiver.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_does_not_hang_on_blocked_handler(self) -> None:
+        """Cycle 2 P2: a handler stuck on network/broker work must
+        not hang shutdown. stop(handler_grace_seconds=0.1) cancels
+        the blocked handler and returns within the grace + small
+        cancellation overhead."""
+        blocked = asyncio.Event()
+
+        async def _slow(_m: ReceivedMessage) -> None:
+            try:
+                blocked.set()
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                raise
+
+        receiver = _make_receiver(_slow)  # type: ignore[arg-type]
+        await receiver._handle_event(_build_event(event_id="ev_slow"))  # noqa: SLF001
+        await asyncio.wait_for(blocked.wait(), timeout=1.0)
+        # Even with 60s sleep in the handler, stop completes within
+        # roughly the grace window (0.1s) plus task-cancel overhead.
+        await asyncio.wait_for(
+            receiver.stop(handler_grace_seconds=0.1),
+            timeout=2.0,
+        )
 
 
 # -----------------------------------------------------------------------------

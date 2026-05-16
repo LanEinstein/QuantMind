@@ -159,8 +159,16 @@ class FeishuEventReceiver:
             self._app_id_fingerprint,
         )
 
-    async def stop(self) -> None:
-        """Cancel the WS task + drain in-flight handlers."""
+    async def stop(self, *, handler_grace_seconds: float = 5.0) -> None:
+        """Cancel the WS task + drain in-flight handlers.
+
+        Cycle 2 P2 fix: handlers may block on broker / repo / network
+        work; without a timeout an unresponsive handler hangs shutdown
+        indefinitely. Grant a short grace window for handlers to
+        complete naturally, then cancel + gather any remainder with
+        ``return_exceptions=True`` so a single bad handler does not
+        block process exit.
+        """
         if self._task is None:
             return
         self._task.cancel()
@@ -169,10 +177,34 @@ class FeishuEventReceiver:
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
         self._task = None
-        # Drain handler tasks (best-effort — handlers should be short).
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-            self._tasks.clear()
+
+        if not self._tasks:
+            log.info(
+                "feishu_event_receiver_stopped app_id_fingerprint=%s",
+                self._app_id_fingerprint,
+            )
+            return
+
+        # Snapshot before drain — handlers may add to / remove from
+        # self._tasks via their own done_callback discard.
+        in_flight = list(self._tasks)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*in_flight, return_exceptions=True),
+                timeout=handler_grace_seconds,
+            )
+        except TimeoutError:
+            log.warning(
+                "feishu_event_receiver_drain_timeout "
+                "app_id_fingerprint=%s pending=%d",
+                self._app_id_fingerprint,
+                sum(1 for t in in_flight if not t.done()),
+            )
+            for task in in_flight:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*in_flight, return_exceptions=True)
+        self._tasks.clear()
         log.info(
             "feishu_event_receiver_stopped app_id_fingerprint=%s",
             self._app_id_fingerprint,
@@ -263,8 +295,18 @@ class FeishuEventReceiver:
         task.add_done_callback(self._tasks.discard)
 
     async def _dispatch(self, message: ReceivedMessage) -> None:
+        # Cycle 2 P1: dedup both event_id AND message_id. Feishu's
+        # standard redelivery reuses event_id, but a forwarded copy
+        # gets a new event_id while keeping the same message_id —
+        # without the secondary check a forwarded execution report
+        # could double-apply. Namespaced keys prevent the two
+        # streams from colliding.
+        is_new_event = True
+        is_new_message = True
+        event_key = f"event:{message.event_id}"
+        message_key = f"message:{message.message_id}"
         try:
-            is_new = await self._dedupe.claim(message.event_id)
+            is_new_event = await self._dedupe.claim(event_key)
         except Exception as exc:  # noqa: BLE001 — fail-open on dedupe outage
             log.warning(
                 "feishu_event_dedupe_unavailable error_class=%s "
@@ -272,12 +314,24 @@ class FeishuEventReceiver:
                 exc.__class__.__name__,
                 message.event_id,
             )
-            is_new = True
-        if not is_new:
+        if is_new_event:
+            try:
+                is_new_message = await self._dedupe.claim(message_key)
+            except Exception as exc:  # noqa: BLE001 — fail-open on dedupe outage
+                log.warning(
+                    "feishu_event_dedupe_unavailable_message error_class=%s "
+                    "message_id=%s",
+                    exc.__class__.__name__,
+                    message.message_id,
+                )
+        if not (is_new_event and is_new_message):
             log.info(
-                "feishu_event_dedupe_skip event_id=%s message_id=%s",
+                "feishu_event_dedupe_skip event_id=%s message_id=%s "
+                "is_new_event=%s is_new_message=%s",
                 message.event_id,
                 message.message_id,
+                is_new_event,
+                is_new_message,
             )
             return
         try:

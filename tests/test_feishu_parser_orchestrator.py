@@ -848,6 +848,26 @@ class TestChaseScheduler:
             )
 
     @pytest.mark.asyncio
+    async def test_schedule_after_stop_raises(self) -> None:
+        """Cycle 2 P2 regression: a concurrent schedule() during
+        stop() previously orphaned tasks. After stop() returns the
+        scheduler is dead — further schedule() must raise rather
+        than create new untracked tasks."""
+        async def _noop(_inst_id: str) -> None:
+            pass
+
+        scheduler = ChaseScheduler(
+            on_chase=_noop,
+            on_expire=_noop,
+            chase_after=timedelta(seconds=10),
+        )
+        await scheduler.stop()
+        with pytest.raises(RuntimeError, match="stopped"):
+            await scheduler.schedule(
+                "inst_post_stop", _utc_now() + timedelta(seconds=10)
+            )
+
+    @pytest.mark.asyncio
     async def test_stop_awaits_in_flight_callback(self) -> None:
         """P2-3: stop() must await callbacks already running. A task
         that has popped itself from the chase/expire dicts (inside

@@ -75,11 +75,18 @@ class ChaseScheduler:
         self._clock = clock or _utc_now
         self._chase_tasks: dict[str, asyncio.Task[None]] = {}
         self._expire_tasks: dict[str, asyncio.Task[None]] = {}
-        # P2-3: tracks every live task created by the scheduler,
-        # including those mid-callback (after the per-instruction
-        # entry has been popped from the chase / expire dicts). Lets
-        # ``stop()`` await in-flight callbacks for clean shutdown.
+        # Cycle 1 P2-3: tracks every live task created by the
+        # scheduler, including those mid-callback (after the
+        # per-instruction entry has been popped from the chase /
+        # expire dicts). Lets ``stop()`` await in-flight callbacks
+        # for clean shutdown.
         self._all_tasks: set[asyncio.Task[None]] = set()
+        # Cycle 2 P2: a concurrent ``schedule()`` between ``stop()``
+        # snapshotting the task set and finishing the drain could
+        # orphan new tasks. The flag is set inside ``stop()`` and
+        # checked at the top of ``schedule()`` so post-stop calls
+        # raise instead of starting tasks that nobody will await.
+        self._stopping = False
         self._lock = asyncio.Lock()
 
     # -- Lifecycle ----------------------------------------------------
@@ -92,11 +99,19 @@ class ChaseScheduler:
         Re-scheduling the same ``instruction_id`` cancels the prior
         timers so a second dispatch (e.g. operator re-pushes) does
         not double-fire.
+
+        Raises ``RuntimeError`` when called after ``stop()`` — the
+        scheduler will not be alive to drain the new task on next
+        shutdown.
         """
         if not instruction_id:
             raise ValueError("instruction_id must not be empty")
         already_expired = False
         async with self._lock:
+            if self._stopping:
+                raise RuntimeError(
+                    "ChaseScheduler is stopped; cannot schedule new tasks"
+                )
             self._cancel_locked(instruction_id)
             now = self._clock()
             chase_at = now + self._chase_after
@@ -142,13 +157,21 @@ class ChaseScheduler:
     async def stop(self) -> None:
         """Cancel everything; safe to call multiple times.
 
-        P2-3 fix: tasks may have already popped themselves from
-        ``_chase_tasks`` / ``_expire_tasks`` (inside ``_fire_chase`` /
-        ``_fire_expire``) but still be awaiting the user callback. We
-        snapshot ``_all_tasks`` so even mid-callback tasks are
-        cancelled + awaited before ``stop()`` returns.
+        Cycle 1 P2-3 fix: tasks may have already popped themselves
+        from ``_chase_tasks`` / ``_expire_tasks`` (inside
+        ``_fire_chase`` / ``_fire_expire``) but still be awaiting the
+        user callback. ``_all_tasks`` retains them so even mid-callback
+        tasks are cancelled + awaited.
+
+        Cycle 2 P2 fix: set ``_stopping`` flag inside the lock so any
+        ``schedule()`` racing with ``stop()`` raises instead of
+        creating orphaned tasks; rely on each task's
+        ``add_done_callback(self._all_tasks.discard)`` to naturally
+        drain ``_all_tasks`` rather than calling ``.clear()`` (which
+        would silently lose tasks added concurrently).
         """
         async with self._lock:
+            self._stopping = True
             self._chase_tasks.clear()
             self._expire_tasks.clear()
             tasks_to_drain = list(self._all_tasks)
@@ -158,8 +181,6 @@ class ChaseScheduler:
             await asyncio.gather(
                 *tasks_to_drain, return_exceptions=True
             )
-        async with self._lock:
-            self._all_tasks.clear()
 
     # -- Introspection (used by /api/system-status + tests) -----------
 
