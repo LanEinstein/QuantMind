@@ -1,0 +1,111 @@
+# QuantMind gitleaks config (P1-6 §1.3 / H-001).
+#
+# Targets the 8-credential pool locked by P1-6 + P0-2-amendment-2026-05-16:
+#   LLM (3): DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MOONSHOT_API_KEY
+#   Feishu (5): FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN /
+#               FEISHU_ENCRYPT_KEY / FEISHU_ALERT_CHAT_ID
+#
+# Legacy custom-bot envs (FEISHU_CUSTOM_BOT_WEBHOOK_URL /
+# FEISHU_CUSTOM_BOT_SIGN_SECRET) are intentionally NOT in the rule set —
+# the amendment retired them, so any value in the repo is a hard fail
+# under the generic ``feishu-app-secret`` / ``generic-api-key`` rule
+# matches (32-hex / sk-... shapes).
+#
+# Updates: every credential rotation cycle re-examines the rule set; new
+# providers added to the LLM pool must extend ``[[rules]]`` here (and the
+# secrets_validator pool in lockstep). See
+# ``docs/runbook/secrets-incident-response.md`` for the rotation process.
+
+title = "QuantMind credential scan"
+
+# Use the upstream rule pack as a starting point — keeps generic
+# patterns (AWS keys, etc.) covered even though we only ship custom
+# rules below. ``useDefault = true`` is the gitleaks idiom for this.
+[extend]
+useDefault = true
+
+# --- LLM provider keys -----------------------------------------------
+
+[[rules]]
+id = "deepseek-api-key"
+description = "DeepSeek API key (sk- prefix)"
+regex = '''(?i)deepseek[_-]?api[_-]?key\s*[:=]\s*['"]?sk-[A-Za-z0-9_\-]{16,}['"]?'''
+keywords = ["DEEPSEEK_API_KEY", "deepseek_api_key"]
+
+[[rules]]
+id = "dashscope-api-key"
+description = "Alibaba DashScope (Qwen) API key"
+regex = '''(?i)dashscope[_-]?api[_-]?key\s*[:=]\s*['"]?sk-[A-Za-z0-9_\-]{16,}['"]?'''
+keywords = ["DASHSCOPE_API_KEY", "dashscope_api_key"]
+
+[[rules]]
+id = "moonshot-api-key"
+description = "Moonshot / Kimi API key"
+regex = '''(?i)moonshot[_-]?api[_-]?key\s*[:=]\s*['"]?sk-[A-Za-z0-9_\-]{16,}['"]?'''
+keywords = ["MOONSHOT_API_KEY", "moonshot_api_key"]
+
+# --- Feishu self-built app credentials -------------------------------
+
+[[rules]]
+id = "feishu-app-id"
+description = "Feishu self-built app ID (cli_ prefix)"
+regex = '''cli_[A-Za-z0-9]{16}'''
+keywords = ["FEISHU_APP_ID", "feishu_app_id", "cli_"]
+
+[[rules]]
+id = "feishu-app-secret"
+description = "Feishu self-built app secret (32 alnum)"
+regex = '''(?i)feishu[_-]?app[_-]?secret\s*[:=]\s*['"]?[A-Za-z0-9]{32}['"]?'''
+keywords = ["FEISHU_APP_SECRET", "feishu_app_secret"]
+
+[[rules]]
+id = "feishu-verify-token"
+description = "Feishu verify token (32 alnum)"
+regex = '''(?i)feishu[_-]?verify[_-]?token\s*[:=]\s*['"]?[A-Za-z0-9]{32}['"]?'''
+keywords = ["FEISHU_VERIFY_TOKEN", "feishu_verify_token"]
+
+[[rules]]
+id = "feishu-encrypt-key"
+description = "Feishu encrypt key (32 alnum)"
+regex = '''(?i)feishu[_-]?encrypt[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9]{32}['"]?'''
+keywords = ["FEISHU_ENCRYPT_KEY", "feishu_encrypt_key"]
+
+[[rules]]
+id = "feishu-alert-chat-id"
+description = "Feishu alert open_chat_id (oc_ prefix + 32 alnum)"
+regex = '''oc_[A-Za-z0-9]{32}'''
+keywords = ["FEISHU_ALERT_CHAT_ID", "feishu_alert_chat_id", "oc_"]
+
+# --- Allowlist -------------------------------------------------------
+
+[allowlist]
+description = "Sample/test values used by docs and unit tests"
+regexes = [
+    # ``cli_`` followed by literal ``a`` repeats — clearly a unit test value.
+    '''cli_a{16}''',
+    # ``oc_`` followed by literal ``f`` repeats — unit test value.
+    '''oc_f{32}''',
+    # 32-char unit test placeholders ``xxxx...`` / ``aaaa...``.
+    '''[xa]{32}''',
+    # ``sk-AAAA...`` / ``sk-BBBB...`` test fixtures.
+    '''sk-[AB]{16,}''',
+    # Markdown / docstring callout: ``${FEISHU_APP_ID}`` templated refs
+    # used inside README / decision docs / amendment text.
+    '''\$\{[A-Z_]+\}''',
+]
+paths = [
+    # Plan docs, decision records, runbooks reference the credential
+    # names but never carry real values. ``.env.example`` carries only
+    # docstring callouts (P1-6 §1.1 — secrets_validator scans .env).
+    '''docs/.*\.html''',
+    '''docs/.*\.md''',
+    '''docs/decisions/.*''',
+    '''docs/runbook/.*''',
+    '''docs/reviews/.*''',
+    '''CLAUDE.md''',
+    '''.env.example''',
+    # The validator itself + test fixtures.
+    '''backend/services/secrets_validator\.py''',
+    '''tests/test_secrets_validator\.py''',
+    '''.gitleaks\.toml''',
+]

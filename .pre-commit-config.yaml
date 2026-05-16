@@ -1,0 +1,25 @@
+# QuantMind pre-commit config (P1-6 §1.3 / H-001).
+#
+# gitleaks is the *only* required pre-commit hook in this repo today.
+# It must run on every commit; bypassing it (``--no-verify``) is a
+# CLAUDE.md §3 red line. The hook ID matches gitleaks' upstream
+# pre-commit definition so ``pre-commit autoupdate`` keeps the
+# config aligned.
+#
+# Local install (one-time):
+#     pip install pre-commit
+#     pre-commit install
+#
+# CI install (the same command runs in any container):
+#     pre-commit run --all-files --show-diff-on-failure
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: gitleaks (QuantMind credential scan)
+        args:
+          - --redact
+          - --no-banner
+          - --config=.gitleaks.toml

@@ -304,10 +304,19 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO")
     )
 
+    # Secrets fail-fast gate (P1-6 / H-001). Must run before any module
+    # that reads credentials (LLMRouter / Feishu client). Errors raise
+    # SecretsValidationError (SystemExit) so uvicorn / docker-compose
+    # exits non-zero with a clear message. Warnings are dispatched to
+    # the audit store once it is wired below.
+    from backend.services.secrets_validator import assert_secrets_or_exit
+
+    application.state.secrets = assert_secrets_or_exit()
+
     # Resolve run mode (P0-1). simulation_auto is always-on; FEISHU_INTERACTIVE_ENABLED
     # toggles the human-in-loop overlay. Replaces the legacy AUTHORIZATION_MODE x
-    # QUANTMIND_PHASE matrix; Feishu credential fail-fast lives in the secrets
-    # validator (P1-6 / H-001), not here.
+    # QUANTMIND_PHASE matrix; Feishu credential fail-fast already happened in
+    # the secrets validator above.
     from backend.services.run_mode import assert_run_mode_env
 
     application.state.run_mode = assert_run_mode_env()

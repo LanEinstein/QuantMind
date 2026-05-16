@@ -126,6 +126,111 @@ for envfile in .env .env.example; do
   fi
 done
 
+echo
+yellow "[P1-6 / H-001] secrets_validator + gitleaks artefacts present"
+# Three artefacts ship together — missing any one weakens the gate:
+#   1. backend/services/secrets_validator.py (runtime fail-fast)
+#   2. .pre-commit-config.yaml referencing gitleaks v8.18+ (pre-commit gate)
+#   3. .gitleaks.toml with rules for the locked 8-credential pool
+SECRETS_OUT="$(python3 - <<'PY'
+import pathlib
+import re
+import sys
+
+findings: list[str] = []
+
+validator = pathlib.Path("backend/services/secrets_validator.py")
+if not validator.exists():
+    findings.append("backend/services/secrets_validator.py missing")
+else:
+    text = validator.read_text(encoding="utf-8")
+    # Pool composition lock — 5 Feishu credentials, 3 LLM keys, custom-bot retired.
+    expected = (
+        "DEEPSEEK_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "MOONSHOT_API_KEY",
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_VERIFY_TOKEN",
+        "FEISHU_ENCRYPT_KEY",
+        "FEISHU_ALERT_CHAT_ID",
+    )
+    for name in expected:
+        if name not in text:
+            findings.append(f"secrets_validator.py missing {name}")
+    legacy = (
+        "FEISHU_CUSTOM_BOT_WEBHOOK_URL",
+        "FEISHU_CUSTOM_BOT_SIGN_SECRET",
+    )
+    for name in legacy:
+        if name not in text:
+            findings.append(
+                f"secrets_validator.py must reference legacy {name} "
+                "for soft-warning matrix"
+            )
+
+pre_commit = pathlib.Path(".pre-commit-config.yaml")
+if not pre_commit.exists():
+    findings.append(".pre-commit-config.yaml missing")
+else:
+    pc_text = pre_commit.read_text(encoding="utf-8")
+    if "gitleaks" not in pc_text:
+        findings.append(".pre-commit-config.yaml has no gitleaks hook")
+    # Require v8.18 or higher.
+    match = re.search(r"rev:\s*v(\d+)\.(\d+)", pc_text)
+    if match is None:
+        findings.append(".pre-commit-config.yaml gitleaks rev not pinned")
+    else:
+        major, minor = int(match.group(1)), int(match.group(2))
+        if (major, minor) < (8, 18):
+            findings.append(
+                f".pre-commit-config.yaml gitleaks rev v{major}.{minor} "
+                "must be >= v8.18"
+            )
+
+gitleaks = pathlib.Path(".gitleaks.toml")
+if not gitleaks.exists():
+    findings.append(".gitleaks.toml missing")
+else:
+    gl_text = gitleaks.read_text(encoding="utf-8")
+    required_rule_ids = (
+        "deepseek-api-key",
+        "dashscope-api-key",
+        "moonshot-api-key",
+        "feishu-app-id",
+        "feishu-app-secret",
+        "feishu-verify-token",
+        "feishu-encrypt-key",
+        "feishu-alert-chat-id",
+    )
+    for rid in required_rule_ids:
+        if rid not in gl_text:
+            findings.append(f".gitleaks.toml missing rule id {rid!r}")
+    # Custom-bot rules MUST NOT ship — they would lock in dead schemas.
+    if "feishu-custom-bot" in gl_text.lower():
+        findings.append(
+            ".gitleaks.toml ships a feishu-custom-bot rule "
+            "(removed by P0-2-amendment-2026-05-16)"
+        )
+
+runbook = pathlib.Path("docs/runbook/secrets-incident-response.md")
+if not runbook.exists():
+    findings.append("docs/runbook/secrets-incident-response.md missing")
+
+if findings:
+    print("\n".join(findings))
+    sys.exit(1)
+PY
+)"
+SECRETS_RC=$?
+if [ "$SECRETS_RC" -eq 0 ]; then
+  green "  ok    secrets_validator + gitleaks + runbook all present and locked"
+else
+  red "  FAIL  secrets_validator artefacts are incomplete:"
+  printf '%s\n' "$SECRETS_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
 # ----------------------------------------------------------------------
 # P0-10 — risk isolation: backend/risk/ never imports LLM / agent layers
 # ----------------------------------------------------------------------
