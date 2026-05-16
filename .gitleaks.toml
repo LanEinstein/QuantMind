@@ -103,6 +103,14 @@ regexes = [
     # _VALID_CHAT uses ``f``; _ALERT_CHAT uses ``a``; _DECISION_CHAT
     # uses ``d``). Any real chat_id mixes alnum so cannot match.
     '''oc_[fadbcv]{32}''',
+    # cli_ + any single repeated letter (used by audit model
+    # negative-test fixtures: tests/test_audit.py asserts the
+    # validator rejects ``cli_a{20}``-shaped strings in payloads).
+    '''cli_a{20,}''',
+    # sk- + lowercase single-letter repeat (same fixture family —
+    # tests/test_audit.py verifies plaintext detection rejects
+    # ``sk-a{20}`` placeholders). Real provider keys mix case + symbols.
+    '''sk-a{20,}''',
     # 32-char placeholders that are a single repeated letter.
     '''x{32}''',
     '''a{32}''',
