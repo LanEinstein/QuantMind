@@ -119,8 +119,11 @@ class TestConstruction:
 
 class TestAlertTypes:
     def test_lock_count(self) -> None:
-        """Adding a new type requires an amendment + this test update."""
-        assert len(ALERT_TYPES) == 13
+        """Adding a new type requires an amendment + this test update.
+
+        J-004 added ``acceptance_reset_triggered`` bringing the total to 14.
+        """
+        assert len(ALERT_TYPES) == 14
 
     def test_includes_p1_7_budget_types(self) -> None:
         for kind in (

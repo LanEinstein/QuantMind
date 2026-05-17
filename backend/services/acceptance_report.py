@@ -39,6 +39,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.data.trading_calendar import compute_window_back, is_trading_day
+from backend.utils.trading_hours import SHANGHAI
 
 log = structlog.get_logger(component="services.acceptance_report")
 
@@ -90,6 +91,27 @@ class AcceptanceMetric(BaseModel):
     direction tag, not on re-deriving the comparison from the name."""
 
 
+class WindowResetState(BaseModel):
+    """Metadata for the most recent reset event affecting the rolling window.
+
+    J-004 — populated by :class:`AcceptanceService.record_reset` whenever
+    one of the 5 P0-6 §1 system-level interruptions fires:
+    ``MARKET_DATA_OUTAGE_30MIN`` / ``LLM_FULL_STOP_1H`` /
+    ``MOCK_BROKER_CORRUPTION`` / ``STATE_MACHINE_ILLEGAL_TRANSITION`` /
+    ``LONG_CONN_OUTAGE_4H``. ``reconciliation freeze`` (P0-6 §1) is
+    deliberately excluded — it PAUSES the window without resetting.
+
+    When both fields are ``None`` no reset has been observed in the
+    current process. Persistence across restart is intentionally
+    out-of-scope for J-004 (see the J-006 runbook).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    last_reset_at: dt.datetime | None = None
+    last_reset_reason: str | None = Field(default=None, max_length=64)
+
+
 class AcceptanceReport(BaseModel):
     """One row of the ``acceptance_reports`` collection (P0-6)."""
 
@@ -104,6 +126,7 @@ class AcceptanceReport(BaseModel):
     outcome: AcceptanceOutcome
     metrics: tuple[AcceptanceMetric, ...]
     notes: str = Field(default="", max_length=256)
+    reset_state: WindowResetState = Field(default_factory=WindowResetState)
 
     @model_validator(mode="after")
     def _check_window(self) -> AcceptanceReport:
@@ -207,6 +230,10 @@ class AcceptanceService:
     can use an in-memory list. The service is intentionally narrow —
     it owns the 45-day rolling window arithmetic, the 8 threshold gates
     and the ``can_switch_to_feishu_on`` lookup, and nothing else.
+
+    J-004 extension — :meth:`record_reset` clamps the rolling window
+    start to the reset wall-clock so subsequent ``compute()`` calls
+    report INSUFFICIENT_DATA until 45 fresh trading days accumulate.
     """
 
     def __init__(
@@ -214,6 +241,92 @@ class AcceptanceService:
         repository: AcceptanceRepository | None = None,
     ) -> None:
         self._repo = repository or InMemoryAcceptanceRepository()
+        self._reset_state: WindowResetState = WindowResetState()
+
+    def record_reset(self, *, when: dt.datetime, reason: str) -> None:
+        """Mark the rolling window as reset; subsequent compute() starts fresh.
+
+        Called by :class:`backend.services.reset_trigger_detector.ResetTriggerDetector`
+        when any of the 5 P0-6 §1 system-level interruptions fires.
+        ``when`` is the wall-clock instant the interruption was confirmed;
+        ``reason`` is the locked trigger identifier (see
+        :class:`ResetTriggerType`). The next ``compute()`` clamps
+        ``window_start`` to ``when.date()`` so the rolling window
+        restarts and the 45-day counter is zeroed in effect.
+
+        Codex cycle 5 P2 fix — monotonic guard: if the current
+        ``_reset_state.last_reset_at`` is newer than ``when``, the
+        call is a no-op. Two reset triggers can race through
+        ``ResetTriggerDetector._fire`` (audit-first + Feishu await),
+        and an older trigger whose dispatch finished later must not
+        rewind the clamp.
+        """
+        if when.tzinfo is None:
+            raise ValueError("record_reset requires an aware datetime")
+        if not reason or len(reason) > 64:
+            raise ValueError("reason must be a non-empty <=64-char identifier")
+        if (
+            self._reset_state.last_reset_at is not None
+            and when <= self._reset_state.last_reset_at
+        ):
+            log.info(
+                "acceptance_window_reset_ignored_older",
+                reason=reason,
+                when=when.isoformat(),
+                current_last_reset_at=(
+                    self._reset_state.last_reset_at.isoformat()
+                ),
+            )
+            return
+        self._reset_state = WindowResetState(
+            last_reset_at=when,
+            last_reset_reason=reason,
+        )
+        log.info(
+            "acceptance_window_reset",
+            reason=reason,
+            when=when.isoformat(),
+        )
+
+    def set_reset_state(self, state: WindowResetState) -> None:
+        """Replace the in-memory reset state (used by startup hydration).
+
+        Codex cycle 2 P1 fix — the ``_reset_state`` was process-local,
+        so a restart after a J-004 reset (but before 45 fresh trading
+        days accumulated) silently dropped the clamp and let the next
+        ``compute()`` use pre-reset history. The lifespan now hydrates
+        from the audit trail: scan for the most recent
+        ``SYSTEM_INTERRUPTED`` event with
+        ``reason_namespace='acceptance_reset_trigger'`` and feed the
+        resulting state in here before the first ``compute()`` runs.
+
+        Codex cycle 5 P2 fix — monotonic guard: hydration must pick
+        the max-timestamp event, but as defence in depth the setter
+        also refuses to move the state backwards in time when a
+        newer state is already in place.
+        """
+        if state.last_reset_at is not None and state.last_reset_at.tzinfo is None:
+            raise ValueError(
+                "WindowResetState.last_reset_at must be timezone-aware"
+            )
+        if (
+            state.last_reset_at is not None
+            and self._reset_state.last_reset_at is not None
+            and state.last_reset_at < self._reset_state.last_reset_at
+        ):
+            log.info(
+                "acceptance_window_reset_state_set_ignored_older",
+                attempted_at=state.last_reset_at.isoformat(),
+                current_last_reset_at=(
+                    self._reset_state.last_reset_at.isoformat()
+                ),
+            )
+            return
+        self._reset_state = state
+
+    def reset_state(self) -> WindowResetState:
+        """Return the most recent reset metadata (empty when none observed)."""
+        return self._reset_state
 
     def compute(self, payload: AcceptanceComputeInput) -> AcceptanceReport:
         """Build an :class:`AcceptanceReport` from the supplied counters."""
@@ -224,6 +337,23 @@ class AcceptanceService:
                 trade_date=end.isoformat(),
             )
         start = compute_window_back(end, WINDOW_TRADING_DAYS)
+
+        # J-004 — clamp window_start to the most recent reset wall-clock
+        # date. Mathematically equivalent to "force zero the 45-day
+        # counter": any data before the reset is excluded from the
+        # acceptance window so the rolling window restarts fresh.
+        #
+        # Codex cycle 3 P2 fix — use Asia/Shanghai for the clamp date so
+        # a reset at e.g. 2026-05-14T16:30:00Z (= 2026-05-15 Shanghai)
+        # clamps to the correct trade date rather than the UTC-derived
+        # 2026-05-14 (which would let one pre-reset day leak in).
+        if self._reset_state.last_reset_at is not None:
+            reset_date = self._reset_state.last_reset_at.astimezone(
+                SHANGHAI
+            ).date()
+            if reset_date > start:
+                start = reset_date
+
         actual_days = _count_trading_days_inclusive(start, end)
 
         if payload.reconciliation_paused:
@@ -236,6 +366,7 @@ class AcceptanceService:
                 outcome=AcceptanceOutcome.PAUSED,
                 metrics=(),
                 notes="acceptance paused — reconciliation OPEN/EXPIRED",
+                reset_state=self._reset_state,
             )
 
         if actual_days < WINDOW_TRADING_DAYS:
@@ -251,6 +382,7 @@ class AcceptanceService:
                     f"window contains {actual_days} trading days; "
                     f"need {WINDOW_TRADING_DAYS}"
                 ),
+                reset_state=self._reset_state,
             )
 
         metrics = self._build_metrics(payload)
@@ -265,6 +397,7 @@ class AcceptanceService:
             outcome=outcome,
             metrics=tuple(metrics),
             notes="",
+            reset_state=self._reset_state,
         )
 
     def _build_metrics(
@@ -340,13 +473,31 @@ class AcceptanceService:
         return await self._repo.latest()
 
     async def can_switch_to_feishu_on(self) -> bool:
-        """Return True iff the most recent report has ``outcome=PASS``.
+        """Return True iff the most recent report has ``outcome=PASS``
+        AND no acceptance reset has fired on/after the report's trade
+        date.
 
         Environment-variable / CLI bypass is forbidden — this method is
         the only sanctioned switching gate (P0-6 §2 redline 5).
+
+        Codex cycle 3 P1 fix — without the reset-state check, a stale
+        PASS report from before a J-004 reset could authorise Feishu
+        interactive mode even after the rolling window was invalidated.
+        The check uses Asia/Shanghai trade dates so a reset at
+        2026-05-14 16:30 UTC (= 2026-05-15 in Shanghai) correctly
+        invalidates a PASS dated 2026-05-15 in the same calendar.
         """
         latest = await self.latest()
-        return latest is not None and latest.outcome is AcceptanceOutcome.PASS
+        if latest is None or latest.outcome is not AcceptanceOutcome.PASS:
+            return False
+        if self._reset_state.last_reset_at is not None:
+            reset_date = self._reset_state.last_reset_at.astimezone(
+                SHANGHAI
+            ).date()
+            pass_date = dt.date.fromisoformat(latest.trade_date)
+            if reset_date >= pass_date:
+                return False
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +582,7 @@ __all__ = [
     "InMemoryAcceptanceRepository",
     "StabilityCounters",
     "StrategyCounters",
+    "WindowResetState",
     "trading_days_in_window",
 ]
 

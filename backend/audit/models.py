@@ -1,10 +1,10 @@
-"""AuditEvent schema (P1-6 §1.7.1 + 3 amendments → 34 event types).
+"""AuditEvent schema (P1-6 §1.7.1 + 3 amendments + J-007 → 41 event types).
 
 Locked invariants (red lines):
 
-* 34 distinct ``AuditEventType`` values across 5 categories
-  (CLAUDE.md §2.9; the redline-check.sh / B-005 unit tests verify the
-  set stays closed).
+* 41 distinct ``AuditEventType`` values across 5 categories
+  (CLAUDE.md §2.9 + J-007 lifecycle extension; the redline-check.sh /
+  B-005 unit tests verify the set stays closed).
 * Evolution category (Category 5, 7 types) must use ``actor=SYSTEM`` or
   ``actor=SCHEDULER`` — LLM / FRONTEND_USER / FEISHU_USER actors are a
   red line (P2-2 §2 red line 12).
@@ -25,11 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AuditEventType(StrEnum):
-    """34 locked event types across 5 categories.
+    """41 locked event types across 5 categories.
 
     Categories: (1) write-endpoint entries x2, (2) mode/freeze/lifecycle
-    x11, (3) credentials + Feishu connectivity x7, (4) exception +
-    enforcement x13, (5) self-evolution lifecycle x7.
+    x12 (includes J-007 owner production-run gate), (3) credentials +
+    Feishu connectivity x7, (4) exception + enforcement x13,
+    (5) self-evolution lifecycle x7.
     """
 
     # === Category 1 — two write-endpoint invocations ===
@@ -48,6 +49,7 @@ class AuditEventType(StrEnum):
     SYSTEM_INTERRUPTED = "system_interrupted"
     BROKERSCHEDULER_STARTED = "brokerscheduler_started"
     BROKERSCHEDULER_STOPPED = "brokerscheduler_stopped"
+    OWNER_PROD_AUTHORIZATION_GRANTED = "owner_prod_authorization_granted"
 
     # === Category 3 — credential lifecycle + Feishu connectivity ===
     CREDENTIAL_ROTATED = "credential_rotated"

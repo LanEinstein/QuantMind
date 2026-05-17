@@ -76,8 +76,9 @@ def fake_feishu() -> MagicMock:
 
 
 def test_matrix_count_is_locked() -> None:
-    # 5 cost types + 4 P0-6 interruptions + 3 ops lifecycle + 1 P2-2
-    assert len(ALERT_MATRIX) == 13
+    # 5 cost types + 4 P0-6 interruptions + 3 ops lifecycle + 1 P2-2 +
+    # 1 J-004 acceptance reset trigger.
+    assert len(ALERT_MATRIX) == 14
 
 
 def test_every_feishu_fire_is_in_feishu_alert_types() -> None:
@@ -114,7 +115,7 @@ def test_kimi_cap_fires_to_feishu_but_not_critical() -> None:
 def test_matrix_summary_shape_is_stable() -> None:
     rows = matrix_summary()
     assert isinstance(rows, list)
-    assert len(rows) == 13
+    assert len(rows) == 14
     required_keys = {
         "alert_type",
         "audit_event_type",
@@ -318,5 +319,9 @@ def test_dispatcher_does_not_import_messenger_or_renderer_paths() -> None:
 
 
 def test_feishu_alert_types_unchanged_count() -> None:
-    """If FeishuAlerter.ALERT_TYPES count changes, force a matrix review."""
-    assert len(FEISHU_ALERT_TYPES) == 13
+    """If FeishuAlerter.ALERT_TYPES count changes, force a matrix review.
+
+    J-004 added one entry (acceptance_reset_triggered) bringing the
+    total to 14. CLAUDE.md §2.11 maintains the locked vocabulary.
+    """
+    assert len(FEISHU_ALERT_TYPES) == 14

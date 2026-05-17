@@ -15,6 +15,7 @@ from backend.services.acceptance_report import (
     InMemoryAcceptanceRepository,
     StabilityCounters,
     StrategyCounters,
+    WindowResetState,
 )
 
 
@@ -211,3 +212,164 @@ class TestAcceptanceReportSchema:
             ),
         )
         assert report.outcome is AcceptanceOutcome.PASS
+
+
+# ---------------------------------------------------------------------------
+# Codex cycle 3 regressions — reset hydration + switch gate invalidation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_can_switch_to_feishu_on_invalidated_by_post_pass_reset() -> None:
+    """Codex cycle 3 P1 regression — a reset firing after a PASS report
+    must invalidate the gate, even before the next compute() runs.
+
+    Scenario: window completed PASS on 2026-05-15; a J-004 reset fires
+    at 2026-05-15T10:00Z (= 2026-05-15 Shanghai); the gate must return
+    False so Feishu interactive does NOT bootstrap from stale state.
+    """
+    service = AcceptanceService()
+    # Stage a PASS row in the repository.
+    from backend.services.acceptance_report import AcceptanceMetric
+
+    pass_report = AcceptanceReport(
+        computed_at=dt.datetime(2026, 5, 15, 8, 0, tzinfo=dt.UTC),
+        trade_date="2026-05-15",
+        window_start="2026-03-13",
+        window_end="2026-05-15",
+        trading_days_in_window=45,
+        outcome=AcceptanceOutcome.PASS,
+        metrics=(
+            AcceptanceMetric(
+                name="x", value=1.0, threshold=0.0, passed=True,
+                direction="at_least",
+            ),
+        ),
+    )
+    await service.upsert(pass_report)
+    assert await service.can_switch_to_feishu_on() is True
+
+    # Now fire a reset; gate must flip False.
+    service.record_reset(
+        when=dt.datetime(2026, 5, 15, 10, 0, tzinfo=dt.UTC),
+        reason="LLM_FULL_STOP_1H",
+    )
+    assert await service.can_switch_to_feishu_on() is False
+
+
+@pytest.mark.asyncio
+async def test_can_switch_to_feishu_on_stays_true_when_pass_after_reset() -> None:
+    """A PASS dated AFTER the reset is a fresh-window PASS — gate True."""
+    service = AcceptanceService()
+    from backend.services.acceptance_report import AcceptanceMetric
+
+    # Reset happened 60 days ago.
+    service.record_reset(
+        when=dt.datetime(2026, 3, 17, 10, 0, tzinfo=dt.UTC),
+        reason="MARKET_DATA_OUTAGE_30MIN",
+    )
+    # Fresh window completed PASS today.
+    pass_report = AcceptanceReport(
+        computed_at=dt.datetime(2026, 5, 17, 8, 0, tzinfo=dt.UTC),
+        trade_date="2026-05-17",
+        window_start="2026-03-17",
+        window_end="2026-05-17",
+        trading_days_in_window=45,
+        outcome=AcceptanceOutcome.PASS,
+        metrics=(
+            AcceptanceMetric(
+                name="x", value=1.0, threshold=0.0, passed=True,
+                direction="at_least",
+            ),
+        ),
+    )
+    await service.upsert(pass_report)
+    assert await service.can_switch_to_feishu_on() is True
+
+
+def test_set_reset_state_rejects_naive_datetime() -> None:
+    service = AcceptanceService()
+    with pytest.raises(ValueError, match="timezone-aware"):
+        service.set_reset_state(
+            WindowResetState(
+                last_reset_at=dt.datetime(2026, 5, 17, 10, 0),  # naive
+                last_reset_reason="X",
+            )
+        )
+
+
+def test_set_reset_state_accepts_empty_state() -> None:
+    service = AcceptanceService()
+    service.set_reset_state(WindowResetState())
+    assert service.reset_state() == WindowResetState()
+
+
+def test_reset_clamp_uses_shanghai_date() -> None:
+    """Codex cycle 3 P2 regression — reset at 2026-05-14T16:30:00Z
+    is 2026-05-15 in Shanghai; the clamp must use the Shanghai date
+    so a pre-reset trading day does not leak in.
+
+    Scenario: trade_date is 2026-05-15 (a trading day); reset was
+    yesterday in UTC but today in Shanghai. The window_start should
+    clamp to 2026-05-15, not 2026-05-14.
+    """
+    service = AcceptanceService()
+    service.record_reset(
+        when=dt.datetime(2026, 5, 14, 16, 30, tzinfo=dt.UTC),
+        reason="LONG_CONN_OUTAGE_4H",
+    )
+    report = service.compute(
+        AcceptanceComputeInput(
+            trade_date=dt.date(2026, 5, 15),
+            now=dt.datetime(2026, 5, 15, 8, 0, 30, tzinfo=dt.UTC),
+            stability=_passing_stability(),
+            strategy=_passing_strategy(),
+        )
+    )
+    # 2026-05-14 UTC = 2026-05-15 Shanghai (UTC+8); the clamp must
+    # use the Shanghai-converted date.
+    assert report.window_start == "2026-05-15"
+
+
+def test_record_reset_is_monotonic() -> None:
+    """Codex cycle 5 P2 regression — an older reset arriving after a
+    newer reset must NOT rewind ``_reset_state.last_reset_at``. Two
+    concurrent triggers can race through the detector (audit + Feishu
+    await) and produce out-of-order ``record_reset`` calls; the
+    monotonic guard preserves the most-recent clamp."""
+    service = AcceptanceService()
+    later = dt.datetime(2026, 5, 17, 12, 0, tzinfo=dt.UTC)
+    earlier = dt.datetime(2026, 5, 17, 10, 0, tzinfo=dt.UTC)
+    service.record_reset(when=later, reason="LLM_FULL_STOP_1H")
+    assert service.reset_state().last_reset_at == later
+    # Out-of-order older arrival: must be ignored.
+    service.record_reset(when=earlier, reason="MARKET_DATA_OUTAGE_30MIN")
+    assert service.reset_state().last_reset_at == later
+    assert service.reset_state().last_reset_reason == "LLM_FULL_STOP_1H"
+
+
+def test_record_reset_equal_timestamp_is_no_op() -> None:
+    """Equal timestamp is treated as already-recorded — no overwrite."""
+    service = AcceptanceService()
+    when = dt.datetime(2026, 5, 17, 12, 0, tzinfo=dt.UTC)
+    service.record_reset(when=when, reason="LLM_FULL_STOP_1H")
+    service.record_reset(when=when, reason="MOCK_BROKER_CORRUPTION")
+    # First-write wins on equal timestamps (no overwrite).
+    assert service.reset_state().last_reset_reason == "LLM_FULL_STOP_1H"
+
+
+def test_set_reset_state_is_monotonic() -> None:
+    """Hydration setter must also guard against rewinding."""
+    service = AcceptanceService()
+    later = WindowResetState(
+        last_reset_at=dt.datetime(2026, 5, 17, 12, 0, tzinfo=dt.UTC),
+        last_reset_reason="LLM_FULL_STOP_1H",
+    )
+    earlier = WindowResetState(
+        last_reset_at=dt.datetime(2026, 5, 17, 10, 0, tzinfo=dt.UTC),
+        last_reset_reason="MARKET_DATA_OUTAGE_30MIN",
+    )
+    service.set_reset_state(later)
+    service.set_reset_state(earlier)  # no-op
+    assert service.reset_state().last_reset_at == later.last_reset_at
+    assert service.reset_state().last_reset_reason == "LLM_FULL_STOP_1H"

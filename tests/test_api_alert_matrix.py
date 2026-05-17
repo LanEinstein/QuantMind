@@ -21,7 +21,7 @@ async def test_alert_matrix_endpoint_returns_locked_rows() -> None:
     body = resp.json()
     assert resp.status_code == 200
     assert body["status"] == "ok"
-    assert len(body["data"]["alerts"]) == len(ALERT_MATRIX) == 13
+    assert len(body["data"]["alerts"]) == len(ALERT_MATRIX) == 14
     types = {row["alert_type"] for row in body["data"]["alerts"]}
     # Spot-check a few across categories
     assert "daily_cost_ceiling_20cny_breached" in types
@@ -29,6 +29,7 @@ async def test_alert_matrix_endpoint_returns_locked_rows() -> None:
     assert "circuit_breaker_open" in types
     assert "feishu_longconn_disconnected" in types
     assert "evolution_amendment_drafted" in types
+    assert "acceptance_reset_triggered" in types  # J-004
 
 
 @pytest.mark.asyncio

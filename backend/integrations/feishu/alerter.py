@@ -61,11 +61,14 @@ ALERT_TYPES: frozenset[str] = frozenset(
         "feishu_longconn_disconnected",
         # P2-2 self-evolution notifications (gated)
         "evolution_amendment_drafted",
+        # J-004 — P0-6 §1 acceptance-window reset triggers (5 sub-types
+        # share this single alert vocabulary entry).
+        "acceptance_reset_triggered",
     }
 )
-"""Locked alert-type vocabulary (CLAUDE.md §2.11 freeze the 12 entries
-above plus the P2-2 notifier). A new entry needs an amendment + test
-update."""
+"""Locked alert-type vocabulary. Adding a new entry needs an amendment +
+test update (see also ``backend/monitoring/alert_dispatcher.py``
+ALERT_MATRIX and ``scripts/redline-check.sh``)."""
 
 
 DEFAULT_DEDUP_WINDOW = timedelta(minutes=15)

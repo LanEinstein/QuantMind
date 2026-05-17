@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +32,73 @@ if TYPE_CHECKING:
     import redis.asyncio
     from openai.types import CompletionUsage
     from openai.types.chat import ChatCompletion
+
+
+# ---------------------------------------------------------------------------
+# J-002 — QUANTMIND_LLM_STUB hook
+# ---------------------------------------------------------------------------
+
+
+QUANTMIND_LLM_STUB_ENV = "QUANTMIND_LLM_STUB"
+_STUB_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+
+
+def is_llm_stub_enabled() -> bool:
+    """``True`` iff ``QUANTMIND_LLM_STUB`` is set to a truthy token.
+
+    Enables the J-002 cold-start smoke test + J-005 N-day simulator
+    harness to drive the system without burning real LLM budget. Every
+    :meth:`LLMRouter.complete` invocation short-circuits to a canned
+    :class:`StubChatCompletion` with zero token usage and no provider
+    call. Production must leave the env var unset (the smoke-check
+    helper exposes the flag so operators can verify in cold-start
+    output).
+    """
+    return os.environ.get(QUANTMIND_LLM_STUB_ENV, "").strip().lower() in _STUB_TRUTHY
+
+
+@dataclass(frozen=True)
+class _StubMessage:
+    role: str = "assistant"
+    content: str = ""
+
+
+@dataclass(frozen=True)
+class _StubChoice:
+    index: int = 0
+    finish_reason: str = "stop"
+    message: _StubMessage = field(default_factory=_StubMessage)
+
+
+@dataclass(frozen=True)
+class _StubUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class StubChatCompletion:
+    """Canned chat completion returned when ``QUANTMIND_LLM_STUB=1``.
+
+    Mirrors the :class:`openai.types.chat.ChatCompletion` surface that
+    QuantMind agents actually touch (``choices[0].message.content`` +
+    ``usage.total_tokens``) without importing the SDK type, so the
+    stub is hermetic across SDK upgrades.
+
+    The ``quantmind_stub`` marker is the canonical way the J-002 smoke
+    test + J-005 simulator verify that no real provider was called.
+    """
+
+    id: str = "stub-completion-id"
+    object: str = "chat.completion"
+    created: int = 0
+    model: str = "quantmind-stub"
+    choices: tuple[_StubChoice, ...] = field(
+        default_factory=lambda: (_StubChoice(),)
+    )
+    usage: _StubUsage = field(default_factory=_StubUsage)
+    quantmind_stub: bool = True
 
 
 # Maximum UTF-8-encoded byte length of a triage response to attempt
@@ -124,7 +193,6 @@ class LLMRouter:
         any network calls — callers use this for a fast 503 cascade
         decision before booting the pipeline.
         """
-        import os
         import re
 
         env_pattern = re.compile(r"^\$\{(\w+)\}$")
@@ -170,6 +238,19 @@ class LLMRouter:
             KeyError: If agent_name is not in config.
             openai.APIError: If both primary and fallback fail.
         """
+        # J-002 — QUANTMIND_LLM_STUB=1 short-circuits every call so the
+        # cold-start smoke test + N-day simulator harness can drive the
+        # backend without burning real LLM budget. The stub returns a
+        # canned :class:`StubChatCompletion` with zero token usage and
+        # never invokes ``track_usage`` so cost_guard counters stay at 0.
+        if is_llm_stub_enabled():
+            self._log.info(
+                "llm_stub_returned",
+                agent_name=agent_name,
+                env_var=QUANTMIND_LLM_STUB_ENV,
+            )
+            return StubChatCompletion()  # type: ignore[return-value]
+
         config = self.config
 
         if agent_name not in config.agents:

@@ -168,6 +168,22 @@ ALERT_MATRIX: dict[str, AlertSpec] = {
         reason_namespace="evolution_amendment_drafted",
         description="Shadow evolution shortlist amendment awaiting owner gate.",
     ),
+    # J-004 — P0-6 §1 acceptance-window reset triggers. All 5 trigger
+    # sub-types (MARKET_DATA_OUTAGE_30MIN / LLM_FULL_STOP_1H /
+    # MOCK_BROKER_CORRUPTION / STATE_MACHINE_ILLEGAL_TRANSITION /
+    # LONG_CONN_OUTAGE_4H) share this alert_type so the operator sees
+    # a single locked vocabulary; the specific trigger sub-type rides
+    # in the payload and feeds the dedup_key per fire so the
+    # FeishuAlerter dedup window does not collapse distinct triggers.
+    "acceptance_reset_triggered": AlertSpec(
+        alert_type="acceptance_reset_triggered",
+        audit_event_type=AuditEventType.SYSTEM_INTERRUPTED,
+        fire_to_feishu=True,
+        severity="critical",
+        reason_namespace="acceptance_reset_trigger",
+        description="One of the 5 P0-6 §1 system-level interruptions reset "
+        "the 45-trading-day acceptance window.",
+    ),
 }
 """Locked alert vocabulary. Adding a new entry needs an amendment +
 audit-type addition + FeishuAlerter.ALERT_TYPES inclusion. Buy/sell/

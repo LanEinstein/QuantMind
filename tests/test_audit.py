@@ -39,18 +39,15 @@ from backend.audit.store import (
 
 class TestEnums:
     def test_event_type_count_matches_amendment(self) -> None:
-        # The P1-6 amendment-34 file literally enumerates 40 event_type
-        # values across 5 categories (2 + 11 + 7 + 13 + 7). The doc
-        # prose summarizes them as "34 类" (2+11+7+13+7=40, doc claim of
-        # "22+4+1+7=34" had an arithmetic error in the original P1-6 main
-        # which counted 22 instead of the listed 28). The enum follows
-        # the literal amendment listing — 40 distinct values — and the
-        # "34 类" shorthand is documented in CLAUDE.md §2.9 / plan.html
-        # B-005 for human readability.
-        assert len(AUDIT_EVENT_TYPES) == 40
+        # P1-6 amendment-34 enumerated 40 event_type values across 5
+        # categories (2 + 11 + 7 + 13 + 7). J-007 extends Category 2
+        # with OWNER_PROD_AUTHORIZATION_GRANTED so the total is now
+        # 41 (2 + 12 + 7 + 13 + 7). The "34 类" shorthand in plan.html
+        # is a doc-prose count; the enum is the locked source of truth.
+        assert len(AUDIT_EVENT_TYPES) == 41
 
     def test_event_type_documented_categories(self) -> None:
-        # 2 + 11 + 7 + 13 + 7 = 40 distinct values.
+        # 2 + 12 + 7 + 13 + 7 = 41 distinct values (J-007 added one).
         category_1 = {
             AuditEventType.EXECUTION_REPORT_SUBMITTED,
             AuditEventType.RECONCILIATION_TICKET_DECIDED,
@@ -62,7 +59,7 @@ class TestEnums:
         assert (
             len(AUDIT_EVENT_TYPES)
             == len(AuditEventType)
-            == 40
+            == 41
         )
 
     def test_evolution_event_count_7(self) -> None:

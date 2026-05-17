@@ -1,0 +1,95 @@
+[Unit]
+# J-003 — Production-grade systemd unit for the QuantMind backend.
+# Supersedes deploy/quantmind-backend.service for the I-002 production
+# run; the legacy unit is retained for the docker-compose dev profile.
+Description=QuantMind backend (simulation_auto / feishu_interactive overlay)
+Documentation=https://github.com/LanEinstein/QuantMind
+Documentation=file:///home/ps/papers/QuantMind/docs/runbook/systemd-setup.md
+
+# Native systemd dependencies — mongod + redis must be up before the
+# backend can bind app.state.mongodb / app.state.redis (P1-2.A persistence
+# + I-001 6 Mongo repositories). ``After=`` orders startup; ``Requires=``
+# also brings them up on demand and stops the unit when they go away.
+After=network-online.target mongod.service redis.service
+Wants=network-online.target
+Requires=mongod.service redis.service
+
+# Crashloop guard — Codex cycle 1 P2 fix: StartLimit{IntervalSec,Burst}
+# are [Unit]-section directives in systemd (≥230); placing them under
+# [Service] silently no-ops the cap. The 20-restart / 5-min window
+# below engages systemd's "start-limit-hit" mode if reached, putting
+# the unit in failed state so the operator must intervene with
+# `systemctl reset-failed quantmind && systemctl restart quantmind`.
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=simple
+
+# Dedicated unprivileged user — the install script (scripts/install_quantmind_service.sh)
+# provisions the account, then grants it the project tree + a read-only
+# bind mount on the .quantmind.env file. P1-6 §1.5 keeps the backend on
+# 127.0.0.1 only; no inbound network capability needed.
+User=quantmind
+Group=quantmind
+
+WorkingDirectory=/home/ps/papers/QuantMind
+
+# Secrets file lives OUTSIDE the repo (gitignore enforces). Derived from
+# the owner's ~/.bashrc by the install script — a symlink chmod 600 so
+# only quantmind:quantmind can read. Production must NEVER put secrets
+# in /home/ps/papers/QuantMind/.env (secrets_validator fail-fasts on
+# any LLM_API_KEY / FEISHU_* line found there per P1-6 §1.1).
+EnvironmentFile=/home/ps/.quantmind.env
+
+# Production run gate — J-007 owner authorization picks these up.
+# Set in /home/ps/.quantmind.env per the runbook:
+#   QUANTMIND_PROD_RUN=1
+#   QUANTMIND_OWNER_PROD_AUTHORIZATION=<owner_id>:YYYYMMDD
+# Without both env vars present, the backend SystemExit()s before
+# binding the listening socket.
+
+# Single worker keeps the in-process AnalysisStreamHub coherent for
+# live SSE subscribers + matches the I-001 orchestration layer's
+# implicit single-process invariants.
+ExecStart=/home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1
+
+# Crash recovery — restart every 10s. The 20-restart / 5-min cap that
+# protects against a tight crashloop lives in the [Unit] section above
+# (StartLimitIntervalSec + StartLimitBurst); placing them here would
+# silently no-op per systemd ≥230.
+Restart=always
+RestartSec=10s
+
+# Graceful shutdown — give the lifespan ``finally`` arm time to stop
+# BrokerScheduler + close Redis + flush audit JSONL before SIGKILL.
+TimeoutStopSec=60s
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Logs flow to journald; `journalctl -u quantmind -f` is the canonical
+# tail. The legacy file-based logging from quantmind-backend.service is
+# intentionally dropped — operators read via journalctl + the structured
+# logs/quantmind.jsonl that backend/logging_config.py writes.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=quantmind
+
+# Hardening — production runs unprivileged + read-only filesystem with
+# explicit RW paths for logs, data, audit JSONL.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ReadWritePaths=/home/ps/papers/QuantMind/logs
+ReadWritePaths=/home/ps/papers/QuantMind/data
+ReadOnlyPaths=/home/ps/.quantmind.env
+
+[Install]
+WantedBy=multi-user.target

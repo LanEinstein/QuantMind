@@ -380,6 +380,56 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     application.state.acceptance_repository = acceptance_repo
     application.state.acceptance_service = acceptance_service
 
+    # Codex cycle 2 P1 fix — hydrate the in-memory reset state from the
+    # JSONL audit trail so a restart between a J-004 reset trigger and
+    # 45 fresh trading days does not silently drop the window clamp.
+    # JSONL is the dependable layer per P1-6 §1.7.4; Mongo may not be
+    # consulted here because the AuditStore Mongo collection only
+    # becomes queryable after _init_data_layer finishes. The latest
+    # ``SYSTEM_INTERRUPTED`` event tagged
+    # ``reason_namespace='acceptance_reset_trigger'`` carries
+    # ``trigger_type`` in the payload — that's the reason identifier.
+    from backend.audit.models import AuditEventType
+    from backend.audit.store import read_jsonl
+    from backend.services.acceptance_report import WindowResetState
+
+    try:
+        _historical_events = read_jsonl(
+            application.state.audit_jsonl_path
+        )
+    except Exception as exc:  # noqa: BLE001 — never block startup on read
+        log.warning("acceptance_reset_hydrate_read_failed", error=str(exc))
+        _historical_events = []
+    # Codex cycle 5 P2 fix — pick the max-timestamp matching event
+    # rather than the last in append order; JSONL appends may be
+    # out-of-order across multiple processes / batched flushes.
+    _reset_candidates = [
+        _e
+        for _e in _historical_events
+        if _e.event_type is AuditEventType.SYSTEM_INTERRUPTED
+        and _e.reason_namespace == "acceptance_reset_trigger"
+    ]
+    _latest_reset = (
+        max(_reset_candidates, key=lambda e: e.timestamp)
+        if _reset_candidates
+        else None
+    )
+    if _latest_reset is not None:
+        _payload = _latest_reset.payload or {}
+        _trigger_type = str(_payload.get("trigger_type", "UNKNOWN"))[:64]
+        _state = WindowResetState(
+            last_reset_at=_latest_reset.timestamp,
+            last_reset_reason=_trigger_type,
+        )
+        acceptance_service.set_reset_state(_state)
+        log.info(
+            "acceptance_reset_state_hydrated",
+            trigger_type=_trigger_type,
+            last_reset_at=_latest_reset.timestamp.isoformat(),
+        )
+    else:
+        log.info("acceptance_reset_state_clean", reason="no_prior_reset_event")
+
     # 4. Appliers — the single legitimate entry points for external
     # writes to the broker mirror (P1-2.A red line).
     from backend.broker.appliers import (
@@ -521,6 +571,18 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         """
         await _build_and_upsert_equity_point(now)
 
+    # Codex cycle 5 P3 fix — bind ``ticket_repo`` BEFORE the
+    # ``_has_open_reconciliation_ticket`` closure (and therefore
+    # before ``broker_scheduler.start()`` below). Previously the
+    # repository was assigned after ``await broker_scheduler.start()``;
+    # an APScheduler misfire firing the EOD job during the start
+    # window would raise NameError inside the closure and fail the
+    # whole EOD chain. The repository is otherwise inert when no
+    # tickets exist, so binding it earlier has no behavioural cost.
+    ticket_repo = MongoTicketRepository(db)
+    mongo_daily_store = MongoDailyReconciliationStore(db)
+    snapshot_lookup = MongoSnapshotLookup(db)
+
     async def _has_open_reconciliation_ticket() -> bool:
         """Return True iff Mongo holds ANY OPEN / EXPIRED ticket.
 
@@ -652,9 +714,10 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         MongoInstructionPlanRepository(db)
     )
 
-    ticket_repo = MongoTicketRepository(db)
-    mongo_daily_store = MongoDailyReconciliationStore(db)
-    snapshot_lookup = MongoSnapshotLookup(db)
+    # ``ticket_repo`` / ``mongo_daily_store`` / ``snapshot_lookup`` were
+    # bound earlier (before the BrokerScheduler closures + start()) per
+    # Codex cycle 5 P3 fix. Construct the dual-write daily store now
+    # that the constructor + cache are both available.
 
     # Dual-write daily store — mirrors every save into the shared
     # ``daily_cache`` so the sync-API ReconciliationApplier sees the
@@ -897,6 +960,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO")
     )
 
+    # Resolve LOG_AUDIT_PATH once at the very top of lifespan so every
+    # audit-write path lands in the same file. Codex cycle 2 P2 fix —
+    # previously the secrets_validator soft-warning JSONL dispatch used
+    # the default ``logs/audit.jsonl`` while the AuditStore + owner
+    # auth used the LOG_AUDIT_PATH-derived path, silently splitting the
+    # audit trail in any deployment that overrode LOG_AUDIT_PATH.
+    from pathlib import Path as _Path
+
+    _resolved_audit_jsonl_path = _Path(
+        os.environ.get("LOG_AUDIT_PATH", "logs/audit.jsonl")
+    )
+
     # Secrets fail-fast gate (P1-6 / H-001). Must run before any module
     # that reads credentials (LLMRouter / Feishu client). Errors raise
     # SecretsValidationError (SystemExit) so uvicorn / docker-compose
@@ -904,7 +979,34 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # the audit store once it is wired below.
     from backend.services.secrets_validator import assert_secrets_or_exit
 
-    application.state.secrets = assert_secrets_or_exit()
+    application.state.secrets = assert_secrets_or_exit(
+        audit_jsonl_path=_resolved_audit_jsonl_path,
+    )
+
+    # J-007 owner production-run authorization gate (P0-6 §2 红线 5
+    # 前置二级门). When ``QUANTMIND_PROD_RUN=1`` the operator must
+    # additionally export ``QUANTMIND_OWNER_PROD_AUTHORIZATION=<owner>:
+    # YYYYMMDD`` no older than 7 days. A successful authorization writes
+    # one ``OWNER_PROD_AUTHORIZATION_GRANTED`` audit event directly to
+    # the JSONL backup (the AuditStore is constructed below). Outside
+    # production mode this is a no-op so J-002 / J-005 dev harnesses
+    # keep working. Errors raise ``OwnerProdAuthorizationError``
+    # (SystemExit) so uvicorn exits non-zero with a clear message.
+    #
+    # Owner authorization gate reuses the single ``_resolved_audit_jsonl_path``
+    # resolved at the top of lifespan so the OWNER_PROD_AUTHORIZATION_GRANTED
+    # audit lands in the same JSONL file the operator queries via the
+    # H-002 audit endpoint / scripts/query_audit.py CLI (Codex cycle 2 P2 fix
+    # also covered the secrets_validator soft warnings now that the path is
+    # resolved before either call).
+    from backend.services.owner_authorization import (
+        assert_owner_authorization_or_exit,
+    )
+
+    application.state.owner_authorization = assert_owner_authorization_or_exit(
+        fingerprints=application.state.secrets.fingerprints,
+        audit_jsonl_path=_resolved_audit_jsonl_path,
+    )
 
     # Resolve run mode (P0-1). simulation_auto is always-on; FEISHU_INTERACTIVE_ENABLED
     # toggles the human-in-loop overlay. Replaces the legacy AUTHORIZATION_MODE x
@@ -941,16 +1043,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # H-002 — single AuditStore singleton (JSONL primary + Mongo
     # fail-open). Built before the data layer so anything constructed in
     # `_init_data_layer` or `_init_trading_layer` can pull the same
-    # instance off app.state. JSONL path comes from the LOG_AUDIT_PATH
-    # env so deploys can tee the file at /var/log if needed; default
-    # `logs/audit.jsonl` is created on first write.
-    from pathlib import Path as _Path
-
+    # instance off app.state. JSONL path is the one resolved at the top
+    # of lifespan so secrets validator + owner auth + AuditStore all
+    # share a single source (Codex cycle 1 + cycle 2 P2 fix).
     from backend.audit.store import AuditStore
 
-    audit_jsonl_path = _Path(
-        os.environ.get("LOG_AUDIT_PATH", "logs/audit.jsonl")
-    )
+    audit_jsonl_path = _resolved_audit_jsonl_path
     application.state.audit_jsonl_path = audit_jsonl_path
     # The Mongo handle is attached once the data layer initializes; until
     # then audit writes still land in JSONL via the lazy collection.
