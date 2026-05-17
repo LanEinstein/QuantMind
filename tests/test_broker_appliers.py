@@ -368,7 +368,7 @@ class TestReconciliationApplier:
             env.broker,
             env.event_store,
             env.audit_store,
-            daily_reconciliations={daily.trade_date: daily},
+            daily_reconciliations={daily.ticket_id: daily},
         )
 
         result = await applier.reset_to_snapshot(_ticket())

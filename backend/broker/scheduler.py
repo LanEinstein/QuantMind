@@ -214,6 +214,7 @@ class BrokerScheduler:
         replica_set_gate: _ReplicaSetGate | None = None,
         freeze_state: EodPipelineFreezeState | None = None,
         intraday_mtm_callback: Callable[[datetime], Awaitable[None]] | None = None,
+        eod_close_callback: Callable[[datetime], Awaitable[None]] | None = None,
         mirofish_postclose_callback: Callable[
             [datetime], Awaitable[None]
         ] | None = None,
@@ -228,6 +229,15 @@ class BrokerScheduler:
         self._replica_gate = replica_set_gate
         self._freeze = freeze_state or EodPipelineFreezeState()
         self._intraday = intraday_mtm_callback
+        # EOD-only close callback (Codex Cycle 7 P2 fix): the 16:00 EOD
+        # chain needs to write exactly ONE closing EquityPoint without
+        # allowing the 30s :class:`IntervalTrigger` to flood the same
+        # window with 180+ ticks. Wiring main.py passes a callback here
+        # that bypasses ``is_trading_hours`` — the 30s callback keeps
+        # the strict guard. Defaults to ``intraday_mtm_callback`` for
+        # backward compatibility with tests / older deploys that don't
+        # wire the new param.
+        self._eod_close = eod_close_callback or intraday_mtm_callback
         self._mirofish = mirofish_postclose_callback
         self._acceptance = acceptance_callback
         self._now = now_func or (lambda: datetime.now(tz=SHANGHAI))
@@ -393,8 +403,8 @@ class BrokerScheduler:
         snapshot_id: str | None = None
         error: str | None = None
         try:
-            if self._intraday is not None:
-                await self._intraday(started)
+            if self._eod_close is not None:
+                await self._eod_close(started)
 
             account = await self._broker.get_account()
             positions = await self._broker.get_positions()

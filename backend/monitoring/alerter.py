@@ -158,10 +158,18 @@ class Alerter:
 
 
 async def _default_sender(url: str, payload: dict[str, Any]) -> None:
-    """Deliver via httpx. Imported lazily so unit tests can stub it."""
+    """Deliver via httpx. Imported lazily so unit tests can stub it.
+
+    Binds local_address="0.0.0.0" so the IPv4-only egress invariant
+    (memory: feedback_ipv4_only_egress) holds — without this, AAAA-only
+    hosts silently stall on a box without an IPv6 default route.
+    """
     import httpx
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(
+        timeout=10.0,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    ) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()
 

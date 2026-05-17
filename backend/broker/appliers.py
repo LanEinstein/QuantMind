@@ -286,7 +286,16 @@ class ReconciliationApplier:
         self._audit = audit_store
         # Maps trade_date → DailyReconciliation for the user-as-truth
         # path. Production wiring loads this from Mongo; tests inject.
-        self._daily = daily_reconciliations or {}
+        # ``is not None`` check (not falsy) so a caller-owned empty dict
+        # is preserved by reference — Phase I-001's dual-write daily
+        # store mirrors saves into this exact dict, so re-creating a
+        # fresh one here would break the RESOLVED_USER_AS_TRUTH path
+        # (Codex Cycle 1 P2 regression).
+        self._daily = (
+            daily_reconciliations
+            if daily_reconciliations is not None
+            else {}
+        )
 
     async def reset_to_snapshot(
         self,
@@ -332,13 +341,20 @@ class ReconciliationApplier:
             target_positions = snapshot.positions
             reason = "reset_to_amended_snapshot"
         else:
-            # RESOLVED_USER_AS_TRUTH — look up the user-reported snapshot.
-            daily = self._daily.get(ticket.trade_date)
+            # RESOLVED_USER_AS_TRUTH — look up the user-reported snapshot
+            # keyed by ticket_id (Codex Cycle 7 P2 fix). Keying by
+            # trade_date silently collapses multi-ticket days: a later
+            # save would overwrite the first ticket's daily and a
+            # decide on the earlier ticket would reset the broker to
+            # the wrong reported snapshot. ticket_id is the
+            # authoritative identity for a DailyReconciliation row
+            # (Mongo unique index + RECON-{YYYYMMDD}-{seq}).
+            daily = self._daily.get(ticket.ticket_id)
             if daily is None:
                 raise ValueError(
                     f"reset_to_snapshot RESOLVED_USER_AS_TRUTH requires "
-                    f"the DailyReconciliation for trade_date "
-                    f"{ticket.trade_date!r} to be registered on the applier"
+                    f"the DailyReconciliation for ticket_id "
+                    f"{ticket.ticket_id!r} to be registered on the applier"
                 )
             target_cash = daily.reported_cash
             target_positions = daily.reported_positions

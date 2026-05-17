@@ -133,6 +133,61 @@ class MockBroker(IBroker):
         self._market_meta = market_meta
         self._log = log
 
+    def attach_market_meta(self, market_meta: MarketMetaProvider) -> None:
+        """Swap in the market-meta provider after construction.
+
+        BrokerRegistry creates the default broker at import time, before
+        the data layer (which owns the Mongo-backed MarketMetaProvider)
+        is wired. Phase I-001 calls this once during the orchestration
+        layer init so the at-fill price-limit recheck (P1-2.C §1.2) is
+        live for simulation_auto. Re-attachment is allowed — the broker
+        does not cache provider state.
+        """
+        self._market_meta = market_meta
+
+    async def seed_from_recovery(
+        self,
+        *,
+        cash: float,
+        frozen_cash: float,
+        initial_capital: float,
+        positions: tuple,
+    ) -> None:
+        """Overwrite the broker mirror from a recovered persistence state.
+
+        Distinct from :meth:`reset_to_snapshot` (used by reconciliation
+        where ``frozen_cash`` is intentionally zeroed because user-
+        reported truth has no in-flight orders): recovery must preserve
+        ``frozen_cash`` so a crash between ORDER_PLACED and ORDER_FILLED
+        is reflected correctly in the rebuilt broker. Called once at
+        lifespan startup by :func:`_init_orchestration_layer` before
+        :class:`SimulationExecutor` is exposed (Codex Cycle 6 P1 fix —
+        without this the broker started from initial_capital while the
+        durable broker_events tracked thousands of CNY of positions,
+        and the first routed order silently diverged the two mirrors).
+
+        ``positions`` is an iterable of objects exposing
+        ``code`` / ``volume`` / ``today_bought_volume`` / ``cost_price``
+        (e.g. :class:`backend.broker.persistence.snapshots.BrokerSnapshotPosition`
+        or the recovery module's ``_MutablePosition``).
+        """
+        async with self._lock:
+            self._cash = float(cash)
+            self._frozen_cash = float(frozen_cash)
+            self._initial_capital = float(initial_capital)
+            self._positions.clear()
+            for pos in positions:
+                if pos.volume <= 0:
+                    continue
+                self._positions[pos.code] = _MutablePosition(
+                    code=pos.code,
+                    volume=int(pos.volume),
+                    today_bought_volume=int(
+                        getattr(pos, "today_bought_volume", 0)
+                    ),
+                    cost_price=float(pos.cost_price),
+                )
+
     async def place_order(
         self,
         code: str,

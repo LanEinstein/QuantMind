@@ -316,6 +316,21 @@ class ReconciliationOrchestrator:
                 f"{ticket.status.value}"
             ) from exc
 
+        # Warm the applier's daily-reconciliation lookup from the
+        # persistence layer before applying RESOLVED_USER_AS_TRUTH. The
+        # applier reads the user-reported snapshot synchronously via
+        # ``self._daily.get(ticket.ticket_id)``; production wires this
+        # to a dual-write dict that ``_DualWriteDailyStore.get()``
+        # mirrors from Mongo on first read. Without this call a
+        # process-restart between the original MISMATCH reply and the
+        # decide call leaves the dict empty and the applier raises
+        # ValueError (Codex Cycle 2 P2 fix). Codex Cycle 7 P2 fix —
+        # the key is ``ticket_id`` not ``trade_date`` so multi-ticket
+        # days don't collapse to the latest save. ``daily_store.get``
+        # implementations therefore must accept the ticket-id form.
+        if resolution is ReconciliationTicketStatus.RESOLVED_USER_AS_TRUTH:
+            await self._daily.get(ticket.ticket_id)
+
         # Apply BEFORE save — if the applier raises (Mongo down,
         # checksum mismatch, etc.) the ticket remains OPEN/EXPIRED and
         # the freeze stays active. The caller surfaces the exception.

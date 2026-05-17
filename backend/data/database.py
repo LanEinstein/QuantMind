@@ -472,6 +472,79 @@ class MongoDBService:
             background=True,
         )
 
+        # instruction_plans — single source of truth for the executable
+        # plan timeline (P0-3 / I-001). Unique instruction_id backs the
+        # upsert path used by the SignalToPlan orchestrator + the
+        # ExecutionReportOrchestrator's InstructionPlanLookup.get().
+        instruction_plans = self._db["instruction_plans"]
+        await instruction_plans.create_index(
+            [("instruction_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await instruction_plans.create_index(
+            [("trade_date", DESCENDING), ("created_at", DESCENDING)],
+            background=True,
+        )
+        await instruction_plans.create_index(
+            [("status", ASCENDING), ("created_at", DESCENDING)],
+            background=True,
+        )
+
+        # instruction_plan_builder_early_returns — sibling collection that
+        # records D-003 builder early-return rows tied to plans that did
+        # get persisted. Drawer reads sorted by ``at`` so the operator
+        # sees the chronological gating chain.
+        builder_rows = self._db["instruction_plan_builder_early_returns"]
+        await builder_rows.create_index(
+            [("instruction_id", ASCENDING), ("at", ASCENDING)],
+            background=True,
+        )
+
+        # reconciliation_tickets — F-005 / P0-5 §1.5.1 lifecycle store.
+        # Unique ticket_id makes ReconciliationOrchestrator.decide_ticket
+        # idempotent against a retried POST decide. Compound
+        # (trade_date, status) backs the open-ticket triage list.
+        reconciliation_tickets = self._db["reconciliation_tickets"]
+        await reconciliation_tickets.create_index(
+            [("ticket_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await reconciliation_tickets.create_index(
+            [("trade_date", DESCENDING), ("status", ASCENDING)],
+            background=True,
+        )
+
+        # daily_reconciliations — user-reported EOD mirror (P0-5 §1.1.2).
+        # Unique ticket_id keeps a retried Feishu delivery of the same
+        # reply idempotent. Standalone trade_date index backs the
+        # reconciliation-by-day reads.
+        daily_reconciliations = self._db["daily_reconciliations"]
+        await daily_reconciliations.create_index(
+            [("ticket_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await daily_reconciliations.create_index(
+            [("trade_date", DESCENDING)],
+            background=True,
+        )
+
+        # acceptance_reports — 16:00:30 daily roll-up (P0-6). Unique
+        # trade_date so a same-day re-run overwrites the prior point
+        # (mirrors ``InMemoryAcceptanceRepository.upsert`` semantics).
+        acceptance_reports = self._db["acceptance_reports"]
+        await acceptance_reports.create_index(
+            [("trade_date", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await acceptance_reports.create_index(
+            [("computed_at", DESCENDING)],
+            background=True,
+        )
+
         self._log.info("mongodb_indexes_created")
 
     async def save_market_snapshot(
