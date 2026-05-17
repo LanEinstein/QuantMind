@@ -121,8 +121,55 @@ class FinancialData(BaseModel):
     timestamp: datetime
 
 
+NewsDomain = Literal["financial", "political", "global"]
+"""C-005 / P0-8 §1.2 three-domain partition.
+
+* ``financial`` — eastmoney + cls (財經)
+* ``political`` — cctv (時政)
+* ``global``    — stock_info_global_em + sina (全球)
+
+The partition is the unit of deduplication: within one domain, identical
+URLs collapse; across domains the same story is preserved because the
+multi-domain echo is itself MiroFish input (P0-8 §1.2). Adding a sixth
+source or fourth domain requires a P0-8-amendment-*.md before any code
+change.
+"""
+
+NewsSource = Literal[
+    "eastmoney",
+    "cls",
+    "cctv",
+    "global_em",
+    "global_sina",
+    "unknown",
+]
+"""Locked 5-source allowlist for C-005 with one ``unknown`` escape hatch.
+
+``unknown`` covers legacy ``news_articles`` rows persisted before C-005
+landed; the dedupe and domain-routing code treats ``unknown`` as a
+read-only legacy bucket so the parser does not invent a domain for it.
+"""
+
+# Maps each ``NewsSource`` to the ``NewsDomain`` it belongs in. Single
+# source of truth used by ``news_crawler`` to tag articles and by
+# ``news_dedupe`` to enforce within-domain-only collapse.
+NEWS_SOURCE_TO_DOMAIN: dict[NewsSource, NewsDomain] = {
+    "eastmoney": "financial",
+    "cls": "financial",
+    "cctv": "political",
+    "global_em": "global",
+    "global_sina": "global",
+}
+
+
 class NewsArticle(BaseModel):
-    """A financial news article."""
+    """A news article tagged with its source and domain.
+
+    Cross-domain duplicates (same URL, different domain) are preserved
+    on purpose: the multi-domain echo of a single event is itself a
+    MiroFish input signal (P0-8 §1.2). Within-domain dedupe lives in
+    :mod:`backend.data.news_dedupe`.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -133,3 +180,8 @@ class NewsArticle(BaseModel):
     publish_time: datetime
     stock_codes: tuple[str, ...] = ()
     importance_score: int = Field(default=0, ge=0, le=10)
+    # C-005: ``domain`` defaults to ``financial`` so pre-C-005 Mongo
+    # rows (eastmoney-only) round-trip without migration. New rows
+    # must set ``domain`` explicitly; the crawler sets it via
+    # ``NEWS_SOURCE_TO_DOMAIN`` lookup.
+    domain: NewsDomain = "financial"

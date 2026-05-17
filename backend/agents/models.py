@@ -71,4 +71,10 @@ class AnalysisServices(BaseModel):
     news_crawler: Any  # NewsCrawlerService
     mirofish_simulator: Any = None  # MiroFishSimulator (optional)
     mongodb: Any = None  # MongoDBService (optional, for simulation persistence)
+    # C-006: MiroFishEvidenceWriter for the event-driven path
+    # (severity>=HIGH news -> evidence_collection with MIROFISH- prefix,
+    # cap=1/trade_date). ``None`` is permitted so non-MiroFish deployments
+    # keep working; intelligence_officer falls back to in-prompt context
+    # only.
+    mirofish_writer: Any = None  # MiroFishEvidenceWriter (optional)
     pipeline_config: PipelineConfig = PipelineConfig()

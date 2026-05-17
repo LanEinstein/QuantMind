@@ -8,7 +8,6 @@ for the Bull/Bear debate (Blueprint V3 Section 3.2).
 
 from __future__ import annotations
 
-from datetime import UTC
 from typing import Any
 
 import structlog
@@ -56,12 +55,17 @@ async def intelligence_officer_node(
 
     market_context = "\n".join(market_context_parts) or "市场概览数据不可用"
 
-    # -- Step 2: MiroFish simulation (new) --
+    # -- Step 2: MiroFish simulation (event-driven path / C-006) --
     # Lazy imports to avoid circular dependency (mirofish -> agents -> graph -> here)
     simulation_context = ""
     if services.mirofish_simulator is not None:
         from backend.mirofish.event_filter import extract_key_events
         from backend.mirofish.formatter import format_simulation_context
+        from backend.mirofish.output_writer import (
+            MiroFishEvidenceError,
+            build_event_evidence,
+            is_high_severity_event,
+        )
 
         try:
             events = await extract_key_events(
@@ -73,20 +77,29 @@ async def intelligence_officer_node(
             if events:
                 from backend.mirofish.schemas import SimulationResult
 
-                results: list[SimulationResult] = []
+                # Keep ``(event, result)`` paired even when a simulation
+                # raises — codex cycle 1 P2 spotted that the previous
+                # ``results.append`` + ``zip(events, results)`` shifts
+                # indices once any earlier event fails, which could
+                # pair a HIGH event with another event's simulation
+                # result.
+                event_results: list[tuple[Any, SimulationResult]] = []
                 for event in events:
                     try:
                         result = await services.mirofish_simulator.run_simulation(
                             event
                         )
-                        results.append(result)
                     except Exception as exc:
                         log.warning(
                             "mirofish_simulation_failed",
-                            event=event.title,
+                            event_title=event.title,
                             error=str(exc),
                         )
-                if results:
+                        continue
+                    event_results.append((event, result))
+
+                if event_results:
+                    results = [r for _, r in event_results]
                     simulation_context = format_simulation_context(
                         tuple(results)
                     )
@@ -94,24 +107,50 @@ async def intelligence_officer_node(
                         "mirofish_simulations_complete",
                         count=len(results),
                     )
-                    # Persist simulation results to MongoDB for browsing
-                    if services.mongodb is not None:
-                        from datetime import datetime
+                    # C-006 (codex cycle 2 P1): the legacy ``simulations``
+                    # collection write was removed. P0-8 §2 redline 14
+                    # locks MiroFish output to evidence_collection only;
+                    # a parallel browser-only store would still count as
+                    # a second sink. The MIROFISH- prefixed
+                    # evidence_collection write below is the single
+                    # persistence path for MiroFish output.
 
-                        coll = services.mongodb._db["simulations"]
-                        for r, ev in zip(results, events):
-                            doc = {
-                                **r.model_dump(mode="json"),
-                                "event": ev.model_dump(mode="json"),
-                                "created_at": datetime.now(UTC).isoformat(),
-                            }
+                    # C-006: route the first high-severity event through
+                    # the MiroFishEvidenceWriter so it lands in
+                    # evidence_collection with the locked MIROFISH-
+                    # prefix. The writer enforces the cap=1/trade_date
+                    # guard — once today's slot is consumed any further
+                    # event is rejected with reason='daily_cap_reached'
+                    # (P0-9 §2 redline 1). The EOD path is independent
+                    # and runs at 17:00 via DataScheduler.
+                    writer = services.mirofish_writer
+                    if writer is not None:
+                        for event, result in event_results:
+                            if not is_high_severity_event(event):
+                                continue
+                            evidence = build_event_evidence(
+                                event=event,
+                                trade_date=state["trade_date"],
+                                result=result,
+                            )
                             try:
-                                await coll.insert_one(doc)
-                            except Exception as store_exc:
-                                log.warning(
-                                    "simulation_persist_failed",
-                                    error=str(store_exc),
+                                ok = await writer.write(evidence)
+                                log.info(
+                                    "mirofish_event_evidence_written",
+                                    evidence_id=evidence.evidence_id,
+                                    inserted=ok,
                                 )
+                            except MiroFishEvidenceError as exc:
+                                log.info(
+                                    "mirofish_event_evidence_rejected",
+                                    evidence_id=evidence.evidence_id,
+                                    reason=exc.reason,
+                                )
+                            # Stop after the first attempt — even a
+                            # ``daily_cap_reached`` rejection means a
+                            # later HIGH event in this run would also
+                            # be rejected, so save the Mongo round-trip.
+                            break
         except Exception as exc:
             log.warning("mirofish_pipeline_failed", error=str(exc))
 

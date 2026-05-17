@@ -345,3 +345,119 @@ class TestCostFlushCronJob:
         ):
             # Should not raise
             await scheduler._run_cost_flush_job()
+
+
+class TestCctvNewsCronJob:
+    """C-005 (codex cycle 1 P1 + cycle 4 P3): CCTV cron at the locked
+    Asia/Shanghai checkpoints 09:00 / 15:30 / 20:00."""
+
+    @pytest.mark.asyncio
+    async def test_cctv_cron_registered_at_all_three_checkpoints(
+        self, scheduler: DataScheduler
+    ) -> None:
+        await scheduler.start()
+        assert scheduler._scheduler is not None
+        for suffix in ("0900", "1530", "2000"):
+            assert (
+                scheduler._scheduler.get_job(f"cctv_news_job_{suffix}")
+                is not None
+            )
+        await scheduler.stop()
+
+    @pytest.mark.asyncio
+    async def test_cctv_job_fetches_and_persists(
+        self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["news_crawler"].fetch_cctv = AsyncMock(
+            return_value=["dummy"]
+        )
+        mock_deps["mongodb"].save_news = AsyncMock(return_value=1)
+        await scheduler._run_cctv_news_job()
+        mock_deps["news_crawler"].fetch_cctv.assert_called_once()
+        mock_deps["mongodb"].save_news.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cctv_job_exception_does_not_crash(
+        self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["news_crawler"].fetch_cctv = AsyncMock(
+            side_effect=RuntimeError("net")
+        )
+        # Should not raise.
+        await scheduler._run_cctv_news_job()
+
+
+class TestMiroFishEodCronJob:
+    """C-006: 17:00 mon-fri MiroFish EOD review cron wiring."""
+
+    @pytest.mark.asyncio
+    async def test_eod_cron_registered_when_writer_present(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        writer = AsyncMock()
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            watchlist=mock_deps["watchlist"],
+            mirofish_writer=writer,
+        )
+        await s.start()
+        assert s._scheduler is not None
+        job = s._scheduler.get_job("mirofish_eod_review_job")
+        assert job is not None
+        await s.stop()
+
+    @pytest.mark.asyncio
+    async def test_eod_cron_not_registered_when_writer_absent(
+        self, scheduler: DataScheduler
+    ) -> None:
+        await scheduler.start()
+        assert scheduler._scheduler is not None
+        # No writer was injected → cron must not be registered (dev-env
+        # parity: scheduler still runs, EOD becomes a no-op).
+        assert scheduler._scheduler.get_job("mirofish_eod_review_job") is None
+        await scheduler.stop()
+
+    @pytest.mark.asyncio
+    async def test_eod_job_writes_evidence(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        writer = AsyncMock()
+        writer.write.return_value = True
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            mirofish_writer=writer,
+        )
+        await s._run_mirofish_eod_job()
+        writer.write.assert_called_once()
+        evidence_arg = writer.write.call_args.args[0]
+        assert evidence_arg.path == "eod_review"
+        assert evidence_arg.evidence_id.startswith("MIROFISH-EOD-")
+
+    @pytest.mark.asyncio
+    async def test_eod_job_no_writer_is_noop(
+        self, scheduler: DataScheduler
+    ) -> None:
+        # Should not raise even without a writer.
+        await scheduler._run_mirofish_eod_job()
+
+    @pytest.mark.asyncio
+    async def test_eod_job_swallows_writer_failure(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        writer = AsyncMock()
+        writer.write.side_effect = RuntimeError("boom")
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            mirofish_writer=writer,
+        )
+        # Should not raise — failure is logged at warning level.
+        await s._run_mirofish_eod_job()

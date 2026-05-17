@@ -286,6 +286,24 @@ class TestSaveNews:
         count = await service.save_news([])
         assert count == 0
 
+    @pytest.mark.asyncio
+    async def test_upsert_key_is_url_and_domain(
+        self, service: MongoDBService
+    ) -> None:
+        """C-005 (codex P2): cross-domain duplicates must survive Mongo.
+
+        The upsert filter must include ``domain`` so two rows with the
+        same URL but different domains land as two documents instead of
+        clobbering each other.
+        """
+        await service.save_news([_sample_news()])
+        coll = service._db["news_articles"]
+        ops_arg = coll.bulk_write.call_args.args[0]
+        assert len(ops_arg) == 1
+        upsert_filter = ops_arg[0]._filter
+        assert "url" in upsert_filter
+        assert "domain" in upsert_filter
+
 
 class TestSaveFinancialData:
     """Tests for save_financial_data."""

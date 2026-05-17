@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from pymongo import ASCENDING, DESCENDING, UpdateOne
+from pymongo.errors import OperationFailure
 
 from backend.models.market import (
     FinancialData,
@@ -56,8 +57,18 @@ class MongoDBService:
     Uses motor's AsyncIOMotorDatabase for all operations.
     """
 
+    # codex cycle 3 P2: when the partial unique index on
+    # ``evidence_collection`` cannot be created (rare; e.g. permission /
+    # version regression), the event-driven daily cap drops back to
+    # ``count_documents + insert_one``. The writer reads this flag at
+    # ``write()`` time and refuses event-driven writes outright so the
+    # P0-9 §2 redline 1 cap is fail-closed instead of silently
+    # downgraded.
+    EVIDENCE_EVENT_CAP_INDEX_NAME = "evidence_event_driven_daily_cap"
+
     def __init__(self, db: Any) -> None:
         """Initialize with a motor AsyncIOMotorDatabase instance."""
+        self.evidence_event_cap_index_ok: bool = False
         self._db = db
         self._log = log
 
@@ -152,8 +163,38 @@ class MongoDBService:
             [("publish_time", DESCENDING)],
             background=True,
         )
+        # C-005 (codex cycle 1 P2 + cycle 2 P2): the unique constraint
+        # must include ``domain`` so the same URL surfaced in two
+        # domains keeps two rows. Existing deployments may still carry
+        # the legacy unique ``url_1`` index — drop it so re-running
+        # initialise on an old DB lets the compound unique index land
+        # cleanly. We also pre-populate ``domain`` on any legacy row
+        # lacking one so the unique build does not collide.
+        try:
+            await news.drop_index("url_1")
+        except OperationFailure as exc:
+            # codex cycle 3 P2: only swallow the "index not found" /
+            # "namespace not found" Mongo error codes (27 / 26 / 28).
+            # Any other OperationFailure means the legacy unique index
+            # is still alive and would still collapse cross-domain
+            # duplicates — those must surface, not silently degrade.
+            if exc.code in (26, 27, 28):
+                self._log.debug(
+                    "news_legacy_url_index_drop_skipped",
+                    code=exc.code,
+                    error=str(exc),
+                )
+            else:
+                raise
+        try:
+            await news.update_many(
+                {"domain": {"$exists": False}},
+                {"$set": {"domain": "financial"}},
+            )
+        except Exception as exc:
+            self._log.warning("news_legacy_domain_backfill_failed", error=str(exc))
         await news.create_index(
-            [("url", ASCENDING)],
+            [("url", ASCENDING), ("domain", ASCENDING)],
             unique=True,
             background=True,
         )
@@ -163,6 +204,49 @@ class MongoDBService:
             [("created_at", DESCENDING)],
             background=True,
         )
+
+        # C-006: evidence_collection holds MIROFISH- prefixed rows
+        # (P0-8 §1.6.2 / §2 redline 14). Unique evidence_id + descending
+        # trade_date so the event-driven daily-cap query
+        # (count where path='event_driven' and trade_date=today) stays
+        # O(log n).
+        evidence_collection = self._db["evidence_collection"]
+        await evidence_collection.create_index(
+            [("evidence_id", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+        await evidence_collection.create_index(
+            [("trade_date", DESCENDING), ("path", ASCENDING)],
+            background=True,
+        )
+        # codex cycle 2 P2: turn the event-driven daily cap (P0-9 §2
+        # redline 1) into an atomic DB constraint instead of relying on
+        # ``count_documents + insert_one``. A unique *partial* index on
+        # ``(trade_date, path)`` filtered to ``path='event_driven'``
+        # blocks the second insert with DuplicateKeyError so two
+        # concurrent writers cannot both slip past the cap check.
+        #
+        # codex cycle 3 P2: when this index cannot be created the cap
+        # falls back to ``count_documents + insert_one`` (racy under
+        # concurrent writes). Track that explicitly so the writer can
+        # fail-closed instead of silently degrading.
+        try:
+            await evidence_collection.create_index(
+                [("trade_date", ASCENDING), ("path", ASCENDING)],
+                unique=True,
+                partialFilterExpression={"path": "event_driven"},
+                name=self.EVIDENCE_EVENT_CAP_INDEX_NAME,
+                background=True,
+            )
+            self.evidence_event_cap_index_ok = True
+        except Exception as exc:
+            self.evidence_event_cap_index_ok = False
+            self._log.warning(
+                "evidence_event_cap_index_create_failed",
+                index=self.EVIDENCE_EVENT_CAP_INDEX_NAME,
+                error=str(exc),
+            )
 
         signals = self._db["trading_signals"]
         await signals.create_index(
@@ -507,14 +591,20 @@ class MongoDBService:
             self._log.warning("save_financial_failed", error=str(exc))
 
     async def save_news(self, articles: list[NewsArticle]) -> int:
-        """Bulk upsert news articles by URL. Returns operation count."""
+        """Bulk upsert news articles by ``(url, domain)``.
+
+        C-005: cross-domain duplicates of the same URL are preserved as
+        separate rows so the multi-domain echo of a story (P0-8 §1.2)
+        survives Mongo persistence — within-domain dedupe stays
+        single-row because the upsert key includes ``domain``.
+        """
         if not articles:
             return 0
 
         coll = self._db["news_articles"]
         ops = [
             UpdateOne(
-                {"url": a.url},
+                {"url": a.url, "domain": a.domain},
                 {"$set": a.model_dump()},
                 upsert=True,
             )

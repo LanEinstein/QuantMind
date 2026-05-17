@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from backend.data.market_data import MarketDataService
     from backend.data.news_crawler import NewsCrawlerService
     from backend.data.watchlist import WatchlistService
+    from backend.mirofish.output_writer import MiroFishEvidenceWriter
 
 log = structlog.get_logger(component="scheduler")
 
@@ -74,6 +75,7 @@ class DataScheduler:
         watchlist: WatchlistService | None = None,
         market_interval_seconds: int = 30,
         news_interval_seconds: int = 300,
+        mirofish_writer: MiroFishEvidenceWriter | None = None,
     ) -> None:
         self._market_data = market_data
         self._news_crawler = news_crawler
@@ -82,6 +84,11 @@ class DataScheduler:
         self._watchlist = watchlist
         self._market_interval = market_interval_seconds
         self._news_interval = news_interval_seconds
+        # C-006: 17:00 mon-fri Asia/Shanghai cron uses this writer to
+        # land the EOD MiroFish review into evidence_collection. ``None``
+        # is permitted so dev environments without the MiroFish stack
+        # still boot — the EOD job becomes a no-op in that case.
+        self._mirofish_writer = mirofish_writer
         self._scheduler: AsyncIOScheduler | None = None
         self._log = log
 
@@ -105,6 +112,30 @@ class DataScheduler:
             name="News collection",
         )
 
+        # C-005: CCTV ingestion is locked to three Asia/Shanghai
+        # checkpoints — 09:00 (pre-open), 15:30 (post-close), 20:00
+        # (after 新闻联播's 19:30 broadcast which is the primary daily
+        # update window). P0-8 §2 redline 13 / §1.3.1 lock this cadence;
+        # using a free-running 6h ``interval`` lets restarts shift the
+        # window away from the broadcast (codex cycle 4 P3). APScheduler
+        # cron with ``hour=H minute=M`` strings cross-product, so we
+        # register three discrete jobs to land at *exactly* the locked
+        # timestamps.
+        for hour, minute, suffix in (
+            (9, 0, "0900"),
+            (15, 30, "1530"),
+            (20, 0, "2000"),
+        ):
+            self._scheduler.add_job(
+                self._run_cctv_news_job,
+                "cron",
+                hour=hour,
+                minute=minute,
+                timezone="Asia/Shanghai",
+                id=f"cctv_news_job_{suffix}",
+                name=f"CCTV political-domain news ({hour:02d}:{minute:02d} SH)",
+            )
+
         self._scheduler.add_job(
             self._run_index_job,
             "cron",
@@ -125,6 +156,21 @@ class DataScheduler:
             id="cost_flush_job",
             name="LLM cost Redis->MongoDB flush",
         )
+
+        # C-006: 17:00 mon-fri Asia/Shanghai — MiroFish EOD review writes
+        # one ``MIROFISH-EOD-{YYYYMMDD}`` row into evidence_collection.
+        # Wired conditionally because dev envs may not have the writer.
+        if self._mirofish_writer is not None:
+            self._scheduler.add_job(
+                self._run_mirofish_eod_job,
+                "cron",
+                hour=17,
+                minute=0,
+                day_of_week="mon-fri",
+                timezone="Asia/Shanghai",
+                id="mirofish_eod_review_job",
+                name="MiroFish EOD review (17:00 mon-fri)",
+            )
 
         self._scheduler.start()
         self._log.info(
@@ -263,6 +309,22 @@ class DataScheduler:
         except Exception as exc:
             self._log.warning("news_job_failed", error=str(exc))
 
+    async def _run_cctv_news_job(self) -> None:
+        """C-005 political-domain ingestion at the upstream's 6h cadence.
+
+        CCTV refreshes every ~6 hours, so the regular 5-min news_job
+        opts out (``include_cctv=False``) and this dedicated cron is
+        responsible for the political domain.
+        """
+        try:
+            articles = await self._news_crawler.fetch_cctv()
+            if articles:
+                await self._mongodb.save_news(articles)
+                await publish_news(self._redis, articles)
+                self._log.info("cctv_news_job_complete", count=len(articles))
+        except Exception as exc:
+            self._log.warning("cctv_news_job_failed", error=str(exc))
+
     async def _run_index_job(self) -> None:
         """Fetch CSI300 recent daily closes and upsert to MongoDB."""
         try:
@@ -299,3 +361,35 @@ class DataScheduler:
             self._log.info("cost_flush_complete", entries=count)
         except Exception as exc:
             self._log.warning("cost_flush_failed", error=str(exc))
+
+    async def _run_mirofish_eod_job(self) -> None:
+        """C-006 EOD review cron: write MIROFISH-EOD-{YYYYMMDD} row.
+
+        Empty event roll-up is fine — the row itself is the audit trail
+        that the cron fired. The writer enforces the locked ``MIROFISH-``
+        prefix; uncapped EOD path means consecutive 17:00 reruns would
+        collide on the unique ``evidence_id`` index, which is the
+        intended fail-closed branch (one EOD row per trade_date).
+        """
+        if self._mirofish_writer is None:
+            return
+        # Lazy import to keep the runtime-level dependency thin —
+        # scheduler.py stays parseable without backend.mirofish at all
+        # in deployments that disable MiroFish.
+        from backend.mirofish.output_writer import build_eod_evidence
+
+        trade_date = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        evidence = build_eod_evidence(events=(), trade_date=trade_date)
+        try:
+            ok = await self._mirofish_writer.write(evidence)
+            self._log.info(
+                "mirofish_eod_review_complete",
+                trade_date=trade_date,
+                inserted=ok,
+            )
+        except Exception as exc:
+            self._log.warning(
+                "mirofish_eod_review_failed",
+                trade_date=trade_date,
+                error=str(exc),
+            )

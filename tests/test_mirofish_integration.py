@@ -234,6 +234,130 @@ class TestIntelligenceOfficerWithMiroFish:
         assert "MiroFish" not in user_msg
 
     @pytest.mark.asyncio
+    async def test_event_driven_evidence_writer_called(self) -> None:
+        """C-006: HIGH severity events route through MiroFishEvidenceWriter."""
+        services = _make_services(with_simulator=True)
+        writer = AsyncMock()
+        writer.write = AsyncMock(return_value=True)
+        services = services.model_copy(update={"mirofish_writer": writer})
+
+        result = await intelligence_officer_node(
+            _sample_state(), services
+        )
+        assert "intelligence_report" in result
+        writer.write.assert_called_once()
+        evidence_arg = writer.write.call_args.args[0]
+        assert evidence_arg.path == "event_driven"
+        assert evidence_arg.evidence_id.startswith("MIROFISH-EVENT-")
+        assert evidence_arg.severity >= 8  # HIGH threshold
+        assert evidence_arg.trade_date == "2026-03-22"
+
+    @pytest.mark.asyncio
+    async def test_event_driven_cap_rejection_does_not_break_pipeline(
+        self,
+    ) -> None:
+        """If the writer rejects (cap), intelligence_officer still produces a report."""
+        from backend.mirofish.output_writer import MiroFishEvidenceError
+
+        services = _make_services(with_simulator=True)
+        writer = AsyncMock()
+        writer.write = AsyncMock(
+            side_effect=MiroFishEvidenceError(
+                "cap", reason="daily_cap_reached"
+            )
+        )
+        services = services.model_copy(update={"mirofish_writer": writer})
+        result = await intelligence_officer_node(
+            _sample_state(), services
+        )
+        assert "intelligence_report" in result
+
+    @pytest.mark.asyncio
+    async def test_high_event_paired_after_earlier_failure(self) -> None:
+        """codex cycle 1 P2: a failed earlier simulation must not shift
+        the (event, result) pairing so that a HIGH event is dropped or
+        paired with the wrong simulation result."""
+        services = _make_services(with_simulator=True)
+        writer = AsyncMock()
+        writer.write = AsyncMock(return_value=True)
+        services = services.model_copy(update={"mirofish_writer": writer})
+
+        # Two events: a LOW-severity one first (which fails simulation),
+        # then a HIGH-severity one (which succeeds). The HIGH event
+        # MUST still be the argument fed to writer.write — the previous
+        # zip(events, results) implementation would have shifted indices.
+        multi_events = json.dumps({
+            "events": [
+                {
+                    "title": "低重要度事件",
+                    "content": "x",
+                    "importance_score": 4,
+                    "sectors": [],
+                    "stocks": [],
+                },
+                {
+                    "title": "重要事件",
+                    "content": "y",
+                    "importance_score": 9,
+                    "sectors": [],
+                    "stocks": [],
+                },
+            ]
+        })
+
+        def _route(*args, **kwargs):
+            agent_name = args[0]
+            if agent_name == "news_crawler":
+                return _make_completion(multi_events)
+            return _make_completion("情报报告")
+
+        services.llm_router.complete = AsyncMock(side_effect=_route)
+        services.mirofish_simulator.run_simulation = AsyncMock(
+            side_effect=[
+                RuntimeError("low-sev simulation explode"),
+                _mock_simulation_result(),
+            ]
+        )
+
+        await intelligence_officer_node(_sample_state(), services)
+
+        writer.write.assert_called_once()
+        evidence_arg = writer.write.call_args.args[0]
+        assert evidence_arg.severity == 9
+        assert evidence_arg.event_title == "重要事件"
+
+    @pytest.mark.asyncio
+    async def test_low_severity_event_skips_evidence_write(self) -> None:
+        """Only events with importance_score>=8 trigger the writer."""
+        services = _make_services(with_simulator=True)
+        writer = AsyncMock()
+        writer.write = AsyncMock(return_value=True)
+        services = services.model_copy(update={"mirofish_writer": writer})
+
+        low_sev_json = json.dumps({
+            "events": [
+                {
+                    "title": "低重要度",
+                    "content": "x",
+                    "importance_score": 5,
+                    "sectors": [],
+                    "stocks": [],
+                }
+            ]
+        })
+
+        def _route(*args, **kwargs):
+            agent_name = args[0]
+            if agent_name == "news_crawler":
+                return _make_completion(low_sev_json)
+            return _make_completion("情报报告")
+
+        services.llm_router.complete = AsyncMock(side_effect=_route)
+
+        await intelligence_officer_node(_sample_state(), services)
+        writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_multiple_events_all_simulated(self) -> None:
         services = _make_services(with_simulator=True)
         multi_events = json.dumps({

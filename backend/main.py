@@ -107,6 +107,16 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     except Exception as exc:
         log.warning("watchlist_init_failed", error=str(exc))
 
+    # C-006: MiroFish evidence writer wired up so the EOD review cron
+    # and the intelligence_officer event-driven path both have a real
+    # writer in the default startup (codex cycle 1 P1). Constructed on
+    # the same MongoDBService that owns ``evidence_collection`` so the
+    # unique evidence_id index and the cap-count query see one source
+    # of truth.
+    from backend.mirofish.output_writer import MiroFishEvidenceWriter
+
+    mirofish_writer = MiroFishEvidenceWriter(mongodb_service)
+
     # Scheduler
     scheduler = DataScheduler(
         market_data=market_data,
@@ -116,6 +126,7 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         watchlist=watchlist_service,
         market_interval_seconds=config.market_data.refresh_interval_seconds,
         news_interval_seconds=config.news.refresh_interval_seconds,
+        mirofish_writer=mirofish_writer,
     )
     await scheduler.start()
 
@@ -127,6 +138,7 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     application.state.news_crawler = news_crawler
     application.state.scheduler = scheduler
     application.state.watchlist = watchlist_service
+    application.state.mirofish_writer = mirofish_writer
 
     log.info("data_layer_initialized")
 
@@ -248,14 +260,37 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
             log.warning("analysis_scheduler_skip", missing=attr)
             return
 
+    # C-006 (codex cycle 2 P1): construct MiroFishSimulator with the
+    # live LLMRouter so intelligence_officer_node actually enters the
+    # event-driven branch (it is gated on ``mirofish_simulator is not
+    # None``). Without this, the C-006 evidence write only triggers in
+    # tests where a mock simulator is injected. Failure is fail-open
+    # (None) so the rest of analysis still runs.
+    mirofish_simulator = None
+    try:
+        from backend.mirofish.simulator import MiroFishSimulator
+
+        mirofish_simulator = MiroFishSimulator(application.state.llm_router)
+    except Exception as exc:
+        log.warning("mirofish_simulator_init_failed", error=str(exc))
+
     services = AnalysisServices(
         llm_router=application.state.llm_router,
         market_data=application.state.market_data,
         history_data=application.state.history_data,
         news_crawler=application.state.news_crawler,
         mongodb=application.state.mongodb,
+        mirofish_simulator=mirofish_simulator,
+        # C-006 (codex cycle 1 P1): hand the MiroFishEvidenceWriter into
+        # AnalysisServices so intelligence_officer's event-driven path
+        # writes MIROFISH- evidence to evidence_collection in the
+        # default startup, not just in tests.
+        mirofish_writer=getattr(
+            application.state, "mirofish_writer", None
+        ),
         pipeline_config=PipelineConfig(),
     )
+    application.state.mirofish_simulator = mirofish_simulator
 
     policy_path = os.environ.get(
         "QUANTMIND_WATCHLIST_POLICY_PATH", "config/watchlist_policy.yaml"
