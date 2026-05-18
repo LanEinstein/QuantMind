@@ -22,6 +22,7 @@ from backend.api.audit import router as audit_router
 from backend.api.cost import router as cost_router
 from backend.api.data_quality import router as data_quality_router
 from backend.api.equity_points import router as equity_points_router
+from backend.api.evolution import router as evolution_router
 from backend.api.execution_reports import router as execution_reports_router
 from backend.api.feishu import router as feishu_router
 from backend.api.health import router as health_router
@@ -1340,6 +1341,7 @@ app.include_router(cost_router)
 app.include_router(execution_reports_router)
 app.include_router(reconciliation_router)
 app.include_router(data_quality_router)
+app.include_router(evolution_router)
 app.include_router(feishu_router)
 app.include_router(websocket_router)
 
