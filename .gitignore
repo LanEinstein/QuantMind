@@ -30,6 +30,10 @@ env/
 *.hdf5
 data/raw/
 data/processed/
+# Phase X — Qwen3-Embedding-0.6B local checkpoint (~600MB, X-006).
+# Downloaded via `hf download Qwen/Qwen3-Embedding-0.6B --local-dir
+# data/models/Qwen3-Embedding-0.6B` outside of git.
+data/models/
 
 # Secrets & config
 .env
