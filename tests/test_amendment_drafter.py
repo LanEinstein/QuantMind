@@ -237,6 +237,22 @@ def test_mandatory_sections_lock() -> None:
     )
 
 
+def test_validate_sections_rejects_missing_mandatory_section(
+    drafter: AmendmentDrafter,
+) -> None:
+    # Codex X-028 R5 claim 5: R7 missing-section negative-path
+    # assertion. The body is missing ``## rollback`` — the drafter
+    # must raise AmendmentSchemaError before write_disk.
+    body_missing_rollback = (
+        "# Pending amendment foo\n\n"
+        "## diff\n\n"
+        "## shadow evidence\n\n"
+        "## readability check\n\n"
+    )
+    with pytest.raises(AmendmentSchemaError, match="missing section"):
+        drafter._validate_sections(body_missing_rollback)
+
+
 def test_validate_sections_rejects_surplus_level2_heading(
     drafter: AmendmentDrafter,
 ) -> None:
