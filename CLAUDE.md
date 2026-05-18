@@ -2,7 +2,7 @@
 
 QuantMind = 多 Agent 投研信号 + 模拟实盘 + 飞书人工执行。**永禁**真实券商程序化下单。
 决策对齐期 ✅ 全完成(P0+P1+P2);**下一站 = Phase A 实施期**(或 dedicated 计划文档 session)。
-SSoT = `docs/plan.html`(61 任务,十一阶段 S/A-H/I/X)。红线条文 → 对应 `docs/decisions/{编号}.md` §2。
+SSoT = `docs/plan.html`(93 任务,十二阶段 S/A-H/J/I/X — Phase J 2026-05-17 session #19 插入,Phase X 2026-05-18 session #21 占位 3 扩 28)。红线条文 → 对应 `docs/decisions/{编号}.md` §2。
 
 ## 1. 项目进度管理协议(**强制,违反 = 违规实现**)
 

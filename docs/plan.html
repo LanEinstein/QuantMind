@@ -720,6 +720,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-18 session #21 Phase X dedicated 计划文档 session — 落地 docs/decisions/P2-2-implementation-plan-2026-05-18.md(16 议题逐题决策 + 28 任务 X-001..X-028 详细清单 + 3 项 P2-2 §2 红线扩展 21~23 落地 GEPA 过拟合 / RAG retrieval precision / amendment 强制 4 section)+ 6 路并行 web 研究汇总 ✅ 2026 SOTA 验证强化(DSPy GEPA ICLR 2026 Oral + 文件式 RAG 7 维度碾压 Mongo + FinMem→ERL 升级 DEFER 到 Phase X-finale + 第 4 路径 frontier→proposal DEFER 到 Phase Y 独立 session)。<strong>修改 docs/plan.html</strong>:删除 X-001/X-002/X-003 3 个旧占位 + 插入 X-001..X-028 28 个详细任务(X-A 基础设施 7 + X-B 自进化执行 8 + X-C audit+守门 5 + X-D 前端 3 + X-E Codex 5 轮)+ TASKS 数组保持 phase ordering S/A/B/C/D/E/F/G/H/J/I/X 一致。<strong>16 议题决策摘要</strong>:Q1 严格 pin dspy==3.2.1+gepa>=0.0.26+litellm>=1.60+openreview-py>=1.40+Codex R3 升级验证 / Q2 Qwen3-Embedding-0.6B 本地 CPU(MTEB multilingual #1 + Apache 2.0;升级自 BGE-small-zh)/ Q3 GitHub PAT 只读异质凭证不加入 P1-6 凭证池 / Q4 R1+R3+R7 三项 Phase X 红线;R2/R4/R5/R6 已被 P0 天然 hedge / Q5 ExemplarRecord 走 decision_ledger Mongo aggregation 派生视图零新 collection / Q6 14 字段含 is_anti_exemplar 强制反例召回 / Q7 provenance.jsonl 17 字段全 schema + 5 子字段 sanitization_applied / Q8 shadow_acceptance_reports 扩 3 字段 bootstrap_pnl_ci_95pct+challenger_artifact_id+champion_baseline_id / Q9 第 4 路径 frontier→proposal Agent DEFER 到 Phase Y / Q10 FinMem→ERL 升级 DEFER 到 Phase X-finale / Q11 4 Agent 差异化注入(fundamental→deep+intermediate / technical→shallow / risk→必含 anti / fund_manager→each layer 1)/ Q12 SystemStatus.vue 内嵌不新增页 / Q13 H→X 命名重映射 / Q14 Phase X 与 I-002 并行(import 守门解耦)/ Q15 Codex 5 轮 + X-B 后 R3 提前 / Q16 本 session 纯 docs。<strong>预飞演练</strong>:scripts/smoke_test_cold_start.py + scripts/simulate_n_trading_days.py --days 45(QUANTMIND_LLM_STUB=1 默认,零真实 LLM ¥),验证 J-002/J-005 harness + Phase J substrate 冷启与 5 类 P0-6 reset 触发器无误触。<strong>本 session 严守 P2-2 lock</strong>:0 自进化代码改动(0 backend/evolution / 0 backend/services/{prompt_registry,rag_provenance,shadow_chain,exemplar_selector,dspy_gepa_runner,evolution_dispatcher,amendment_drafter,evolution_feishu_notifier,evolution_audit_writer}.py);仅交付 docs/decisions/P2-2-implementation-plan-2026-05-18.md + 本 docs/plan.html 更新 + memory/project_phase_x_research_2026_05_18.md(已落)+ 预飞演练报告。下一站 = (a) owner 召开 Phase X 实施期 dedicated session 启 X-001(可与 I-002 并行)OR (b) owner 直接授权 QUANTMIND_OWNER_PROD_AUTHORIZATION 启 I-002 真实长跑(45 真实交易日 ≈ 9 周)— 两者可并行,owner 优先级灵活。</li>
         <li>2026-05-17 session #20 phase-j-full (J-001..J-007 done) + codex 5-cycle PASS:本 session 在 session #19 leftover docs-only commit <code>b55eab0</code> 落地后,一次性合入 Phase J 7 P0 任务为 <strong>1 个 bundled feature commit <code>3d914fd</code></strong>(per session #18 I-001 precedent + 跨任务文件耦合现实:main.py 同时承载 J-002/J-004/J-007 改动,acceptance_report.py 跨 J-004 + 3 个 codex cycle 修复,reset_trigger_detector.py 跨 J-004 + cycle 3/4 修复)。<strong>Codex 5-cycle review + Phase 6 final verification</strong>:4 P1 + 12 P2 + 2 P3 = 18 真实 bug,0 dismissed false positive,全部 RESOLVED + 0 critical regression。覆盖核心 P0-6/P1-2.A 不变量:reset state JSONL hydration(restart 持久化)/ switch gate 与 reset 联动(stale PASS 防护)/ Shanghai 时区一致性(跨 dashboard+reset clamp)/ 并发 reset monotonicity(record_reset + set_reset_state + hydration max-timestamp)/ audit-first 顺序(_fire 失败时 raise 不更新内存)/ naive datetime 早返 / systemd User=quantmind ACL 授权 + 验收 / smoke + simulator force-set 安全 env vars / smoke 捕获 BaseException。测试:2410 baseline → <strong>2605 passed</strong>(+195),11 skipped,ruff Phase J touched files 全绿,redline-check.sh 全绿。完整 codex 报告:<code>docs/reviews/phase-j-codex-review-summary.md</code>。<strong>Phase J 7/7 done</strong> → 下一站 = owner 决策(a)I-002 真实长跑启动需 owner 直接授权 QUANTMIND_OWNER_PROD_AUTHORIZATION env var(由 J-007 守门;Claude 严禁主动启动)OR(b)Phase X dedicated 计划文档 session 启动。SESSION_LOG #20 + 本修订记录追加。</li>
         <li>2026-05-17 session #19 docs-only — 落地 owner 2026-05-17 directive '把 (a) 真实长跑放最后,先填代码层面障碍与隐藏的各种坑,无 owner 直接授权严禁烧钱启动 (a)':<strong>新增 Phase J '运行前 hardening' 7 个 P0 任务</strong>(J-001 acceptance dashboard CLI read-only Mongo 聚合 + 投射 PASS 日期 / J-002 cold-start 集成 smoke 测试 stub LLM 0 真实 ¥ / J-003 systemd 单元 + 自动重启 + journald + StartLimitBurst=20 防 crashloop / J-004 5 类 P0 reset 触发器显式检测 + AlertDispatcher 走告警群隔离决策 + acceptance reset_at/reason / J-005 trading-hours 模拟器 harness --days {1,5,10,45} 把 (a) reset-burn-relaunch 边际成本降到 0 / J-006 I-002 production runbook + incident playbook ≥800 行含 ≥10 故障情形 / J-007 owner-authorization hard lock QUANTMIND_OWNER_PROD_AUTHORIZATION env var 7 天过期 fail-fast 是 P0-6 §2 红线 5 acceptance gate 的前置二级门)。<strong>修改 I-002 task</strong>:depends 加 'J-001..J-007 全部 done + owner 直接授权';summary 加 owner 2026-05-17 锁定说明;notes 加 owner directive 引用。<strong>修改 timeline 阶段顺序</strong>:加 lane.j 'J 运行前 hardening' 介于 H 与 I 之间 + 补回原 timeline 缺失的 lane.i 'I 验收运行' + CSS 加 .lane.j(teal #0d9488)+ .lane.i(orange #ea580c)。SESSION_LOG 追加 #19 条目。本 session 严守用户 '完成后先报告,不要自动 commit' 指令 — 仅改 docs/plan.html 一文件,无代码改动,无 git commit,无 SSoT 外其他文件改动。基于推荐序列 (b) Phase X dedicated 计划文档 session 先 + Phase J 中间 + (a) 长跑最后;Phase X 与 Phase J 互不依赖可并行。下一 session 入口 = owner 决策 (b) Phase X 计划文档 OR Phase J 启动(允许 J-001/J-007 在同 session 并行因都仅依赖 I-001/H-001 已 done)。<strong>严禁本 session 或后续 session 在 Phase J 未 done + 无 owner 直接授权时擅自启动 (a)。</strong></li>
         <li>2026-05-17 session #18 phase-i-001 simulation_auto 联调 + codex 9-cycle:用户开 session "check ./docs/plan.html, start phase I-001",先一次 feature commit(后被两次 codex review 修复版连续取代,最终 <code>c0bfa4b</code>),用户触发 /codex-review → 用户后续两次催 "闭合 cycle 3 验证 gap" + "codex已经畅通,闭合 cycle 3 验证 gap"。整体跑了 9 个 codex review cycle,每 cycle codex 都找到真实生产 bug,本地门禁全绿 pre-codex 仍非 commit-safe。<strong>统计:5 P1 + 13 P2 + 1 INFO = 19 真实 bug,0 dismissed false positive</strong>。Cycle 10 verification 因 codex CLI 命中 OpenAI usage limit(reset 19:19 PM)按 skill Phase 5 退出 codex_unavailable;cycle 9 修复由 30 个新回归测试 + 完整本地门禁(pytest 2410 / 88.18% / ruff / redline / 前端)覆盖。本 session 一次 feature commit <code>c0bfa4b</code> 落 I-001 完整 9-cycle 加固版(integration phase 单任务 — I-002/I-003 blocked on real 5-day + 45-day runtime + owner authorization)。新建 <code>backend/services/mongo_repositories.py</code>(6 Mongo adapter:InstructionPlan / EquityPoint / Ticket / DailyReconciliation / SnapshotLookup / Acceptance,统一 naive→UTC + Mongo-list→tuple 重建在一处)+ 改造 <code>backend/main.py</code> 加 _init_orchestration_layer 在 _init_trading_layer 之后跑(BrokerEventStore + BrokerSnapshotStore + MockBroker.attach_market_meta + ExecutionReportApplier + ReconciliationApplier + ModeRouter w/ AcceptanceService gate + SimulationExecutor + BrokerScheduler w/ intraday-MTM + acceptance 回调 + ExecutionReportOrchestrator + ReconciliationOrchestrator),原 line 509 SystemExit 改为 AcceptanceService.can_switch_to_feishu_on() PASS 检查 — 遵守 P0-6 §2 红线 5 严禁 env var 绕过 + 4 类异常归入 audit + log。<code>backend/data/database.py</code> 加 5 新 collection 索引(instruction_plans 唯一 instruction_id + 复合 trade_date/status / instruction_plan_builder_early_returns 复合 instruction_id+at / reconciliation_tickets 唯一 ticket_id + 复合 trade_date/status / daily_reconciliations 唯一 ticket_id + standalone trade_date / acceptance_reports 唯一 trade_date + standalone computed_at)。<code>backend/broker/mock_broker.py</code> NEW <code>attach_market_meta(provider)</code> setter — BrokerRegistry 在 import 期构造 default broker,数据层(MongoBackedMarketMetaProvider)在 lifespan 才就绪,所以 orchestration_layer 跑一次把 provider 装上去,无新状态无新行为。<code>backend/monitoring/alerter.py</code> httpx outbound 加 <code>transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0")</code> — IPv4-only egress 红线([[feedback_ipv4_only_egress]] memory)落地;providers.py 早已合规,本次补 alerter 是 backend 仅剩 2 个 httpx 使用点之一。新建 <code>tests/test_phase_i_001_orchestration.py</code> 15 tests 三层覆盖:(1) Mongo repo round-trips 8 个用例覆盖 upsert→get + list_recent 排序 + status/trade_date 过滤 + broker_at_fill FILLED/REJECTED 路径 + 5 类边界(2) 5-day simulation_auto loop drive transitions 通过 MockBroker(_current_now 注入测试时钟过交易时段 check) → EquityPointBuilder.build → MongoEquityPointRepository.upsert → AcceptanceService.compute → MongoAcceptanceRepository.upsert,assertion 三条:every transition tuple ∈ LAWFUL 7-tuple 集(DRAFT→VALIDATED / DRAFT→REJECTED / VALIDATED→DISPATCHED / VALIDATED→REJECTED / DISPATCHED→FILLED/EXPIRED/AMBIGUOUS) + 5 acceptance_report rows w/ distinct trade_date + broker NAV ↔ EquityPoint.total_equity 漂移 ≤0.05 CNY + can_switch_to_feishu_on() 返回 False 因合成 counters 致 FAIL(P0-6 gate 不变)(3) wiring smoke test 拼接 18 个必备 app.state slot 名 一一断言 not None,FEISHU_DECISION_CHAT_ID 未设时 reconciliation_orchestrator stay None,broker_scheduler.stop() 收尾。门禁:pytest 2395 passed / 11 skipped(基线 2380 → +15)+ 88.30% coverage + ruff touched 6 files clean + scripts/redline-check.sh 全绿(无新红线但已有 14 类全过)+ frontend vue-tsc + vitest 120 passed 15 files(未触前端)。本 session 严格遵守 [[feedback_codex_review_manual_invocation]] 不自动跑 codex — 用户未显式要求;commit-safe 由本地门禁链定义而不是 codex。Phase I 进度:I-001 done;I-002 blocked-on real 5 trading-day continuous run;I-003 blocked-on I-002 PASS + owner written authorization。下一站 = 用户决策:(a) 启动 simulation_auto 长跑 累积 I-002 所需 5/45 trading day,(b) 进入 Phase X 自进化(等用户 dedicated 计划文档 session per P2-2 lock),或(c) 用户主动 codex-review 本 session 整 Phase 改动(per [[feedback_codex_review_manual_invocation]])。</li>
@@ -756,6 +757,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-18",
+        session: "#21 phase-x-dedicated-planning + 6-route research + 16 议题逐题决策 + 28 任务详细清单 + 预飞演练",
+        owner: "Claude Opus 4.7 (1M ctx)",
+        state_in: "Session #20 left Phase J 7/7 done (commit 3d914fd) + Phase X dedicated 计划文档 session 与 I-002 真实长跑作为两条 owner-gated 下一站。Owner 在 session 开始时选 (b) Phase X 计划文档 → 预飞演练序列(per 2026-05-17 session #19 推荐),指令'查看 ./docs/plan.html 了解整体进度,然后将下一步工作总结出来供我查看,我回复执行之后,你需要构建todo list并按计划推进 + 在调查过程中广泛调查众多源头的信息,各大开源社区/X 社交媒体的技术相关发帖,等等;确保每一个议题都有充分的理论与技术支撑'。SSoT 状态:55/61 done + 6 blocked(I-002/I-003/X-001/X-002/X-003/S-004);Phase X 3 个 X-001/X-002/X-003 占位为 P2-2 lock 2026-05-11 留下的 dedicated 计划文档 session 接管点;P2-2 主决策 doc §3 已锁 28 任务 H-001..H-028 但 **H 前缀与现有 Phase H 撞名**需重命名;P2-2 lock 明文'本 session 严禁写任何自进化代码'。",
+        actions: "1) 构建 10 任务 TaskCreate todo list 覆盖 6 路并行研究 + 议题起草 + 用户互动 + SSoT 落地 + 预飞演练。2) **6 路并行 general-purpose Agent web 研究(2026-05-18 启动期最新动态)**:(i) DSPy + GEPA — 确认 dspy==3.2.1 最新稳定 + gepa-ai/gepa 4.4k★ + ICLR 2026 Oral 接收 + LiteLLM dashscope provider verified + 7 工程坑;(ii) prompt 优化替代方案对比 — DSPy GEPA 30/30 仍最优 vs TextGrad/PromptBreeder/AdalFlow/OPRO/EvoPrompt/SCOPE 全部劣势;(iii) FinMem + ERL — 原 arxiv 2311.13743 + KDD 2024 FinAgent + 2603.24639 ERL heuristic 蒸馏升级 + k=3 sweet spot + 7 contamination 防护;(iv) RAG provenance — 5 源 API 工程速查表 + 3 层防 prompt-injection(sanitize+Spotlighting datamarking+audit gate)+ 17 字段 JSON Schema + 文件系统 vs Mongo 7 维度论证;(v) LLM 量化生态 — TradingAgents v0.2.5 + RD-Agent-Quant ICML 2026 + Omar Khattab X 引述 + 第 4 路径 frontier→proposal Agent 强候选 deferred;(vi) shadow validation — 文件式 prompt registry 7 维度优于 MLflow/LangSmith + SR 11-7 + 中国证监会 2024 草案完全契合 + 飞书通知/amendment 模板。研究汇总落到 memory/project_phase_x_research_2026_05_18.md + MEMORY.md 索引更新。3) **互动 Q1-Q7 逐题以 AskUserQuestion 卡片询问 + Q8-Q16 用户指令'剩余选择均采用推荐选项继续推进'批量锁定**:Q1 严格 pin + Codex R3 / Q2 Qwen3-Embedding-0.6B 本地(用户主动询问技术背景后升级自 BGE-small-zh)/ Q3 GitHub PAT 只读异质凭证 / Q4 R1+R3+R7 三项硬约束 / Q5 decision_ledger 派生视图 / Q6 14 字段含 is_anti_exemplar / Q7 全 17 字段 schema / Q8-Q16 推荐选项(详见 docs/decisions/P2-2-implementation-plan-2026-05-18.md §决策摘要 表)。4) **落地 docs/decisions/P2-2-implementation-plan-2026-05-18.md**(~600 行 + 28 任务详细 X-001..X-028 + §2 红线 21~23 扩 + 决策依据 + 排除选项 + 验证清单)。5) **更新 docs/plan.html SSoT**:删除 X-001/X-002/X-003 3 个旧占位 + 插入 X-001..X-028 28 个详细任务 + SESSION_LOG #21 + 修订记录 ul 顶部追加。6) **预飞演练**:跑 scripts/smoke_test_cold_start.py + scripts/simulate_n_trading_days.py --days 45(QUANTMIND_LLM_STUB=1 默认零真实 LLM ¥)+ 输出 docs/reviews/phase-x-preflight-2026-05-18.md。7) docs-only commit(session 结尾一次性 per CLAUDE.md §1.4)。**严守 P2-2 lock 本 session 边界**:0 backend/evolution / 0 backend/services/{prompt_registry,rag_provenance,shadow_chain,exemplar_selector,dspy_gepa_runner,evolution_dispatcher,amendment_drafter,evolution_feishu_notifier,evolution_audit_writer}.py / 0 config/prompts / 0 data/rag 改动;0 main.py / scheduler.py / agents/prompts.py 现有代码改动。",
+        commit: "(pending docs-only commit at session end)",
+        next: "**Phase X 计划文档 ✅ + 预飞演练 ✅ → 下一站 owner-gated 二选一可并行**:(a) owner 召开 Phase X 实施期 dedicated session(任意时间;沿用 X-001..X-028 28 任务清单 + Q14 决策与 I-002 并行 import 守门已解耦)— 推荐第一 session 推 X-A 基础设施 7 任务(X-001..X-007 ~5.5d 工作量);(b) owner 直接授权 QUANTMIND_OWNER_PROD_AUTHORIZATION=<owner>:YYYYMMDD 启 I-002 真实长跑(45 真实交易日 ≈ 9 周 + ≈ ¥900 LLM 预算 per current pricing;按 docs/runbook/i-002-production-runbook.md 执行)。两条路径互不依赖(Phase X 18 模块严禁 import backend.{api,broker,risk,llm,agents,mirofish,data} = 与 I-002 主路径零依赖;唯一接入点 X-005 BrokerScheduler 第 5 cron 需 owner 协调 ~5 min restart 窗口)。**Codex review 不在本 session 跑**:决策文档无代码 R3 SDK 抽象 + R5 coverage 不适用;Codex 5 轮 R1-R5 在 Phase X 实施期 X-024..X-028 跑(其中 X-026 R3 SDK 在 X-015 后提前跑防 SDK 漂移导致大范围回滚 — Q15 决策)。"
+      },
       {
         date: "2026-05-17",
         session: "#20 phase-j-full (J-001..J-007) + codex 5-cycle PASS",
@@ -1737,35 +1747,310 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
       {
         id: "X-001", phase: "X 自进化", status: "blocked", priority: "P2",
-        title: "文件式 prompt registry(占位)",
-        summary: "config/prompts/{agent}/{version}.yaml + prompts.lock.json, git + restart 切换。详细 28 任务清单 H-001..H-028 由 dedicated 计划文档 session 写入。",
-        scope: "config/prompts, backend/services/prompt_registry.py",
-        depends: "Phase A/B 完成, owner 确认启动 Phase X + dedicated 计划文档 session 完成",
-        acceptance: "runtime 不可 mutate; promote 必经 amendment。",
-        tests: "registry lock tests; rollback tests。",
-        sources: "P2-2",
+        title: "config/prompts/{agent}/{version}.yaml + prompts.lock.json schema",
+        summary: "创建 config/prompts/ + 4 必经 Agent 子目录(fundamental_analyst/technical_analyst/risk_officer/fund_manager);frozen Pydantic PromptLockFile schema;.gitkeep 占位。X-A 基础设施 1/7。",
+        scope: "config/prompts/, backend/services/prompt_registry.py (schema only)",
+        depends: "owner 启动 Phase X 实施期 session",
+        acceptance: "目录结构 + schema 单元测试通过。",
+        tests: "schema strict validation tests。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.1 X-001",
         commit: "", session_date: "", notes: ""
       },
       {
         id: "X-002", phase: "X 自进化", status: "blocked", priority: "P2",
-        title: "RAG 白名单与 frontier crawler(占位)",
-        summary: "只抓 arxiv/semanticscholar/openreview/白名单 GitHub releases/akshare changelog, 输出到 data/rag 文件系统。详细任务由 dedicated 计划文档 session 写入。",
-        scope: "backend/services/frontier_crawler.py, backend/services/rag_ingester.py, data/rag",
-        depends: "X-001, owner Phase X authorization",
-        acceptance: "非白名单拒绝入库并写 audit; 不写 Mongo/evidence_collection。",
-        tests: "allowlist tests; prompt-injection rejection tests。",
-        sources: "P2-2",
+        title: "data/rag/{source}/{date}/{doc_id}.md + provenance.jsonl 目录(fcntl flock)",
+        summary: "5 source 子目录(arxiv/semanticscholar/openreview/github_releases/akshare);provenance.jsonl append-only;启动期 fail-fast 校验。X-A 2/7。",
+        scope: "data/rag/, backend/evolution/provenance/writer.py (skeleton)",
+        depends: "owner 启动 Phase X 实施期 session",
+        acceptance: "fcntl flock + append-only 工程测试通过。",
+        tests: "concurrent write tests; flock contention tests。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.1 X-002",
         commit: "", session_date: "", notes: ""
       },
       {
         id: "X-003", phase: "X 自进化", status: "blocked", priority: "P2",
-        title: "GEPA / exemplars / shadow evolution(占位)",
-        summary: "离线 GEPA、FinMem exemplars、22:00 evolution_shadow_run, 45 交易日 shadow validate 后飞书通知人工 gate;复用 S-004 留下的 backend/services/shadow_*。",
-        scope: "backend/services/dspy_gepa_runner.py, shadow_chain.py, exemplar_selector.py, evolution_feishu_notifier.py",
-        depends: "X-001, X-002, E-008, H-003",
-        acceptance: "不绕过 cost_guard; 不直接改 production prompt/config。",
-        tests: "budget tests; shadow pass/fail tests; audit 34 类 tests。",
-        sources: "P2-2, P1-2.A amendment, P1-6 amendment",
+        title: "PromptRegistry frozen Pydantic + load_pinned_version + alias_resolver",
+        summary: "backend/services/prompt_registry.py 单一真相源加载 prompts.lock.json + 校验文件存在 + checksum + 启动期 fail-fast。0 runtime mutate + 0 hot-reload(继承 P0-7 §2 红线 14)。X-A 3/7。",
+        scope: "backend/services/prompt_registry.py",
+        depends: "X-001",
+        acceptance: "PromptRegistry strict+frozen+extra='forbid';启动期 fail-fast on missing prompts.lock.json。",
+        tests: "registry lock tests; rollback tests; checksum mismatch fail-fast。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.1 X-003",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-004", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "backend/evolution/provenance/{models,writer,verifier}.py(17 字段 RagProvenanceEntry)",
+        summary: "Q7 schema 落地:17 字段 + 5 子字段 sanitization_applied;hash-anchored citation;3 文件 Pydantic v2 frozen+strict+extra='forbid'。X-A 4/7。",
+        scope: "backend/evolution/provenance/*.py",
+        depends: "X-002",
+        acceptance: "RagProvenanceEntry 17 字段 strict 校验;starting 白名单源校验 fail-fast;hash verify on retrieval。",
+        tests: "schema tests; whitelist enforcement tests; hash mismatch tests。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.1 X-004 + §1.6",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-005", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "BrokerScheduler evolution_shadow_run 5th cron(22:00 mon-fri Asia/Shanghai)",
+        summary: "P1-2.A-amendment-2026-05-11-evolution-shadow-cron-5th 落地;非破坏式追加;失败 1-retry + audit;不冻结买卖路由(EOD chain 不同源)。X-A 5/7。",
+        scope: "backend/broker/scheduler.py(add_job 第 5 cron)",
+        depends: "P1-2.A 主决策(已 done)",
+        acceptance: "5th cron 注册成功 + 失败重试 + audit emission。",
+        tests: "scheduler dry-run; cron 触发 mock tests。",
+        sources: "P2-2, P1-2.A-amendment-2026-05-11, P2-2-implementation-plan-2026-05-18 §3.1 X-005",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-006", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "ExemplarSelector(FinMem 14 字段 + 4 Agent stratify + Qwen3-Embedding-0.6B + ≤3 cap)",
+        summary: "Q5/Q6/Q11 落地:decision_ledger 派生视图(Mongo aggregation pipeline 4 stage,零新 collection);Qwen3-Embedding-0.6B 本地 CPU 推理;4 Agent 差异化 stratify;严禁 LLM-rerank;k≤3 hard。X-A 6/7。",
+        scope: "backend/services/exemplar_selector.py + data/models/Qwen3-Embedding-0.6B/",
+        depends: "无(独立于 X-003/X-004)",
+        acceptance: "4 Agent 召回结果满足 layer 分布 + risk_officer 必含 ≥1 anti_exemplar;k=3 strict cap。",
+        tests: "4 Agent stratify tests; anti_exemplar 强制召回; k>3 raise; embedding cache tests。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.1 X-006 + §1.5 + §1.10",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-007", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "ShadowChain(45 日 acceptance replay + ShadowAcceptanceReport + challenger 胜判定)",
+        summary: "Q8 三字段扩(bootstrap_pnl_ci_95pct + challenger_artifact_id + champion_baseline_id);沿用 P0-6 compute_acceptance_window;5+3 硬门槛 + 4 严格优于 + 4 不差于 0.5pct;scipy.stats.bootstrap 1000 resample。X-A 7/7。",
+        scope: "backend/services/shadow_chain.py + Mongo shadow_acceptance_reports collection",
+        depends: "X-003, X-004, X-006, P0-6 主决策",
+        acceptance: "ShadowAcceptanceReport 17+3 字段 strict;challenger 胜判定 13 项断言全过;bootstrap CI 单元测试。",
+        tests: "shadow validate happy/fail path; bootstrap CI correctness; collection isolation。",
+        sources: "P2-2, P0-6, P2-2-implementation-plan-2026-05-18 §3.1 X-007 + §1.7",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-008", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "EvolutionDispatcher(4 类自进化提议协调 + import 守门)",
+        summary: "单一入口 dispatch prompt / RAG / risk_proposal / exemplar 4 类;严禁 LLM 反向调用 .activate_*;import 守门继承 X-018。X-B 1/8。",
+        scope: "backend/services/evolution_dispatcher.py",
+        depends: "X-003..X-007",
+        acceptance: "4 路径 dispatch 单一入口;import 守门测试通过。",
+        tests: "dispatch routing tests; import isolation lint。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-008",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-009", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "DSPyGEPARunner(GEPA 离线 prompt 演化 + R1 sample/iter cap + ≤¥5 budget)",
+        summary: "Q1 SDK pin(dspy==3.2.1 + gepa>=0.0.26)+ R1 硬约束(GEPA_MAX_SAMPLES=100 + GEPA_MAX_ITERATIONS=10)+ deepseek-reasoner reflection_lm + dspy.Reasoning 开启(防 issue #7489 thinking 吞失)+ log_dir 文件持久化。X-B 2/8。",
+        scope: "backend/services/dspy_gepa_runner.py",
+        depends: "X-003, X-017",
+        acceptance: "GEPA compile() ≤¥5 budget;sample/iter 超限 raise GEPASampleLimitExceededError;reflection_lm 用 deepseek-reasoner 走 dspy.Reasoning。",
+        tests: "budget tests; sample limit raise; reasoning 启用 verify; log_dir 持久化。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-009 + §1.1 + §2 红线 21",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-010", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "FrontierCrawler(22:00 5 源 crawl + DeepSeek 总结 + 写 data/rag/)",
+        summary: "arxiv OAI-PMH(asyncio.Semaphore + 3.1s 节流)+ S2(free key bulk)+ OpenReview(openreview-py >=1.40)+ GitHub PAT(5000/hr + ETag)+ akshare(Atom feed);Spotlighting datamarking 防 prompt-injection;DeepSeek 总结 ~¥0.10/日。X-B 3/8。",
+        scope: "backend/evolution/crawlers/*.py + backend/evolution/frontier_crawler.py",
+        depends: "X-004, X-017",
+        acceptance: "5 源全部接通 + rate limit 守门 + Spotlighting datamarking + 启动期 PAT/secrets_validator。",
+        tests: "5 源 mock tests; rate limit守门; datamarking; PAT 校验。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-010 + §1.2",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-011", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "RagIngester(provenance + 白名单 + sanitize + audit + R3 precision fail-closed)",
+        summary: "3 层防 injection(sanitize + datamarking + audit);hash-anchored citation;R3 RAG_RETRIEVAL_PRECISION_FLOOR=0.80 fail-closed;严禁非白名单入库。X-B 4/8。",
+        scope: "backend/evolution/rag_ingester.py + backend/services/rag_provenance.py",
+        depends: "X-004, X-010",
+        acceptance: "白名单严格过滤 + precision < 80% fail-closed + audit RAG_DOCUMENT_REJECTED_NON_WHITELIST。",
+        tests: "allowlist tests; precision floor tests; prompt-injection rejection; sanitize regression。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-011 + §2 红线 22",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-012", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "P0-7 amendment 落地 — risk_parameter_proposals 扩 4 字段(非破坏式)",
+        summary: "P0-7-amendment-2026-05-11-risk-proposals-shadow-validation:target_artifact_type 区分 + shadow_validation_status + pending_amendment_id + feishu_notified_at;default=None 兼容历史 record。X-B 5/8。",
+        scope: "backend/models/risk_proposal.py + backend/data/database.py",
+        depends: "P0-7 主决策",
+        acceptance: "扩字段非破坏式;旧 record 默认 None;新 record 走 P2-2 shadow validate。",
+        tests: "schema migration tests; backwards-compat tests。",
+        sources: "P2-2, P0-7-amendment-2026-05-11, P2-2-implementation-plan-2026-05-18 §3.2 X-012",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-013", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "AmendmentDrafter(自动起草 + R7 强制 4 section + ≤¥5 budget)",
+        summary: "R7 硬约束:## diff + ## shadow evidence + ## readability check + ## rollback 4 section 强制;challenger prompt 长度膨胀 >50% 标 [WARNING];docs/decisions/pending/{artifact_id}.md 文件;LLM 生成走 cost_guard。X-B 6/8。",
+        scope: "backend/services/amendment_drafter.py",
+        depends: "X-007, X-017",
+        acceptance: "缺 section raise AmendmentSchemaError;长度膨胀 >50% 警告;LLM 调用走 cost_guard。",
+        tests: "4 section 强制; readability check; ≤¥5 budget; pending/ 文件写入。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-013 + §2 红线 23",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-014", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "EvolutionFeishuNotifier(shadow 通过 → 飞书通知 + Alerter dedup_15min)",
+        summary: "走 owner 自建应用 OpenAPI 发 FEISHU_ALERT_CHAT_ID(P0-2-amendment-2026-05-16);严禁 FEISHU_CUSTOM_BOT_*;renderer.py::render_evolution_pending 纯文本模板;Alerter dedup_15min 防轰炸。X-B 7/8。",
+        scope: "backend/services/evolution_feishu_notifier.py + backend/feishu/renderer.py 模板",
+        depends: "P1-7 §1.7, P0-2-amendment-2026-05-16",
+        acceptance: "走 OpenAPI 不走 webhook;dedup 防轰炸;纯文本无 prompt 全文(防 injection)。",
+        tests: "OpenAPI 路径 verify; dedup tests; template strict 校验。",
+        sources: "P2-2, P0-2-amendment-2026-05-16, P1-7, P2-2-implementation-plan-2026-05-18 §3.2 X-014",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-015", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "EvolutionAuditWriter(7 类 audit 写入 + JSONL 双写 + actor=SYSTEM/SCHEDULER)",
+        summary: "7 类自进化 audit 写入封装(PROMPT_VERSION_PINNED/...);严禁 LLM/FRONTEND_USER 写;调用 audit_writer.write()。X-B 8/8。",
+        scope: "backend/services/evolution_audit_writer.py",
+        depends: "X-016, P1-6 §1.7",
+        acceptance: "7 类 audit emission;actor 守门;JSONL 双写。",
+        tests: "actor 守门; 7 类断言; JSONL emission verify。",
+        sources: "P2-2, P1-6-amendment-2026-05-11, P2-2-implementation-plan-2026-05-18 §3.2 X-015",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-016", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "AuditEventType 7 类自进化 enum review + 单元测试断言",
+        summary: "已发现 backend/audit/models.py:81-87 7 类自进化 enum 预定义 ✅(P1-6-amendment-2026-05-11-audit-eventtype-34 已落地);本任务 review + 单元测试断言 7 类存在 + ACTOR 守门。X-C 1/5。",
+        scope: "tests/test_audit_evolution.py (NEW)",
+        depends: "P1-6 主决策 + 前 2 amendment(已 done)",
+        acceptance: "7 类 enum value 断言;ACTOR=SYSTEM/SCHEDULER 守门测试。",
+        tests: "enum 完整性; ACTOR 拒绝 LLM/FRONTEND_USER; 7 类全断言。",
+        sources: "P2-2, P1-6-amendment-2026-05-11, P2-2-implementation-plan-2026-05-18 §3.3 X-016",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-017", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "cost_guard 集成 P2-2(DSPy GEPA + frontier + drafter LLM 计入 daily ¥20 / monthly ¥440 / Kimi ¥4)",
+        summary: "assert_budget_allows() 包裹所有 P2-2 LLM 出站;严禁单独预算池(继承 P1-7 §1.4)。X-C 2/5。",
+        scope: "backend/services/cost_guard.py (调用扩展;4 常量不变)",
+        depends: "P1-7 主决策",
+        acceptance: "DSPy/frontier/drafter LLM 全部计入 daily ¥20 hard;超限 raise + audit。",
+        tests: "budget integration tests; raise behavior; 4 常量不变断言。",
+        sources: "P2-2, P1-7, P2-2-implementation-plan-2026-05-18 §3.3 X-017",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-018", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Phase X 18 模块 import 守门 3 层(ruff lint + AST scan + 单元测试 + grep)",
+        summary: "18 模块严禁 import backend.{api,broker,risk,llm,agents,mirofish,data}:ruff isort.no-restricted-imports rule + AST scan test + scripts/redline-check.sh 扩展 + grep 守门。X-C 3/5。",
+        scope: ".ruff.toml + tests/test_phase_x_imports.py + scripts/redline-check.sh",
+        depends: "X-003..X-015",
+        acceptance: "3 层守门通过;违规 import lint + test 双拒绝。",
+        tests: "AST scan all 18 files; ruff rule trigger; redline-check pass。",
+        sources: "P2-2 §2 红线 17, P2-2-implementation-plan-2026-05-18 §3.3 X-018",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-019", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Phase X 单元测试 — 8 主模块 200+ 案例 + 覆盖率 >70%",
+        summary: "prompt_registry + rag_provenance + shadow_chain + exemplar_selector + dspy_gepa_runner + frontier_crawler + rag_ingester + evolution_dispatcher 各 200+ 案例;快路径 + 失败路径 + budget 超限 + 白名单拒绝 + R1/R3/R7 边界。X-C 4/5。",
+        scope: "tests/test_evolution_*.py(8+ 文件)",
+        depends: "X-003..X-015",
+        acceptance: "8 模块各 200+ 案例;Phase X 模块覆盖率 >70%。",
+        tests: "本任务=测试本身。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.3 X-019",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-020", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Phase X 集成测试 — 端到端 evolution_shadow_run 链 + 失败/budget/白名单 path",
+        summary: "22:00 cron → shadow validate → 通过 → 飞书通知(mock OpenAPI)→ amendment_drafter → audit 7 类完整链;含 happy + 失败 + budget 超限 + 白名单源拒绝 + R1 sample 超限 + R3 precision 触发。X-C 5/5。",
+        scope: "tests/test_evolution_e2e.py",
+        depends: "X-019",
+        acceptance: "完整链 happy + 4 失败 path 全过;mock webhook 不发真实飞书。",
+        tests: "本任务=测试本身。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.3 X-020",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-021", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "backend/api/evolution.py(3 GET 端点;仅 GET 符合 P1-5)",
+        summary: "GET /api/evolution/pending(待处理列表)+ GET /api/evolution/runs(shadow_run 历史)+ GET /api/evolution/precision(R3 retrieval precision 监控);仅 GET 符合 P1-5 §2 红线 1+2。X-D 1/3。",
+        scope: "backend/api/evolution.py + backend/main.py(挂载 router)",
+        depends: "X-008, P1-5 主决策",
+        acceptance: "3 GET 端点;Pydantic strict response;0 写入端点。",
+        tests: "API endpoint tests; only-GET 守门。",
+        sources: "P2-2, P1-5, P2-2-implementation-plan-2026-05-18 §3.4 X-021",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-022", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "前端不新增独立页(P1-5 §2 红线 1 11 页名额永锁;纯约束任务)",
+        summary: "履行 P1-5 §2 红线 1 11 页名额永锁;Phase X 不破。owner 走飞书 + amendment 文件路径,不需要前端独立页。X-D 2/3(纯约束,0d 工作量)。",
+        scope: "(无文件改动;纯约束)",
+        depends: "P1-5 主决策",
+        acceptance: "约束遵守(无新前端 .vue 文件创建)。",
+        tests: "frontend/src/views/ 文件数 = P1-5 锁定数。",
+        sources: "P1-5, P2-2-implementation-plan-2026-05-18 §3.4 X-022",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-023", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "SystemStatus.vue 内嵌『自进化待处理』slot(轮询 GET /api/evolution/pending 5min)",
+        summary: "Q12 落地:SystemStatus.vue 现有 5 freeze source 卡片之后加 1 行;0 pending 绿/1-3 黄/>3 红;5 min polling。复用现 source-card 样式。X-D 3/3。",
+        scope: "frontend/src/views/SystemStatus.vue + frontend/src/stores/freezeSources.ts(扩字段)",
+        depends: "X-021, P1-5 §1.1 主决策(已存在)",
+        acceptance: "SystemStatus 显示自进化状态点;颜色阈值正确;polling 正常。",
+        tests: "vitest 单元测试; visual regression (0/1/3/5 pending 4 状态)。",
+        sources: "P2-2, P1-5, P2-2-implementation-plan-2026-05-18 §3.4 X-023",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-024", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Codex R1 — consistency + redline coherence(P2-2 + 3 amendment + 本计划 §2 红线 21~23 vs 130+ 红线)",
+        summary: "5 轮 codex review 第 1 轮;输出 docs/reviews/X-XXX-r1-consistency.md。X-E 1/5。",
+        scope: "docs/reviews/X-XXX-r1-consistency.md",
+        depends: "Phase X-A/B/C/D 全部完成",
+        acceptance: "0 critical 一致性冲突;PASS 才进 R2。",
+        tests: "本任务=codex 输出 review。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.5 X-024",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-025", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Codex R2 — red-team / adversarial(绕过 shadow / human gate / prompt injection / 死锁 / cost 超限)",
+        summary: "尝试找出绕过 shadow validate / 绕过 human gate / prompt injection / 自进化死锁 / cost 超限等攻击路径;输出 docs/reviews/X-XXX-r2-redteam.md。X-E 2/5。",
+        scope: "docs/reviews/X-XXX-r2-redteam.md",
+        depends: "R1 通过",
+        acceptance: "0 critical 攻击路径;PASS 才进下一轮。",
+        tests: "本任务=codex 输出 review。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.5 X-025",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-026", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Codex R3 — SDK signatures(DSPy GEPA / LiteLLM / Qwen3-Embedding / openreview-py 兼容性)【提前在 X-015 后跑】",
+        summary: "Q15 决策:X-B(X-015)完成后立即跑(不等 X-D)防 SDK 漂移导致大范围回滚;输出 docs/reviews/X-XXX-r3-sdk.md。X-E 3/5。",
+        scope: "docs/reviews/X-XXX-r3-sdk.md",
+        depends: "X-015 完成(提前触发,不等 X-D)",
+        acceptance: "5 SDK 契约校验通过;PASS 后才允许 X-D 启动。",
+        tests: "本任务=codex 输出 review + SDK 真实运行 verify。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.5 X-026 + §1.14",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-027", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Codex R4 — security(RAG provenance / data/rag 权限 / GitHub PAT / cost_guard 不绕过)",
+        summary: "RAG ingestion provenance / data/rag/ 文件权限 / provenance.jsonl 篡改防护 / GitHub PAT 防泄露 / cost_guard 不绕过;输出 docs/reviews/X-XXX-r4-security.md。X-E 4/5。",
+        scope: "docs/reviews/X-XXX-r4-security.md",
+        depends: "R3 通过 + X-D 完成",
+        acceptance: "0 critical 安全漏洞;PASS 才进 R5。",
+        tests: "本任务=codex 输出 review。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.5 X-027",
+        commit: "", session_date: "", notes: ""
+      },
+      {
+        id: "X-028", phase: "X 自进化", status: "blocked", priority: "P2",
+        title: "Codex R5 — coverage(80%+ 单元 + 集成 + 端到端 + R1/R3/R7 硬约束断言覆盖)",
+        summary: "严禁覆盖率回退;输出 docs/reviews/X-XXX-r5-coverage.md。X-E 5/5;PASS = Phase X 闭环。",
+        scope: "docs/reviews/X-XXX-r5-coverage.md",
+        depends: "R4 通过",
+        acceptance: "Phase X 模块覆盖率 ≥80%;R1/R3/R7 全部硬约束断言覆盖。",
+        tests: "本任务=codex 输出 review + coverage 报告。",
+        sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.5 X-028",
         commit: "", session_date: "", notes: ""
       }
     ];
