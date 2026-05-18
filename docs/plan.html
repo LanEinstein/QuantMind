@@ -720,6 +720,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-18 session #23 phase-x-B-full + codex 1-cycle PASS — Phase X-B 8 任务 X-008..X-015 全部 done(独立 feature commit 4ce2cb8/72d9321/02ba4d8/e9797e6/53d6b80/f25bace/dc0adbd/fe79227)+ codex review --uncommitted 1 cycle 找 2 P1 + 4 P2 真实 bug 全部修复(P1-1 RagIngester 用 published_at 而 verifier 用 ingested_at 导致 hash-anchored 失败 / P1-2 amendment_id 缺 path-traversal 守门 / P2-1 Spotlighting wrapper 可被 body 内嵌 END 标签提前关闭 / P2-2 Sanitiser HTML strip 早于 marker count 漏报 XML 风格标签 / P2-3 FrontierCrawler summariser budget breach 同 break 丢 raw ingest / P2-4 RiskParameterProposal rejected 状态强制 accepted=True 错乱)+ 8 新 codex 回归测试 + 共 5360 行新代码 + 129 新单元测试(全 296 Phase X 测试通过)+ 2909 全测试套件全绿(基线 2901 → +8)+ ruff/redline-check 全绿。<strong>关键落地</strong>:8 模块(evolution_dispatcher 唯一入口 + dspy_gepa_runner R1 cap + frontier_crawler 5 源 + rag_ingester 3 层 + risk_proposal 4 字段 + amendment_drafter R7 + evolution_feishu_notifier OpenAPI + evolution_audit_writer 7 类) + Spotlighting datamarking + R1+R3+R7 三红线落地 + cost_guard.assert_budget_allows 包裹 GEPA/FrontierCrawler/AmendmentDrafter LLM 出站(继承 P1-7)+ MessageRenderer 新增 render_evolution_pending + FeishuAlerter.alert_chat_id 暴露。<strong>守住的红线</strong>:0 P0-7/P0-10/P1-6/P1-7 突破 + LLM positive list 4 类不动 + 凭证池 LLM 3+飞书 5 不动 + 永禁 FEISHU_CUSTOM_BOT_*(P0-2-amendment-2026-05-16)+ Phase X 全 26 新文件零 backend.{api,broker,risk,llm,agents,mirofish,data} 导入 + 4 必经 Agent 不动 + 0 backend restart + 0 destructive git。<strong>下一站</strong>:Phase X-C audit+守门 5 任务(X-016..X-020;X-016 Audit enum review + X-017 cost_guard P2-2 集成 + X-018 import 守门 3 层 + X-019 单元测试 200+ × 8 模块 + X-020 端到端集成测试)。Q15 决策提前 R3:X-026 Codex R3 SDK(DSPy/gepa/LiteLLM/openreview-py/Qwen3-Embedding/sentence-transformers 兼容性)可以现在跑(本 session codex 1-cycle 已找出语义 bug,SDK 漂移单独验证。完整报告 docs/reviews/phase-x-B-codex-review-summary.md。</li>
         <li>2026-05-18 session #22 phase-x-A-full — Phase X-A 7 任务 X-001..X-007 全部 done(独立 feature commit 1828fbf/f15e6c0/d3562e7/9204f64/9302472/eb364f1/3964e83)+ 207 unit tests 全过(prompt registry schema 26 + loader 21 + provenance writer 22 + provenance models 35 + broker scheduler evolution shadow 9 + E-005 既有 12 + exemplar selector 32 + shadow chain 30 + acceptance regression)+ ruff/redline-check 全绿。<strong>关键落地</strong>:Qwen3-Embedding-0.6B 1.2GB 通过 hf download 落 data/models/(gitignored;真实模型 fail_fast+embed verify 1024-dim 通过)+ BrokerScheduler 第 5 cron evolution_shadow_run 22:00 mon-fri 非破坏式追加(I-002 backend pid 3563 不受影响;需 owner 协调 restart 才生效)+ shadow_chain 4+4 metrics partition + scipy bootstrap 1000 resample 95% CI + ChallengerVerdict 13-bool surface。<strong>守住的红线</strong>:0 P0-7/P0-10/P1-6/P1-7 突破 + LLM positive list 4 类不动 + 凭证池 LLM 3+飞书 5 不动 + hot-reload 全禁 + cost_guard 4 常量不动 + 全 18 Phase X 模块零 backend.{api,broker,risk,llm,agents,mirofish,data} 导入(8 个 dedicated 测试断言)+ 0 backend restart + 0 destructive git。<strong>下一站</strong>:Phase X-B 自进化执行 8 任务(X-008..X-015)~10d 工作量;X-015 done 后 Q15 决策提前跑 Codex R3 SDK 防漂移。</li>
         <li>2026-05-18 session #21 Phase X dedicated 计划文档 session — 落地 docs/decisions/P2-2-implementation-plan-2026-05-18.md(16 议题逐题决策 + 28 任务 X-001..X-028 详细清单 + 3 项 P2-2 §2 红线扩展 21~23 落地 GEPA 过拟合 / RAG retrieval precision / amendment 强制 4 section)+ 6 路并行 web 研究汇总 ✅ 2026 SOTA 验证强化(DSPy GEPA ICLR 2026 Oral + 文件式 RAG 7 维度碾压 Mongo + FinMem→ERL 升级 DEFER 到 Phase X-finale + 第 4 路径 frontier→proposal DEFER 到 Phase Y 独立 session)。<strong>修改 docs/plan.html</strong>:删除 X-001/X-002/X-003 3 个旧占位 + 插入 X-001..X-028 28 个详细任务(X-A 基础设施 7 + X-B 自进化执行 8 + X-C audit+守门 5 + X-D 前端 3 + X-E Codex 5 轮)+ TASKS 数组保持 phase ordering S/A/B/C/D/E/F/G/H/J/I/X 一致。<strong>16 议题决策摘要</strong>:Q1 严格 pin dspy==3.2.1+gepa>=0.0.26+litellm>=1.60+openreview-py>=1.40+Codex R3 升级验证 / Q2 Qwen3-Embedding-0.6B 本地 CPU(MTEB multilingual #1 + Apache 2.0;升级自 BGE-small-zh)/ Q3 GitHub PAT 只读异质凭证不加入 P1-6 凭证池 / Q4 R1+R3+R7 三项 Phase X 红线;R2/R4/R5/R6 已被 P0 天然 hedge / Q5 ExemplarRecord 走 decision_ledger Mongo aggregation 派生视图零新 collection / Q6 14 字段含 is_anti_exemplar 强制反例召回 / Q7 provenance.jsonl 17 字段全 schema + 5 子字段 sanitization_applied / Q8 shadow_acceptance_reports 扩 3 字段 bootstrap_pnl_ci_95pct+challenger_artifact_id+champion_baseline_id / Q9 第 4 路径 frontier→proposal Agent DEFER 到 Phase Y / Q10 FinMem→ERL 升级 DEFER 到 Phase X-finale / Q11 4 Agent 差异化注入(fundamental→deep+intermediate / technical→shallow / risk→必含 anti / fund_manager→each layer 1)/ Q12 SystemStatus.vue 内嵌不新增页 / Q13 H→X 命名重映射 / Q14 Phase X 与 I-002 并行(import 守门解耦)/ Q15 Codex 5 轮 + X-B 后 R3 提前 / Q16 本 session 纯 docs。<strong>预飞演练</strong>:scripts/smoke_test_cold_start.py + scripts/simulate_n_trading_days.py --days 45(QUANTMIND_LLM_STUB=1 默认,零真实 LLM ¥),验证 J-002/J-005 harness + Phase J substrate 冷启与 5 类 P0-6 reset 触发器无误触。<strong>本 session 严守 P2-2 lock</strong>:0 自进化代码改动(0 backend/evolution / 0 backend/services/{prompt_registry,rag_provenance,shadow_chain,exemplar_selector,dspy_gepa_runner,evolution_dispatcher,amendment_drafter,evolution_feishu_notifier,evolution_audit_writer}.py);仅交付 docs/decisions/P2-2-implementation-plan-2026-05-18.md + 本 docs/plan.html 更新 + memory/project_phase_x_research_2026_05_18.md(已落)+ 预飞演练报告。下一站 = (a) owner 召开 Phase X 实施期 dedicated session 启 X-001(可与 I-002 并行)OR (b) owner 直接授权 QUANTMIND_OWNER_PROD_AUTHORIZATION 启 I-002 真实长跑(45 真实交易日 ≈ 9 周)— 两者可并行,owner 优先级灵活。</li>
         <li>2026-05-17 session #20 phase-j-full (J-001..J-007 done) + codex 5-cycle PASS:本 session 在 session #19 leftover docs-only commit <code>b55eab0</code> 落地后,一次性合入 Phase J 7 P0 任务为 <strong>1 个 bundled feature commit <code>3d914fd</code></strong>(per session #18 I-001 precedent + 跨任务文件耦合现实:main.py 同时承载 J-002/J-004/J-007 改动,acceptance_report.py 跨 J-004 + 3 个 codex cycle 修复,reset_trigger_detector.py 跨 J-004 + cycle 3/4 修复)。<strong>Codex 5-cycle review + Phase 6 final verification</strong>:4 P1 + 12 P2 + 2 P3 = 18 真实 bug,0 dismissed false positive,全部 RESOLVED + 0 critical regression。覆盖核心 P0-6/P1-2.A 不变量:reset state JSONL hydration(restart 持久化)/ switch gate 与 reset 联动(stale PASS 防护)/ Shanghai 时区一致性(跨 dashboard+reset clamp)/ 并发 reset monotonicity(record_reset + set_reset_state + hydration max-timestamp)/ audit-first 顺序(_fire 失败时 raise 不更新内存)/ naive datetime 早返 / systemd User=quantmind ACL 授权 + 验收 / smoke + simulator force-set 安全 env vars / smoke 捕获 BaseException。测试:2410 baseline → <strong>2605 passed</strong>(+195),11 skipped,ruff Phase J touched files 全绿,redline-check.sh 全绿。完整 codex 报告:<code>docs/reviews/phase-j-codex-review-summary.md</code>。<strong>Phase J 7/7 done</strong> → 下一站 = owner 决策(a)I-002 真实长跑启动需 owner 直接授权 QUANTMIND_OWNER_PROD_AUTHORIZATION env var(由 J-007 守门;Claude 严禁主动启动)OR(b)Phase X dedicated 计划文档 session 启动。SESSION_LOG #20 + 本修订记录追加。</li>
@@ -758,6 +759,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-18",
+        session: "#23 phase-x-B-full + codex 1-cycle PASS — X-008..X-015 8 任务全部 done + 129 新单元测试 + Phase X 296 测试全过 + 6 codex bug 全修",
+        owner: "Claude Opus 4.7 (1M ctx)",
+        state_in: "Session #22 left Phase X-A ✅ 7/7 done(commit 1828fbf/f15e6c0/d3562e7/9204f64/9302472/eb364f1/3964e83 + SSoT docs-only 9cd9f4f);207 X-A unit tests 全过 + Qwen3-Embedding-0.6B 1.2GB 已落 data/models/(gitignored)+ BrokerScheduler 第 5 cron evolution_shadow_run 22:00 mon-fri 非破坏式追加。X-008..X-015 全部 blocked 待 X-B session 启动。Owner 在本 session 直接 instruction '执行X-B,完成后执行codex-review,然后commit'。",
+        actions: "1) 构建 10 任务 TaskCreate todo list(8 X-B 任务 + codex-review + session 收尾)。2) **X-012 (commit 4ce2cb8)** 最基础先做:backend/models/risk_proposal.py(RiskParameterProposal frozen+strict+extra='forbid' + 4 P2-2 字段非破坏式 default=None / 'pending' / 'risk_config' + PROPOSAL_ID_RE + PENDING_AMENDMENT_ID_RE + 终态守门 promoted⇒accepted=True / rejected⇒accepted=False);20 unit tests。模型故意放 backend/models/ 避开 backend.risk import 红线。3) **X-015 (commit 72d9321)** EvolutionAuditWriter(frozen 7-method wrapper over AuditStore;_SCHEDULER_EVENTS={SHADOW_EVOLUTION_RUN_COMPLETED} 单元素;其他 6 类 default actor=SYSTEM;非 Category-5 event raise + actor not in SYSTEM_ONLY_ACTORS raise);17 unit tests。4) **X-014 (commit 02ba4d8)** EvolutionFeishuNotifier(包装 FeishuAlerter OpenAPI 路由 + dedup_15min + render_evolution_pending 单行模板纯 identifiers+path 零 prompt 全文)+ MessageRenderer.render_evolution_pending + _PENDING_AMENDMENT_PATH_RE 严格锁 docs/decisions/pending/ + _EVOLUTION_ARTIFACT_TYPES 4 类 + FeishuAlerter.alert_chat_id property 暴露;16 unit tests。5) **X-013 (commit e9797e6)** AmendmentDrafter(R7 4 section 强制 ## diff/## shadow evidence/## readability check/## rollback 缺一 raise AmendmentSchemaError BEFORE 写盘 + DEFAULT_LENGTH_INFLATION_THRESHOLD=0.50 严格 >50% 触发 length_inflation flag + AMENDMENT_ID_RE 守门 + cost_guard.assert_budget_allows 可选 redis 钩子);15 unit tests。6) **X-011 (commit 53d6b80)** RagIngester(3 层防 injection:whitelist+sanitise+R3 precision floor=0.80 fail-closed;Sanitiser 计算 INJECTION_MARKER_PATTERNS 6 类锁定;非白名单源 Category-5 BLOCKED audit);19 unit tests。7) **X-010 (commit f25bace)** FrontierCrawler(5 crawlers 共享 CrawlerBase frozen + Fetcher Protocol seam + Spotlighting wrap_with_spotlight 带 _escape_sentinels 中和 body 内嵌 sentinel + global asyncio.Semaphore=5 限并发 + summariser 可选 side-channel);13 unit tests。8) **X-009 (commit dc0adbd)** DSPyGEPARunner(GEPA_MAX_SAMPLES=100 + GEPA_MAX_ITERATIONS=10 + REFLECTION_LM_NAME='deepseek-reasoner' 锁定 + GEPACompiler Protocol seam 避免拉重 dspy/LiteLLM + cost_guard 包裹 + log_dir 每 agent + ISO timestamp 分区 + seed/new/summary 三文件);11 unit tests。9) **X-008 (commit fe79227)** EvolutionDispatcher(frozen façade routing 4 lanes + DispatchOutcome 4 status enum + per-lane finaliser emits SHADOW_EVOLUTION_RUN_COMPLETED audit 然后 short-circuits on shadow fail / drafts+pages on pass + challenger_id 用 strftime YYYYMMDDTHHMMSSZ 避开 amendment path regex 的冒号问题);10 unit tests。10) **Codex review 1-cycle(用户主动触发,per memory/feedback_codex_review_manual_invocation)**:codex review --uncommitted 跑 26 文件 5360 LOC 找出 2 P1 + 4 P2 真实 bug:P1-1 RagIngester 用 published_at 而 ProvenanceVerifier.verify_entry 用 ingested_at 路径不一致 → hash-anchored citation 永远 missing(修复:_write_payload 接 ingested_at 与 verifier 完全一致;同时 ingest 中 ingested_at = datetime.now(UTC) 单次计算供 disk+entry 共用)/ P1-2 amendment_id 直接插入 Path 容许 ../etc/passwd 写出 pending 目录(修复:AMENDMENT_ID_RE=^[A-Za-z0-9._-]+$ + 额外拒 .. 子序列 + 前导 .)/ P2-1 wrap_with_spotlight 不转义 body 内嵌 [[END UNTRUSTED:...]] 可被恶意文档提前关闭(修复:_escape_sentinels 用 ⟦⟦...⟧⟧ 视觉等价替换 BEFORE wrap)/ P2-2 Sanitiser 在 marker count 之前做 HTML strip → <system>...</system> 等 XML 风格 marker 被抹除漏报(修复:pre_strip_markers + post_strip_markers 取 max)/ P2-3 FrontierCrawler summariser budget breach 同 break 丢后续 raw ingest(修复:budget_blocked 标志位 — summariser 跳过但 ingest 继续因 raw ingest 零 LLM 成本)/ P2-4 RiskParameterProposal rejected 状态 require accepted_at 但另一 invariant require accepted=True → 人工 reject 只能存 accepted=True 错乱(修复:accepted_at 重定义为 review 时间戳;promoted⇒accepted=True + rejected⇒accepted=False cross-state invariants)。8 新 codex 回归测试覆盖每个修复点。完整报告 docs/reviews/phase-x-B-codex-review-summary.md。最终门禁:pytest 2909 passed 11 skipped(基线 2901 → +8)+ ruff Phase X-B 全文件 clean + scripts/redline-check.sh 全绿。11) Session 末:本 docs-only commit(plan.html 8 任务状态 blocked→done + commit hash 回填 + 本 SESSION_LOG #23 + 修订记录追加)。**严守的 ops 约束**:Codex review 用户主动触发 1 cycle 即收尾(per [[feedback_codex_review_manual_invocation]];6 bug 1 轮全修无需 R2-R5);0 backend restart(I-002 进程不受影响);0 P0-7/P0-10/P1-6/P1-7 突破(LLM positive list 4 类不动 + 凭证池 LLM 3+飞书 5 不动 + hot-reload 全禁 + cost_guard 4 常量不动 + 永禁 FEISHU_CUSTOM_BOT_* per P0-2-amendment-2026-05-16)+ Phase X 全 26 新文件零 backend.{api,broker,risk,llm,agents,mirofish,data} 导入(grep 守门通过)+ 0 destructive git。",
+        commit: "(pending docs-only commit at session end)",
+        next: "**Phase X-B ✅ 8/8 done → 下一站 Phase X-C audit+守门 5 任务(X-016..X-020 ~5d 工作量)**:X-016 AuditEventType 7 类自进化 enum review + 单元测试断言 + ACTOR 守门(已在 X-015 部分覆盖;独立测试文件落 tests/test_audit_evolution.py)+ X-017 cost_guard P2-2 集成(本 session 已 inline 由 X-009/X-010/X-013 三模块直接调 assert_budget_allows;X-017 任务变为校验 + 单元测试形式)+ X-018 Phase X 18 模块 import 守门 3 层(ruff isort.no-restricted-imports + AST scan + scripts/redline-check.sh 扩展)+ X-019 Phase X 单元测试 200+ × 8 模块覆盖率 >70%(本 session 已落 296 测试)+ X-020 端到端集成测试(22:00 cron → shadow validate → 通过 → 飞书通知 mock → amendment_drafter → audit 7 类完整链)。**Q15 提前 R3**:X-026 Codex R3 SDK(DSPy/gepa/LiteLLM/openreview-py/Qwen3-Embedding/sentence-transformers 兼容性验证)可在 X-C 完成后跑(本 session codex 1-cycle 仅找语义 bug 未触 SDK 漂移)。**I-002 真实长跑**:Phase X-C 期间 owner 可独立授权启动(import 守门已解耦;X-005 5th cron 仅在 X-008 落 evolution_shadow_run_callback 后才有实际行为,owner 协调 restart 后即可生效)。**Phase X-D 前端 3 任务(X-021..X-023)+ X-E Codex 5 轮(X-024..X-028)在 X-C 收尾后**。"
+      },
       {
         date: "2026-05-18",
         session: "#22 phase-x-A-full — X-001..X-007 7 任务全部 done + 207 unit tests + Qwen3-Embedding-0.6B 本地落地",
@@ -1833,7 +1843,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "3964e83", session_date: "2026-05-18", notes: "ShadowAcceptanceReport(继承 AcceptanceReport + 3 Q8 字段)+ STRICT_BETTER_METRICS/NO_REGRESSION_METRICS 4+4 partition + NO_REGRESSION_TOLERANCE_PCT=0.005 + scipy bootstrap 1000 resample 95%CI + ChallengerVerdict 13-bool surface + ChallengerReplayer Protocol + ShadowChain 编排;30 unit tests。actual 45 日 replay 实现 deferred to X-008(EvolutionDispatcher)。"
       },
       {
-        id: "X-008", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-008", phase: "X 自进化", status: "done", priority: "P2",
         title: "EvolutionDispatcher(4 类自进化提议协调 + import 守门)",
         summary: "单一入口 dispatch prompt / RAG / risk_proposal / exemplar 4 类;严禁 LLM 反向调用 .activate_*;import 守门继承 X-018。X-B 1/8。",
         scope: "backend/services/evolution_dispatcher.py",
@@ -1841,10 +1851,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "4 路径 dispatch 单一入口;import 守门测试通过。",
         tests: "dispatch routing tests; import isolation lint。",
         sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-008",
-        commit: "", session_date: "", notes: ""
+        commit: "fe79227", session_date: "2026-05-18", notes: "Frozen façade routing prompt / RAG / risk_proposal / exemplar lanes;DispatchOutcome 4 status enum(ignored/shadow_failed/drafted_and_notified/skipped_no_shadow);per-lane finaliser emits SHADOW_EVOLUTION_RUN_COMPLETED audit then short-circuits on shadow fail / drafts + pages on pass;challenger_id 用 strftime YYYYMMDDTHHMMSSZ 避免冒号触发 amendment path regex;10 unit tests。"
       },
       {
-        id: "X-009", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-009", phase: "X 自进化", status: "done", priority: "P2",
         title: "DSPyGEPARunner(GEPA 离线 prompt 演化 + R1 sample/iter cap + ≤¥5 budget)",
         summary: "Q1 SDK pin(dspy==3.2.1 + gepa>=0.0.26)+ R1 硬约束(GEPA_MAX_SAMPLES=100 + GEPA_MAX_ITERATIONS=10)+ deepseek-reasoner reflection_lm + dspy.Reasoning 开启(防 issue #7489 thinking 吞失)+ log_dir 文件持久化。X-B 2/8。",
         scope: "backend/services/dspy_gepa_runner.py",
@@ -1852,10 +1862,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "GEPA compile() ≤¥5 budget;sample/iter 超限 raise GEPASampleLimitExceededError;reflection_lm 用 deepseek-reasoner 走 dspy.Reasoning。",
         tests: "budget tests; sample limit raise; reasoning 启用 verify; log_dir 持久化。",
         sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-009 + §1.1 + §2 红线 21",
-        commit: "", session_date: "", notes: ""
+        commit: "dc0adbd", session_date: "2026-05-18", notes: "GEPA_MAX_SAMPLES=100 + GEPA_MAX_ITERATIONS=10 + GEPA_MAX_BUDGET_CNY=5.0 + REFLECTION_LM_NAME='deepseek-reasoner' 锁定;GEPACompiler Protocol seam(测试用 stub 不拉 dspy/LiteLLM);assert_budget_allows 包裹 LLM 出站(继承 P1-7 §1.4);log_dir 每 agent + ISO timestamp 分区 + seed/new/summary 文件;11 unit tests。"
       },
       {
-        id: "X-010", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-010", phase: "X 自进化", status: "done", priority: "P2",
         title: "FrontierCrawler(22:00 5 源 crawl + DeepSeek 总结 + 写 data/rag/)",
         summary: "arxiv OAI-PMH(asyncio.Semaphore + 3.1s 节流)+ S2(free key bulk)+ OpenReview(openreview-py >=1.40)+ GitHub PAT(5000/hr + ETag)+ akshare(Atom feed);Spotlighting datamarking 防 prompt-injection;DeepSeek 总结 ~¥0.10/日。X-B 3/8。",
         scope: "backend/evolution/crawlers/*.py + backend/evolution/frontier_crawler.py",
@@ -1863,10 +1873,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "5 源全部接通 + rate limit 守门 + Spotlighting datamarking + 启动期 PAT/secrets_validator。",
         tests: "5 源 mock tests; rate limit守门; datamarking; PAT 校验。",
         sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-010 + §1.2",
-        commit: "", session_date: "", notes: ""
+        commit: "f25bace", session_date: "2026-05-18", notes: "5 crawlers(arxiv/semanticscholar/openreview/github_releases/akshare)共享 CrawlerBase frozen + Fetcher Protocol seam;Spotlighting wrap + _escape_sentinels 中和 body 内嵌 sentinel(codex P2-1 防 wrapper 早关闭);global asyncio.Semaphore=5 限并发;summariser budget breach 不丢 raw ingest(codex P2-3);DeepSeek 总结作为可选 side-channel;18 unit tests。"
       },
       {
-        id: "X-011", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-011", phase: "X 自进化", status: "done", priority: "P2",
         title: "RagIngester(provenance + 白名单 + sanitize + audit + R3 precision fail-closed)",
         summary: "3 层防 injection(sanitize + datamarking + audit);hash-anchored citation;R3 RAG_RETRIEVAL_PRECISION_FLOOR=0.80 fail-closed;严禁非白名单入库。X-B 4/8。",
         scope: "backend/evolution/rag_ingester.py + backend/services/rag_provenance.py",
@@ -1874,10 +1884,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "白名单严格过滤 + precision < 80% fail-closed + audit RAG_DOCUMENT_REJECTED_NON_WHITELIST。",
         tests: "allowlist tests; precision floor tests; prompt-injection rejection; sanitize regression。",
         sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-011 + §2 红线 22",
-        commit: "", session_date: "", notes: ""
+        commit: "53d6b80", session_date: "2026-05-18", notes: "Sanitiser 3 层(whitelist → sanitise → R3 precision floor=0.80 fail-closed);injection marker count BOTH pre-strip and post-sanitise(codex P2-2 防 HTML tag stripper 抹除 <system> 等 marker);payload 路径用 ingested_at 与 ProvenanceVerifier 完全一致(codex P1-1);非白名单源 Category-5 BLOCKED audit;19 unit tests。"
       },
       {
-        id: "X-012", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-012", phase: "X 自进化", status: "done", priority: "P2",
         title: "P0-7 amendment 落地 — risk_parameter_proposals 扩 4 字段(非破坏式)",
         summary: "P0-7-amendment-2026-05-11-risk-proposals-shadow-validation:target_artifact_type 区分 + shadow_validation_status + pending_amendment_id + feishu_notified_at;default=None 兼容历史 record。X-B 5/8。",
         scope: "backend/models/risk_proposal.py + backend/data/database.py",
@@ -1885,10 +1895,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "扩字段非破坏式;旧 record 默认 None;新 record 走 P2-2 shadow validate。",
         tests: "schema migration tests; backwards-compat tests。",
         sources: "P2-2, P0-7-amendment-2026-05-11, P2-2-implementation-plan-2026-05-18 §3.2 X-012",
-        commit: "", session_date: "", notes: ""
+        commit: "4ce2cb8", session_date: "2026-05-18", notes: "RiskParameterProposal frozen+strict+extra='forbid';4 P2-2 字段全 default 非破坏式;promoted⇒accepted=True + rejected⇒accepted=False cross-state invariants(codex P2-4 修复 rejected 状态强制 accepted=True 的错乱);PROPOSAL_ID_RE + PENDING_AMENDMENT_ID_RE 强约束;22 unit tests。模型放 backend/models/ 避开 backend.risk import 红线。"
       },
       {
-        id: "X-013", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-013", phase: "X 自进化", status: "done", priority: "P2",
         title: "AmendmentDrafter(自动起草 + R7 强制 4 section + ≤¥5 budget)",
         summary: "R7 硬约束:## diff + ## shadow evidence + ## readability check + ## rollback 4 section 强制;challenger prompt 长度膨胀 >50% 标 [WARNING];docs/decisions/pending/{artifact_id}.md 文件;LLM 生成走 cost_guard。X-B 6/8。",
         scope: "backend/services/amendment_drafter.py",
@@ -1896,10 +1906,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "缺 section raise AmendmentSchemaError;长度膨胀 >50% 警告;LLM 调用走 cost_guard。",
         tests: "4 section 强制; readability check; ≤¥5 budget; pending/ 文件写入。",
         sources: "P2-2, P2-2-implementation-plan-2026-05-18 §3.2 X-013 + §2 红线 23",
-        commit: "", session_date: "", notes: ""
+        commit: "e9797e6", session_date: "2026-05-18", notes: "R7 4 section(## diff/## shadow evidence/## readability check/## rollback)强制断言 BEFORE 写盘;DEFAULT_LENGTH_INFLATION_THRESHOLD=0.50 严格 >50% 触发 length_inflation flag;AMENDMENT_ID_RE + ``..`` + 前导 ``.`` 三重 path-traversal 守门(codex P1-2);cost_guard.assert_budget_allows 可选 redis 钩子(模板化目前 0 LLM 调用);16 unit tests 含 path traversal regression。"
       },
       {
-        id: "X-014", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-014", phase: "X 自进化", status: "done", priority: "P2",
         title: "EvolutionFeishuNotifier(shadow 通过 → 飞书通知 + Alerter dedup_15min)",
         summary: "走 owner 自建应用 OpenAPI 发 FEISHU_ALERT_CHAT_ID(P0-2-amendment-2026-05-16);严禁 FEISHU_CUSTOM_BOT_*;renderer.py::render_evolution_pending 纯文本模板;Alerter dedup_15min 防轰炸。X-B 7/8。",
         scope: "backend/services/evolution_feishu_notifier.py + backend/feishu/renderer.py 模板",
@@ -1907,10 +1917,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "走 OpenAPI 不走 webhook;dedup 防轰炸;纯文本无 prompt 全文(防 injection)。",
         tests: "OpenAPI 路径 verify; dedup tests; template strict 校验。",
         sources: "P2-2, P0-2-amendment-2026-05-16, P1-7, P2-2-implementation-plan-2026-05-18 §3.2 X-014",
-        commit: "", session_date: "", notes: ""
+        commit: "02ba4d8", session_date: "2026-05-18", notes: "Frozen 包装 FeishuAlerter(OpenAPI 路由 + dedup_15min 沿用)+ MessageRenderer.render_evolution_pending 新增单行模板(纯 identifiers+amendment_path 零 prompt 全文 防 injection);_PENDING_AMENDMENT_PATH_RE 严格锁 docs/decisions/pending/;FeishuAlerter.alert_chat_id property 暴露;suppression Category-5 BLOCKED audit;16 unit tests。"
       },
       {
-        id: "X-015", phase: "X 自进化", status: "blocked", priority: "P2",
+        id: "X-015", phase: "X 自进化", status: "done", priority: "P2",
         title: "EvolutionAuditWriter(7 类 audit 写入 + JSONL 双写 + actor=SYSTEM/SCHEDULER)",
         summary: "7 类自进化 audit 写入封装(PROMPT_VERSION_PINNED/...);严禁 LLM/FRONTEND_USER 写;调用 audit_writer.write()。X-B 8/8。",
         scope: "backend/services/evolution_audit_writer.py",
@@ -1918,7 +1928,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "7 类 audit emission;actor 守门;JSONL 双写。",
         tests: "actor 守门; 7 类断言; JSONL emission verify。",
         sources: "P2-2, P1-6-amendment-2026-05-11, P2-2-implementation-plan-2026-05-18 §3.2 X-015",
-        commit: "", session_date: "", notes: ""
+        commit: "72d9321", session_date: "2026-05-18", notes: "Frozen 7-method wrapper over AuditStore;actor 默认 SCHEDULER 仅 shadow_run / SYSTEM 其他 6 类;非 Category-5 event_type 直接 raise(P2-2 §2 红线 12);reason_namespace='evolution' 统一便于 CLI 过滤;JSONL+Mongo 双写继承 AuditStore;17 unit tests 含 actor 拒绝 LLM/FRONTEND_USER 守门。"
       },
       {
         id: "X-016", phase: "X 自进化", status: "blocked", priority: "P2",
