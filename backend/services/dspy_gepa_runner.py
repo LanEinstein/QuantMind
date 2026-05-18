@@ -244,6 +244,22 @@ class DSPyGEPARunner:
         )
         finished = datetime.now(UTC)
 
+        # Codex X-025 R2 scenario 8 defense-in-depth: re-assert the
+        # daily ¥20 cap AFTER ``compile()`` returns so a future SDK
+        # integration that internally retries / makes more LLM calls
+        # than the pre-check estimated still surfaces a typed error on
+        # the audit trail. The pre-check already gates ENTRY; this
+        # post-check gates the NEXT run from compounding the overrun.
+        try:
+            await assert_budget_allows(
+                redis_client, agent_name=f"dspy_gepa:{agent}:post_compile"
+            )
+        except DailyBudgetExceededError as exc:
+            raise GEPABudgetError(
+                f"cost_guard breach detected POST-compile (GEPA internal "
+                f"spend exceeded the daily ceiling): {exc}"
+            ) from exc
+
         log_dir_for_run = self._persist_log(
             agent=agent,
             seed_prompt=seed_prompt,

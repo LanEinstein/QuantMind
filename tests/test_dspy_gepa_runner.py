@@ -230,6 +230,44 @@ async def test_budget_error_propagates(
 
 
 @pytest.mark.asyncio
+async def test_post_compile_budget_breach_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Codex X-025 R2 scenario 8: a pre-check OK + a post-compile breach
+    # (simulating internal SDK retries / overrun) must surface a typed
+    # GEPABudgetError so the next GEPA run does not compound the
+    # overrun.
+    call_count = {"n": 0}
+
+    async def fake_assert(_client: object, *, agent_name: str) -> None:
+        from backend.services.cost_guard import DailyBudgetExceededError
+
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None  # pre-check OK
+        raise DailyBudgetExceededError(
+            f"daily budget exceeded post-compile for {agent_name}"
+        )
+
+    monkeypatch.setattr(
+        "backend.services.dspy_gepa_runner.assert_budget_allows",
+        fake_assert,
+    )
+    compiler = StubCompiler()
+    r = DSPyGEPARunner(compiler=compiler, log_dir=tmp_path / "gepa")
+    with pytest.raises(GEPABudgetError, match="POST-compile"):
+        await r.run(
+            agent="fund_manager",
+            seed_prompt="x",
+            examples=_examples(1),
+            redis_client=object(),  # type: ignore[arg-type]
+        )
+    # Pre-check + post-check both invoked.
+    assert call_count["n"] == 2
+
+
+@pytest.mark.asyncio
 async def test_run_without_redis_client_fails_closed(
     runner: tuple[DSPyGEPARunner, StubCompiler],
 ) -> None:
