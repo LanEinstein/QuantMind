@@ -113,6 +113,23 @@ def test_version_entry_rejects_path_outside_config_prompts() -> None:
         _make_entry(path="other/dir/v1.yaml")
 
 
+def test_version_entry_rejects_path_traversal_in_components() -> None:
+    # Codex X-027 R4 claim 10: prefix-only ``startswith("config/prompts/")``
+    # accepts paths whose components escape the prompts subtree.
+    with pytest.raises(ValidationError, match="path-traversal"):
+        _make_entry(path="config/prompts/../etc/passwd.yaml")
+
+
+def test_version_entry_rejects_absolute_path() -> None:
+    with pytest.raises(ValidationError):
+        _make_entry(path="/etc/passwd.yaml")
+
+
+def test_version_entry_rejects_backslash_path() -> None:
+    with pytest.raises(ValidationError):
+        _make_entry(path="config/prompts\\fundamental_analyst\\v1.yaml")
+
+
 def test_version_entry_rejects_non_yaml_extension() -> None:
     with pytest.raises(ValidationError):
         _make_entry(path="config/prompts/fundamental_analyst/v1.json")

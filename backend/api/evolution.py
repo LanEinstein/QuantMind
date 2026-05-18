@@ -239,6 +239,14 @@ async def list_pending_amendments(request: Request) -> dict[str, Any]:
     items: list[PendingAmendment] = []
     if pending_dir.exists() and pending_dir.is_dir():
         for path in pending_dir.iterdir():
+            # Codex X-027 R4 claim 6: ``is_file()`` follows symlinks, so
+            # a hostile ``foo.md → /etc/passwd`` would be served. Reject
+            # symlinks explicitly before any further checks.
+            if path.is_symlink():
+                log.warning(
+                    "evolution_pending_symlink_skipped path=%s", path
+                )
+                continue
             if not path.is_file() or path.suffix != ".md":
                 continue
             try:

@@ -204,6 +204,29 @@ async def test_pending_ignores_non_markdown(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pending_rejects_symlinks(tmp_path: Path) -> None:
+    # Codex X-027 R4 claim 6: ``path.is_file()`` follows symlinks, so a
+    # ``foo.md -> /etc/passwd`` would be served. The fix explicitly
+    # tests ``is_symlink()`` before ``is_file()``.
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    target = tmp_path / "outside.md"
+    target.write_text("sensitive content", encoding="utf-8")
+    link = pending / "draft.md"
+    link.symlink_to(target)
+
+    app = _build_app(pending_dir=pending)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/evolution/pending")
+    body = resp.json()
+    # The symlinked entry is rejected; the listing is empty.
+    assert body["data"]["count"] == 0
+    assert body["data"]["items"] == []
+
+
+@pytest.mark.asyncio
 async def test_pending_emits_pending_dir_for_observability(tmp_path: Path) -> None:
     pending = tmp_path / "pending"
     pending.mkdir()

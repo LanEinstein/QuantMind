@@ -158,6 +158,26 @@ class PromptVersionEntry(BaseModel):
             raise ValueError(
                 f"prompt version path must end with .yaml, got {self.path!r}"
             )
+        # Codex X-027 R4 claim 10: a prefix-only startswith check accepts
+        # ``config/prompts/../etc/passwd.yaml`` which escapes the prompt
+        # subtree at load time. Reject any path component equal to
+        # ``..`` so the loader cannot read or hash files outside the
+        # prompts directory.
+        from pathlib import PurePosixPath
+
+        parts = PurePosixPath(self.path).parts
+        if any(p == ".." for p in parts):
+            raise ValueError(
+                f"prompt version path must not contain '..' components "
+                f"(path-traversal containment): got {self.path!r}"
+            )
+        # Same fail-closed posture for absolute paths or backslash
+        # separators that could escape the relative containment.
+        if "\\" in self.path or self.path.startswith("/"):
+            raise ValueError(
+                f"prompt version path must be a forward-slash relative "
+                f"path under config/prompts/, got {self.path!r}"
+            )
         if not SHA256_HEX_RE.fullmatch(self.sha256):
             raise ValueError(
                 f"sha256 must be 64-char lowercase hex, got {self.sha256!r}"
