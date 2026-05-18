@@ -733,6 +733,118 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# X-018 / P2-2 §2 red line 17 — Phase X import isolation
+# Every Phase X module (backend/evolution/** + the 8 Phase X service
+# files) must NOT import backend.{api,broker,risk,llm,agents,mirofish,
+# data}. The same boundary is enforced by:
+#   * pyproject.toml [tool.ruff.lint.flake8-tidy-imports.banned-api]
+#   * tests/test_phase_x_imports.py AST scan
+# This grep-cum-AST sub-check is the pre-commit / CI gate.
+# ----------------------------------------------------------------------
+echo
+yellow "[X-018] Phase X import isolation (P2-2 §2 red line 17)"
+PHASE_X_OUT="$(python3 - <<'PY'
+import ast
+import pathlib
+import sys
+
+FORBIDDEN = {"api", "broker", "risk", "llm", "agents", "mirofish", "data"}
+PHASE_X_SERVICE_FILES = (
+    "backend/services/prompt_registry.py",
+    "backend/services/shadow_chain.py",
+    "backend/services/exemplar_selector.py",
+    "backend/services/dspy_gepa_runner.py",
+    "backend/services/evolution_dispatcher.py",
+    "backend/services/amendment_drafter.py",
+    "backend/services/evolution_feishu_notifier.py",
+    "backend/services/evolution_audit_writer.py",
+)
+
+
+def _is_forbidden(mod: str) -> bool:
+    parts = mod.split(".") if mod else []
+    return (
+        len(parts) >= 2
+        and parts[0] == "backend"
+        and parts[1] in FORBIDDEN
+    )
+
+
+def _iter_paths():
+    root = pathlib.Path("backend/evolution")
+    if root.exists():
+        yield from sorted(root.rglob("*.py"))
+    for name in PHASE_X_SERVICE_FILES:
+        path = pathlib.Path(name)
+        if path.exists():
+            yield path
+
+
+violations: list[str] = []
+for path in _iter_paths():
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        violations.append(f"{path}: SyntaxError: {exc}")
+        continue
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            level = node.level or 0
+            # Absolute form: ``from backend.api import ...``
+            if _is_forbidden(mod):
+                violations.append(
+                    f"{path}:{node.lineno}: from {mod} import ..."
+                )
+            elif mod == "backend":
+                for alias in node.names:
+                    if alias.name in FORBIDDEN:
+                        violations.append(
+                            f"{path}:{node.lineno}: "
+                            f"from backend import {alias.name}"
+                        )
+            # Package-relative ``from ..api import router`` —
+            # ``mod`` is just ``api`` and ``level`` is non-zero, so
+            # the ``backend.``-prefix check above misses it (codex
+            # review P2 cycle 1).
+            if level > 0 and mod:
+                parts = mod.split(".")
+                if parts and parts[0] in FORBIDDEN:
+                    violations.append(
+                        f"{path}:{node.lineno}: "
+                        f"from {'.' * level}{mod} import ..."
+                    )
+            # Relative ``from .. import api`` — empty module + level>0.
+            if level > 0 and not mod:
+                for alias in node.names:
+                    if alias.name in FORBIDDEN:
+                        violations.append(
+                            f"{path}:{node.lineno}: "
+                            f"from {'.' * level} import {alias.name}"
+                        )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if _is_forbidden(alias.name):
+                    violations.append(
+                        f"{path}:{node.lineno}: import {alias.name}"
+                    )
+
+if violations:
+    for line in violations:
+        print(line)
+    sys.exit(1)
+PY
+)"
+PHASE_X_RC=$?
+if [ $PHASE_X_RC -eq 0 ]; then
+  green "  ok    Phase X modules do not import backend.{api,broker,risk,llm,agents,mirofish,data}"
+else
+  red "  FAIL  Phase X module(s) import a decision-path subpackage:"
+  printf '%s\n' "$PHASE_X_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

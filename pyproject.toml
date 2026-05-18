@@ -62,7 +62,85 @@ target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
+select = ["E", "F", "I", "N", "W", "UP", "TID"]
+
+# X-018 layer 1 — Phase X module isolation (P2-2 §2 red line 17).
+# Lints the seven decision-path subpackages so a contributor adding a
+# ``from backend.api import ...`` line into a Phase X file sees a ruff
+# error at edit time. The redline-check.sh + tests/test_phase_x_imports.py
+# enforce the same rule at commit time and during pytest.
+#
+# NOTE: ruff TID251 is a global rule — it fires across the whole repo.
+# A legitimate consumer of these subpackages (e.g. backend/api itself
+# importing backend/api.router) imports BELOW the ``backend.api`` root
+# so the rule's pattern matching only catches *cross-package* imports.
+# Use ``noqa: TID251`` in legitimate inside-backend.api cross references
+# if any surface (none currently exist).
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"backend.api".msg = "Phase X modules must not import backend.api (P2-2 §2 red line 17)"
+"backend.broker".msg = "Phase X modules must not import backend.broker (P2-2 §2 red line 17)"
+"backend.risk".msg = "Phase X modules must not import backend.risk (P2-2 §2 red line 17)"
+"backend.llm".msg = "Phase X modules must not import backend.llm (P2-2 §2 red line 17)"
+"backend.agents".msg = "Phase X modules must not import backend.agents (P2-2 §2 red line 17)"
+"backend.mirofish".msg = "Phase X modules must not import backend.mirofish (P2-2 §2 red line 17)"
+"backend.data".msg = "Phase X modules must not import backend.data (P2-2 §2 red line 17)"
+
+# The banned-api rule applies globally, but only Phase X files are
+# the "real" target; relax it everywhere else so legitimate decision-path
+# code (which imports these subpackages on purpose) keeps building.
+# Phase X scope (rule remains active):
+#   * backend/evolution/**/*.py
+#   * backend/services/{prompt_registry, shadow_chain, exemplar_selector,
+#     dspy_gepa_runner, evolution_dispatcher, amendment_drafter,
+#     evolution_feishu_notifier, evolution_audit_writer}.py
+# Anything else is allowed to import the 7 decision-path subpackages
+# because it IS the decision path. Every non-Phase-X service file is
+# enumerated below so a future Phase X service addition (e.g. when
+# Q9 frontier->proposal Agent lands) is added implicitly by not being
+# listed here.
+[tool.ruff.lint.per-file-ignores]
+"backend/api/**/*.py" = ["TID251"]
+"backend/audit/**/*.py" = ["TID251"]
+"backend/agents/**/*.py" = ["TID251"]
+"backend/broker/**/*.py" = ["TID251"]
+"backend/data/**/*.py" = ["TID251"]
+"backend/integrations/**/*.py" = ["TID251"]
+"backend/llm/**/*.py" = ["TID251"]
+"backend/mirofish/**/*.py" = ["TID251"]
+"backend/risk/**/*.py" = ["TID251"]
+"backend/main.py" = ["TID251"]
+"backend/services/acceptance_report.py" = ["TID251"]
+"backend/services/analysis_stream.py" = ["TID251"]
+"backend/services/config_service.py" = ["TID251"]
+"backend/services/cost_guard.py" = ["TID251"]
+"backend/services/cost_probe.py" = ["TID251"]
+"backend/services/daily_state_assembler.py" = ["TID251"]
+"backend/services/execution_report_parser.py" = ["TID251"]
+"backend/services/fund_manager_output.py" = ["TID251"]
+"backend/services/instruction_plan.py" = ["TID251"]
+"backend/services/instruction_plan_builder.py" = ["TID251"]
+"backend/services/instruction_state_machine.py" = ["TID251"]
+"backend/services/ledger.py" = ["TID251"]
+"backend/services/mode_router.py" = ["TID251"]
+"backend/services/mongo_repositories.py" = ["TID251"]
+"backend/services/owner_authorization.py" = ["TID251"]
+"backend/services/phase5b_exit_check.py" = ["TID251"]
+"backend/services/reconciliation_parser.py" = ["TID251"]
+"backend/services/reconciliation_state_machine.py" = ["TID251"]
+"backend/services/reconciliation_threshold.py" = ["TID251"]
+"backend/services/reset_trigger_detector.py" = ["TID251"]
+"backend/services/run_mode.py" = ["TID251"]
+"backend/services/secrets_validator.py" = ["TID251"]
+"backend/services/shadow_compare.py" = ["TID251"]
+"backend/services/shadow_recorder.py" = ["TID251"]
+"backend/services/shadow_runner.py" = ["TID251"]
+"backend/services/signal_evaluator.py" = ["TID251"]
+"backend/services/simulation_executor.py" = ["TID251"]
+"backend/services/smoke_check.py" = ["TID251"]
+"backend/services/soft_degrade_manager.py" = ["TID251"]
+"backend/services/watchlist_policy.py" = ["TID251"]
+"scripts/**/*.py" = ["TID251"]
+"tests/**/*.py" = ["TID251"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
