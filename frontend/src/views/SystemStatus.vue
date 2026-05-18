@@ -32,6 +32,32 @@
           </template>
         </dl>
       </article>
+
+      <article
+        :class="['source-card', evolutionCardClass]"
+        data-testid="evolution-pending-card"
+      >
+        <header class="card-header">
+          <span class="card-title">自进化待处理</span>
+          <span
+            :class="['status-pill', evolutionCardClass]"
+            data-testid="evolution-status-pill"
+          >
+            {{ evolutionPillText }}
+          </span>
+        </header>
+
+        <dl class="kv-list">
+          <dt>待处理</dt>
+          <dd data-testid="evolution-pending-count">{{ evolutionCountText }}</dd>
+          <dt>阈值</dt>
+          <dd data-testid="evolution-thresholds">
+            黄 ≥{{ evolutionStore.yellowThreshold }} / 红 ≥{{ evolutionStore.redThreshold }}
+          </dd>
+          <dt>目录</dt>
+          <dd data-testid="evolution-pending-dir">{{ evolutionPendingDirText }}</dd>
+        </dl>
+      </article>
     </div>
 
     <footer class="page-footer">
@@ -45,18 +71,33 @@
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useSystemStatusStore } from '@/stores/systemStatus'
 import {
+  EVOLUTION_POLL_INTERVAL_MS,
+  useEvolutionStore,
+} from '@/stores/evolution'
+import {
   FREEZE_SOURCE_LABELS as LABELS,
   type FreezeSource,
 } from '@/types/systemStatus'
 
 const store = useSystemStatusStore()
+const evolutionStore = useEvolutionStore()
 
 const POLL_INTERVAL_MS = 10_000
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let evolutionPollTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   store.fetchFreezeSources()
   pollTimer = setInterval(() => store.fetchFreezeSources(), POLL_INTERVAL_MS)
+
+  // X-023: evolution pending polled at the locked 5-min cadence
+  // (deliberately slower than the 10s freeze-source poll — the
+  // pending queue moves on operator-time, not market-time).
+  evolutionStore.fetchPending()
+  evolutionPollTimer = setInterval(
+    () => evolutionStore.fetchPending(),
+    EVOLUTION_POLL_INTERVAL_MS,
+  )
 })
 
 onBeforeUnmount(() => {
@@ -64,10 +105,15 @@ onBeforeUnmount(() => {
     clearInterval(pollTimer)
     pollTimer = null
   }
+  if (evolutionPollTimer !== null) {
+    clearInterval(evolutionPollTimer)
+    evolutionPollTimer = null
+  }
 })
 
 function refresh(): void {
   store.fetchFreezeSources()
+  evolutionStore.fetchPending()
 }
 
 function cardClass(source: FreezeSource): string {
@@ -142,6 +188,43 @@ const formattedTimestamp = computed(() => {
     return store.timestamp
   }
 })
+
+const evolutionCardClass = computed<'active' | 'idle' | 'unavailable' | 'warn'>(
+  () => {
+    switch (evolutionStore.status) {
+      case 'red':
+        return 'active'
+      case 'yellow':
+        return 'warn'
+      case 'green':
+        return 'idle'
+      default:
+        return 'unavailable'
+    }
+  },
+)
+
+const evolutionPillText = computed(() => {
+  switch (evolutionStore.status) {
+    case 'red':
+      return '积压'
+    case 'yellow':
+      return '待处理'
+    case 'green':
+      return '正常'
+    default:
+      return '探针未就绪'
+  }
+})
+
+const evolutionCountText = computed(() => {
+  if (evolutionStore.status === 'unavailable') return '—'
+  return `${evolutionStore.count} 份`
+})
+
+const evolutionPendingDirText = computed(() =>
+  evolutionStore.pendingDir ?? '—',
+)
 </script>
 
 <style lang="scss" scoped>
@@ -207,6 +290,11 @@ const formattedTimestamp = computed(() => {
   opacity: 0.85;
 }
 
+.source-card.warn {
+  border-color: rgba(255, 171, 0, 0.55);
+  box-shadow: 0 0 0 1px rgba(255, 171, 0, 0.18);
+}
+
 .card-header {
   display: flex;
   align-items: center;
@@ -234,6 +322,10 @@ const formattedTimestamp = computed(() => {
 .status-pill.unavailable {
   background: rgba(142, 142, 160, 0.18);
   color: $text-muted;
+}
+.status-pill.warn {
+  background: rgba(255, 171, 0, 0.18);
+  color: #ffab00;
 }
 
 .kv-list {
