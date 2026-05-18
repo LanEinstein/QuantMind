@@ -72,9 +72,32 @@ when the recorded post-run spend exceeds this value — the hard
 ceiling is still the daily ¥20 from :data:`cost_guard`."""
 
 REFLECTION_LM_NAME = "deepseek-reasoner"
-"""GEPA reflection LM. Locked to deepseek-reasoner (Q1 SDK pin) so the
-issue #7489 thinking-token swallow regression on smaller models does
-not silently degrade the optimisation signal."""
+"""GEPA reflection LM (provider-bare slug). Locked to deepseek-reasoner
+(Q1 SDK pin) so the issue #7489 thinking-token swallow regression on
+smaller models does not silently degrade the optimisation signal.
+
+This matches the convention used by QuantMind's existing
+``backend/llm/router.py``, which talks to the DeepSeek
+OpenAI-compatible endpoint directly (no LiteLLM in between, so a bare
+slug is what the API expects).
+
+NOTE for the forward-looking production GEPA adapter (codex X-026 R3
+claim 7): DSPy 3.2.1's ``dspy.GEPA(reflection_lm=...)`` passes the
+string through to LiteLLM. LiteLLM 1.60+ resolves DeepSeek models via
+the **provider-prefixed** slug — see
+:data:`REFLECTION_LM_LITELLM_MODEL` below. The adapter that wires the
+real ``dspy.GEPA`` MUST translate ``REFLECTION_LM_NAME`` to the
+prefixed form before handing it to LiteLLM, OR configure a LiteLLM
+proxy alias. The bare slug shipped here is the right label for our
+intra-router conventions; a runtime mismatch would surface as a
+LiteLLM ``BadRequestError: model not found`` on the very first GEPA
+call."""
+
+REFLECTION_LM_LITELLM_MODEL = "deepseek/deepseek-reasoner"
+"""LiteLLM-compatible spelling of :data:`REFLECTION_LM_NAME`. Provided
+so the future production adapter has a single SSoT for the prefixed
+form (and does not silently re-derive it inline). Codex X-026 R3
+claim 7 fix."""
 
 DEFAULT_LOG_DIR = Path("data/evolution/gepa")
 """Boot-time fixed; the dispatcher overrides with the absolute path."""
@@ -322,5 +345,6 @@ __all__ = [
     "GEPARunResult",
     "GEPASampleLimitExceededError",
     "GEPATrainingExample",
+    "REFLECTION_LM_LITELLM_MODEL",
     "REFLECTION_LM_NAME",
 ]

@@ -15,6 +15,7 @@ from backend.services.dspy_gepa_runner import (
     GEPA_MAX_BUDGET_CNY,
     GEPA_MAX_ITERATIONS,
     GEPA_MAX_SAMPLES,
+    REFLECTION_LM_LITELLM_MODEL,
     REFLECTION_LM_NAME,
     DSPyGEPARunner,
     GEPABudgetError,
@@ -86,6 +87,12 @@ def test_constants_locked() -> None:
     assert GEPA_MAX_ITERATIONS == 10
     assert REFLECTION_LM_NAME == "deepseek-reasoner"
     assert GEPA_MAX_BUDGET_CNY == 5.0
+    # Codex X-026 R3 claim 7: future production GEPA adapter (DSPy 3.2.1
+    # + LiteLLM 1.60) must use the provider-prefixed spelling.
+    assert REFLECTION_LM_LITELLM_MODEL == "deepseek/deepseek-reasoner"
+    # The two forms must encode the same model — a regression that
+    # changed one without the other would mismatch the adapter contract.
+    assert REFLECTION_LM_NAME in REFLECTION_LM_LITELLM_MODEL
 
 
 @pytest.mark.asyncio
