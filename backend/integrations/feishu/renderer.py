@@ -315,6 +315,43 @@ class MessageRenderer:
             ]
         )
 
+    # -- Self-evolution pending notification (X-014 surface) -----------
+
+    def render_evolution_pending(
+        self,
+        *,
+        amendment_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        amendment_path: str,
+    ) -> str:
+        """Compose the single-line summary the alerter sends to the
+        alert chat after the X-013 amendment drafter writes a draft.
+
+        Returned as a single sanitised line so :meth:`render_alert`
+        does not have to collapse newlines a second time. The body
+        contains the *identifiers* the operator needs to find the
+        draft inside SystemStatus.vue self-evolution panel; the prompt
+        text and shadow metric details are intentionally NOT included
+        (P2-2 §2 — keep prompt-injection vectors out of the alert chat).
+        """
+        if artifact_type not in _EVOLUTION_ARTIFACT_TYPES:
+            raise ValueError(
+                f"artifact_type {artifact_type!r} is not one of "
+                f"{sorted(_EVOLUTION_ARTIFACT_TYPES)}"
+            )
+        if not _PENDING_AMENDMENT_PATH_RE.fullmatch(amendment_path):
+            raise ValueError(
+                f"amendment_path must live under docs/decisions/pending/, "
+                f"got {amendment_path!r}"
+            )
+        safe_amendment_id = _single_line(amendment_id)
+        safe_artifact_id = _single_line(artifact_id)
+        return (
+            f"自进化 pending: id={safe_amendment_id} type={artifact_type} "
+            f"artifact={safe_artifact_id} path={amendment_path}"
+        )
+
 
 # === Helpers ========================================================
 
@@ -425,6 +462,22 @@ def _strip_controls(text: str) -> str:
 _INSTRUCTION_ID_RE = re.compile(r"^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL|HOLD)-\d{3}$")
 _RECONCILIATION_ID_RE = re.compile(r"^RECON-\d{8}-\d{3}$")
 _TRADE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PENDING_AMENDMENT_PATH_RE = re.compile(
+    r"^docs/decisions/pending/[A-Za-z0-9._-]+\.md$"
+)
+"""Lock the path shape so the alert chat can never advertise a file
+outside ``docs/decisions/pending/`` (P2-2 §2 — amendments live there
+exclusively before owner review)."""
+
+_EVOLUTION_ARTIFACT_TYPES: frozenset[str] = frozenset(
+    {
+        "prompt",
+        "rag_document",
+        "risk_parameter_proposal",
+        "exemplar_schema",
+    }
+)
+"""Four artifact discriminators the X-008 EvolutionDispatcher routes."""
 
 
 _REPORT_TEMPLATE_BLOCK: tuple[str, ...] = (

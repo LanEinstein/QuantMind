@@ -169,6 +169,17 @@ class FeishuAlerter:
 
     # -- Public API ----------------------------------------------------
 
+    @property
+    def alert_chat_id(self) -> str:
+        """``FEISHU_ALERT_CHAT_ID`` the alerter dispatches into.
+
+        Exposed read-only so downstream wrappers (e.g. the X-014
+        ``EvolutionFeishuNotifier``) can audit the destination
+        without having to thread the env var through their own
+        constructor.
+        """
+        return self._alert_chat_id
+
     async def fire(
         self,
         *,
