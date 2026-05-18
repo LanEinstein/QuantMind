@@ -503,10 +503,20 @@ class TestE2ER1SampleLimitBreach:
 
     @pytest.mark.asyncio
     async def test_at_exactly_100_allowed(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Boundary: ``GEPA_MAX_SAMPLES`` itself is accepted — the
         # rejection clause is strict ``>``, not ``>=``.
+        # Codex X-024 R1 claim 11: runner now requires redis_client +
+        # budget guard; e2e boundary test stubs both to focus on the
+        # sample-count rule.
+        async def noop_budget(_client: object, *, agent_name: str) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "backend.services.dspy_gepa_runner.assert_budget_allows",
+            noop_budget,
+        )
         runner = DSPyGEPARunner(
             compiler=_StubCompiler(new_prompt="x"),
             log_dir=tmp_path / "gepa",
@@ -519,6 +529,7 @@ class TestE2ER1SampleLimitBreach:
             agent="fund_manager",
             seed_prompt="seed",
             examples=at_limit,
+            redis_client=object(),  # type: ignore[arg-type]
         )
         assert result.samples_used == GEPA_MAX_SAMPLES
 

@@ -215,15 +215,25 @@ class DSPyGEPARunner:
                 f"max_iterations must be positive; got {max_iterations}"
             )
 
-        if redis_client is not None:
-            try:
-                await assert_budget_allows(
-                    redis_client, agent_name=f"dspy_gepa:{agent}"
-                )
-            except DailyBudgetExceededError as exc:
-                raise GEPABudgetError(
-                    f"cost_guard blocked GEPA run: {exc}"
-                ) from exc
+        # P1-7 budget guard is mandatory before the LLM out-call (codex
+        # X-024 R1 claim 11): a ``None`` redis client used to be allowed
+        # as a test escape, but every production GEPA run must verify
+        # the daily ¥20 hard ceiling before paying the LLM provider.
+        if redis_client is None:
+            raise GEPABudgetError(
+                "redis_client is required for GEPA budget enforcement "
+                "(P1-7). Production must supply a real Redis client; "
+                "tests must pass a stub and monkeypatch "
+                "assert_budget_allows."
+            )
+        try:
+            await assert_budget_allows(
+                redis_client, agent_name=f"dspy_gepa:{agent}"
+            )
+        except DailyBudgetExceededError as exc:
+            raise GEPABudgetError(
+                f"cost_guard blocked GEPA run: {exc}"
+            ) from exc
 
         started = datetime.now(UTC)
         new_prompt = await self.compiler.compile(

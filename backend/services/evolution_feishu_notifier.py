@@ -14,12 +14,13 @@ After the X-013 ``AmendmentDrafter`` writes
 
 Locked invariants:
 
-* Route is the self-built-app OpenAPI — :data:`FEISHU_CUSTOM_BOT_*`
-  webhook envs are explicitly disallowed (P0-2-amendment-2026-05-16
-  §4 red line 7). The constructor only takes a ``FeishuAlerter`` whose
-  ``_feishu`` is itself a ``FeishuClient`` (OpenAPI route); legacy
-  webhook clients have a different surface and won't satisfy the
-  type hint.
+* Route is the self-built-app OpenAPI — the legacy custom-bot
+  webhook envs are explicitly disallowed (see
+  P0-2-amendment-2026-05-16 §4 red line 7 for the banned env names;
+  this notifier does not reference them by literal). The constructor
+  only takes a ``FeishuAlerter`` whose ``_feishu`` is itself a
+  ``FeishuClient`` (OpenAPI route); legacy webhook clients have a
+  different surface and won't satisfy the type hint.
 * Dedup via the alerter's ``dedup_15min`` cooldown — repeated calls
   with the same ``amendment_id`` within 15 minutes are suppressed
   (P1-7 §1.7).

@@ -54,6 +54,26 @@ def runner(tmp_path: Path) -> tuple[DSPyGEPARunner, StubCompiler]:
     return DSPyGEPARunner(compiler=compiler, log_dir=tmp_path / "gepa"), compiler
 
 
+@pytest.fixture
+def stub_budget(monkeypatch: pytest.MonkeyPatch) -> object:
+    """Noop budget guard for tests that don't exercise budget behavior.
+
+    Codex X-024 R1 claim 11: production GEPA runs now require a real
+    ``redis_client``. Tests that only care about prompt evolution
+    mechanics opt in via this fixture, which monkeypatches
+    ``assert_budget_allows`` to a no-op coroutine and returns a
+    sentinel object suitable as the ``redis_client=`` kwarg.
+    """
+
+    async def noop(_client: object, *, agent_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "backend.services.dspy_gepa_runner.assert_budget_allows", noop
+    )
+    return object()
+
+
 def _examples(n: int) -> tuple[GEPATrainingExample, ...]:
     return tuple(
         GEPATrainingExample(inputs={"i": i}, outputs={"o": i})
@@ -71,12 +91,14 @@ def test_constants_locked() -> None:
 @pytest.mark.asyncio
 async def test_happy_path(
     runner: tuple[DSPyGEPARunner, StubCompiler],
+    stub_budget: object,
 ) -> None:
     r, compiler = runner
     result = await r.run(
         agent="fund_manager",
         seed_prompt="old prompt",
         examples=_examples(10),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert result.new_prompt_text == "evolved prompt"
     assert result.samples_used == 10
@@ -137,12 +159,14 @@ async def test_iteration_zero_rejected(
 async def test_log_dir_partitioned_per_agent(
     runner: tuple[DSPyGEPARunner, StubCompiler],
     tmp_path: Path,
+    stub_budget: object,
 ) -> None:
     r, _ = runner
     result = await r.run(
         agent="fund_manager",
         seed_prompt="x",
         examples=_examples(1),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert result.log_dir.parents[0].name == "fund_manager"
 
@@ -150,6 +174,7 @@ async def test_log_dir_partitioned_per_agent(
 @pytest.mark.asyncio
 async def test_explicit_max_iterations_propagated(
     runner: tuple[DSPyGEPARunner, StubCompiler],
+    stub_budget: object,
 ) -> None:
     r, compiler = runner
     result = await r.run(
@@ -157,6 +182,7 @@ async def test_explicit_max_iterations_propagated(
         seed_prompt="x",
         examples=_examples(1),
         max_iterations=3,
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert result.iterations_used == 3
     assert compiler.calls[0]["max_iterations"] == 3
@@ -165,6 +191,7 @@ async def test_explicit_max_iterations_propagated(
 @pytest.mark.asyncio
 async def test_zero_samples_allowed(
     runner: tuple[DSPyGEPARunner, StubCompiler],
+    stub_budget: object,
 ) -> None:
     # zero training rows is a no-op optimisation; the runner does not
     # forbid it (R1 only caps the upper bound).
@@ -173,6 +200,7 @@ async def test_zero_samples_allowed(
         agent="fund_manager",
         seed_prompt="x",
         examples=(),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert result.samples_used == 0
 
@@ -202,8 +230,25 @@ async def test_budget_error_propagates(
 
 
 @pytest.mark.asyncio
+async def test_run_without_redis_client_fails_closed(
+    runner: tuple[DSPyGEPARunner, StubCompiler],
+) -> None:
+    # Codex X-024 R1 claim 11: omitting redis_client used to silently
+    # skip the budget guard; the fix raises GEPABudgetError before any
+    # LLM out-call so production must always supply a real client.
+    r, _ = runner
+    with pytest.raises(GEPABudgetError, match="redis_client is required"):
+        await r.run(
+            agent="fund_manager",
+            seed_prompt="x",
+            examples=_examples(1),
+        )
+
+
+@pytest.mark.asyncio
 async def test_compiler_called_with_seed_examples(
     runner: tuple[DSPyGEPARunner, StubCompiler],
+    stub_budget: object,
 ) -> None:
     r, compiler = runner
     examples = _examples(3)
@@ -211,6 +256,7 @@ async def test_compiler_called_with_seed_examples(
         agent="fund_manager",
         seed_prompt="seed",
         examples=examples,
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     call = compiler.calls[0]
     assert call["seed_prompt"] == "seed"

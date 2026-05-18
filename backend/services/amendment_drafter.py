@@ -388,6 +388,22 @@ class AmendmentDrafter:
                     f"R7 violation: draft body is missing section {section!r}; "
                     f"all four sections are mandatory before write_disk"
                 )
+        # R7 strict surplus-section guard (codex X-024 R1 claim 5):
+        # the drafter is the only writer that may emit ``## `` level-2
+        # headings; an extra heading would be a code-injection signal
+        # (someone bypassed ``_compose_body`` or appended unauthorized
+        # content). Count level-2 headings only — ``# `` header lines
+        # and ``### `` sub-headings under "shadow evidence" do NOT
+        # satisfy ``startswith("## ")``.
+        level2_count = sum(
+            1 for line in body.splitlines() if line.startswith("## ")
+        )
+        if level2_count != len(MANDATORY_SECTIONS):
+            raise AmendmentSchemaError(
+                f"R7 violation: draft body has {level2_count} ``## `` "
+                f"level-2 headings; exactly {len(MANDATORY_SECTIONS)} are "
+                f"required (no surplus sections allowed)"
+            )
 
     def _write(self, amendment_id: str, body: str) -> Path:
         self.pending_dir.mkdir(parents=True, exist_ok=True)

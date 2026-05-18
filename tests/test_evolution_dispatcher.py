@@ -116,6 +116,29 @@ class StubCompiler:
 
 
 @pytest.fixture
+def stub_budget(monkeypatch: pytest.MonkeyPatch) -> object:
+    """Noop budget guard for dispatcher tests that don't exercise budget.
+
+    Codex X-024 R1 claim 11: ``DSPyGEPARunner.run`` now fail-closes
+    when ``redis_client`` is ``None``. Dispatcher tests that focus on
+    shadow/draft/notify orchestration opt in via this fixture, which
+    monkeypatches ``assert_budget_allows`` to a no-op coroutine and
+    returns a sentinel object suitable as ``redis_client``.
+    """
+
+    async def noop(_client: object, *, agent_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "backend.services.dspy_gepa_runner.assert_budget_allows", noop
+    )
+    monkeypatch.setattr(
+        "backend.evolution.frontier_crawler.assert_budget_allows", noop
+    )
+    return object()
+
+
+@pytest.fixture
 def base_metrics() -> dict[str, float]:
     return {
         "pnl_cny": 1000.0,
@@ -249,6 +272,7 @@ async def test_prompt_lane_passing(
     audit_writer: EvolutionAuditWriter,
     champion_report: ShadowAcceptanceReport,
     tmp_path: Path,
+    stub_budget: object,
 ) -> None:
     dispatcher = _passing_dispatcher(
         base_metrics, drafter, notifier, audit_writer
@@ -261,7 +285,10 @@ async def test_prompt_lane_passing(
         champion_body_length=len("old prompt"),
     )
     outcome = await dispatcher.run_prompt_evolution(
-        task=task, champion_report=champion_report, as_of=dt.date(2026, 5, 18)
+        task=task,
+        champion_report=champion_report,
+        as_of=dt.date(2026, 5, 18),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert outcome.status == "drafted_and_notified"
     assert outcome.shadow_passed is True
@@ -282,6 +309,7 @@ async def test_prompt_lane_shadow_fails(
     audit_writer: EvolutionAuditWriter,
     champion_report: ShadowAcceptanceReport,
     tmp_path: Path,
+    stub_budget: object,
 ) -> None:
     dispatcher = _failing_dispatcher(
         base_metrics, drafter, notifier, audit_writer
@@ -294,7 +322,10 @@ async def test_prompt_lane_shadow_fails(
         champion_body_length=3,
     )
     outcome = await dispatcher.run_prompt_evolution(
-        task=task, champion_report=champion_report, as_of=dt.date(2026, 5, 18)
+        task=task,
+        champion_report=champion_report,
+        as_of=dt.date(2026, 5, 18),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert outcome.status == "shadow_failed"
     assert outcome.draft_result is None
@@ -311,6 +342,7 @@ async def test_prompt_lane_identical_prompt_ignored(
     notifier: EvolutionFeishuNotifier,
     audit_writer: EvolutionAuditWriter,
     champion_report: ShadowAcceptanceReport,
+    stub_budget: object,
 ) -> None:
     dispatcher = _passing_dispatcher(
         base_metrics,
@@ -327,7 +359,10 @@ async def test_prompt_lane_identical_prompt_ignored(
         champion_body_length=14,
     )
     outcome = await dispatcher.run_prompt_evolution(
-        task=task, champion_report=champion_report, as_of=dt.date(2026, 5, 18)
+        task=task,
+        champion_report=champion_report,
+        as_of=dt.date(2026, 5, 18),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     assert outcome.status == "ignored"
     assert outcome.gepa_result is not None
@@ -520,6 +555,7 @@ async def test_metrics_summary_keys(
     audit_writer: EvolutionAuditWriter,
     champion_report: ShadowAcceptanceReport,
     tmp_path: Path,
+    stub_budget: object,
 ) -> None:
     dispatcher = _passing_dispatcher(
         base_metrics, drafter, notifier, audit_writer
@@ -532,7 +568,10 @@ async def test_metrics_summary_keys(
         champion_body_length=3,
     )
     await dispatcher.run_prompt_evolution(
-        task=task, champion_report=champion_report, as_of=dt.date(2026, 5, 18)
+        task=task,
+        champion_report=champion_report,
+        as_of=dt.date(2026, 5, 18),
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     audit_text = (tmp_path / "audit.jsonl").read_text()
     # one of the strict-better metric deltas should land in the payload
@@ -547,6 +586,7 @@ async def test_correlation_id_propagates(
     audit_writer: EvolutionAuditWriter,
     champion_report: ShadowAcceptanceReport,
     tmp_path: Path,
+    stub_budget: object,
 ) -> None:
     dispatcher = _passing_dispatcher(
         base_metrics, drafter, notifier, audit_writer
@@ -563,6 +603,7 @@ async def test_correlation_id_propagates(
         champion_report=champion_report,
         as_of=dt.date(2026, 5, 18),
         correlation_id="corr-2026-05-18-22",
+        redis_client=stub_budget,  # type: ignore[arg-type]
     )
     audit_text = (tmp_path / "audit.jsonl").read_text()
     assert "corr-2026-05-18-22" in audit_text

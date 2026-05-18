@@ -237,6 +237,39 @@ def test_mandatory_sections_lock() -> None:
     )
 
 
+def test_validate_sections_rejects_surplus_level2_heading(
+    drafter: AmendmentDrafter,
+) -> None:
+    # Codex X-024 R1 claim 5: R7 must reject extra ``## `` headings even
+    # when all four mandatory sections are present, so an upstream
+    # tamper that appends an unauthorized section cannot slip through.
+    body = (
+        "## diff\n\n"
+        "## shadow evidence\n\n"
+        "## readability check\n\n"
+        "## rollback\n\n"
+        "## extra unauthorized section\n"
+    )
+    with pytest.raises(AmendmentSchemaError, match="surplus"):
+        drafter._validate_sections(body)
+
+
+def test_validate_sections_accepts_exactly_four_level2_headings(
+    drafter: AmendmentDrafter,
+) -> None:
+    body = (
+        "# Pending amendment foo\n\n"
+        "## diff\n\n"
+        "## shadow evidence\n\n"
+        "### strict-better metrics\n\n"
+        "### no-regression metrics\n\n"
+        "## readability check\n\n"
+        "## rollback\n\n"
+    )
+    # No exception raised.
+    drafter._validate_sections(body)
+
+
 def test_threshold_lock() -> None:
     assert DEFAULT_LENGTH_INFLATION_THRESHOLD == 0.50
 

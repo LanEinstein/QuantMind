@@ -101,10 +101,16 @@ class FrontierCrawler:
 
         Args:
             as_of: tick the crawlers are seeded with. Defaults to now.
-            redis_client: optional cost-guard backing — when supplied
-                each summariser call is preceded by
-                :func:`assert_budget_allows`. ``None`` skips the
-                budget check (tests / simulation paths).
+            redis_client: cost-guard backing. When the crawler is
+                wired with a ``summariser`` (LLM out-call), a real
+                Redis client is required so :func:`assert_budget_allows`
+                can verify the daily ¥20 hard ceiling (P1-7) before
+                paying the provider. Passing ``None`` while a summariser
+                is wired is a fail-closed configuration error: raw
+                ingest still proceeds, but every summariser call is
+                skipped with an ``errors`` entry (codex X-024 R1
+                claim 11). When ``summariser`` is ``None`` the
+                ``redis_client`` value is ignored.
             correlation_id: forwarded to every audit row.
         """
         as_of_ts = as_of or datetime.now(UTC)
@@ -140,7 +146,19 @@ class FrontierCrawler:
             # prevent the raw document from landing on disk (codex
             # review P2-3).
             if self.summariser is not None and not budget_blocked:
-                if redis_client is not None:
+                if redis_client is None:
+                    # Codex X-024 R1 claim 11 fail-closed: refuse to
+                    # invoke the summariser (LLM out-call) without
+                    # budget backing. Raw ingest still proceeds — the
+                    # codex P2-3 invariant (raw ingest during budget
+                    # breach) is preserved by exiting only the
+                    # summariser branch, not the outer document loop.
+                    errors.append(
+                        "cost_guard: redis_client is None — "
+                        "summariser skipped (P1-7 budget guard required)"
+                    )
+                    budget_blocked = True
+                else:
                     try:
                         await assert_budget_allows(
                             redis_client, agent_name="frontier_crawler"

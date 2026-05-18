@@ -322,7 +322,72 @@ async def test_frontier_crawler_errors_isolated(
 @pytest.mark.asyncio
 async def test_summariser_called_per_document(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    summarised: list[str] = []
+
+    async def summariser(doc: Any) -> str:
+        summarised.append(doc.doc_id)
+        return "summary"
+
+    async def noop_budget(_client: object, *, agent_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "backend.evolution.frontier_crawler.assert_budget_allows",
+        noop_budget,
+    )
+
+    ingester = _build_ingester(tmp_path)
+    crawlers = _build_crawlers()
+    frontier = FrontierCrawler(
+        crawlers=crawlers, ingester=ingester, summariser=summariser
+    )
+    # Codex X-024 R1 claim 11: summariser path now requires a real
+    # ``redis_client``; tests pass a sentinel + monkeypatched
+    # ``assert_budget_allows`` to focus on summariser semantics.
+    await frontier.run(redis_client=object())  # type: ignore[arg-type]
+    assert len(summarised) == 5
+
+
+@pytest.mark.asyncio
+async def test_summariser_failure_does_not_abort_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def summariser(doc: Any) -> str:
+        raise RuntimeError("LLM crashed")
+
+    async def noop_budget(_client: object, *, agent_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "backend.evolution.frontier_crawler.assert_budget_allows",
+        noop_budget,
+    )
+
+    ingester = _build_ingester(tmp_path)
+    crawlers = _build_crawlers()
+    frontier = FrontierCrawler(
+        crawlers=crawlers, ingester=ingester, summariser=summariser
+    )
+    result = await frontier.run(redis_client=object())  # type: ignore[arg-type]
+    # the summariser failed for every doc; ingestion still proceeded
+    assert result.ingested == 5
+    assert len(result.crawler_errors) == 5
+
+
+def test_global_concurrency_default() -> None:
+    assert DEFAULT_GLOBAL_CONCURRENCY == 5
+
+
+@pytest.mark.asyncio
+async def test_summariser_without_redis_client_skipped_fail_closed(
+    tmp_path: Path,
+) -> None:
+    # Codex X-024 R1 claim 11: when summariser is wired but redis_client
+    # is None, the summariser MUST be skipped fail-closed (P1-7) — raw
+    # ingest still completes (preserves codex P2-3 invariant).
     summarised: list[str] = []
 
     async def summariser(doc: Any) -> str:
@@ -334,30 +399,14 @@ async def test_summariser_called_per_document(
     frontier = FrontierCrawler(
         crawlers=crawlers, ingester=ingester, summariser=summariser
     )
-    await frontier.run()
-    assert len(summarised) == 5
-
-
-@pytest.mark.asyncio
-async def test_summariser_failure_does_not_abort_batch(
-    tmp_path: Path,
-) -> None:
-    async def summariser(doc: Any) -> str:
-        raise RuntimeError("LLM crashed")
-
-    ingester = _build_ingester(tmp_path)
-    crawlers = _build_crawlers()
-    frontier = FrontierCrawler(
-        crawlers=crawlers, ingester=ingester, summariser=summariser
+    result = await frontier.run()  # redis_client defaults to None
+    assert result.fetched == 5
+    assert result.ingested == 5  # raw ingest unaffected
+    assert summarised == []  # summariser never invoked
+    assert any(
+        "redis_client is None" in err and "summariser skipped" in err
+        for err in result.crawler_errors
     )
-    result = await frontier.run()
-    # the summariser failed for every doc; ingestion still proceeded
-    assert result.ingested == 5
-    assert len(result.crawler_errors) == 5
-
-
-def test_global_concurrency_default() -> None:
-    assert DEFAULT_GLOBAL_CONCURRENCY == 5
 
 
 @pytest.mark.asyncio
