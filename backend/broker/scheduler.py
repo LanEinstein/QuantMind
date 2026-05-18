@@ -1,9 +1,10 @@
-"""BrokerScheduler — EOD pipeline + intraday MTM + post-close orchestration.
+"""BrokerScheduler — EOD pipeline + intraday MTM + post-close + evolution.
 
-E-005 / P1-2.A / P1-2.B owns the dedicated APScheduler that drives the
-broker lifecycle outside of intraday order routing. Four cron jobs are
-locked at launch; a fifth (``evolution_shadow_run``) is reserved for
-Phase X and stays disabled by default.
+E-005 / P1-2.A / P1-2.B / X-005 owns the dedicated APScheduler that
+drives the broker lifecycle outside of intraday order routing. Five
+cron jobs land at launch; the fifth (``evolution_shadow_run``) is
+gated by the Phase X self-evolution chain (P2-2 §1.5) and runs as a
+no-op when no callback is wired.
 
 Cron jobs (Asia/Shanghai):
 
@@ -18,6 +19,13 @@ Cron jobs (Asia/Shanghai):
 * ``mirofish_postclose`` — 17:00 post-close MiroFish re-analysis;
   failures here are best-effort (audit + log, no freeze).
 * ``advance_day`` — 16:30 advances T+1 settlement on the broker mirror.
+* ``evolution_shadow_run`` — 22:00 mon-fri Phase X self-evolution
+  shadow validate (P2-2 §1.5 + P1-2.A amendment 2026-05-11). One
+  retry on failure; emits ``SHADOW_EVOLUTION_RUN_COMPLETED`` audit
+  with outcome ``SUCCESS`` / ``FAILURE``. Failures do **not** activate
+  the EOD freeze — the evolution chain is intentionally decoupled
+  from the live trading path so a misbehaving challenger prompt cannot
+  freeze next-day routing (X-005 acceptance criteria).
 
 Replica-set fence: ``start()`` calls
 :meth:`backend.data.database.MongoDBService.assert_replica_set` before
@@ -204,6 +212,12 @@ class BrokerScheduler:
     """16:30 advance_day — clears today_bought_volume so T+1 holdings
     are sellable on the next session."""
 
+    EVOLUTION_SHADOW_RUN_CRON = "0 22 * * mon-fri"
+    """22:00 mon-fri — Phase X self-evolution shadow validate
+    (P1-2.A amendment 2026-05-11 + P2-2 §1.5). One retry on failure;
+    emits ``SHADOW_EVOLUTION_RUN_COMPLETED`` audit; does not activate
+    any freeze (X-005 acceptance criteria)."""
+
     def __init__(
         self,
         *,
@@ -219,6 +233,9 @@ class BrokerScheduler:
             [datetime], Awaitable[None]
         ] | None = None,
         acceptance_callback: Callable[[datetime], Awaitable[None]] | None = None,
+        evolution_shadow_run_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
         now_func: Callable[[], datetime] | None = None,
         initial_capital: float = 1_000_000.0,
     ) -> None:
@@ -240,6 +257,7 @@ class BrokerScheduler:
         self._eod_close = eod_close_callback or intraday_mtm_callback
         self._mirofish = mirofish_postclose_callback
         self._acceptance = acceptance_callback
+        self._evolution_shadow_run = evolution_shadow_run_callback
         self._now = now_func or (lambda: datetime.now(tz=SHANGHAI))
         self._initial_capital = initial_capital
         self._scheduler: AsyncIOScheduler | None = None
@@ -295,13 +313,29 @@ class BrokerScheduler:
             replace_existing=True,
             misfire_grace_time=300,
         )
+        # X-005 — Phase X self-evolution shadow validate. Always
+        # register so the cron is in flight regardless of whether the
+        # evolution chain (X-008 EvolutionDispatcher) has been wired
+        # yet; the callback is a no-op when ``_evolution_shadow_run``
+        # is ``None`` so deploys that do not yet ship the X-B chain
+        # still boot cleanly.
+        self._scheduler.add_job(
+            self._evolution_shadow_run_job,
+            trigger=CronTrigger.from_crontab(
+                self.EVOLUTION_SHADOW_RUN_CRON, timezone="Asia/Shanghai"
+            ),
+            id="evolution_shadow_run",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
         self._scheduler.start()
         await self._audit.write(
             event_type=AuditEventType.BROKERSCHEDULER_STARTED,
             actor=AuditActor.SCHEDULER,
             resource_type="broker_scheduler",
             payload={"jobs": ["eod_pipeline", "intraday_mtm",
-                              "mirofish_postclose", "advance_day"]},
+                              "mirofish_postclose", "advance_day",
+                              "evolution_shadow_run"]},
             outcome=AuditOutcome.SUCCESS,
         )
         log.info("broker_scheduler_started")
@@ -367,6 +401,85 @@ class BrokerScheduler:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("advance_day_failed", error=str(exc))
+
+    async def _evolution_shadow_run_job(self) -> None:
+        """22:00 cron entry for the Phase X evolution shadow chain.
+
+        Calls into :meth:`run_evolution_shadow` so tests and operators
+        can exercise the retry + audit semantics without scheduling.
+        """
+        await self.run_evolution_shadow()
+
+    async def run_evolution_shadow(
+        self,
+        *,
+        retry: bool = True,
+        force_now: datetime | None = None,
+    ) -> bool:
+        """Trigger the Phase X evolution shadow chain.
+
+        Returns ``True`` on success (or when no callback is wired —
+        the cron is a no-op until X-008 lands the dispatcher), ``False``
+        when both the initial attempt and the single retry failed.
+
+        Audit emission per attempt outcome (P2-2 §1.10 + P1-6 third
+        amendment 34): ``SHADOW_EVOLUTION_RUN_COMPLETED`` with
+        ``outcome=SUCCESS`` on the first successful attempt or
+        ``outcome=FAILURE`` after the retry blew up. The retry path
+        explicitly does **not** activate the EOD freeze — failure
+        here only means tonight's challenger comparison is skipped;
+        next-day live routing must stay open (X-005 acceptance criteria
+        + P2-2 §1.5 decoupling rationale).
+        """
+        if self._evolution_shadow_run is None:
+            # Cron is registered but no chain is wired yet — typical
+            # state during Phase X-A before X-008 EvolutionDispatcher
+            # lands. Return True without emitting audit so the booth
+            # is silent during the gap; the X-B integration tests
+            # exercise the real callback path.
+            return True
+
+        started = force_now or self._now()
+        trade_date = started.astimezone(SHANGHAI).strftime("%Y-%m-%d")
+        error: str | None = None
+        try:
+            await self._evolution_shadow_run(started)
+            await self._audit.write(
+                event_type=AuditEventType.SHADOW_EVOLUTION_RUN_COMPLETED,
+                actor=AuditActor.SCHEDULER,
+                resource_type="evolution_shadow_run",
+                resource_id=trade_date,
+                payload={"trade_date": trade_date, "retried": not retry},
+                outcome=AuditOutcome.SUCCESS,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — the chain is the trust boundary
+            error = str(exc)
+            log.warning(
+                "evolution_shadow_run_failed",
+                trade_date=trade_date,
+                error=error,
+                will_retry=retry,
+            )
+
+        if retry:
+            log.info("evolution_shadow_run_retrying", trade_date=trade_date)
+            await asyncio.sleep(0)
+            return await self.run_evolution_shadow(
+                retry=False, force_now=started
+            )
+
+        await self._audit.write(
+            event_type=AuditEventType.SHADOW_EVOLUTION_RUN_COMPLETED,
+            actor=AuditActor.SCHEDULER,
+            resource_type="evolution_shadow_run",
+            resource_id=trade_date,
+            payload={"trade_date": trade_date, "error": error,
+                     "retried": True},
+            outcome=AuditOutcome.FAILURE,
+            reason_namespace="evolution_shadow_run_failed",
+        )
+        return False
 
     # ------------------------------------------------------------------
     # EOD pipeline orchestration
