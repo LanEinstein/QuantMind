@@ -133,6 +133,35 @@ class ProvenanceWriter:
         finally:
             os.close(fd)
 
+    def write_entry(self, entry: object) -> None:
+        """Serialize a :class:`RagProvenanceEntry` and append the line.
+
+        ``entry`` is typed as ``object`` so this skeleton can ship
+        before the X-004 ``RagProvenanceEntry`` schema lands. The
+        runtime check requires ``entry.model_dump_json()`` (the
+        Pydantic v2 surface) to exist — any object exposing the same
+        contract is accepted, which keeps the writer test-friendly
+        without coupling it back to a specific schema import.
+
+        Layered on top of :meth:`append_line` so the lower-level
+        invariants (flock, O_APPEND, no embedded newline) are reused
+        verbatim.
+        """
+        dumper = getattr(entry, "model_dump_json", None)
+        if dumper is None or not callable(dumper):
+            raise ProvenanceAppendError(
+                "write_entry expects a Pydantic v2 model exposing "
+                "model_dump_json(); got "
+                f"{type(entry).__name__}"
+            )
+        try:
+            payload = dumper()
+        except Exception as exc:  # noqa: BLE001 — serialization is the trust boundary
+            raise ProvenanceAppendError(
+                f"model_dump_json() raised: {exc}"
+            ) from exc
+        self.append_line(payload)
+
 
 def fail_fast_validate_paths(
     *,
