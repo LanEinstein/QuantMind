@@ -7,6 +7,7 @@ X-004 with their own test module.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
@@ -21,7 +22,11 @@ from backend.evolution.provenance import (
     ProvenanceWriter,
     fail_fast_validate_paths,
 )
-from backend.evolution.provenance.writer import WHITELIST_SOURCE_DIRS
+from backend.evolution.provenance import writer as writer_module
+from backend.evolution.provenance.writer import (
+    MAX_LOCK_ATTEMPTS,
+    WHITELIST_SOURCE_DIRS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -151,6 +156,72 @@ def test_append_line_does_not_truncate_existing_content(tmp_path: Path) -> None:
     writer.append_line('{"new": true}')
     lines = target.read_text(encoding="utf-8").splitlines()
     assert lines == ['{"existing": true}', '{"new": true}']
+
+
+# ---------------------------------------------------------------------------
+# Codex X-027 R4 claim 4 — LOCK_NB bounded retry (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+
+def test_lock_acquired_after_contention_releases(tmp_path: Path) -> None:
+    """A short-lived contender releases inside the retry budget — the
+    main writer should retry, acquire the lock, and write its line."""
+    target = tmp_path / "provenance.jsonl"
+    writer = ProvenanceWriter(target)
+    # Pre-create the file so fd open + flock target both exist.
+    target.touch()
+
+    # Open a competing fd and hold LOCK_EX briefly, then release.
+    competitor_fd = os.open(target, os.O_WRONLY | os.O_APPEND)
+    fcntl.flock(competitor_fd, fcntl.LOCK_EX)
+    released = threading.Event()
+
+    def release_after_short_delay() -> None:
+        # Release within the first backoff window so the main writer's
+        # second attempt succeeds (0.1s sleep, then retry).
+        import time as _time
+
+        _time.sleep(0.15)
+        fcntl.flock(competitor_fd, fcntl.LOCK_UN)
+        os.close(competitor_fd)
+        released.set()
+
+    releaser = threading.Thread(target=release_after_short_delay)
+    releaser.start()
+    try:
+        # Main writer's first attempt fails with BlockingIOError, sleeps
+        # 0.1s, retries and succeeds after the contender releases at ~0.15s.
+        writer.append_line('{"after_contention": true}')
+    finally:
+        releaser.join()
+    assert released.is_set()
+    body = target.read_text(encoding="utf-8")
+    assert json.loads(body.strip())["after_contention"] is True
+
+
+def test_lock_timeout_raises_after_max_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If every attempt hits BlockingIOError, the writer raises a typed
+    ProvenanceAppendError after MAX_LOCK_ATTEMPTS — no infinite hang."""
+    target = tmp_path / "provenance.jsonl"
+    writer = ProvenanceWriter(target)
+
+    call_count = {"n": 0}
+
+    def always_block(_fd: int, _op: int) -> None:
+        call_count["n"] += 1
+        raise BlockingIOError("simulated lock contention")
+
+    # Skip real sleeps so the test still completes quickly even though
+    # the production code path would sleep ~3.1s in total.
+    monkeypatch.setattr(writer_module.fcntl, "flock", always_block)
+    monkeypatch.setattr(writer_module.time, "sleep", lambda _s: None)
+
+    with pytest.raises(ProvenanceAppendError, match="bounded retry"):
+        writer.append_line('{"never_lands": true}')
+    # All MAX_LOCK_ATTEMPTS attempts should have been made.
+    assert call_count["n"] == MAX_LOCK_ATTEMPTS
 
 
 # ---------------------------------------------------------------------------

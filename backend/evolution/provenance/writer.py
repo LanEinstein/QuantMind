@@ -34,6 +34,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import time
 from pathlib import Path
 
 PROVENANCE_FILE_NAME = "provenance.jsonl"
@@ -51,6 +52,16 @@ WHITELIST_SOURCE_DIRS: frozenset[str] = frozenset(
 """Five RAG sources locked by P2-2 §1.1.1 (Round 2 Q3). The X-004
 schema enforces this allowlist at the field level; X-002 only checks
 that the per-source directories exist."""
+
+MAX_LOCK_ATTEMPTS = 5
+"""Bounded retry budget for LOCK_EX|LOCK_NB acquisition (codex X-027 R4
+claim 4 defense-in-depth). Sum of waits at 0.1s base with 2x backoff
+is 0.1 + 0.2 + 0.4 + 0.8 + 1.6 ≈ 3.1s total — fast enough that an
+operator sees the failure, long enough that genuine contention from
+the verifier's tail read does not spuriously fail the writer."""
+
+INITIAL_LOCK_BACKOFF_SEC = 0.1
+"""Base sleep between attempts; doubled on each retry."""
 
 
 class ProvenanceAppendError(RuntimeError):
@@ -120,12 +131,30 @@ class ProvenanceWriter:
             mode=0o644,
         )
         try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            except OSError as exc:
-                raise ProvenanceAppendError(
-                    f"failed to acquire flock on {self._path}: {exc}"
-                ) from exc
+            # codex X-027 R4 claim 4 defense-in-depth: replace blocking
+            # LOCK_EX (which would hang indefinitely if another local
+            # process held the lock) with LOCK_EX|LOCK_NB plus bounded
+            # exponential-backoff retry. SSH-only deployment (P1-6 §1.5)
+            # bounds the threat, but a typed timeout is cheap insurance.
+            last_err: OSError | None = None
+            for attempt in range(MAX_LOCK_ATTEMPTS):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    last_err = exc
+                    if attempt == MAX_LOCK_ATTEMPTS - 1:
+                        raise ProvenanceAppendError(
+                            f"could not acquire LOCK_EX on {self._path} "
+                            f"after {MAX_LOCK_ATTEMPTS} attempts (codex "
+                            "X-027 R4 claim 4 defense-in-depth — bounded "
+                            "retry replaces blocking flock)"
+                        ) from last_err
+                    time.sleep(INITIAL_LOCK_BACKOFF_SEC * (2**attempt))
+                except OSError as exc:
+                    raise ProvenanceAppendError(
+                        f"failed to acquire flock on {self._path}: {exc}"
+                    ) from exc
             try:
                 os.write(fd, line.encode("utf-8") + b"\n")
             finally:
