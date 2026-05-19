@@ -10,6 +10,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import stat
 import threading
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from backend.evolution.provenance import writer as writer_module
 from backend.evolution.provenance.writer import (
     MAX_LOCK_ATTEMPTS,
     WHITELIST_SOURCE_DIRS,
+    _harden_path,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +289,97 @@ def test_fail_fast_validate_paths_rejects_corrupt_tail(tmp_path: Path) -> None:
     )
     with pytest.raises(ProvenanceAppendError, match="not valid JSON"):
         fail_fast_validate_paths(rag_root=rag)
+
+
+# ---------------------------------------------------------------------------
+# Codex X-027 R4 claim 5 — chmod 0o700/0o600 hardening of data/rag/
+# ---------------------------------------------------------------------------
+
+
+def test_fail_fast_validate_paths_hardens_rag_subtree(tmp_path: Path) -> None:
+    """Owned subtree gets 0o700 on dirs and 0o600 on provenance.jsonl."""
+    rag = _bootstrap(tmp_path)
+    # Loosen perms first so the test exercises the chmod path.
+    os.chmod(rag, 0o755)
+    for source in WHITELIST_SOURCE_DIRS:
+        os.chmod(rag / source, 0o755)
+    os.chmod(rag / "provenance.jsonl", 0o644)
+
+    fail_fast_validate_paths(rag_root=rag)
+
+    assert stat.S_IMODE(rag.stat().st_mode) == 0o700
+    for source in WHITELIST_SOURCE_DIRS:
+        assert stat.S_IMODE((rag / source).stat().st_mode) == 0o700, source
+    assert stat.S_IMODE((rag / "provenance.jsonl").stat().st_mode) == 0o600
+
+
+def test_fail_fast_validate_paths_skips_foreign_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the path is owned by a different EUID, chmod must NOT be called."""
+    rag = _bootstrap(tmp_path)
+    os.chmod(rag, 0o755)
+
+    chmod_calls: list[tuple[str, int]] = []
+
+    def fake_chmod(p: str | Path, mode: int) -> None:
+        chmod_calls.append((str(p), mode))
+
+    # Fabricate a fake EUID that won't match any tmp_path owner.
+    monkeypatch.setattr(writer_module.os, "geteuid", lambda: 999_999_999)
+    monkeypatch.setattr(writer_module.os, "chmod", fake_chmod)
+
+    fail_fast_validate_paths(rag_root=rag)
+
+    # Skipped silently — zero chmod calls, no exception.
+    assert chmod_calls == []
+
+
+def test_harden_path_swallows_oserror_from_chmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A platform-level chmod failure must not propagate (best-effort)."""
+    target = tmp_path / "dir"
+    target.mkdir()
+    # Force os.chmod to fail; _harden_path must still return cleanly.
+    monkeypatch.setattr(
+        writer_module.os,
+        "chmod",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("EROFS")),
+    )
+    _harden_path(target)  # must not raise
+
+
+def test_harden_path_skips_symlink_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex X-027 R4 cycle 1 P2 follow-up — a symlink to a directory
+    or file outside the RAG tree must NOT have its target chmodded.
+
+    Without the fix, ``_harden_path(symlink)`` would follow the link
+    and modify the foreign target's mode; with the fix, the symlink
+    is detected via ``os.lstat`` and ``_harden_path`` returns silently.
+    """
+    foreign_target = tmp_path / "foreign"
+    foreign_target.mkdir()
+    os.chmod(foreign_target, 0o755)  # the mode we want to PRESERVE
+
+    link = tmp_path / "rag_subdir_link"
+    link.symlink_to(foreign_target)
+
+    chmod_calls: list[tuple[str, int]] = []
+
+    def fake_chmod(p: str | Path, mode: int) -> None:
+        chmod_calls.append((str(p), mode))
+
+    monkeypatch.setattr(writer_module.os, "chmod", fake_chmod)
+
+    _harden_path(link)
+
+    # Symlink path must be skipped — no chmod attempted, target intact.
+    assert chmod_calls == []
+    # And the foreign target's mode is genuinely untouched on the FS.
+    assert stat.S_IMODE(foreign_target.stat().st_mode) == 0o755
 
 
 # ---------------------------------------------------------------------------

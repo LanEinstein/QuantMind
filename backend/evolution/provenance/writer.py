@@ -34,6 +34,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import stat
 import time
 from pathlib import Path
 
@@ -192,6 +193,55 @@ class ProvenanceWriter:
         self.append_line(payload)
 
 
+def _harden_path(path: Path) -> None:
+    """Tighten permissions on a RAG path — best-effort defense-in-depth.
+
+    Codex X-027 R4 claim 5: ``data/rag/`` deserves 0o700 on directories
+    and 0o600 on the provenance JSONL even though the deployment
+    boundary (127.0.0.1 + SSH-only) bounds the threat. ``chmod`` is
+    cheap; an operator-induced 0o755 default is the only realistic
+    leak vector.
+
+    Skipped silently when:
+
+    * the path does not exist;
+    * the path **is a symlink** — both ``Path.stat()`` and ``os.chmod``
+      follow links by default, so chmoding a symlink would modify the
+      target's mode bits, potentially outside ``data/rag/`` if an
+      operator symlinks a source directory to a shared mount (codex
+      X-027 R4 follow-up — P2 finding fix);
+    * the EUID does not own the path (multi-user host safety — never
+      modify another user's files);
+    * the platform lacks ``os.geteuid`` (Windows / non-POSIX) — in
+      that case ``AttributeError`` is caught;
+    * the underlying ``chmod`` raises ``OSError`` (filesystem refuses
+      mode bits, network mount, etc.).
+
+    The function is intentionally exception-swallowing — a hardening
+    failure must not block boot. Persistent loose modes will surface
+    on audit review of the deploy host.
+    """
+    try:
+        # Reject symlinks BEFORE stat() so we never reach the target
+        # (codex X-027 R4 follow-up P2). ``os.lstat`` returns metadata
+        # about the link itself; chmod on a link is not portable
+        # (Linux raises NotImplementedError for lchmod) and even if
+        # supported would leave the target's permissions unchanged,
+        # giving false confidence.
+        link_st = os.lstat(path)
+        if stat.S_ISLNK(link_st.st_mode):
+            return
+        st = path.stat()
+        if st.st_uid != os.geteuid():
+            return  # not our path; leave alone
+        target_mode = 0o600 if path.is_file() else 0o700
+        current_mode = stat.S_IMODE(st.st_mode)
+        if current_mode != target_mode:
+            os.chmod(path, target_mode)
+    except (OSError, AttributeError):
+        return  # best-effort; never block boot
+
+
 def fail_fast_validate_paths(
     *,
     rag_root: Path | str = "data/rag",
@@ -238,18 +288,28 @@ def fail_fast_validate_paths(
     # larger than any one entry; a fully corrupted file would still
     # surface as a parse failure on the final line.
     size = path.stat().st_size
-    if size == 0:
-        return
-    read_window = min(size, 65536)
-    with path.open("rb") as fh:
-        fh.seek(-read_window, os.SEEK_END)
-        tail = fh.read()
-    last_line = tail.splitlines()[-1] if tail.splitlines() else b""
-    if not last_line:
-        return
-    try:
-        json.loads(last_line)
-    except json.JSONDecodeError as exc:
-        raise ProvenanceAppendError(
-            f"provenance ledger {path} last line is not valid JSON: {exc.msg}"
-        ) from exc
+    if size > 0:
+        read_window = min(size, 65536)
+        with path.open("rb") as fh:
+            fh.seek(-read_window, os.SEEK_END)
+            tail = fh.read()
+        split_tail = tail.splitlines()
+        last_line = split_tail[-1] if split_tail else b""
+        if last_line:
+            try:
+                json.loads(last_line)
+            except json.JSONDecodeError as exc:
+                raise ProvenanceAppendError(
+                    f"provenance ledger {path} last line is not valid JSON: "
+                    f"{exc.msg}"
+                ) from exc
+
+    # codex X-027 R4 claim 5 defense-in-depth: chmod the RAG subtree to
+    # 0o700/0o600 after the structural checks pass. Best-effort —
+    # _harden_path swallows non-owned / non-POSIX / OSError cases.
+    # Runs even on an empty ledger so a fresh deploy locks down the
+    # subtree immediately.
+    _harden_path(root)
+    for source in sorted(WHITELIST_SOURCE_DIRS):
+        _harden_path(root / source)
+    _harden_path(path)
