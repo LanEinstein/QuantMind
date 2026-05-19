@@ -9,6 +9,23 @@ Repo allowlist is enforced by the orchestrator (X-010
 returns approved repo / release pairs. Per provenance schema
 (``doc_id`` cross-check) the crawler-side prefix must stay synced with
 the source name.
+
+Production wiring note (codex X-027 R4 claim 1+2):
+    The real ``FetcherCallable`` provided at production wiring time
+    MUST load the PAT from ``os.environ["GITHUB_TOKEN"]`` only —
+    never from ``.env`` files, never hard-coded. Use it as a Bearer
+    auth header (``Authorization: Bearer <token>``). Log only the
+    SHA256[:8] fingerprint per
+    :func:`backend.services.secrets_validator.compute_fingerprint`;
+    never log the raw token.
+
+    Q3 of P2-2-implementation-plan-2026-05-18 keeps the PAT
+    heterogeneous to the LLM 3 + Feishu 5 pool, so
+    ``secrets_validator`` only soft-warns on a malformed PAT (not
+    fail-fast). The crawler-side init is the place to fail-fast with
+    a typed ``MissingCrawlerCredentialError`` if the env var is unset
+    while the GitHub source is enabled in
+    ``config/evolution/frontier.yaml``.
 """
 
 from __future__ import annotations

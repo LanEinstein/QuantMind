@@ -17,6 +17,7 @@ import pytest
 from backend.services.secrets_validator import (
     EXPECTED_POOL_SIZE,
     FEISHU_CREDENTIAL_NAMES,
+    HETEROGENEOUS_CREDENTIAL_NAMES,
     LEGACY_FEISHU_CUSTOM_BOT_NAMES,
     LLM_API_KEY_NAMES,
     SecretsValidationError,
@@ -251,6 +252,84 @@ class TestLegacyCustomBotSoftWarning:
         result = SecretsValidator(env=env).validate()
         assert (
             "FEISHU_CUSTOM_BOT_WEBHOOK_URL" not in result.fingerprints
+        )
+
+
+# -----------------------------------------------------------------------------
+# Heterogeneous credentials — GITHUB_TOKEN soft-warn (codex X-027 R4 1+2)
+# -----------------------------------------------------------------------------
+
+
+class TestHeterogeneousCredentials:
+    def test_github_token_listed_outside_canonical_pool(self) -> None:
+        """Q3 keeps PAT heterogeneous — never count toward EXPECTED_POOL_SIZE."""
+        assert "GITHUB_TOKEN" in HETEROGENEOUS_CREDENTIAL_NAMES
+        assert "GITHUB_TOKEN" not in LLM_API_KEY_NAMES
+        assert "GITHUB_TOKEN" not in FEISHU_CREDENTIAL_NAMES
+        # Pool size stays 8 (3 LLM + 5 Feishu) regardless of PAT.
+        assert EXPECTED_POOL_SIZE == 8
+
+    def test_github_token_well_formed_prefix_no_warning(self) -> None:
+        """ghp_ prefix + sufficient body — validator emits zero warnings."""
+        env = _baseline_env()
+        env["GITHUB_TOKEN"] = "ghp_" + "A" * 24  # well-formed classic PAT
+        result = SecretsValidator(env=env).validate()
+        assert result.ok is True
+        for w in result.warnings:
+            assert w.resource_id != "GITHUB_TOKEN"
+        # And the heterogeneous credential must not enter fingerprints.
+        assert "GITHUB_TOKEN" not in result.fingerprints
+
+    def test_github_token_fine_grained_prefix_no_warning(self) -> None:
+        """github_pat_ prefix (fine-grained) also accepted."""
+        env = _baseline_env()
+        env["GITHUB_TOKEN"] = "github_pat_" + "B" * 60
+        result = SecretsValidator(env=env).validate()
+        assert result.ok is True
+        for w in result.warnings:
+            assert w.resource_id != "GITHUB_TOKEN"
+
+    def test_github_token_malformed_prefix_emits_soft_warning(self) -> None:
+        """Misshapen PAT triggers a soft warning but never blocks startup."""
+        env = _baseline_env()
+        env["GITHUB_TOKEN"] = "xyz-not-a-github-pat"
+        result = SecretsValidator(env=env).validate()
+        assert result.ok is True  # warnings never block
+        github_warnings = [
+            w for w in result.warnings if w.resource_id == "GITHUB_TOKEN"
+        ]
+        assert len(github_warnings) == 1
+        w = github_warnings[0]
+        assert w.reason_namespace == "malformed_heterogeneous_credential"
+        assert w.payload["credential_name"] == "GITHUB_TOKEN"
+        # Fingerprint never leaks plaintext.
+        assert len(w.payload["fingerprint"]) == 8
+        assert "xyz-not-a-github-pat" not in w.payload["fingerprint"]
+
+    def test_github_token_unset_emits_no_warning(self) -> None:
+        """Absent env var is the production-wiring concern (crawler init
+        fails fast there), not a validator warning."""
+        env = _baseline_env()  # GITHUB_TOKEN unset
+        result = SecretsValidator(env=env).validate()
+        for w in result.warnings:
+            assert w.resource_id != "GITHUB_TOKEN"
+
+    def test_env_with_github_token_assignment_rejects(
+        self, tmp_path: Path
+    ) -> None:
+        """Codex X-027 R4 cycle 1 P1 follow-up — the .env scan must
+        also reject ``GITHUB_TOKEN=...`` since the docstring promise
+        is "secrets live in ~/.bashrc, never in .env"."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "GITHUB_TOKEN=ghp_leaked_into_env_file_xxxxxxxx\n",
+            encoding="utf-8",
+        )
+        validator = SecretsValidator(env=_baseline_env(), env_file=env_file)
+        result = validator.validate()
+        assert result.ok is False
+        assert any(
+            "GITHUB_TOKEN" in e and ".env" in e for e in result.errors
         )
 
 

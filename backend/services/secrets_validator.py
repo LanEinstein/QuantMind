@@ -71,8 +71,30 @@ LEGACY_FEISHU_CUSTOM_BOT_NAMES: tuple[str, ...] = (
 """Soft-warning legacy names — owner tenant disables custom-bot, so any
 value here is dead config but not a startup blocker."""
 
+HETEROGENEOUS_CREDENTIAL_NAMES: tuple[str, ...] = (
+    "GITHUB_TOKEN",  # X-010 GitHub releases crawler PAT (Q3 — not in LLM/Feishu pool)
+)
+"""Heterogeneous credentials (P2-2 §1.13 Q3): credentials that are NOT
+part of the LLM 3 + Feishu 5 pool but that ``secrets_validator`` still
+inspects with a *soft* warning at boot. The GitHub PAT is the first
+member — Q3 of P2-2-implementation-plan-2026-05-18 keeps it outside
+the canonical pool because it serves a different purpose (crawler
+auth, not LLM / chat), is owned by GitHub not by an internal vendor,
+and has its own rotation cadence. We still soft-warn at boot when the
+env var is set but the value does not look like a GitHub PAT
+(``ghp_`` / ``github_pat_`` prefix) so an obvious paste error is
+visible before the crawler call fails downstream."""
+
+_GITHUB_PAT_RE = re.compile(r"\A(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}\Z")
+"""GitHub PAT shape — covers both classic (``ghp_``) and fine-grained
+(``github_pat_``) formats. Anchored so trailing whitespace is rejected."""
+
+_HETEROGENEOUS_PATTERNS: Mapping[str, re.Pattern[str]] = {
+    "GITHUB_TOKEN": _GITHUB_PAT_RE,
+}
+
 # Total pool size = 3 LLM + 5 Feishu = 8 names. The two CUSTOM_BOT_*
-# legacy names are explicitly excluded by the amendment.
+# legacy names and the heterogeneous credentials are explicitly excluded.
 EXPECTED_POOL_SIZE = 8
 
 
@@ -94,10 +116,14 @@ _FEISHU_CREDENTIAL_PATTERNS: Mapping[str, re.Pattern[str]] = {
 
 # .env assignment-form scanner. Comments (lines beginning with ``#``,
 # possibly after whitespace) are skipped so the .env.example docstring
-# does not trip the guard.
+# does not trip the guard. The pattern covers (1) LLM provider keys,
+# (2) any FEISHU_* prefix (catches legacy custom-bot names too), and
+# (3) heterogeneous credentials such as ``GITHUB_TOKEN`` — the latter
+# follows the same "secrets live in ~/.bashrc, never in .env" rule
+# (codex X-027 R4 follow-up — P1 finding fix).
 _ASSIGNMENT_RE = re.compile(
     r"^\s*(?P<name>(?:DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|"
-    r"FEISHU_[A-Z_]+))\s*="
+    r"FEISHU_[A-Z_]+|GITHUB_TOKEN))\s*="
 )
 
 _FEISHU_FLAG_ENV = "FEISHU_INTERACTIVE_ENABLED"
@@ -227,6 +253,7 @@ class SecretsValidator:
             errors.extend(self._validate_feishu_credentials(fingerprints))
 
         warnings.extend(self._collect_legacy_custom_bot_warnings())
+        warnings.extend(self._scan_heterogeneous_credentials())
 
         return SecretsValidationResult(
             fingerprints=fingerprints,
@@ -309,6 +336,46 @@ class SecretsValidator:
                 continue
             fingerprints[name] = compute_fingerprint(value)
         return errors
+
+    # -- Heterogeneous credentials -------------------------------------
+
+    def _scan_heterogeneous_credentials(self) -> list[_DeferredWarning]:
+        """Soft-warn on misshapen heterogeneous credentials.
+
+        Heterogeneous credentials (e.g. ``GITHUB_TOKEN``) are NOT part
+        of the LLM 3 + Feishu 5 pool — they don't count toward
+        ``EXPECTED_POOL_SIZE``. We only emit a warning when the env
+        var is set but the value fails the per-credential shape regex
+        so an obviously broken paste surfaces early. Absence is not a
+        warning here — the crawler-side init is the place to fail-fast
+        if the source is enabled without the env var (codex X-027 R4
+        claim 1+2).
+        """
+        warnings: list[_DeferredWarning] = []
+        for name in HETEROGENEOUS_CREDENTIAL_NAMES:
+            value = self._env.get(name, "").strip()
+            if not value:
+                continue
+            pattern = _HETEROGENEOUS_PATTERNS.get(name)
+            if pattern is not None and pattern.match(value):
+                continue  # well-formed; no warning
+            warnings.append(
+                _DeferredWarning(
+                    reason_namespace="malformed_heterogeneous_credential",
+                    resource_type="credential",
+                    resource_id=name,
+                    payload={
+                        "credential_name": name,
+                        "fingerprint": compute_fingerprint(value),
+                        "expected_shape": (
+                            pattern.pattern
+                            if pattern is not None
+                            else "<unknown>"
+                        ),
+                    },
+                )
+            )
+        return warnings
 
     # -- Legacy custom-bot warnings ------------------------------------
 
@@ -449,6 +516,7 @@ def assert_secrets_or_exit(
 __all__ = [
     "EXPECTED_POOL_SIZE",
     "FEISHU_CREDENTIAL_NAMES",
+    "HETEROGENEOUS_CREDENTIAL_NAMES",
     "LEGACY_FEISHU_CUSTOM_BOT_NAMES",
     "LLM_API_KEY_NAMES",
     "SecretsValidationError",
