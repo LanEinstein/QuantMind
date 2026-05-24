@@ -2200,14 +2200,14 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       // MVP = Phase K + L + M + N(双线端到端 on 快照,无自进化/无 MiroFish 核心/无全异动栈)。
       {
         id: "K-001", phase: "K 数据地基", status: "todo", priority: "P0",
-        title: "Tushare Pro 5000 档接入 + 数据源 amendment",
-        summary: "全市场 5000+ 扫描需 Tushare daily/daily_basic/fina_indicator_vip(全市场单次拉取);akshare/baostock/adata 降为兜底 + 新闻保留。新增 TUSHARE_TOKEN(异质凭证不入 LLM/飞书池)。",
-        scope: "config/data_sources.yaml, backend/data/tushare_*.py, backend/services/secrets_validator.py, docs/decisions/P0-8-amendment(数据源)",
+        title: "Tushare Pro 5000 档接入(官方 Python SDK)+ 数据源 amendment",
+        summary: "调用方式 = **官方 tushare Python SDK**(2026-05-24 owner 确认):`pro = ts.pro_api(os.environ['TUSHARE_TOKEN'])` → 全市场单次拉取 `pro.daily(trade_date)` / `pro.daily_basic(trade_date)` / `pro.fina_indicator_vip(period)` / `pro.adj_factor(trade_date)` / `pro.index_daily(ts_code)` / `pro.fund_daily(...)`。同步调用包 `asyncio.to_thread`(沿用 adata/akshare/baostock 模式)。**严禁 MCP / agent-skill 等 LLM-推理时取数模式**(违反 R0 §3 PIT 可复现 + §4 LLM-数据隔离 + L-002 纯量化筛 0 LLM + ¥20 成本红线)。akshare/baostock/adata 降兜底 + 新闻保留;TUSHARE_TOKEN 异质凭证不入 LLM/飞书池。",
+        scope: "backend/data/tushare_client.py(新), pyproject.toml(pin tushare>=1.4), config/data_sources.yaml, backend/services/secrets_validator.py(异质凭证+.env 禁放), docs/decisions/P0-8-amendment(数据源)",
         depends: "R0, A-H 数据层",
-        acceptance: "全市场单日 daily/daily_basic/fina_indicator_vip 各 1 次拉全 + 兜底链不变 + TUSHARE_TOKEN 仅 os.environ + fingerprint log;数据成本不设 ceiling(P1-7)。",
-        tests: "单测 vip 全市场拉取 + 兜底回退 + secrets_validator 异质凭证软警告;httpx local_address=0.0.0.0(IPv4-only egress)。",
-        sources: "R0 §6, P1-7(数据不设 ceiling), 数据源调研 dossier",
-        commit: "", session_date: "", notes: "data_sources.yaml 改动走 amendment + git diff + 重启(runtime 不可改不变)。TUSHARE_TOKEN 异质池不计入 LLM 3+飞书 5。"
+        acceptance: "SDK `ts.pro_api` 全市场单日 daily/daily_basic/fina_indicator_vip 各 1 次拉全(5000 档 vip)+ 原始 DataFrame/payload 直接喂 K-002 快照 + 兜底链不变 + TUSHARE_TOKEN 仅 os.environ + fingerprint log;`grep -rn 'mcp\\|tushare.*skill' backend/` 运行时取数路径必空;数据成本不设 ceiling(P1-7)。",
+        tests: "单测 vip 全市场拉取(mock SDK)+ 兜底回退 + secrets_validator 异质凭证软警告 + .env 禁放 TUSHARE_TOKEN;httpx/SDK 出站 IPv4-only;断言无 MCP 客户端在数据路径。",
+        sources: "R0 §6(SDK only 锁定), P1-7(数据不设 ceiling), 数据源调研 dossier",
+        commit: "", session_date: "", notes: "owner 2026-05-24 确认 SDK over MCP/skill:MCP/skill 是 LLM 工具调用模式,撞 PIT 可复现+LLM-数据隔离+纯量化筛+成本 4 红线。data_sources.yaml 改动走 amendment + git diff + 重启。TUSHARE_TOKEN 异质池不计入 LLM 3+飞书 5(EXPECTED_POOL_SIZE 仍 8,GITHUB_TOKEN 同款 HETEROGENEOUS 模式)。"
       },
       {
         id: "K-002", phase: "K 数据地基", status: "todo", priority: "P0",
