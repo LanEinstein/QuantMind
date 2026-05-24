@@ -1,0 +1,36 @@
+# Candidate-selector weights / thresholds (Phase M-001).
+#
+# Git-versioned, runtime-immutable (P0-8-amendment-2026-05-24 §2.3 / R0 §8).
+# The deterministic CandidateSelector reads this to turn the quant shortlist
+# + (optional) advisory evidence into the final shortlist the agents debate.
+# Changing any value requires an amendment + restart; LiveArtifactRegistry
+# pins the derived feature_def_hash (Phase R). Never edited at runtime, never
+# hot-reloaded, never written by an LLM.
+#
+# Bump `version` (and add a new vN.yaml) when the maths changes so a stale
+# pin / replay fails closed instead of silently selecting differently.
+version: "candidate_selector/v1"
+
+# Final shortlist size — the agents debate at most this many candidates
+# (O-004: 辩论收敛 ≤5). The screener already truncated the full market to its
+# own top-N; this is the smaller debate set.
+final_shortlist_size: 5
+
+# Minimum number of top quant-ranked codes that MUST survive into the final
+# shortlist regardless of advisory re-ranking (CLAUDE.md red line 3 — a
+# bounded re-rank can never indirectly evict the quant favorites). Must be
+# ≤ final_shortlist_size.
+min_quant_slots: 3
+
+# Advisory (MiroFish) re-rank is bounded to at most this fraction of the
+# qualified-set size in position displacement (CLAUDE.md red line 2 —
+# "≤1 分位"). 0.01 = 1 percentile. If the requested re-rank would displace any
+# code beyond this bound, the advisory is dropped and the pure-quant order is
+# used (fail-closed: MiroFish never gets an unbounded pull).
+max_percentile_shift: 0.01
+
+# How strongly an advisory signal pulls a candidate's position (in units of
+# the max bounded shift). Still hard-clamped by max_percentile_shift, so this
+# only tunes the pull WITHIN the bound; it can never widen it. MVP: MiroFish
+# is not wired (Phase O-003) so in practice no advisory signals arrive yet.
+advisory_weight: 1.0
