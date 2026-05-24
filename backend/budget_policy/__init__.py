@@ -6,6 +6,10 @@ emits ``NO_COMPLIANT_TRADE`` as a first-class outcome. Import isolation
 (P0-7-amendment-2026-05-24 §3.1): no ``backend.{llm,agents,mirofish}``.
 """
 
+from backend.budget_policy.calibration import (
+    TierCalibration,
+    calibrate_tiers,
+)
 from backend.budget_policy.policy import (
     NO_COMPLIANT_TRADE,
     AffordabilityOutcome,
@@ -29,5 +33,7 @@ __all__ = [
     "BudgetTierConfig",
     "BudgetTierPolicy",
     "CandidateAffordability",
+    "TierCalibration",
+    "calibrate_tiers",
     "load_budget_tier_config",
 ]
