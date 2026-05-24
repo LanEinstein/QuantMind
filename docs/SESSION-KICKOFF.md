@@ -24,7 +24,7 @@
 【3. 每完成一个任务】
 - TDD 实现(测试先行;非 risk 覆盖率>70%,risk>95%)。
 - commit 前本地门禁全绿:pytest + ruff + scripts/redline-check.sh(动到前端再加 npm run type-check && npm run test)。
-  codex 绝不自动跑,只在我明说时跑。
+- **有代码编写的任务:本地门禁全绿后,commit 之前先跑 codex-review,修复完所有 P0/P1/P2(CRITICAL/HIGH/MEDIUM)bug 后再 commit + push**(2026-05-24 协议变更,推翻旧"手动-only")。docs-only/配置文档/记账 commit 不需 codex。codex CLI 不可用须上报 owner 拿决策,严禁静默推未审代码。
 - 一任务一 feature commit;然后该任务 status 改 "doing"→"done" + 回填真实 commit:(7 位 hash)
   + notes:(做了什么+为什么,1-2 句)。
 

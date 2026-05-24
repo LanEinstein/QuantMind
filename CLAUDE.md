@@ -54,7 +54,7 @@ SSoT = `docs/plan.html`(原 S/A-H/J/I/X + 新增 Phase K-T 40 任务)。**双线
 - 注释 / commit 英文;UI 文档中文;public function 必须 type hints + docstring(WHY 而非 WHAT)。
 - 不可变结构优先(frozen dataclass / NamedTuple / Pydantic frozen);文件 200-400 行典型 / 800 上限;函数 <50 行;嵌套 <4 层。
 - 测试金字塔 + ruff 全绿才允许 commit;非 risk >70%,risk >95%。**测试通过 ≠ 闭环可用**(audit 反面教材 1139 绿但 RiskEngine 不接订单;断言要覆盖被谁调用、贯穿到哪)。
-- Codex review = **手动调用,绝不自动**(2026-05-12 用户锁定):commit 前的本地门禁 = pytest + ruff + redline-check + 前端 type-check + vitest 全绿,**不**包括 codex;Claude 绝不主动跑 `/codex-review` / `codex review --uncommitted` / `codex exec` / `scripts/run-codex-review.sh`。用户显式说"跑 codex"/"/codex-review" 时再跑;那时仍按 codex-review skill 流程跑(1 cycle 起步,major 用户可指定 5 轮 R1-R5,输出 `docs/reviews/{task_id}-codex-review-summary.md`)。绿测试 ≠ 完美但够提交;codex 留给用户主动质检整 Phase 的批量改动。
+- Codex review = **代码任务强制前置门禁**(2026-05-24 用户锁定,推翻 2026-05-12 手动-only):**但凡有代码编写的任务,commit 之前先跑 codex-review,修复完所有 P0/P1/P2(CRITICAL/HIGH/MEDIUM)bug 后再 commit + push**。本地门禁(pytest + ruff + redline-check + 前端 type-check + vitest 全绿)是前置必要条件但不充分;codex-review 是 commit 前的最后一道门。按 codex-review skill 跑(1 cycle 起步,major 用户可指定 5 轮 R1-R5,输出 `docs/reviews/{task_id}-codex-review-summary.md`),修完 P0/P1/P2 后再提交。**例外**:docs-only / 配置文档 / SSoT 记账 commit 不需 codex("有代码编写的任务"才触发)。codex CLI 不可用时须上报 owner 拿决策,**严禁**静默跳过推未审代码。绿测试 ≠ commit-safe(印证 [[feedback_codex_findings_real]])。
 - fail-closed for data corruption / fail-open for infra glitches;完整升级路径优先,不为省工作量妥协可用性。
 
 ## 4. 重要文档
