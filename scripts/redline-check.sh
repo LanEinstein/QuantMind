@@ -845,6 +845,85 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# K-006 / R0 §3 new red line A — PIT data reproducibility
+# Module 0 backend/marketdata_snapshot/ must:
+#   1. NOT import backend.{llm,agents,mirofish} (LLM<->data isolation;
+#      it stays a pure storage/replay layer — the orchestration layer
+#      passes payloads in).
+#   2. Store RAW BYTES, not hash-only: MarketDataSnapshot must declare a
+#      ``raw_payload: bytes`` field (red line A.1, Codex showstopper #1).
+# Paired with tests/marketdata_snapshot/test_module_contract.py (AST).
+# ----------------------------------------------------------------------
+yellow "[K-006] PIT snapshot module isolation + raw-bytes (R0 §3 red line A)"
+PIT_OUT="$(python3 - <<'PY'
+import ast
+import pathlib
+import sys
+
+FORBIDDEN = {"llm", "agents", "mirofish"}
+ROOT = pathlib.Path("backend/marketdata_snapshot")
+violations: list[str] = []
+
+# 1. import isolation
+for path in sorted(ROOT.rglob("*.py")):
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        violations.append(f"{path}: SyntaxError: {exc}")
+        continue
+    mods: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            mods.append(node.module)
+        elif isinstance(node, ast.Import):
+            mods += [a.name for a in node.names]
+    for mod in mods:
+        parts = mod.split(".")
+        if len(parts) >= 2 and parts[0] == "backend" and parts[1] in FORBIDDEN:
+            violations.append(f"{path}: forbidden import {mod}")
+
+# 2. raw bytes, not hash-only
+snap = ROOT / "snapshot.py"
+raw_bytes_field = False
+if snap.exists():
+    tree = ast.parse(snap.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ClassDef)
+            and node.name == "MarketDataSnapshot"
+        ):
+            for stmt in node.body:
+                if (
+                    isinstance(stmt, ast.AnnAssign)
+                    and isinstance(stmt.target, ast.Name)
+                    and stmt.target.id == "raw_payload"
+                    and isinstance(stmt.annotation, ast.Name)
+                    and stmt.annotation.id == "bytes"
+                ):
+                    raw_bytes_field = True
+else:
+    violations.append("backend/marketdata_snapshot/snapshot.py missing")
+if not raw_bytes_field:
+    violations.append(
+        "MarketDataSnapshot lacks a ``raw_payload: bytes`` field "
+        "(hash-only variant forbidden — R0 §3 red line A.1)"
+    )
+
+if violations:
+    print("\n".join(violations))
+    sys.exit(1)
+PY
+)"
+PIT_RC=$?
+if [ $PIT_RC -eq 0 ]; then
+  green "  ok    marketdata_snapshot pure + MarketDataSnapshot stores raw bytes"
+else
+  red "  FAIL  PIT snapshot module red line A violated:"
+  printf '%s\n' "$PIT_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."
