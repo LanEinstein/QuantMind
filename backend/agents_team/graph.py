@@ -1,0 +1,158 @@
+"""agents_team LangGraph orchestration (Phase M-002).
+
+Builds the two-line MVP debate graph and compiles it with a **local SQLite
+checkpointer** (no hosted SaaS — P0-10-amendment-2026-05-24 / agents_team
+CLAUDE.md). Topology:
+
+    START → fundamental_analyst ┐
+            technical_analyst    ├─→ debate → fund_manager → risk_gate → builder → END
+            risk_officer        ┘
+
+The three analysts run in parallel (each writes its own report key, so no
+concurrent-write reducer is needed); the debate fans them in. ``fund_manager``
+is the sole BUY/SELL/HOLD proposer. ``risk_gate`` + ``builder`` are pure
+deterministic tool nodes — there is **no edge by which an LLM/agent node writes
+their numeric order / decision output** (R0 §4): the analysts and fund_manager
+only write free-text + the direction proposal, and the tool nodes read the
+deterministic numeric state set at entry.
+
+MVP (M-002): the agent nodes are deterministic stubs. M-003 swaps in the real
+4 mandatory LLM agents + single-round debate; M-003/M-004 wire ``builder`` to
+``instruction_plan_builder.assemble_plan`` as the single construction point.
+"""
+
+from __future__ import annotations
+
+import functools
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import structlog
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, START, StateGraph
+
+from backend.agents_team.nodes import (
+    builder_node,
+    debate_node,
+    fund_manager_node,
+    fundamental_analyst_node,
+    risk_gate_node,
+    risk_officer_node,
+    technical_analyst_node,
+)
+from backend.agents_team.state import (
+    CandidateBrief,
+    TeamContext,
+    TeamState,
+    make_initial_state,
+)
+
+log = structlog.get_logger(component="agents_team.graph")
+
+
+def _bind(node: Any, ctx: TeamContext) -> Any:
+    """Inject ``ctx`` into a ``node(state, ctx)`` callable (async or sync).
+
+    ``functools.partial`` preserves coroutine-function-ness for async nodes, so
+    LangGraph awaits them and runs sync tool nodes directly.
+    """
+    return functools.partial(node, ctx=ctx)
+
+
+def build_team_graph(
+    ctx: TeamContext,
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> Any:
+    """Build + compile the agents_team graph with ``ctx`` injected.
+
+    Args:
+        ctx: Injected deterministic context (RiskEngine + risk inputs +
+            skeleton stub knobs). Never enters the checkpointed state.
+        checkpointer: Optional local checkpointer. When provided, ``ainvoke``
+            must pass a ``thread_id`` in its config. ``None`` runs without
+            persistence (still fully functional).
+
+    Returns:
+        A compiled LangGraph app ready for ``ainvoke``.
+    """
+    graph = StateGraph(TeamState)
+
+    graph.add_node("fundamental_analyst", _bind(fundamental_analyst_node, ctx))
+    graph.add_node("technical_analyst", _bind(technical_analyst_node, ctx))
+    graph.add_node("risk_officer", _bind(risk_officer_node, ctx))
+    graph.add_node("debate", _bind(debate_node, ctx))
+    graph.add_node("fund_manager", _bind(fund_manager_node, ctx))
+    graph.add_node("risk_gate", _bind(risk_gate_node, ctx))
+    graph.add_node("builder", _bind(builder_node, ctx))
+
+    # START → 3 analysts in parallel.
+    graph.add_edge(START, "fundamental_analyst")
+    graph.add_edge(START, "technical_analyst")
+    graph.add_edge(START, "risk_officer")
+    # 3 analysts fan into the debate (LangGraph waits for all incoming edges).
+    graph.add_edge("fundamental_analyst", "debate")
+    graph.add_edge("technical_analyst", "debate")
+    graph.add_edge("risk_officer", "debate")
+    # Decision → deterministic tool gates → END.
+    graph.add_edge("debate", "fund_manager")
+    graph.add_edge("fund_manager", "risk_gate")
+    graph.add_edge("risk_gate", "builder")
+    graph.add_edge("builder", END)
+
+    return graph.compile(checkpointer=checkpointer)
+
+
+@asynccontextmanager
+async def open_sqlite_checkpointer(
+    db_path: str | Path,
+) -> AsyncIterator[AsyncSqliteSaver]:
+    """Open a local SQLite checkpointer (no hosted SaaS).
+
+    ``db_path`` may be ``":memory:"`` for tests or a filesystem path for
+    persistent per-agent memory across restarts. Usage::
+
+        async with open_sqlite_checkpointer("data/agents_team.sqlite") as cp:
+            graph = build_team_graph(ctx, checkpointer=cp)
+            await graph.ainvoke(state, {"configurable": {"thread_id": tid}})
+    """
+    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as saver:
+        yield saver
+
+
+async def run_team(
+    ctx: TeamContext,
+    candidate: CandidateBrief,
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
+    thread_id: str | None = None,
+) -> TeamState:
+    """Run the team graph for one candidate; return the terminal state.
+
+    When ``checkpointer`` is provided a ``thread_id`` is required by LangGraph
+    (defaults to the candidate code).
+    """
+    graph = build_team_graph(ctx, checkpointer=checkpointer)
+    config: dict[str, Any] = {}
+    if checkpointer is not None:
+        config = {"configurable": {"thread_id": thread_id or candidate.code}}
+    initial = make_initial_state(candidate)
+    log.info("team_run_started", code=candidate.code)
+    result = await graph.ainvoke(initial, config)
+    log.info(
+        "team_run_completed",
+        code=candidate.code,
+        decision=result.get("decision"),
+        reason=result.get("decision_reason"),
+    )
+    return result  # type: ignore[return-value]
+
+
+__all__ = [
+    "build_team_graph",
+    "open_sqlite_checkpointer",
+    "run_team",
+]

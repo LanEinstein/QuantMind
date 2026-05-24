@@ -13,6 +13,10 @@ dependencies = [
     "uvicorn[standard]>=0.34,<1",
     # Agent orchestration
     "langgraph>=0.3,<1",
+    # Local SQLite checkpointer for the agents_team graph (M-002). Pinned <4 so
+    # it keeps langgraph-checkpoint at the 3.x line langgraph 0.6 requires
+    # (sqlite-saver 3.1+ forces checkpoint>=4.1 which breaks langgraph 0.6).
+    "langgraph-checkpoint-sqlite>=3,<3.1",
     "langchain-openai>=0.3,<1",
     # Database
     "motor>=3.6,<4",
@@ -103,6 +107,7 @@ select = ["E", "F", "I", "N", "W", "UP", "TID"]
 "backend/api/**/*.py" = ["TID251"]
 "backend/audit/**/*.py" = ["TID251"]
 "backend/agents/**/*.py" = ["TID251"]
+"backend/agents_team/**/*.py" = ["TID251"]
 "backend/broker/**/*.py" = ["TID251"]
 "backend/data/**/*.py" = ["TID251"]
 "backend/integrations/**/*.py" = ["TID251"]
