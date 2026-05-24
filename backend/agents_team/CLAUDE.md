@@ -1,6 +1,6 @@
 # backend/agents_team/ — 子任务上下文(Phase M MVP / Phase T 扩展)
 
-> 状态:**todo**(Phase M 4 必经单轮;Phase T 加 ≥2 交易员)。治理:[P0-10-amendment-2026-05-24](../../docs/decisions/P0-10-amendment-2026-05-24-evolvable-agent-team.md) + R0 §4。任务:plan.html M-002/M-003/T-001/T-002/T-004。
+> 状态:**done(M-002..M-005 MVP)**(LangGraph 骨架 `b47a594` + 4 必经 agent 真 LLM 单轮辩论 `4813ce8` + cost_guard 真·预留/fan-out cap 接线;≥2 交易员 + 多轮 bull/bear 仍 Phase T)。治理:[P0-10-amendment-2026-05-24](../../docs/decisions/P0-10-amendment-2026-05-24-evolvable-agent-team.md) + [P1-7-amendment-2026-05-24](../../docs/decisions/P1-7-amendment-2026-05-24-precall-reservation-fanout-cap.md) + R0 §4。任务:plan.html M-002/M-003(done)/M-005(done)/T-001/T-002/T-004。
 
 ## 职责
 **LangGraph 多 agent 编排**:4 必经 agent(MVP 单轮)+ ≥2 交易员 agent(Phase T);辩论收敛候选;交易员提"何时买/买多少"建议。

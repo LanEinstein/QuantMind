@@ -68,6 +68,33 @@ class FeishuMessageKind(StrEnum):
     ALERT = "alert"
 
 
+class BuySignalTemplate(StrEnum):
+    """Four visually-distinct BUY-signal templates (M-006 / P0-7-amendment).
+
+    The CandidateSelector → debate → builder pipeline classifies each BUY into
+    a budget-tier outcome; the template id maps 1:1 to that outcome so the
+    operator can tell at a glance whether a signal is a normal compliant order,
+    an ETF concentration-exception that needs explicit confirmation, a
+    budget-too-small no-trade, or a paper-only (Micro-tier) signal.
+    """
+
+    NORMAL_COMPLIANT = "normal_compliant"
+    ETF_CONCENTRATION_EXCEPTION = "etf_concentration_exception"
+    NO_COMPLIANT_TRADE = "no_compliant_trade"
+    PAPER_ONLY = "paper_only"
+
+
+# Order-bearing BUY templates that carry a real InstructionPlan; the
+# NO_COMPLIANT_TRADE template has no order and uses its own renderer method.
+_PLAN_BACKED_BUY_TEMPLATES: frozenset[BuySignalTemplate] = frozenset(
+    {
+        BuySignalTemplate.NORMAL_COMPLIANT,
+        BuySignalTemplate.ETF_CONCENTRATION_EXCEPTION,
+        BuySignalTemplate.PAPER_ONLY,
+    }
+)
+
+
 class ClarificationTemplate(StrEnum):
     """Five pre-written clarification templates (P0-4 §1.1.1).
 
@@ -112,10 +139,97 @@ class MessageRenderer:
         this method — a :class:`ValueError` here is a fail-closed signal
         that an upstream guard slipped.
         """
+        self._assert_dispatchable(plan)
+        # Locked layout — order, labels, line breaks. Any change must
+        # update the snapshot test in tests/test_feishu_renderer.py.
+        return "\n".join(["【QuantMind 指令】", *self._dispatch_body_lines(plan)])
+
+    # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------
+
+    def render_buy_signal(
+        self,
+        plan: InstructionPlan,
+        *,
+        template: BuySignalTemplate,
+    ) -> str:
+        """Render a BUY signal in one of the three order-bearing templates.
+
+        ``NORMAL_COMPLIANT`` / ``ETF_CONCENTRATION_EXCEPTION`` / ``PAPER_ONLY``
+        all carry a real BUY InstructionPlan; the shared 7-section body is
+        reused so the wire shape is consistent, while a distinct header +
+        banner make the budget-tier outcome unmistakable. The
+        ``NO_COMPLIANT_TRADE`` outcome has no order and uses
+        :meth:`render_no_compliant_trade` instead — passing it here is a
+        fail-closed ``ValueError``.
+
+        The ETF concentration-exception confirmation flow embeds the
+        instruction_id in a reply instruction; it is re-validated against the
+        canonical regex here (defence-in-depth — an instruction_id is the
+        classic injection / leakage point, P0-2 §2.6 / CLAUDE.md §2.6).
+        """
+        # Coerce a raw-string template id (e.g. from JSON/config) to the enum
+        # FIRST. BuySignalTemplate is a StrEnum, so a raw string would pass the
+        # set-membership + header lookup below by string-equality yet fail the
+        # later ``is`` identity check, silently dropping the ETF confirmation
+        # block (codex M-006 P1). An invalid id raises ValueError (fail-closed).
+        template = BuySignalTemplate(template)
+        if template not in _PLAN_BACKED_BUY_TEMPLATES:
+            raise ValueError(
+                f"template {template.value!r} has no InstructionPlan — use "
+                "render_no_compliant_trade"
+            )
+        if plan.side is not InstructionSide.BUY:
+            raise ValueError(
+                f"render_buy_signal is BUY-only, got {plan.side.value}"
+            )
+        self._assert_dispatchable(plan)
+        if not _INSTRUCTION_ID_RE.fullmatch(plan.instruction_id):
+            raise ValueError(
+                f"instruction_id {plan.instruction_id!r} fails canonical pattern"
+            )
+
+        header, banner = _BUY_SIGNAL_HEADERS[template]
+        body = self._dispatch_body_lines(plan)
+        lines = [header, banner, *body]
+        if template is BuySignalTemplate.ETF_CONCENTRATION_EXCEPTION:
+            # Confirmation block — the operator must explicitly confirm the
+            # ETF concentration exception before it executes.
+            lines.append("—— 需人工确认 ——")
+            lines.append(f"确认执行请回复:确认 {plan.instruction_id}")
+        return "\n".join(lines)
+
+    def render_no_compliant_trade(
+        self,
+        *,
+        stock_code: str,
+        stock_name: str,
+        reason: str,
+    ) -> str:
+        """Render the NO_COMPLIANT_TRADE first-class outcome (no order).
+
+        Sent when the budget tier admits no compliant trade (e.g. Micro
+        budget below the ETF lot floor). Carries the candidate identity + a
+        sanitised reason; deliberately has NO order fields so it can never be
+        mistaken for a dispatchable instruction.
+        """
+        if not _STOCK_CODE_RE.fullmatch(stock_code):
+            raise ValueError(f"stock_code {stock_code!r} must be 6 digits")
+        return "\n".join(
+            [
+                "【QuantMind 无合规交易】",
+                f"标的: {stock_code} {_single_line(stock_name)}",
+                "结论: 当前预算/约束下无合规可交易方案,本次不产生指令。",
+                f"原因: {_single_line(reason)}",
+            ]
+        )
+
+    @staticmethod
+    def _assert_dispatchable(plan: InstructionPlan) -> None:
+        """Shared guard: only VALIDATED/DISPATCHED BUY/SELL plans dispatch."""
         if plan.side is InstructionSide.HOLD:
             raise ValueError(
-                "HOLD plan is not routable — render_instruction_plan must "
-                "only be called for BUY/SELL (P0-3 §1.3.1)"
+                "HOLD plan is not routable — must only render for BUY/SELL "
+                "(P0-3 §1.3.1)"
             )
         if plan.status not in (
             InstructionStatus.VALIDATED,
@@ -126,32 +240,32 @@ class MessageRenderer:
                 "Feishu — VALIDATED or DISPATCHED only"
             )
 
+    def _dispatch_body_lines(self, plan: InstructionPlan) -> list[str]:
+        """The shared 7-section dispatch body (everything after the header).
+
+        Reused verbatim by :meth:`render_instruction_plan` and
+        :meth:`render_buy_signal` so the operator sees identical order /
+        risk / position / report sections regardless of the template header.
+        """
         side_zh = "买入" if plan.side is InstructionSide.BUY else "卖出"
         amount_cny = (
             Decimal(str(plan.limit_price))  # type: ignore[arg-type]
             * Decimal(plan.volume)  # type: ignore[arg-type]
         )
-        risk_lines = _format_risk_summary(plan.risk_summary)
-        position_line = _format_position_summary(plan)
-
-        # Locked layout — order, labels, line breaks. Any change must
-        # update the snapshot test in tests/test_feishu_renderer.py.
-        lines = [
-            "【QuantMind 指令】",
+        return [
             f"指令编号: {plan.instruction_id}",
             f"操作: {side_zh} {plan.stock_code} {plan.stock_name}",
             f"股数: {plan.volume} 股",
             f"限价: {_format_money(plan.limit_price)} CNY",
             f"预计金额: {_format_money(amount_cny)} CNY",
             f"有效期: {_format_local_ts(plan.valid_until)} 前(同日 14:55 截止)",
-            position_line,
+            _format_position_summary(plan),
             "—— 风险摘要 ——",
-            *risk_lines,
+            *_format_risk_summary(plan.risk_summary),
             f"失效说明: {plan.invalidation_summary}",
             "—— 回报模板(原文回复)——",
             *_REPORT_TEMPLATE_BLOCK,
         ]
-        return "\n".join(lines)
 
     # -- Clarification (F-004 surface) ---------------------------------
 
@@ -462,6 +576,25 @@ def _strip_controls(text: str) -> str:
 _INSTRUCTION_ID_RE = re.compile(r"^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL|HOLD)-\d{3}$")
 _RECONCILIATION_ID_RE = re.compile(r"^RECON-\d{8}-\d{3}$")
 _TRADE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STOCK_CODE_RE = re.compile(r"^\d{6}$")
+
+# (header, banner) per order-bearing BUY template (M-006). Snapshot-locked in
+# tests/test_feishu_buy_signal.py — the headers are the at-a-glance visual
+# discriminator between budget-tier outcomes.
+_BUY_SIGNAL_HEADERS: Mapping[BuySignalTemplate, tuple[str, str]] = {
+    BuySignalTemplate.NORMAL_COMPLIANT: (
+        "【QuantMind 买入信号 · 合规】",
+        "分层: 正常合规额度,经 14-check 通过。",
+    ),
+    BuySignalTemplate.ETF_CONCENTRATION_EXCEPTION: (
+        "【QuantMind 买入信号 · ETF 集中度例外 · 需确认】",
+        "分层: ETF 集中度例外(RiskEngine 独立再校验通过),需人工确认。",
+    ),
+    BuySignalTemplate.PAPER_ONLY: (
+        "【QuantMind 买入信号 · 仅模拟】",
+        "分层: 预算分层为仅模拟(paper),仅记入模拟账本,不构成实盘建议。",
+    ),
+}
 _PENDING_AMENDMENT_PATH_RE = re.compile(
     r"^docs/decisions/pending/[A-Za-z0-9._-]+\.md$"
 )
@@ -511,6 +644,7 @@ _CLARIFICATION_BODIES: Mapping[ClarificationTemplate, str] = {
 
 
 __all__ = [
+    "BuySignalTemplate",
     "ClarificationTemplate",
     "FeishuMessageKind",
     "MessageRenderer",

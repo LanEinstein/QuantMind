@@ -1,6 +1,6 @@
 # backend/candidate_selector/ — 子任务上下文(Phase M)
 
-> 状态:**todo**(Phase M)。治理:[P0-8-amendment-2026-05-24](../../docs/decisions/P0-8-amendment-2026-05-24-mirofish-advisory-core.md) + R0 §4。任务:plan.html M-001 / O-003。
+> 状态:**done(M-001 MVP)**(确定性选择器 + 对抗测试落地,commit `d634fc9`;MiroFish 实际接线在 O-003)。治理:[P0-8-amendment-2026-05-24](../../docs/decisions/P0-8-amendment-2026-05-24-mirofish-advisory-core.md) + R0 §4。任务:plan.html M-001(done)/ O-003(MiroFish 有界重排接入)。
 
 ## 职责
 **确定性候选选择器**(纯 Python,固定 git 版本权重):读 evidence + 量化特征 → 出候选 ID。是 "MiroFish 建议 vs 决策" 的明线落点 —— **MiroFish 写 evidence,本模块(确定性代码)写候选**。
