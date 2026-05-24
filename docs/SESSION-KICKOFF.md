@@ -46,5 +46,5 @@
 
 **备注**
 - 第 5 步默认带 `push origin main`。若想保持"push 由 owner 手动控制",删掉该半句即可。
-- 当前会自动落到 **Phase K**(SESSION_LOG 顶部条目 `next` 已指向 K-001;Phase K 全部 `todo`)。
+- 当前会自动落到 **Phase L 全市场选股**(Phase K 数据地基 K-001..K-006 已 done;SESSION_LOG 顶部 #29 `next` 指向 Phase L,`backend/screening/` 读 K 的 PIT 快照、写 SignalInputManifest;L-001 universe_policy 改写 → L-002 纯量化筛 0 LLM → L-003 BudgetTierPolicy → L-004 top-N → L-005 模块+隔离测试)。此行只是便捷锚点,真正定位仍以"最早含 `todo` 的字母 Phase"为准。
 - 进度状态以 `plan.html` 的 `TASKS` 数组 `status` 字段为准(不是浏览器 localStorage);改状态 = 编辑该数组。
