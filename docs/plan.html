@@ -791,6 +791,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-05-24 session #30 phase-l-full — 全市场选股 L-001..L-005 全落地,5 独立 feature commit + 每任务 codex-review:<code>6b866b5</code> L-001(<code>watchlist_policy</code>→<code>universe_policy</code> 重命名 + v3 schema board 白名单规则集,删 13-code lock;builder 第五道 non_watchlist_code→board_not_whitelisted;消费方全绿)+ <code>676c28b</code> L-002(<code>backend/screening</code> 纯 stdlib Alpha158 子集 + fail-closed 排除 + 截面加权 top-N + SignalInputManifest 血缘,读 K 快照 0 LLM)+ <code>92e7d38</code> L-003(<code>backend/budget_policy</code> BudgetTierPolicy 三档 + NO_COMPLIANT_TRADE 一等 outcome + concentration_exception 仅 ETF+白名单+Micro/Small)+ <code>1c7a27a</code> L-004(RiskEngine check 5 budget-aware 方案 A 不改 14-check + <code>_grant_concentration_exception</code> 独立再校验 ETF+白名单+结果仓位≤1手,flag 单独永不放行)+ <code>78f22b5</code> L-005(calibration 从 lot 成本分布派生 tier 阈值 + 两模块 AST 契约/隔离测试 + CLAUDE.md done)。决策边界:落地 P0-9-amendment(全市场 universe)+ P0-7-amendment(budget-adaptive + concentration_exception),无新 amendment(均在已锁 amendment 范围内)。codex-review 累计 6 P1 + 6 P2 全修 + 5 次 read-only 复核 PASS(报告 docs/reviews/L-00{1..5}-codex-review-summary.md)。门禁:全量 <strong>3352 passed</strong> / 11 skipped(基线 3233 → +119)、redline-check 全绿(28 ok,新增 [L-001..L-004] 子检)、Phase L 触及文件 ruff 全绿(2 既存 E501 在未触及 backend/mirofish 不动)、screening+budget_policy 模块覆盖率 97%、engine.py 99%。守住安全地基:永禁真实下单 / 飞书人工 / 127.0.0.1 / LLM 不写决策 / RiskEngine 纯函数 / config runtime 不可改 / 0 backend restart 全不变;两 Line-1 模块零 backend.{llm,agents,mirofish} import。下一站 = Phase M 候选与辩论(CandidateSelector + 多 agent 辩论;screener→scheduler 接线 + concentration_exception flag 串 builder→RiskEngine 端到端在 M 首次接入,InstructionPlan 单一构造点在 M 落地)。</li>
         <li>2026-05-24 session #29 phase-k-full — 模块 0 <code>backend/marketdata_snapshot/</code>(PIT 数据可复现地基)K-001..K-006 全落地,6 独立 feature commit(<code>0fa4920</code> K-001 Tushare SDK client + <code>6aec158</code> K-002 MarketDataSnapshot 存原始字节 + <code>b03138e</code> K-003 coverage + 消费行血缘 + <code>ab56996</code> K-004 复权 pin bit-exact + <code>7dfa7f9</code> K-005 离线 replay + CLI + <code>491bdd3</code> K-006 模块封装 + 隔离测试 + redline [K-006] 子检)。决策边界:新增 <code>docs/decisions/P0-8-amendment-2026-05-24-tushare-data-source.md</code>(P0-8「第一阶段不引入付费源」→ Tushare Pro 全市场扫描层;adata/akshare 实时主备 + 新闻 5 源不变;TUSHARE_TOKEN 异质凭证不入 LLM 3+飞书 5 池 EXPECTED_POOL_SIZE 仍 8;数据成本不设 ceiling)。落地 R0 §3 新红线 A(存原始字节非哈希 / coverage manifest / 消费行血缘 / 复权 pin artifact / 离线 bit-exact replay,三消费者同 snapshot_id 源)+ R0 §6 SDK only(AST 断言无 MCP/skill 在数据路径)。门禁:全量 3236 passed / 11 skipped、coverage 89.63%(模块 98%)、redline-check 全绿(含新 [K-006] PIT 子检)、Phase K 触及文件 ruff 全绿(33 既存 ruff 错在未触及的 mirofish/旧测试文件,不动)。**codex-review(协议变更后首次强制)= 1 P1 + 2 P2 → 全修 commit e9f0250 → 复核 PASS**(报告 docs/reviews/phase-k-codex-review-summary.md)。守住红线:0 backend restart + marketdata_snapshot 纯模块零 backend.* 子包 import + 永禁真实下单/飞书人工/127.0.0.1/LLM 不写决策不变。下一站 = Phase L 全市场选股(<code>backend/screening/</code> 读 K 的 PIT 快照)。</li>
         <li>2026-05-24 session #28 — 双线重构 v2 规划。新增 Phase K-T 程序(40 任务)+ 双线架构 section + timeline K-T lanes + v2 决策卡 + CSS。决策边界:<code>docs/decisions/R0-two-line-rearch-provenance-and-single-builder-2026-05-24.md</code>(总纲 + 2 新红线:PIT 数据可复现 / InstructionPlan 单一构造点)+ 6 amendment(P0-9 全市场 / P0-7 budget-adaptive / P0-8 MiroFish 建议核心 / P0-10 可进化 agent 团队 / P2-2 主动发现+知识图谱 / P1-7 真·预留+fan-out cap;commit 2e89709)。经 Claude 三路调研 + Codex 2 轮红队(Conditional GO)。安全地基(永禁真实下单 / 飞书人工 / 127.0.0.1 / LLM 不写决策 / 人工 gate)不动。MVP = K+L+M+N 双线端到端。待续:CLAUDE.md 修订 + 8 子模块 CLAUDE.md。</li>
         <li>2026-05-19 session #27 post-x-E-hardening + codex 2-cycle PASS — 4 项 review-deferred 硬化全部 done(<strong>independent feature commits 51b9684 / 53bca67 / acc01ee / ea01cb5;TASKS 数组零变更</strong>;本 session 是 post-X-E 加固,不在任何 phase TASKS scope)+ 3124 全 pytest(基线 3097 → +27:Task 1 2 + Task 2 6 + Task 3 4 + Task 4 15)+ ruff 触动文件全绿(其余 33 pre-existing ruff error 与本 session 无关 git stash 验证 baseline 33 → 本 session 0 new)+ scripts/redline-check.sh 全绿 + 三 crawler focused cov 92%(≥85%)。<strong>Task 1 (51b9684) provenance LOCK_EX bounded retry — codex X-027 R4 claim 4 defense-in-depth</strong>:backend/evolution/provenance/writer.py append_line() 把阻塞式 fcntl.LOCK_EX 改成 LOCK_EX|LOCK_NB + 指数退避(MAX_LOCK_ATTEMPTS=5,初始 0.1s × 2^attempt 总 ~3.1s),超时抛 ProvenanceAppendError 含 'bounded retry' 触发词;SSH-only 部署(P1-6 §1.5)bounded threat,defense-in-depth 廉价插入。<strong>Task 2 (53bca67) GITHUB_TOKEN soft-warning + .env block + crawler PAT docstring — codex X-027 R4 claim 1+2 forward-looking</strong>:secrets_validator 新增 HETEROGENEOUS_CREDENTIAL_NAMES + _scan_heterogeneous_credentials(GITHUB_TOKEN set 但 prefix 不是 ghp_ / github_pat_ → SoftWarning,不阻断启动);_ASSIGNMENT_RE 扩 (...|GITHUB_TOKEN) 实现 .env 也禁 PAT(codex cycle-1 P1 fix);github_releases.py docstring 加 production wiring note 锁 PAT 仅 os.environ + Bearer + fingerprint log;EXPECTED_POOL_SIZE 保持 8(GITHUB_TOKEN 异质不入池,Q3)。<strong>Task 3 (acc01ee) data/rag/ chmod 0o700/0o600 hardening + symlink rejection — codex X-027 R4 claim 5 defense-in-depth</strong>:新增 _harden_path(path: Path) 用 os.lstat + stat.S_ISLNK 检测 symlink BEFORE stat()(codex cycle-1 P2 fix;原写法 follow symlink chmod 到 RAG tree 外目标)+ EUID 守门 + 目录 0o700 / 文件 0o600 + best-effort 吞 OSError + AttributeError;fail_fast_validate_paths 末尾对 root + 5 sources + provenance.jsonl 调 _harden_path;empty ledger 早返改 if size > 0 ensuring fresh deploy 也 harden。<strong>Task 4 (ea01cb5) 3 crawler _parse_published fallback coverage 75% → 92%</strong>:新 tests/test_crawlers_parse_published.py 15 parametrised 测试覆盖 akshare_changelog/github_releases/openreview_crawler 共 5 路径(missing key / malformed string / datetime passthrough / well-formed ISO 8601 / Z-suffix normalization);docs/reviews/x-028-r5-coverage.md 标的 75% gap closed。<strong>Codex review 2-cycle (owner 显式授权)</strong>:cycle 1 codex review --uncommitted 找出 2 真实 bug — P1 GITHUB_TOKEN 在 _ASSIGNMENT_RE 不在(operator 误粘 .env 不会被守门拦,违 docstring 承诺)+ P2 _harden_path follow symlinks(operator 把 data/rag/github_releases 软链到 shared mount 时会破坏其它 user/service mode);两 fix 折入 Task 2 + Task 3 feature commit(per session #23/#24/#25/#26 precedent)+ 2 新回归(.env block test + symlink-skip test verify foreign target mode 保留);cycle 2 codex exec -s read-only verdict <strong>PASS — both fixes verified; original 4 hardenings unchanged in intent and safe</strong> 0 new findings(49.7K tokens)。<strong>再次印证 [[feedback_codex_findings_real]]</strong>:全 pytest + ruff + redline 已绿 + 4 硬化精心设计,codex cycle 1 仍找 2 真实 bug(.env 守门漂移 + chmod follow symlink)0 dismissed — 即使 review-deferred 加固范围内 codex 仍抓到漂移。<strong>守住的红线</strong>:0 backend restart + 0 P0-7/P0-10/P1-6/P1-7 突破(LLM positive list 4 类不动 + 凭证池 LLM 3+飞书 5 = 8 不动 GITHUB_TOKEN 异质不入池 + hot-reload 全禁 + cost_guard 4 常量不动 + 永禁 FEISHU_CUSTOM_BOT_*)+ Phase X 23 模块零 backend.{api,broker,risk,llm,agents,mirofish,data} import(Task 1/3 改的 writer.py 在 Phase X 隔离区内,仅用标准库 fcntl/json/os/stat/time/pathlib)+ 0 destructive git + 0 TASKS status 变更 + 0 SSoT phase 进度改动 + 0 amendment 派生(全部在已锁红线内 defense-in-depth)。<strong>下一站</strong>:(a) Phase X-finale candidates DEFER 到 dedicated 未来 session;(b) owner 直接授权 QUANTMIND_OWNER_PROD_AUTHORIZATION 启 I-002 真实长跑(45 真实交易日 ≈ 9 周 + ≈ ¥900 LLM 预算)。两条路径互不依赖。X-005 5th cron evolution_shadow_run 仍需 owner 协调一次 ~5min restart 才能挂载实际 callback。</li>
@@ -836,6 +837,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-05-24",
+        session: "#30 phase-l-full — 全市场选股(13 标的固定池 → 全市场 universe 规则集)L-001..L-005 全落地",
+        owner: "Claude Opus 4.7 (1M ctx)",
+        state_in: "#29 完成 Phase K 模块 0 PIT 地基;next 指向 Phase L。无遗留 doing;3 blocked(S-004/I-002/I-003)是正交历史项(都要花钱)。Owner 开场 AskUserQuestion 确认 L-001 重命名 watchlist_policy→universe_policy(推荐项);L-004 走文档默认方案 A(不改 14-check 数)。本 session = 整个 Phase L 5 任务,TDD 先行,一任务一 feature commit + 每任务 codex-review。",
+        actions: "**5 feature commit(每任务 codex-review 修完 P0/P1/P2 + 复核 PASS 后落地;plan.html 留本 docs commit)**:① **6b866b5 L-001** watchlist_policy.{yaml,py}→universe_policy.{yaml,py}(class WatchlistPolicy→UniversePolicy)+ v3 schema(universe.board_whitelist + forbidden_boards,删 13-code lock/composition/required_etfs,loader 拒 v2)+ builder 第五道 non_watchlist_code→board_not_whitelisted + 消费方(main/api/scheduler/phase5b/config_service)全绿;codex 1 P1(空 pin 集破坏性软删)→ main.py seed guard 修 + 复核 PASS;redline [L-001]。② **676c28b L-002** backend/screening(factors.py 纯 stdlib Alpha158 子集 + screener.py CSV frame→fail-closed 排除→截面加权 composite→top-N→SignalInputManifest 血缘),读 K 快照 0 LLM;codex 2 P1(unscorable 因子崩溃 / nan-inf 解析)+ 2 P2(manifest config hash / 重复码全丢)全修 + 复核 PASS;redline [L-002] 隔离子检。③ **92e7d38 L-003** backend/budget_policy(BudgetTierPolicy Micro/Small/Normal + NO_COMPLIANT_TRADE 一等 outcome + concentration_exception 仅 ETF+白名单+Micro/Small;15%/lot 单源 position_limits);codex 1 P1(例外漏进 Normal)+ 1 P2(NaN lot)全修 + 复核 PASS;redline [L-003]。④ **1c7a27a L-004** RiskEngine check 5 budget-aware(方案 A 不改 14-check;_grant_concentration_exception 独立再校验 ETF+白名单+结果仓位≤1手,flag 单独永不放行)+ ConcentrationExceptionConfig + validate_order 透出标记 + builder _build_risk_summary 落行;codex 1 P1(1手上限应封结果仓位)+ 1 P2(标记被裸 pass 丢弃)全修 + 复核 PASS;engine.py cov 99%;redline [L-004]。⑤ **78f22b5 L-005** calibration.py(tier 阈值从 universe lot 成本分布派生 p10/median÷15%,复现 shipped 2000/10000)+ 两模块契约/隔离测试(AST 三形式 + planted 自检)+ 两 CLAUDE.md todo→done;codex 1 P2(AST 漏 from backend import / 相对 names 形式)修 + 复核 PASS;模块覆盖率 97%。**最终门禁**:全量 **3352 passed / 11 skipped**(基线 3233 → +119)、redline-check 全绿(28 ok,含新 [L-001..L-004])、Phase L 触及文件 ruff 全绿(2 既存 E501 在未触及 backend/mirofish,session #29 已记录不动)。codex 报告:docs/reviews/L-00{1..5}-codex-review-summary.md。守住安全地基:永禁真实下单 / 飞书人工 / 127.0.0.1 / LLM 不写决策 / RiskEngine 纯函数 / config runtime 不可改 / 0 backend restart 全不变;screening+budget_policy 零 backend.{llm,agents,mirofish} import。",
+        commit: "5 feature(6b866b5/676c28b/92e7d38/1c7a27a/78f22b5)+ 5 codex 报告 + 本条目 docs commit;每任务 codex-review PASS 后 push origin main",
+        next: "Phase L ✅ 全市场选股链路就位(universe 规则集 + 全市场纯量化筛 on K 快照 + 预算自适应分层 + RiskEngine concentration_exception 独立再校验)。**下一站 = Phase M 候选与辩论**(M-001..M-006):确定性 CandidateSelector 出候选(≥3 量化名额 + MiroFish 有界重排 ≤1 分位)→ ≤5 → 多 agent 辩论 → fund_manager 唯一倡议 → RiskEngine 14-check → 飞书。Phase M 依赖 L 已满足。**集成 gap(M 闭合)**:screener 输出 → scheduler/CandidateSelector 接线 + budget_policy 的 concentration_exception flag 串到 builder→RiskEngine 的端到端 wiring 在 M 首次接入(L-001 codex P1 记录的'fresh 部署调度器空喂'过渡态由此消除);InstructionPlan 单一构造点(R0 §2 新红线)在 M 落地。",
+      },
       {
         date: "2026-05-24",
         session: "#29 phase-k-full — 模块 0 marketdata_snapshot(PIT 可复现地基)K-001..K-006 全落地",
@@ -2275,7 +2285,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "491bdd3", session_date: "2026-05-24", notes: "__init__ 导出全 K-002..K-005 公开 API(29 符号);CLAUDE.md 更新 done + 文件图 + 6 红线 + import 隔离契约(纯模块,不 import 任何 backend.* 子包,编排层传 payload)。test_module_contract.py(26):AST 断言无 backend.{llm,agents,mirofish} 且不 import 任何 backend.*(除自身)+ 21 符号导出 + raw_payload:bytes 字段 + strict/frozen/forbid。redline-check.sh 加 [K-006] PIT 子检(AST 断言隔离 + raw_payload:bytes 非 hash-only)。全模块 82 测试覆盖率 98%。Codex:snapshot-store 必须 module 0 独立可测。"
       },
       {
-        id: "L-001", phase: "L 全市场选股", status: "todo", priority: "P0",
+        id: "L-001", phase: "L 全市场选股", status: "done", priority: "P0",
         title: "universe_policy.yaml 改写 + P0-9 amendment 落地",
         summary: "删 13-code lock + composition + required_etfs 强制三元组 + size_must_equal=13;新增 universe.board_whitelist(沪主/深主/创业板/ETF)+ forbidden_boards(科创688/北交8/ST/可转债);保留 exclusion_rules/cap_allocation/direction_policy;policy_version 2→3。建议改名 universe_policy.yaml。",
         scope: "config/watchlist_policy.yaml→universe_policy.yaml, backend/services/watchlist_policy.py",
@@ -2283,10 +2293,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "13-code grep 空;board 白名单 + 排除规则 + long-only runtime 不可改;科创/北交/ST/可转债 grep 永禁;仅 GET API。",
         tests: "loader 拒 v2 旧版本 + 白名单/排除规则锁定 + 写端点缺席。",
         sources: "P0-9-amendment-2026-05-24",
-        commit: "", session_date: "", notes: "板块白名单 + 排除规则仍 runtime 不可改;改的是不再枚举 13 code,不是放开板块白名单。"
+        commit: "6b866b5", session_date: "2026-05-24", notes: "重命名 watchlist_policy→universe_policy(class WatchlistPolicy→UniversePolicy)+ v3 schema(universe.board_whitelist+forbidden_boards,删 13-code lock/composition/required_etfs,loader 拒 v2);builder 第五道 non_watchlist_code→board_not_whitelisted(membership-in-13 → board∉白名单);消费方(main/api/scheduler/phase5b)全绿。codex 1-cycle+复核 PASS(1 P1:空 pin 集破坏性软删 → main.py seed guard 修)。板块白名单+排除规则仍 runtime 不可改。"
       },
       {
-        id: "L-002", phase: "L 全市场选股", status: "todo", priority: "P0",
+        id: "L-002", phase: "L 全市场选股", status: "done", priority: "P0",
         title: "backend/screening/ 全市场纯量化筛 + 排除四件套 fail-closed + Alpha158 子集因子",
         summary: "全市场拉取(读 K 快照,写 SignalInputManifest)→ 排除四件套硬排除(新股≤30/次新≤180/流动性<2亿/单价>500,stock_meta 缺失/历史<20日/缺价 → 排除)→ Alpha158 子集因子 → top-N(~50-100)。",
         scope: "backend/screening/screener.py, backend/screening/factors.py",
@@ -2294,10 +2304,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "全市场扫描可行(~5 calls/日)+ 排除 fail-closed + top-N ≤ 固定上限;LLM 不介入(超候选数不调 LLM)。",
         tests: "排除四件套各路径 fail-closed + 因子在快照上可复现 + top-N 截断 + 0 LLM 调用。",
         sources: "P0-9-amendment-2026-05-24, R0 §8, 冷启动调研 dossier",
-        commit: "", session_date: "", notes: "排除前移到 screening 硬排除;Builder 第五道早返保留为最后防御,同一真相源。严禁 import backend.{llm,agents,mirofish}。"
+        commit: "676c28b", session_date: "2026-05-24", notes: "factors.py(纯 stdlib Alpha158 子集:momentum/MA-ratio/volatility/RSI/avg-amount,无 qlib 依赖 bit-stable)+ screener.py(CSV frame 解析→fail-closed 排除[首中,含 malformed/insufficient_history/unscorable_factor]→确定性截面百分位加权 composite→top-N[score desc,code asc]→SignalInputManifest 血缘+config hash)。读 K 快照,0 LLM。codex 1-cycle 2 P1+2 P2 全修(unscorable 因子崩溃→fail-close、nan/inf→malformed、manifest 记 config hash、重复码全丢)+复核 PASS。redline [L-002] 隔离子检。47 测试。"
       },
       {
-        id: "L-003", phase: "L 全市场选股", status: "todo", priority: "P0",
+        id: "L-003", phase: "L 全市场选股", status: "done", priority: "P0",
         title: "BudgetTierPolicy + NO_COMPLIANT_TRADE + P0-7 amendment 落地",
         summary: "纯 Python 上游门:Micro(<¥2k)仅 ETF / Small(¥2k-10k)低价股 1 手+ETF / Normal(≥¥10k)P0-7 三连不变。max_lot_cost=cash×15%;无合规整手 → NO_COMPLIANT_TRADE(一等公民,非 error)。预算运行期输入。",
         scope: "backend/budget_policy/policy.py, config/risk.yaml(budget_tiers)",
@@ -2305,10 +2315,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "三档分层正确 + NO_COMPLIANT_TRADE 一等 outcome + Micro 落 ETF-only + tier 阈值 runtime 不可改。",
         tests: "几百元→ETF-only + ¥500 个股 NO_COMPLIANT_TRADE + Normal P0-7 不变 + 阈值锁定。",
         sources: "P0-7-amendment-2026-05-24, Codex round-2 §3",
-        commit: "", session_date: "", notes: "Codex:笼统'整手超 15%'放行危险;universe 限制比阔放行例外安全。严禁 import backend.{llm,agents,mirofish}。"
+        commit: "92e7d38", session_date: "2026-05-24", notes: "backend/budget_policy/policy.py 纯 Python tier 门(Micro<¥2k 仅白名单 ETF / Small ¥2k-10k 低价股 1 手+ETF / Normal≥¥10k P0-7 三连不变)+ NO_COMPLIANT_TRADE 一等 outcome + concentration_exception 仅 ETF+白名单+Micro/Small(个股永不享有,设标志非绕过,RiskEngine L-004 再校验)。15%/100-lot 单源 position_limits;budget_tiers 仅 2 阈值+whitelist。codex 1-cycle 1 P1(例外漏进 Normal→限 Micro/Small)+1 P2(NaN lot→isfinite fail-close)全修+复核 PASS。redline [L-003]+[L-002] 覆盖。32 测试。"
       },
       {
-        id: "L-004", phase: "L 全市场选股", status: "todo", priority: "P0",
+        id: "L-004", phase: "L 全市场选股", status: "done", priority: "P0",
         title: "RiskEngine Check 1 budget-aware + concentration_exception 独立再校验",
         summary: "方案 A:Check 1(single_stock_pct)扩 budget-aware;concentration_exception=true 且标的∈{ETF+白名单}且≤1手则放行 + reason 标注;RiskEngine 独立再校验 ETF+白名单+1手(非绕过)。保 risk_summary min=max=14 schema 常量。",
         scope: "backend/risk/engine.py, config/risk.yaml(concentration_exception)",
@@ -2316,10 +2326,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "Check 1 budget-aware + exception 独立再校验 + 14-check 数不变 + 标志非单点绕过 + RiskEngine 仍纯函数。",
         tests: "ETF exception 放行 + 个股不享有 + RiskEngine 再校验拒非白名单 + 14 长度不变。",
         sources: "P0-7-amendment-2026-05-24 §2.3/§2.4, Codex round-2 §3",
-        commit: "", session_date: "", notes: "方案 A 默认(不改 14-check 数);方案 B(Check 15 + schema 14→15)仅 owner 显式要求审计独立时启用。"
+        commit: "1c7a27a", session_date: "2026-05-24", notes: "方案 A 落地(不改 14-check 数,risk_summary min=max=14 不变):check 5(_check_position_limit)budget-aware,超 15% 时若 ETF+自有白名单+结果仓位≤1手+上游 flag → 放行标注 concentration_exception_granted。_grant_concentration_exception 独立再校验(引擎自有 config+stock_meta 派生,flag 单独永不放行;None stock_meta fail-close;个股永不享有)。新增 ConcentrationExceptionConfig。validate_order 透出标记 + builder _build_risk_summary 落行。codex 1-cycle 1 P1(1手上限应封结果仓位非单笔)+1 P2(标记被裸 pass 丢弃)全修+复核 PASS。engine.py cov 99%。redline [L-004]。12 测试。"
       },
       {
-        id: "L-005", phase: "L 全市场选股", status: "todo", priority: "P1",
+        id: "L-005", phase: "L 全市场选股", status: "done", priority: "P1",
         title: "backend/screening/ + budget_policy/ 模块 + CLAUDE.md + tier 校准 + 隔离测试",
         summary: "两子模块各自 CLAUDE.md;tier 阈值从 universe 实际 1 手成本中位数校准初值(非硬编码);import 隔离。",
         scope: "backend/screening/CLAUDE.md, backend/budget_policy/CLAUDE.md, tests/screening/, tests/budget_policy/",
@@ -2327,7 +2337,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "import 隔离 + CLAUDE.md 锁红线 + tier 阈值从 lot 成本分布派生 + 覆盖率 ≥80%。",
         tests: "AST 隔离 + tier 校准回归 + 模块契约。",
         sources: "P0-7-amendment-2026-05-24 §2.5, 用户子任务 CLAUDE.md 指令",
-        commit: "", session_date: "", notes: "Codex:tier 阈值从中位 lot 成本派生,不硬编码。"
+        commit: "78f22b5", session_date: "2026-05-24", notes: "calibration.py calibrate_tiers 从 universe 1 手成本分布派生 tier 阈值(micro=p10/15%,small=median/15%;复现 shipped 2000/10000=校准非硬编码;离线助手不入运行路径)。两模块契约/隔离测试(AST 覆盖 absolute/from backend import/相对三形式 + planted 自检)+ 公开 API 契约。两 CLAUDE.md todo→done。codex 1-cycle 1 P2(AST 漏 from backend import llm/相对 names 形式)修+复核 PASS。模块覆盖率 97%(≥80%)。"
       },
       {
         id: "M-001", phase: "M 候选与辩论", status: "todo", priority: "P0",
