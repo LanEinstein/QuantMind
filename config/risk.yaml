@@ -29,6 +29,25 @@ circuit_breaker:
   halt_priority_order: ["daily_loss", "consecutive_loss"]
   apply_to_sell_orders: false           # SELL bypasses halt (anti-trap; P0-7 §4.6)
 
+# Budget-adaptive position tiers — P0-7-amendment-2026-05-24 LOCKED.
+#
+# Upstream of the RiskEngine: the user's real investable cash maps to a
+# tier that bounds the affordable universe + position rule before any LLM
+# stage. ``max_single_stock_pct`` + ``volume_lot_size`` are NOT duplicated
+# here — backend/budget_policy reads them from ``position_limits`` above so
+# the 15% / 100-lot constants stay single-source (P0-7). Only the two cash
+# thresholds + the concentration-exception ETF whitelist live here.
+# Runtime-immutable (same git-diff + amendment + restart discipline).
+# Thresholds are initial values; L-005 calibrates them from the universe's
+# median 1-lot cost distribution.
+budget_tiers:
+  micro_max_cash_yuan: 2000.0    # < this → Micro (whitelisted broad ETF only)
+  small_max_cash_yuan: 10000.0   # < this → Small; >= this → Normal (P0-7 trio)
+  etf_whitelist:                 # concentration_exception eligible (broad ETFs)
+    - "510300"
+    - "510500"
+    - "159949"
+
 universe:
   allowed_boards: ["sh_main", "sz_main", "chuangye", "etf"]
   forbidden_st: true

@@ -988,6 +988,39 @@ else
   fi
 fi
 
+# ----------------------------------------------------------------------
+# L-003 / P0-7-amendment-2026-05-24 — budget_tiers config exists + the 15%
+# single-stock pct is NOT duplicated in budget_tiers (it must stay
+# single-source in position_limits). The cash thresholds + ETF whitelist
+# live in budget_tiers; runtime-immutable like the rest of risk.yaml.
+# ----------------------------------------------------------------------
+yellow "[L-003] budget_tiers config present + single-source 15% pct"
+L003_FAIL=0
+if [ -f config/risk.yaml ]; then
+  for key in "budget_tiers:" "micro_max_cash_yuan:" "small_max_cash_yuan:" \
+             "etf_whitelist:"; do
+    if ! grep -q "$key" config/risk.yaml; then
+      red "  FAIL  config/risk.yaml missing budget_tiers key: $key"
+      L003_FAIL=1
+    fi
+  done
+  # The 15% pct must NOT be re-declared inside the budget_tiers block —
+  # budget_policy reads it from position_limits (single source of truth).
+  L003_DUP="$(awk '/^budget_tiers:/{f=1;next} /^[a-z]/{f=0} f && /max_single_stock_pct/' config/risk.yaml || true)"
+  if [ -n "$L003_DUP" ]; then
+    red "  FAIL  max_single_stock_pct duplicated inside budget_tiers (must be single-source in position_limits)"
+    L003_FAIL=1
+  fi
+else
+  red "  FAIL  config/risk.yaml missing"
+  L003_FAIL=1
+fi
+if [ $L003_FAIL -eq 0 ]; then
+  green "  ok    budget_tiers present; 15% pct single-source in position_limits"
+else
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."
