@@ -16,15 +16,15 @@ from backend.agents.models import (
 )
 from backend.agents.records import AnalysisRecord, AnalysisRunResult
 from backend.data.analysis_scheduler import AnalysisScheduler
-from backend.services.watchlist_policy import (
-    WatchlistPolicy,
+from backend.services.universe_policy import (
+    UniversePolicy,
     load_policy,
 )
 
 YAML_TEMPLATE = """
-policy_version: 2
+policy_version: 3
 locked_decision: P0-9
-last_updated: 2026-05-12
+last_updated: 2026-05-24
 
 fast:
   cron: "0 9,11,13,15 * * mon-fri"
@@ -48,25 +48,17 @@ slow:
 overrides:
   "601318": slow
 
-watchlist:
-  total_codes: 13
-  composition:
-    sh_main: 4
-    sz_main: 3
-    chuangye: 3
-    etf: 3
-  default_category: slow
-
-required_etfs:
-  - code: "510300"
-    name: "沪深300 ETF"
-    tracking: "沪深300指数"
-  - code: "510500"
-    name: "中证500 ETF"
-    tracking: "中证500指数"
-  - code: "159949"
-    name: "创业板50 ETF"
-    tracking: "创业板50指数"
+universe:
+  board_whitelist:
+    - sh_main
+    - sz_main
+    - chuangye
+    - etf
+  forbidden_boards:
+    - kechuang_688
+    - beijiao_8
+    - st
+    - convertible_bond
 
 exclusion_rules:
   ipo_min_trading_days: 30
@@ -120,7 +112,7 @@ def _sample_result(code: str = "600519") -> AnalysisRunResult:
 
 
 @pytest.fixture()
-def policy(tmp_path: Path) -> WatchlistPolicy:
+def policy(tmp_path: Path) -> UniversePolicy:
     p = tmp_path / "policy.yaml"
     p.write_text(YAML_TEMPLATE, encoding="utf-8")
     return load_policy(p)
@@ -162,7 +154,7 @@ def mongodb() -> AsyncMock:
 def scheduler_with_policy(
     watchlist_with_codes: AsyncMock,
     mongodb: AsyncMock,
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
 ) -> AnalysisScheduler:
     return AnalysisScheduler(
         watchlist=watchlist_with_codes,
@@ -178,13 +170,13 @@ class TestPolicyAccessors:
     def test_policy_property_returns_loaded_policy(
         self,
         scheduler_with_policy: AnalysisScheduler,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         assert scheduler_with_policy.policy is policy
 
     @pytest.mark.unit
     def test_update_policy_swaps_in_memory(
-        self, scheduler_with_policy: AnalysisScheduler, policy: WatchlistPolicy
+        self, scheduler_with_policy: AnalysisScheduler, policy: UniversePolicy
     ) -> None:
         # P0-9 forbids runtime mutation via API, but the scheduler's
         # internal ``update_policy`` swap is still exercised here to
@@ -249,7 +241,7 @@ class TestRunCategoryAnalysis:
         self,
         watchlist_with_codes: AsyncMock,
         mongodb: AsyncMock,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         # Build a watchlist with only a slow-default code
         watchlist_with_codes.list_stocks.return_value = [
@@ -546,7 +538,7 @@ class TestBudgetInteractionWithPolicy:
         self,
         watchlist_with_codes: AsyncMock,
         mongodb: AsyncMock,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         from backend.services.cost_guard import DailyBudgetExceededError
 
@@ -650,7 +642,7 @@ class TestEmptyWatchlistWithPolicy:
 
     @pytest.mark.asyncio
     async def test_run_category_analysis_returns_empty(
-        self, mongodb: AsyncMock, policy: WatchlistPolicy
+        self, mongodb: AsyncMock, policy: UniversePolicy
     ) -> None:
         wl = AsyncMock()
         wl.list_stocks = AsyncMock(return_value=[])

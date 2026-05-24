@@ -1,26 +1,29 @@
-"""P0-9 locked watchlist policy: schema + loader + pure assignment helpers.
+"""P0-9 + P0-9-amendment-2026-05-24 locked universe policy: schema + loader.
 
-The single :class:`WatchlistPolicy` aggregate captures everything the
-P0-9 decision locked: the 13-code universe split into 10 individual
-stocks (沪主 4 / 深主 3 / 创业板 3) plus 3 mandatory ETFs
-(510300 / 510500 / 159949), the fast/slow scheduling cadence, the
-5-instruction daily cap (traditional 4 + event 1, with a 14:30 slide
-rule), the four exclusion thresholds enforced as the
-``InstructionPlanBuilder`` fifth early-return, and the strict long-only
+The single :class:`UniversePolicy` aggregate captures the full-market
+*ruleset* the 2026-05-24 two-line rearchitecture locked: the universe is
+no longer 13 enumerated codes but a board whitelist
+(沪主 / 深主 / 创业板 / ETF) with a permanently-forbidden board set
+(科创 688 / 北交 8 / ST / 可转债), plus the unchanged four exclusion
+thresholds, the 5-instruction daily cap (traditional 4 + event 1 with a
+14:30 slide), the fast/slow scheduling cadence, and the strict long-only
 direction policy.
 
-Every field is frozen and runtime-immutable. The legacy
-``update_override`` / ``save_policy`` helpers were removed in C-002
-because the decision (P0-9 §1.3 + P0-7 §1.4) requires changes to go
-through ``git diff`` + amendment + process restart — there is no
-sanctioned in-process mutation path.
+Every field is frozen and runtime-immutable. There is no sanctioned
+in-process mutation path — changes go through ``git diff`` + a
+``docs/decisions/P0-9-amendment-*`` doc + a process restart (P0-9 §1.3 /
+P0-7 §1.4).
 
-The loader rejects v1 YAML loudly: missing ``policy_version: 2`` or any
-P0-9 section raises :class:`WatchlistPolicyError` at boot rather than
-silently dropping locked invariants.
+The loader rejects v1/v2 YAML loudly: it requires ``policy_version: 3``
+and the ``universe`` ruleset section. The dead 13-code sections
+(``watchlist`` composition / ``required_etfs`` triplet /
+``watchlist_size_must_equal``) are gone — a v2 file fails fast at boot
+rather than silently honouring invariants the amendment removed.
 
 ``assign_category`` / ``partition_watchlist`` remain pure functions so
-the scheduler can categorise a watchlist tick without touching disk.
+the scheduler can categorise a tick of dynamically-screened codes
+without touching disk. ``all_watchlist_codes`` now returns only the
+manually-pinned fast/slow codes (empty by default in full-market mode).
 """
 
 from __future__ import annotations
@@ -33,27 +36,29 @@ from typing import Any, Literal
 import structlog
 import yaml
 
-log = structlog.get_logger(component="watchlist_policy")
+log = structlog.get_logger(component="universe_policy")
 
 Category = Literal["fast", "slow"]
 _VALID_CATEGORIES: tuple[Category, ...] = ("fast", "slow")
-
-# P0-9 §1.2 mandatory ETF triplet — locked by code.
-MANDATORY_ETF_CODES: frozenset[str] = frozenset({"510300", "510500", "159949"})
 
 # P0-9 §4.1 forbidden InstructionSide values — locked exact set.
 FORBIDDEN_SIDES: frozenset[str] = frozenset(
     {"SHORT", "COVER", "MARGIN_BUY", "REVERSE_REPO", "ETF_SUBSCRIBE", "ETF_REDEEM"}
 )
 
-# P0-9 §1.1 composition lock — total 13 = 4+3+3+3.
-LOCKED_COMPOSITION: dict[str, int] = {
-    "sh_main": 4,
-    "sz_main": 3,
-    "chuangye": 3,
-    "etf": 3,
-}
-LOCKED_TOTAL_CODES: int = 13
+# P0-9-amendment-2026-05-24 §2.1 — the exact set of allowed `Board` enum
+# values (backend/data/stock_metadata.py Board). Locked: narrowing this
+# is honoured downstream (Builder 5th early-return) but widening it past
+# these four boards requires an amendment (科创/北交/ST/可转债 永禁).
+BOARD_WHITELIST: frozenset[str] = frozenset({"sh_main", "sz_main", "chuangye", "etf"})
+
+# P0-9-amendment-2026-05-24 §2.1 — the permanently-forbidden board set,
+# mirroring the data-layer `classify_board` ForbiddenCodeError reasons.
+# Locked exactly: this is the grep target the redline check asserts is
+# never narrowed (科创 688 / 北交 8 / ST / 可转债 永禁, P0-7 §2.4).
+FORBIDDEN_BOARDS: frozenset[str] = frozenset(
+    {"kechuang_688", "beijiao_8", "st", "convertible_bond"}
+)
 
 # P0-9 §3.1 cap-allocation lock (also mirrors P0-7 max_daily_new=5).
 LOCKED_TOTAL_DAILY_CAP: int = 5
@@ -61,12 +66,12 @@ LOCKED_TRADITIONAL_CAP: int = 4
 LOCKED_EVENT_CAP: int = 1
 LOCKED_RESERVED_CAP_RELEASE_TIME: str = "14:30"
 
-# P0-9 §2.1 exclusion-rule thresholds — locked exactly. A YAML edit
-# that drifts any of these values without a corresponding code change
-# would silently widen / narrow which candidates the InstructionPlan
-# builder rejects. Requiring lock-step changes (both this constant
-# AND the YAML must move together) forces the amendment + git-diff
-# discipline the decision demands (§2.4).
+# P0-9 §2.1 exclusion-rule thresholds — locked exactly (UNCHANGED by the
+# 2026-05-24 amendment, only the enforcement *location* moved to
+# backend/screening). A YAML edit that drifts any of these without a
+# matching code change would silently widen / narrow which candidates the
+# screener and the InstructionPlan builder reject; requiring lock-step
+# changes forces the amendment + git-diff discipline (§2.4).
 LOCKED_EXCLUSION_RULES: dict[str, int | float] = {
     "ipo_min_trading_days": 30,
     "sub_new_min_trading_days": 180,
@@ -75,8 +80,8 @@ LOCKED_EXCLUSION_RULES: dict[str, int | float] = {
 }
 
 
-class WatchlistPolicyError(ValueError):
-    """Raised when ``watchlist_policy.yaml`` fails P0-9 validation."""
+class UniversePolicyError(ValueError):
+    """Raised when ``universe_policy.yaml`` fails P0-9 (+amendment) validation."""
 
 
 # ---------------------------------------------------------------------------
@@ -96,29 +101,22 @@ class BucketConfig:
 
 
 @dataclass(frozen=True)
-class WatchlistComposition:
-    """Locked board distribution for the 13-code universe."""
+class UniverseRules:
+    """The full-market universe ruleset (board whitelist + forbidden set).
 
-    sh_main: int = 4
-    sz_main: int = 3
-    chuangye: int = 3
-    etf: int = 3
-    total_codes: int = LOCKED_TOTAL_CODES
-    default_category: Category = "slow"
+    Replaces the v2 ``WatchlistComposition`` + ``required_etfs`` triplet.
+    ``board_whitelist`` is the exact set of allowed boards;
+    ``forbidden_boards`` mirrors the data-layer forbidden set so audit /
+    redline tooling has a declared-intent source to grep against.
+    """
 
-
-@dataclass(frozen=True)
-class RequiredETF:
-    """One mandatory ETF (locked by code)."""
-
-    code: str
-    name: str
-    tracking: str
+    board_whitelist: frozenset[str] = field(default_factory=lambda: BOARD_WHITELIST)
+    forbidden_boards: frozenset[str] = field(default_factory=lambda: FORBIDDEN_BOARDS)
 
 
 @dataclass(frozen=True)
 class ExclusionRules:
-    """Four exclusion thresholds enforced in InstructionPlanBuilder 5th early-return."""
+    """Four exclusion thresholds — screening hard-filter + Builder 5th early-return."""
 
     ipo_min_trading_days: int = 30
     sub_new_min_trading_days: int = 180
@@ -145,17 +143,9 @@ class DirectionPolicy:
     etf_arbitrage_enabled: bool = False
 
 
-def _default_required_etfs() -> tuple[RequiredETF, ...]:
-    return (
-        RequiredETF(code="510300", name="沪深300 ETF", tracking="沪深300指数"),
-        RequiredETF(code="510500", name="中证500 ETF", tracking="中证500指数"),
-        RequiredETF(code="159949", name="创业板50 ETF", tracking="创业板50指数"),
-    )
-
-
 @dataclass(frozen=True)
-class WatchlistPolicy:
-    """Aggregate P0-9 policy view.
+class UniversePolicy:
+    """Aggregate P0-9 (+amendment) policy view.
 
     ``fast_default_set`` / ``slow_default_set`` are derived O(1) lookup
     caches built by :func:`load_policy` so per-tick partitioning stays
@@ -166,13 +156,10 @@ class WatchlistPolicy:
     slow: BucketConfig
     overrides: dict[str, Category] = field(default_factory=dict)
     default_category: Category = "slow"
-    policy_version: int = 2
+    policy_version: int = 3
     last_updated: str | None = None
     locked_decision: str = "P0-9"
-    composition: WatchlistComposition = field(default_factory=WatchlistComposition)
-    required_etfs: tuple[RequiredETF, ...] = field(
-        default_factory=_default_required_etfs
-    )
+    universe: UniverseRules = field(default_factory=UniverseRules)
     exclusion_rules: ExclusionRules = field(default_factory=ExclusionRules)
     cap_allocation: CapAllocation = field(default_factory=CapAllocation)
     direction_policy: DirectionPolicy = field(default_factory=DirectionPolicy)
@@ -185,14 +172,25 @@ class WatchlistPolicy:
     def bucket_for(self, category: Category) -> BucketConfig:
         return self.fast if category == "fast" else self.slow
 
-    def all_watchlist_codes(self) -> frozenset[str]:
-        """Union of every code mentioned in fast / slow / overrides.
+    def is_board_whitelisted(self, board: str) -> bool:
+        """True if ``board`` (a ``Board`` value string) is in the whitelist.
 
-        Used by callers (boot seed, exit-check helper) that need a single
-        canonical view of the active universe without re-implementing
-        the resolution rule. Codes only appearing in ``overrides`` still
-        count — they bind to a bucket but may not be in either
-        ``default_codes`` list yet (e.g. owner-pick rotation in progress).
+        Used by the InstructionPlanBuilder 5th early-return as the
+        last-line universe membership check (replaces the v2
+        membership-in-13-codes test). Narrowing the whitelist via
+        amendment is enforced here even though ``classify_board`` already
+        rejects forbidden boards upstream — defense-in-depth.
+        """
+        return board in self.universe.board_whitelist
+
+    def all_watchlist_codes(self) -> frozenset[str]:
+        """Union of every manually-pinned code in fast / slow / overrides.
+
+        In full-market mode this is empty by default — the analysis
+        universe is produced by ``backend/screening`` rather than
+        enumerated here. Codes only appearing in ``overrides`` still
+        count (they bind to a bucket). Used by the boot seed to reconcile
+        any owner-pinned codes into the Mongo watchlist collection.
         """
         return frozenset(self.fast.default_codes).union(
             self.slow.default_codes, self.overrides.keys()
@@ -200,37 +198,37 @@ class WatchlistPolicy:
 
 
 # ---------------------------------------------------------------------------
-# Loader — strict v2 validation
+# Loader — strict v3 validation
 # ---------------------------------------------------------------------------
 
 
 def _coerce_bucket(name: str, raw: Any) -> BucketConfig:
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            f"watchlist_policy.{name} must be a mapping, got {type(raw).__name__}"
+        raise UniversePolicyError(
+            f"universe_policy.{name} must be a mapping, got {type(raw).__name__}"
         )
     required = ("cron", "pipeline", "max_debate_rounds", "pipeline_timeout_seconds")
     missing = [k for k in required if k not in raw]
     if missing:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.{name} missing required keys: {missing}"
+        raise UniversePolicyError(
+            f"universe_policy.{name} missing required keys: {missing}"
         )
 
     rounds = raw["max_debate_rounds"]
     timeout = raw["pipeline_timeout_seconds"]
     if not isinstance(rounds, int) or rounds < 0:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.{name}.max_debate_rounds must be a non-negative int"
+        raise UniversePolicyError(
+            f"universe_policy.{name}.max_debate_rounds must be a non-negative int"
         )
     if not isinstance(timeout, int) or timeout <= 0:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.{name}.pipeline_timeout_seconds must be a positive int"
+        raise UniversePolicyError(
+            f"universe_policy.{name}.pipeline_timeout_seconds must be a positive int"
         )
 
     default_codes_raw = raw.get("default_codes", []) or []
     if not isinstance(default_codes_raw, list):
-        raise WatchlistPolicyError(
-            f"watchlist_policy.{name}.default_codes must be a list"
+        raise UniversePolicyError(
+            f"universe_policy.{name}.default_codes must be a list"
         )
     default_codes: tuple[str, ...] = tuple(str(c) for c in default_codes_raw)
 
@@ -247,15 +245,15 @@ def _coerce_overrides(raw: Any) -> dict[str, Category]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            f"watchlist_policy.overrides must be a mapping, got {type(raw).__name__}"
+        raise UniversePolicyError(
+            f"universe_policy.overrides must be a mapping, got {type(raw).__name__}"
         )
     out: dict[str, Category] = {}
     for code, category in raw.items():
         code_str = str(code)
         if category not in _VALID_CATEGORIES:
-            raise WatchlistPolicyError(
-                f"watchlist_policy.overrides[{code_str}] must be 'fast' or 'slow', "
+            raise UniversePolicyError(
+                f"universe_policy.overrides[{code_str}] must be 'fast' or 'slow', "
                 f"got {category!r}"
             )
         out[code_str] = category  # type: ignore[assignment]
@@ -266,96 +264,50 @@ def _coerce_default(raw: Any) -> Category:
     if raw is None:
         return "slow"
     if raw not in _VALID_CATEGORIES:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.default_category must be 'fast' or 'slow', got {raw!r}"
+        raise UniversePolicyError(
+            f"universe_policy.default_category must be 'fast' or 'slow', got {raw!r}"
         )
     return raw  # type: ignore[return-value]
 
 
-def _coerce_composition(raw: Any) -> WatchlistComposition:
+def _coerce_universe(raw: Any) -> UniverseRules:
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            f"watchlist_policy.watchlist must be a mapping, got {type(raw).__name__}"
+        raise UniversePolicyError(
+            f"universe_policy.universe must be a mapping, got {type(raw).__name__}"
         )
-    total = raw.get("total_codes")
-    if total != LOCKED_TOTAL_CODES:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.watchlist.total_codes must equal {LOCKED_TOTAL_CODES}, "
-            f"got {total!r}"
-        )
-    comp_raw = raw.get("composition")
-    if not isinstance(comp_raw, dict):
-        raise WatchlistPolicyError(
-            "watchlist_policy.watchlist.composition must be a mapping"
-        )
-    for board, expected in LOCKED_COMPOSITION.items():
-        got = comp_raw.get(board)
-        if got != expected:
-            raise WatchlistPolicyError(
-                f"watchlist_policy.watchlist.composition.{board} must equal "
-                f"{expected}, got {got!r}"
-            )
-    extra = set(comp_raw) - set(LOCKED_COMPOSITION)
-    if extra:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.watchlist.composition has unexpected boards: "
-            f"{sorted(extra)}"
-        )
-    default_category = _coerce_default(raw.get("default_category"))
-    return WatchlistComposition(
-        sh_main=LOCKED_COMPOSITION["sh_main"],
-        sz_main=LOCKED_COMPOSITION["sz_main"],
-        chuangye=LOCKED_COMPOSITION["chuangye"],
-        etf=LOCKED_COMPOSITION["etf"],
-        total_codes=LOCKED_TOTAL_CODES,
-        default_category=default_category,
-    )
+    for key in ("board_whitelist", "forbidden_boards"):
+        if key not in raw:
+            raise UniversePolicyError(f"universe_policy.universe missing key: {key}")
+        if not isinstance(raw[key], list):
+            raise UniversePolicyError(f"universe_policy.universe.{key} must be a list")
 
+    whitelist = frozenset(str(b) for b in raw["board_whitelist"])
+    forbidden = frozenset(str(b) for b in raw["forbidden_boards"])
 
-def _coerce_required_etfs(raw: Any) -> tuple[RequiredETF, ...]:
-    if not isinstance(raw, list):
-        raise WatchlistPolicyError(
-            "watchlist_policy.required_etfs must be a list of 3 mandatory ETFs"
+    # The whitelist must equal the four allowed boards exactly. Widening
+    # past these (e.g. adding 'kechuang_688') would smuggle a forbidden
+    # board into the tradable universe — P0-7 §2.4 / amendment §2.1 lock.
+    if whitelist != BOARD_WHITELIST:
+        raise UniversePolicyError(
+            "universe.board_whitelist must equal "
+            f"{sorted(BOARD_WHITELIST)} (P0-9-amendment-2026-05-24 §2.1 locked), "
+            f"got {sorted(whitelist)}"
         )
-    if len(raw) != len(MANDATORY_ETF_CODES):
-        raise WatchlistPolicyError(
-            f"watchlist_policy.required_etfs must have exactly "
-            f"{len(MANDATORY_ETF_CODES)} entries, got {len(raw)}"
+    # The forbidden set is locked exactly so a YAML edit cannot quietly
+    # drop a permanently-banned board (科创/北交/ST/可转债 永禁).
+    if forbidden != FORBIDDEN_BOARDS:
+        raise UniversePolicyError(
+            "universe.forbidden_boards must equal "
+            f"{sorted(FORBIDDEN_BOARDS)} (P0-7 §2.4 永禁 locked), "
+            f"got {sorted(forbidden)}"
         )
-    etfs: list[RequiredETF] = []
-    codes: list[str] = []
-    for idx, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise WatchlistPolicyError(
-                f"watchlist_policy.required_etfs[{idx}] must be a mapping"
-            )
-        for key in ("code", "name", "tracking"):
-            if key not in entry:
-                raise WatchlistPolicyError(
-                    f"watchlist_policy.required_etfs[{idx}] missing key: {key}"
-                )
-        code = str(entry["code"])
-        codes.append(code)
-        etfs.append(
-            RequiredETF(
-                code=code,
-                name=str(entry["name"]),
-                tracking=str(entry["tracking"]),
-            )
-        )
-    code_set = set(codes)
-    if code_set != MANDATORY_ETF_CODES:
-        raise WatchlistPolicyError(
-            "watchlist_policy.required_etfs must contain exactly "
-            f"{sorted(MANDATORY_ETF_CODES)}, got {sorted(code_set)}"
-        )
-    return tuple(etfs)
+    return UniverseRules(board_whitelist=whitelist, forbidden_boards=forbidden)
 
 
 def _coerce_exclusion_rules(raw: Any) -> ExclusionRules:
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            "watchlist_policy.exclusion_rules must be a mapping"
+        raise UniversePolicyError(
+            "universe_policy.exclusion_rules must be a mapping"
         )
     required = (
         "ipo_min_trading_days",
@@ -365,27 +317,27 @@ def _coerce_exclusion_rules(raw: Any) -> ExclusionRules:
     )
     missing = [k for k in required if k not in raw]
     if missing:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.exclusion_rules missing keys: {missing}"
+        raise UniversePolicyError(
+            f"universe_policy.exclusion_rules missing keys: {missing}"
         )
     ipo = raw["ipo_min_trading_days"]
     sub = raw["sub_new_min_trading_days"]
     amount = raw["min_avg_amount_20d_yuan"]
     price = raw["max_unit_price_yuan"]
     if ipo != LOCKED_EXCLUSION_RULES["ipo_min_trading_days"]:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "exclusion_rules.ipo_min_trading_days must equal "
             f"{LOCKED_EXCLUSION_RULES['ipo_min_trading_days']} "
             f"(P0-9 §2.1 locked), got {ipo!r}"
         )
     if sub != LOCKED_EXCLUSION_RULES["sub_new_min_trading_days"]:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "exclusion_rules.sub_new_min_trading_days must equal "
             f"{LOCKED_EXCLUSION_RULES['sub_new_min_trading_days']} "
             f"(P0-9 §2.1 locked), got {sub!r}"
         )
     if amount != LOCKED_EXCLUSION_RULES["min_avg_amount_20d_yuan"]:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "exclusion_rules.min_avg_amount_20d_yuan must equal "
             f"{LOCKED_EXCLUSION_RULES['min_avg_amount_20d_yuan']} "
             f"(P0-9 §2.1 locked), got {amount!r}"
@@ -394,7 +346,7 @@ def _coerce_exclusion_rules(raw: Any) -> ExclusionRules:
     # but reject any other numeric drift like 499.99 or 501.
     locked_price = float(LOCKED_EXCLUSION_RULES["max_unit_price_yuan"])
     if not isinstance(price, int | float) or float(price) != locked_price:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "exclusion_rules.max_unit_price_yuan must equal "
             f"{locked_price} (P0-9 §2.1 locked), got {price!r}"
         )
@@ -411,8 +363,8 @@ _RELEASE_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 def _coerce_cap_allocation(raw: Any) -> CapAllocation:
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            "watchlist_policy.cap_allocation must be a mapping"
+        raise UniversePolicyError(
+            "universe_policy.cap_allocation must be a mapping"
         )
     required = (
         "total_daily_cap",
@@ -422,39 +374,39 @@ def _coerce_cap_allocation(raw: Any) -> CapAllocation:
     )
     missing = [k for k in required if k not in raw]
     if missing:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.cap_allocation missing keys: {missing}"
+        raise UniversePolicyError(
+            f"universe_policy.cap_allocation missing keys: {missing}"
         )
     total = raw["total_daily_cap"]
     traditional = raw["traditional_path_default_cap"]
     event = raw["event_path_reserved_cap"]
     release = raw["reserved_cap_release_time"]
     if total != LOCKED_TOTAL_DAILY_CAP:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             f"cap_allocation.total_daily_cap must equal "
             f"{LOCKED_TOTAL_DAILY_CAP} (mirrors P0-7 max_daily_new), got {total!r}"
         )
     if traditional != LOCKED_TRADITIONAL_CAP:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             f"cap_allocation.traditional_path_default_cap must equal "
             f"{LOCKED_TRADITIONAL_CAP}, got {traditional!r}"
         )
     if event != LOCKED_EVENT_CAP:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             f"cap_allocation.event_path_reserved_cap must equal "
             f"{LOCKED_EVENT_CAP}, got {event!r}"
         )
     if traditional + event != total:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "cap_allocation: traditional + event cap must equal total"
         )
     if not isinstance(release, str) or not _RELEASE_TIME_RE.match(release):
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             f"cap_allocation.reserved_cap_release_time must be HH:MM (24h), "
             f"got {release!r}"
         )
     if release != LOCKED_RESERVED_CAP_RELEASE_TIME:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "cap_allocation.reserved_cap_release_time must equal "
             f"{LOCKED_RESERVED_CAP_RELEASE_TIME!r} "
             "(P0-9 §3.1 14:30 slide rule locked), "
@@ -470,28 +422,28 @@ def _coerce_cap_allocation(raw: Any) -> CapAllocation:
 
 def _coerce_direction_policy(raw: Any) -> DirectionPolicy:
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            "watchlist_policy.direction_policy must be a mapping"
+        raise UniversePolicyError(
+            "universe_policy.direction_policy must be a mapping"
         )
     long_only = raw.get("long_only")
     if long_only is not True:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "direction_policy.long_only must be true (P0-9 §4.1 strict long-only)"
         )
     forbidden_raw = raw.get("forbidden_sides")
     if not isinstance(forbidden_raw, list):
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "direction_policy.forbidden_sides must be a list"
         )
     forbidden = frozenset(str(s) for s in forbidden_raw)
     if forbidden != FORBIDDEN_SIDES:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "direction_policy.forbidden_sides must equal "
             f"{sorted(FORBIDDEN_SIDES)}, got {sorted(forbidden)}"
         )
     etf_arb = raw.get("etf_arbitrage_enabled")
     if etf_arb is not False:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             "direction_policy.etf_arbitrage_enabled must be false "
             "(P0-9 §4.4 永锁 — 启用走 amendment)"
         )
@@ -502,77 +454,55 @@ def _coerce_direction_policy(raw: Any) -> DirectionPolicy:
     )
 
 
-def _validate_constraints_block(raw: Any) -> None:
-    if raw is None:
-        return
-    if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            "watchlist_policy.constraints must be a mapping when present"
-        )
-    expectations = {
-        "watchlist_size_must_equal": LOCKED_TOTAL_CODES,
-        "watchlist_etf_count_must_equal": LOCKED_COMPOSITION["etf"],
-        "total_daily_cap_must_equal_p0_7": LOCKED_TOTAL_DAILY_CAP,
-        "long_only_must_be_true": True,
-    }
-    for key, expected in expectations.items():
-        if key in raw and raw[key] != expected:
-            raise WatchlistPolicyError(
-                f"watchlist_policy.constraints.{key} drifted from locked value "
-                f"{expected!r} (got {raw[key]!r}) — fix YAML or open amendment"
-            )
-
-
-def load_policy(path: str | Path) -> WatchlistPolicy:
-    """Load and validate ``watchlist_policy.yaml`` against P0-9 §5 schema.
+def load_policy(path: str | Path) -> UniversePolicy:
+    """Load and validate ``universe_policy.yaml`` against P0-9 v3 schema.
 
     Raises:
         FileNotFoundError: ``path`` does not exist.
-        WatchlistPolicyError: any P0-9 invariant is violated.
+        UniversePolicyError: any P0-9 (+amendment) invariant is violated.
     """
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"watchlist policy file not found: {p}")
+        raise FileNotFoundError(f"universe policy file not found: {p}")
 
     try:
         with p.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
     except yaml.YAMLError as exc:
-        raise WatchlistPolicyError(
-            f"watchlist_policy.yaml is not valid YAML: {exc}"
+        raise UniversePolicyError(
+            f"universe_policy.yaml is not valid YAML: {exc}"
         ) from exc
 
     if not isinstance(raw, dict):
-        raise WatchlistPolicyError(
-            f"watchlist_policy.yaml root must be a mapping, got {type(raw).__name__}"
+        raise UniversePolicyError(
+            f"universe_policy.yaml root must be a mapping, got {type(raw).__name__}"
         )
 
     version_raw = raw.get("policy_version")
-    if version_raw != 2:
-        raise WatchlistPolicyError(
-            "watchlist_policy.policy_version must be 2 (P0-9 v2 schema). "
-            f"Got {version_raw!r} — v1 schema is no longer accepted."
+    if version_raw != 3:
+        raise UniversePolicyError(
+            "universe_policy.policy_version must be 3 (P0-9 v3 schema). "
+            f"Got {version_raw!r} — v1/v2 (13-code lock) schema is no longer accepted."
         )
 
     locked_decision = raw.get("locked_decision")
     if locked_decision != "P0-9":
-        raise WatchlistPolicyError(
-            "watchlist_policy.locked_decision must equal 'P0-9', "
+        raise UniversePolicyError(
+            "universe_policy.locked_decision must equal 'P0-9', "
             f"got {locked_decision!r}"
         )
 
     for required_section in (
         "fast",
         "slow",
-        "watchlist",
-        "required_etfs",
+        "universe",
         "exclusion_rules",
         "cap_allocation",
         "direction_policy",
     ):
         if required_section not in raw:
-            raise WatchlistPolicyError(
-                f"watchlist_policy.yaml missing required section: {required_section}"
+            raise UniversePolicyError(
+                f"universe_policy.yaml missing required section: {required_section}"
             )
 
     fast = _coerce_bucket("fast", raw["fast"])
@@ -580,67 +510,42 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
 
     overlap = set(fast.default_codes) & set(slow.default_codes)
     if overlap:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             f"codes appear in both fast.default_codes and slow.default_codes: "
             f"{sorted(overlap)}"
         )
 
-    composition = _coerce_composition(raw["watchlist"])
-    required_etfs = _coerce_required_etfs(raw["required_etfs"])
+    universe = _coerce_universe(raw["universe"])
     exclusion_rules = _coerce_exclusion_rules(raw["exclusion_rules"])
     cap_allocation = _coerce_cap_allocation(raw["cap_allocation"])
     direction_policy = _coerce_direction_policy(raw["direction_policy"])
 
-    # Mandatory ETFs must already be seeded in slow.default_codes (P0-9 §1.2
-    # locks them as passive long-horizon holdings — fast bucket would force
-    # an intraday cadence that adds no value for index ETFs).
-    seeded_etfs = MANDATORY_ETF_CODES & set(slow.default_codes)
-    missing_etfs = MANDATORY_ETF_CODES - seeded_etfs
-    if missing_etfs:
-        raise WatchlistPolicyError(
-            f"mandatory ETFs not in slow.default_codes: {sorted(missing_etfs)} "
-            "(P0-9 §1.2 lock — they must be in the watchlist)"
-        )
-    # Overrides can re-bucket the ETFs but only across the {fast, slow}
-    # set — the YAML loader for overrides already constrains values; no
-    # extra check needed.
-
     overrides = _coerce_overrides(raw.get("overrides"))
-    # Overrides must reference codes actually in the watchlist; an
-    # override pointing at a code that does not appear in either
-    # default_codes list is a silent drift (the cron would run a code
-    # that is not in any user-controlled list).
+    # Overrides must reference codes actually pinned in a default list;
+    # an override pointing at a code in neither list is a silent drift
+    # (the cron would run a code no user-controlled list declares).
     union_codes = set(fast.default_codes) | set(slow.default_codes)
     dangling = set(overrides.keys()) - union_codes
     if dangling:
-        raise WatchlistPolicyError(
+        raise UniversePolicyError(
             f"overrides reference codes outside default_codes: {sorted(dangling)}"
         )
 
-    # Total unique codes across the policy cannot exceed the 13-code lock.
-    total_in_policy = len(union_codes)
-    if total_in_policy > LOCKED_TOTAL_CODES:
-        raise WatchlistPolicyError(
-            f"total unique codes in fast/slow default_codes is "
-            f"{total_in_policy}, exceeds locked maximum {LOCKED_TOTAL_CODES}"
-        )
-
-    _validate_constraints_block(raw.get("constraints"))
+    default_category = _coerce_default(raw.get("default_category"))
 
     last_updated = raw.get("last_updated")
     if last_updated is not None and not isinstance(last_updated, str):
         last_updated = str(last_updated)
 
-    policy = WatchlistPolicy(
+    policy = UniversePolicy(
         fast=fast,
         slow=slow,
         overrides=overrides,
-        default_category=composition.default_category,
-        policy_version=2,
+        default_category=default_category,
+        policy_version=3,
         last_updated=last_updated,
         locked_decision="P0-9",
-        composition=composition,
-        required_etfs=required_etfs,
+        universe=universe,
         exclusion_rules=exclusion_rules,
         cap_allocation=cap_allocation,
         direction_policy=direction_policy,
@@ -648,13 +553,12 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
         slow_default_set=frozenset(slow.default_codes),
     )
     log.info(
-        "watchlist_policy_loaded",
+        "universe_policy_loaded",
         path=str(p),
         fast_default_count=len(fast.default_codes),
         slow_default_count=len(slow.default_codes),
         overrides_count=len(overrides),
-        total_codes_provisioned=total_in_policy,
-        total_codes_target=LOCKED_TOTAL_CODES,
+        board_whitelist=sorted(universe.board_whitelist),
     )
     return policy
 
@@ -664,7 +568,7 @@ def load_policy(path: str | Path) -> WatchlistPolicy:
 # ---------------------------------------------------------------------------
 
 
-def assign_category(code: str, policy: WatchlistPolicy) -> Category:
+def assign_category(code: str, policy: UniversePolicy) -> Category:
     """Return ``'fast'`` or ``'slow'`` for ``code``.
 
     Resolution order (first match wins):
@@ -684,7 +588,7 @@ def assign_category(code: str, policy: WatchlistPolicy) -> Category:
 
 
 def partition_watchlist(
-    codes: list[str], policy: WatchlistPolicy
+    codes: list[str], policy: UniversePolicy
 ) -> tuple[list[str], list[str]]:
     """Split ``codes`` into ``(fast_codes, slow_codes)`` preserving input order."""
     fast_codes: list[str] = []
@@ -697,28 +601,26 @@ def partition_watchlist(
     return fast_codes, slow_codes
 
 
-# P0-9 §1.3 forbids runtime mutation; there is intentionally no
-# public ``update_override`` / ``save_policy`` here — rebuild via
-# load_policy after editing the YAML on disk + process restart.
+# P0-9 §1.3 forbids runtime mutation; there is intentionally no public
+# ``update_override`` / ``save_policy`` here — rebuild via load_policy
+# after editing the YAML on disk + process restart.
 __all__ = [
+    "BOARD_WHITELIST",
+    "FORBIDDEN_BOARDS",
+    "FORBIDDEN_SIDES",
+    "LOCKED_EVENT_CAP",
+    "LOCKED_EXCLUSION_RULES",
+    "LOCKED_RESERVED_CAP_RELEASE_TIME",
+    "LOCKED_TOTAL_DAILY_CAP",
+    "LOCKED_TRADITIONAL_CAP",
     "BucketConfig",
     "CapAllocation",
     "Category",
     "DirectionPolicy",
     "ExclusionRules",
-    "FORBIDDEN_SIDES",
-    "LOCKED_COMPOSITION",
-    "LOCKED_EVENT_CAP",
-    "LOCKED_EXCLUSION_RULES",
-    "LOCKED_RESERVED_CAP_RELEASE_TIME",
-    "LOCKED_TOTAL_CODES",
-    "LOCKED_TOTAL_DAILY_CAP",
-    "LOCKED_TRADITIONAL_CAP",
-    "MANDATORY_ETF_CODES",
-    "RequiredETF",
-    "WatchlistComposition",
-    "WatchlistPolicy",
-    "WatchlistPolicyError",
+    "UniversePolicy",
+    "UniversePolicyError",
+    "UniverseRules",
     "assign_category",
     "load_policy",
     "partition_watchlist",

@@ -24,7 +24,7 @@ from backend.services.phase5b_exit_check import (
     render_markdown,
     split_runs_by_category,
 )
-from backend.services.watchlist_policy import BucketConfig, WatchlistPolicy
+from backend.services.universe_policy import BucketConfig, UniversePolicy
 
 # ----------------------------------------------------------------------
 # Test fixtures
@@ -36,8 +36,8 @@ def _policy(
     fast_codes: tuple[str, ...] = ("600519",),
     slow_codes: tuple[str, ...] = ("000001",),
     default_category: str = "slow",
-) -> WatchlistPolicy:
-    return WatchlistPolicy(
+) -> UniversePolicy:
+    return UniversePolicy(
         fast=BucketConfig(
             cron="*/15 9-15 * * 1-5",
             pipeline="fast",

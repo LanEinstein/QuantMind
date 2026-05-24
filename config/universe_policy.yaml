@@ -1,0 +1,138 @@
+# config/universe_policy.yaml — P0-9 + P0-9-amendment-2026-05-24 locked structure (v3)
+#
+# This file is the SINGLE SOURCE OF TRUTH for the full-market universe
+# *ruleset*, scheduling cadence, daily-instruction cap split, exclusion
+# rules and direction limits. Every threshold below is runtime-immutable
+# — see docs/decisions/P0-9-amendment-2026-05-24-full-market-screening.md
+# (§2.1 / §2.2 / §4) for the locked constants, and the base decision
+# docs/decisions/P0-9-watchlist-scope-frequency-traditional-quant-primary-long-only.md
+# for the unchanged cap / direction / exclusion semantics.
+#
+# Any change requires:
+#   1. a new `docs/decisions/P0-9-amendment-{date}-{topic}.md` explaining
+#      why the rule moves and what risk it accepts;
+#   2. `git diff config/universe_policy.yaml`;
+#   3. a backend restart.
+#
+# `backend/api/watchlist.py` only exposes GET endpoints (P0-9 §1.3 /
+# P1-5 §2 redline 1) — runtime mutation is forbidden.
+#
+# Why v3: the 2026-05-24 two-line rearchitecture (P0-9 amendment) tore
+# out the fixed 13-code lock (the old board-composition split, the
+# mandatory-ETF triplet, and the size-equals-13 self-check constraints)
+# and replaced it with a *ruleset* universe = full A-share main boards +
+# ChiNext + ETFs, filtered by board whitelist + the four exclusion rules
+# + long-only. `policy_version: 3` lets the loader reject v2 YAML loudly
+# instead of silently honouring those dead invariants.
+
+policy_version: 3
+last_updated: 2026-05-24
+locked_decision: P0-9
+
+# ============================================================
+# Scheduling buckets — sole fast/slow split sharing one process
+# ============================================================
+#
+# `slow` runs once at 09:00 for the full-market quant screen + the
+# multi-Agent debate on the resulting shortlist; `fast` runs four times
+# per trading day for short-horizon technical checks on held positions
+# and (when needed) a shortlist recompute. `default_codes` is now empty
+# by default — the analysis universe is produced by `backend/screening/`
+# (Phase L) rather than enumerated here. A code may still be pinned into
+# a bucket manually (owner watch), but no code is hardcoded.
+# `pipeline_timeout_seconds` is a hard upper bound enforced by
+# `asyncio.wait_for` inside `AnalysisScheduler`.
+fast:
+  cron: "0 9,11,13,15 * * mon-fri"
+  pipeline: fast_pipeline
+  max_debate_rounds: 1
+  pipeline_timeout_seconds: 480
+  default_codes: []
+
+slow:
+  cron: "0 9 * * mon-fri"
+  pipeline: slow_pipeline
+  max_debate_rounds: 2
+  pipeline_timeout_seconds: 900
+  default_codes: []
+
+# ============================================================
+# Universe ruleset — full A-share main boards + ChiNext + ETFs
+# ============================================================
+#
+# P0-9-amendment-2026-05-24 §2.1: universe is a *ruleset*, not a code
+# list. `board_whitelist` is the exact set of allowed `Board` enum
+# values (backend/data/stock_metadata.py). `forbidden_boards` mirrors the
+# data-layer `classify_board` ForbiddenCodeError set — STAR 688 / 北交 8
+# / ST / convertible bonds stay permanently banned (P0-7 §2.4 unchanged).
+# Both lists are runtime-immutable; narrowing the whitelist (e.g. dropping
+# `etf`) is honoured by the InstructionPlanBuilder 5th early-return as a
+# last-line defense.
+universe:
+  board_whitelist:
+    - sh_main      # 沪市主板个股
+    - sz_main      # 深市主板个股
+    - chuangye     # 创业板个股
+    - etf          # 宽基 / 可交易 ETF
+  forbidden_boards:
+    - kechuang_688   # 科创板 688 永禁
+    - beijiao_8      # 北交所 8 永禁
+    - st             # ST / *ST / 退 / PT 永禁
+    - convertible_bond  # 可转债永禁
+
+# ============================================================
+# Exclusion rules — fail-closed in backend/screening (hard pre-filter)
+#                    + InstructionPlanBuilder 5th early-return (defense)
+# ============================================================
+#
+# P0-9-amendment-2026-05-24 §2.2: the four thresholds are UNCHANGED but
+# their primary enforcement moves to `backend/screening/` as a hard
+# fail-closed pre-filter (missing stock_meta / liquidity history < 20d /
+# missing price → excluded, no optimistic fallback). The Builder 5th
+# early-return keeps applying the SAME thresholds as the last-line
+# defense (defense-in-depth, mirroring the 14-check). One source of truth.
+exclusion_rules:
+  ipo_min_trading_days: 30
+  sub_new_min_trading_days: 180
+  min_avg_amount_20d_yuan: 200000000
+  max_unit_price_yuan: 500.0
+
+# ============================================================
+# Daily instruction cap allocation (P0-9 §3 + P0-7 max_daily_new=5)
+# ============================================================
+#
+# Unchanged by the amendment. `total_daily_cap` mirrors
+# RiskConfig.max_daily_new_instructions and splits into traditional
+# (slow + fast) + event. The event path is now driven by the MiroFish
+# advisory core (P0-8 amendment) rather than an "add-on" cap, but the
+# cap value (=1) and the 14:30 slide rule are unchanged.
+cap_allocation:
+  total_daily_cap: 5
+  traditional_path_default_cap: 4
+  event_path_reserved_cap: 1
+  reserved_cap_release_time: "14:30"
+
+# ============================================================
+# Direction policy — strict long-only (P0-9 §4.1 unchanged)
+# ============================================================
+direction_policy:
+  long_only: true
+  forbidden_sides:
+    - SHORT
+    - COVER
+    - MARGIN_BUY
+    - REVERSE_REPO
+    - ETF_SUBSCRIBE
+    - ETF_REDEEM
+  etf_arbitrage_enabled: false
+
+# ============================================================
+# Per-code overrides — pin a manually-watched code into a bucket
+# ============================================================
+#
+# Codes not listed fall back to `slow` (the default bucket). Overrides
+# must reference codes that already appear in fast.default_codes ∪
+# slow.default_codes — there is no enumerated universe to validate
+# against any more, so a dangling override (pointing at a code in
+# neither default list) is still rejected to avoid a silent typo.
+overrides: {}

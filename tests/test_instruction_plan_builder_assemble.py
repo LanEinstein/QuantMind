@@ -76,7 +76,7 @@ from backend.services.instruction_plan_builder import (
     MandatoryAgentRecords,
     WatchlistMarketSignal,
 )
-from backend.services.watchlist_policy import WatchlistPolicy, load_policy
+from backend.services.universe_policy import UniversePolicy, load_policy
 
 _SH = ZoneInfo("Asia/Shanghai")
 _NOW = datetime(2026, 5, 15, 10, 30, 0, tzinfo=_SH)
@@ -91,8 +91,8 @@ _NAME = "沪深300 ETF"
 
 
 @pytest.fixture
-def policy() -> WatchlistPolicy:
-    return load_policy(Path("config/watchlist_policy.yaml"))
+def policy() -> UniversePolicy:
+    return load_policy(Path("config/universe_policy.yaml"))
 
 
 @pytest.fixture
@@ -220,7 +220,7 @@ def _build_context(
     stock_meta: RiskStockMetadata | None,
     quiet_breaker: CircuitBreaker,
     clean_data_quality: DataQualityState,
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
     passing_signal: WatchlistMarketSignal,
     data_snapshot: DataSnapshot,
     debate_round_count: int = 1,
@@ -354,7 +354,7 @@ class TestFourAgentGate:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
         missing_field: str,
@@ -407,7 +407,7 @@ class TestFourAgentGate:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -446,7 +446,7 @@ class TestFourAgentGate:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -502,7 +502,7 @@ class TestHoldPath:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -557,7 +557,7 @@ class TestHoldPath:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -608,7 +608,7 @@ class TestBuySellPath:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -659,7 +659,7 @@ class TestBuySellPath:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -718,7 +718,7 @@ class TestBuySellPath:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:
@@ -788,7 +788,7 @@ class TestBuySellPath:
         stock_meta: RiskStockMetadata,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         data_snapshot: DataSnapshot,
     ) -> None:

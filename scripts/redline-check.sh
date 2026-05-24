@@ -924,6 +924,45 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# L-001 / P0-9-amendment-2026-05-24 — full-market universe ruleset.
+# The fixed 13-code lock must be gone from config/, replaced by a board
+# whitelist + forbidden-board set. universe_policy.{yaml,py} replaces the
+# renamed watchlist_policy.{yaml,py}; the dead invariants
+# (total_codes=13 / watchlist_size_must_equal / required_etfs) must not
+# reappear in config/ (CLAUDE.md §5 grep ∅).
+# ----------------------------------------------------------------------
+yellow "[L-001] universe ruleset replaces 13-code lock (P0-9-amendment-2026-05-24)"
+L001_FAIL=0
+if [ ! -f config/universe_policy.yaml ]; then
+  red "  FAIL  config/universe_policy.yaml missing"
+  L001_FAIL=1
+fi
+if [ -f config/watchlist_policy.yaml ]; then
+  red "  FAIL  config/watchlist_policy.yaml still present (renamed to universe_policy.yaml)"
+  L001_FAIL=1
+fi
+if [ -f backend/services/watchlist_policy.py ]; then
+  red "  FAIL  backend/services/watchlist_policy.py still present (renamed to universe_policy.py)"
+  L001_FAIL=1
+fi
+L001_DEAD="$(grep -rnE 'total_codes.*13|watchlist_size_must_equal|required_etfs' config/ 2>/dev/null || true)"
+if [ -n "$L001_DEAD" ]; then
+  red "  FAIL  dead 13-code invariants still in config/:"
+  printf '%s\n' "$L001_DEAD" | sed 's/^/        /'
+  L001_FAIL=1
+fi
+if ! grep -q 'board_whitelist:' config/universe_policy.yaml 2>/dev/null \
+   || ! grep -q 'forbidden_boards:' config/universe_policy.yaml 2>/dev/null; then
+  red "  FAIL  universe_policy.yaml missing board_whitelist / forbidden_boards"
+  L001_FAIL=1
+fi
+if [ $L001_FAIL -eq 0 ]; then
+  green "  ok    universe_policy ruleset present + no 13-code lock in config/"
+else
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

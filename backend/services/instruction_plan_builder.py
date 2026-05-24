@@ -18,8 +18,9 @@ The five checks, in locked first-wins order:
 4. ``data_quality_breach`` — P0-8 DataQualityState fails
    ``is_acceptable_for_buy_sell`` (the four blocking breaches only;
    news / MiroFish / snapshot outage are non-blocking per redline)
-5. ``watchlist_exclusion`` — P0-9 13-code universe + 4 thresholds + ST
-   + forbidden boards (STAR / 北交 / 可转债 / B-share)
+5. ``watchlist_exclusion`` — P0-9 (+2026-05-24 amendment) universe board
+   whitelist + 4 exclusion thresholds + ST + forbidden boards
+   (STAR / 北交 / 可转债 / B-share)
 
 Each early return writes ONE
 :class:`backend.audit.models.AuditEvent` of type
@@ -88,7 +89,7 @@ from backend.risk.engine import RiskEngine
 from backend.risk.stock_meta import StockMetadata as RiskStockMetadata
 from backend.services.fund_manager_output import FundManagerOutput
 from backend.services.instruction_plan import make_instruction_id
-from backend.services.watchlist_policy import WatchlistPolicy
+from backend.services.universe_policy import UniversePolicy
 
 log = structlog.get_logger(component="services.instruction_plan_builder")
 
@@ -112,7 +113,7 @@ REASON_WATCHLIST = "watchlist_exclusion"
 # without re-deriving it from message text. Locked enum-like set.
 WATCHLIST_SUB_REASONS: frozenset[str] = frozenset(
     {
-        "non_watchlist_code",
+        "board_not_whitelisted",
         "forbidden_board",
         "unknown_code",
         "is_st",
@@ -252,7 +253,7 @@ class CandidateInputs:
     open_tickets: tuple[ReconciliationTicket, ...]
     circuit_breaker: CircuitBreaker
     data_quality: DataQualityState
-    watchlist_policy: WatchlistPolicy
+    watchlist_policy: UniversePolicy
     watchlist_signal: WatchlistMarketSignal
 
     def __post_init__(self) -> None:
@@ -432,18 +433,23 @@ def check_data_quality(
 def check_watchlist_exclusion(
     code: str,
     name: str,
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
     signal: WatchlistMarketSignal,
 ) -> BuilderEarlyReturn | None:
-    """Fifth early return: P0-9 watchlist exclusion (8 sub-reasons).
+    """Fifth early return: P0-9 universe exclusion (8 sub-reasons).
+
+    Last-line defense (defense-in-depth, mirroring the 14-check). The
+    primary universe filtering now happens in ``backend/screening`` (P0-9
+    amendment §2.2); this re-applies the SAME exclusion-rule source.
 
     Sub-reason precedence (first-match wins inside this check):
 
     1. ``forbidden_board`` — STAR / 北交 / 可转债 / B-share
        (data-layer ``ForbiddenCodeError``)
     2. ``unknown_code`` — code prefix matches no allowlist
-    3. ``non_watchlist_code`` — board is allowed but the code is not
-       in the loaded P0-9 13-code universe
+    3. ``board_not_whitelisted`` — code classifies to a board not in the
+       policy's ``universe.board_whitelist`` (honours an amendment that
+       narrows the whitelist; replaces the v2 membership-in-13-codes test)
     4. ``is_st`` — name carries an ST / *ST / 退 / PT marker
     5. ``ipo_too_new`` — listed-trading-days < 30 (or unknown)
     6. ``sub_new_too_new`` — 30 ≤ listed < 180
@@ -487,20 +493,20 @@ def check_watchlist_exclusion(
 
     payload["board"] = board.value
 
-    universe = policy.all_watchlist_codes()
-    if code not in universe:
-        sub_reason = "non_watchlist_code"
+    if not policy.is_board_whitelisted(board.value):
+        sub_reason = "board_not_whitelisted"
         payload.update(
             {
                 "exclusion_sub_reason": sub_reason,
-                "watchlist_size": len(universe),
+                "board_whitelist": sorted(policy.universe.board_whitelist),
             }
         )
         return BuilderEarlyReturn(
             source=FreezeSource.WATCHLIST,
             reason_namespace=REASON_WATCHLIST,
             message=(
-                f"code {code} is not in the P0-9 watchlist (size={len(universe)})"
+                f"code {code} board {board.value} is not in the universe "
+                f"board whitelist {sorted(policy.universe.board_whitelist)}"
             ),
             payload=payload,
         )
@@ -1041,7 +1047,7 @@ class AssemblyContext:
     open_tickets: tuple[ReconciliationTicket, ...]
     circuit_breaker: CircuitBreaker
     data_quality: DataQualityState
-    watchlist_policy: WatchlistPolicy
+    watchlist_policy: UniversePolicy
     watchlist_signal: WatchlistMarketSignal
 
     # 14-check inputs (D-001)

@@ -36,7 +36,7 @@ from backend.services.phase5b_exit_check import (  # noqa: E402
     compute_exit_report,
     render_markdown,
 )
-from backend.services.watchlist_policy import load_policy  # noqa: E402
+from backend.services.universe_policy import load_policy  # noqa: E402
 
 _MAX_DAYS = 30  # cap matches shadow_decisions TTL retention
 
@@ -86,8 +86,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--policy-path",
         type=Path,
-        default=Path("config/watchlist_policy.yaml"),
-        help="Path to watchlist_policy.yaml (relative to project root).",
+        default=Path("config/universe_policy.yaml"),
+        help="Path to universe_policy.yaml (relative to project root).",
     )
     parser.add_argument(
         "--strict",
@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if not args.policy_path.exists():
         sys.stderr.write(
-            f"watchlist_policy.yaml not found at {args.policy_path}\n"
+            f"universe_policy.yaml not found at {args.policy_path}\n"
         )
         return 2
     policy = load_policy(args.policy_path)

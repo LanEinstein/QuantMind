@@ -1,15 +1,15 @@
 """FastAPI routes for watchlist management (GET-only per P0-9 / P1-5).
 
-P0-9 locks the watchlist universe at 13 codes (4 SH main + 3 SZ main +
-3 ChiNext + 3 mandatory ETFs 510300/510500/159949) and forbids runtime
-mutation. Phase A redline: every POST/PUT/PATCH/DELETE handler in this
-module has been destructively deleted so the universe is immutable
-between deploys.
+P0-9-amendment-2026-05-24 replaced the fixed 13-code universe with a
+full-market *ruleset* (board whitelist + the four exclusion rules +
+long-only). Runtime mutation stays forbidden: Phase A destructively
+deleted every POST/PUT/PATCH/DELETE handler in this module so the
+universe ruleset is immutable between deploys.
 
-The serialiser exposes every locked section (composition, required
-ETFs, exclusion rules, cap allocation, direction policy) so the
-frontend / audit tooling can verify the active configuration without
-re-reading the YAML.
+The serialiser exposes every locked section (the universe ruleset,
+exclusion rules, cap allocation, direction policy) so the frontend /
+audit tooling can verify the active configuration without re-reading the
+YAML.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, Request
 
-from backend.services.watchlist_policy import (
-    WatchlistPolicy,
+from backend.services.universe_policy import (
+    UniversePolicy,
     assign_category,
 )
 
@@ -59,7 +59,7 @@ async def list_watchlist(request: Request) -> dict[str, Any]:
     return _ok(stocks)
 
 
-def _serialize_policy(policy: WatchlistPolicy) -> dict[str, Any]:
+def _serialize_policy(policy: UniversePolicy) -> dict[str, Any]:
     return {
         "policy_version": policy.policy_version,
         "locked_decision": policy.locked_decision,
@@ -78,20 +78,10 @@ def _serialize_policy(policy: WatchlistPolicy) -> dict[str, Any]:
             "pipeline_timeout_seconds": policy.slow.pipeline_timeout_seconds,
             "default_codes": list(policy.slow.default_codes),
         },
-        "watchlist": {
-            "total_codes": policy.composition.total_codes,
-            "composition": {
-                "sh_main": policy.composition.sh_main,
-                "sz_main": policy.composition.sz_main,
-                "chuangye": policy.composition.chuangye,
-                "etf": policy.composition.etf,
-            },
-            "default_category": policy.composition.default_category,
+        "universe": {
+            "board_whitelist": sorted(policy.universe.board_whitelist),
+            "forbidden_boards": sorted(policy.universe.forbidden_boards),
         },
-        "required_etfs": [
-            {"code": e.code, "name": e.name, "tracking": e.tracking}
-            for e in policy.required_etfs
-        ],
         "exclusion_rules": {
             "ipo_min_trading_days": policy.exclusion_rules.ipo_min_trading_days,
             "sub_new_min_trading_days": (
@@ -126,8 +116,8 @@ def _serialize_policy(policy: WatchlistPolicy) -> dict[str, Any]:
     }
 
 
-def _get_policy(request: Request) -> WatchlistPolicy:
-    """Read the active WatchlistPolicy from app state."""
+def _get_policy(request: Request) -> UniversePolicy:
+    """Read the active UniversePolicy from app state."""
     policy = getattr(request.app.state, "watchlist_policy", None)
     if policy is None:
         _err("Watchlist policy not loaded", 503)

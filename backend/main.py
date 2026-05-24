@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 
 if TYPE_CHECKING:
     from backend.data.watchlist import WatchlistService
-    from backend.services.watchlist_policy import WatchlistPolicy
+    from backend.services.universe_policy import UniversePolicy
 
 from backend.api.acceptance import router as acceptance_router
 from backend.api.analysis import router as analysis_router
@@ -200,28 +200,38 @@ async def _init_trading_layer(application: FastAPI) -> None:
 
 
 async def _seed_watchlist_from_policy(
-    watchlist_service: WatchlistService, policy: WatchlistPolicy
+    watchlist_service: WatchlistService, policy: UniversePolicy
 ) -> None:
     """Reconcile Mongo watchlist with the policy (add missing + soft-delete stale).
 
     Reads the union of ``policy.{fast,slow}.default_codes`` and
-    ``policy.overrides`` as the canonical universe. Codes present in
-    Mongo but absent from the policy are soft-deleted (``active=False``)
-    so a policy rotation cannot leave stale rows that
+    ``policy.overrides`` as the set of manually-pinned codes. Codes
+    present in Mongo but absent from the policy are soft-deleted
+    (``active=False``) so a policy rotation cannot leave stale rows that
     :func:`assign_category` would silently route to the default bucket.
 
-    Display names for the mandatory ETFs come from
-    ``policy.required_etfs`` (single source of truth — P0-9 §1.2); any
-    individual code without a known display name falls back to the code
-    itself until a later phase wires in a stock_metadata registry.
+    Since the 2026-05-24 amendment removed the fixed 13-code universe,
+    ``all_watchlist_codes()`` is empty by default — the analysis universe
+    is produced by ``backend/screening`` rather than seeded here. This
+    reconciliation only matters when the owner pins codes into a bucket.
+    Display names fall back to the code itself until a later phase wires
+    in a stock_metadata registry.
     """
-    etf_names = {e.code: e.name for e in policy.required_etfs}
     canonical = policy.all_watchlist_codes()
 
-    # Reactivate / upsert every code the policy declares.
+    # Full-market mode (no manually-pinned codes): the analysis universe
+    # is produced by ``backend/screening`` (Phase L-002/M), NOT by this
+    # reconciliation. Skip entirely so an empty pin set neither seeds a
+    # fixed list nor destructively soft-deletes pre-existing rows during
+    # the migration window (codex L-001 P1: empty canonical must not wipe
+    # the whole watchlist collection out from under the scheduler).
+    if not canonical:
+        log.info("watchlist_seed_skipped_full_market")
+        return
+
+    # Reactivate / upsert every code the policy pins.
     for code in sorted(canonical):
-        name = etf_names.get(code, code)
-        await watchlist_service.add_stock(code, name)
+        await watchlist_service.add_stock(code, code)
 
     # Soft-delete any currently-active code that is no longer in the
     # policy — protects against post-rotation drift (codex C-002 P1).
@@ -819,7 +829,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
 async def _init_analysis_scheduler(application: FastAPI) -> None:
     """Initialize the daily analysis orchestrator.
 
-    Phase 5B-T02: when ``config/watchlist_policy.yaml`` is present the
+    Phase 5B-T02: when ``config/universe_policy.yaml`` is present the
     scheduler runs in Fast/Slow mode (two cron jobs). When the file is
     missing or fails to parse we log a warning and fall back to the
     legacy single-cron mode so a typo in the YAML can't bring the
@@ -827,8 +837,8 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
     """
     from backend.agents.models import AnalysisServices, PipelineConfig
     from backend.data.analysis_scheduler import AnalysisScheduler
-    from backend.services.watchlist_policy import (
-        WatchlistPolicyError,
+    from backend.services.universe_policy import (
+        UniversePolicyError,
         load_policy,
     )
 
@@ -878,20 +888,20 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
     application.state.mirofish_simulator = mirofish_simulator
 
     policy_path = os.environ.get(
-        "QUANTMIND_WATCHLIST_POLICY_PATH", "config/watchlist_policy.yaml"
+        "QUANTMIND_UNIVERSE_POLICY_PATH", "config/universe_policy.yaml"
     )
     policy = None
     if os.path.exists(policy_path):
         try:
             policy = load_policy(policy_path)
-        except (WatchlistPolicyError, OSError) as exc:
+        except (UniversePolicyError, OSError) as exc:
             log.warning(
-                "watchlist_policy_load_failed",
+                "universe_policy_load_failed",
                 path=policy_path,
                 error=str(exc),
             )
     else:
-        log.info("watchlist_policy_missing", path=policy_path)
+        log.info("universe_policy_missing", path=policy_path)
 
     # Idempotent watchlist seed (A-002/A-004 follow-up per codex review).
     # The POST/DELETE handlers were destructively removed, so without

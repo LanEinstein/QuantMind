@@ -1,6 +1,6 @@
 """Daily stock analysis orchestrator.
 
-Phase 5B-T02 added a Fast/Slow split: when a :class:`WatchlistPolicy`
+Phase 5B-T02 added a Fast/Slow split: when a :class:`UniversePolicy`
 is supplied at construction, ``start()`` registers two cron jobs (one
 per category) and each per-stock run rebuilds the agent services with
 that category's :class:`PipelineConfig` (debate rounds + timeout). When
@@ -57,9 +57,9 @@ from backend.services.cost_guard import (
 )
 from backend.services.shadow_runner import schedule_shadow_run
 from backend.services.soft_degrade_manager import SoftDegradeManager
-from backend.services.watchlist_policy import (
+from backend.services.universe_policy import (
     Category,
-    WatchlistPolicy,
+    UniversePolicy,
     assign_category,
 )
 
@@ -94,7 +94,7 @@ class AnalysisScheduler:
         services: AnalysisServices,
         mongodb: MongoDBService,
         redis_client: redis.asyncio.Redis | None,
-        policy: WatchlistPolicy | None = None,
+        policy: UniversePolicy | None = None,
         alert_dispatcher: object | None = None,
     ) -> None:
         self._watchlist = watchlist
@@ -118,11 +118,11 @@ class AnalysisScheduler:
         self._run_lock = asyncio.Lock()
 
     @property
-    def policy(self) -> WatchlistPolicy | None:
+    def policy(self) -> UniversePolicy | None:
         """Current Fast/Slow watchlist policy (None ⇒ legacy mode)."""
         return self._policy
 
-    def update_policy(self, policy: WatchlistPolicy) -> None:
+    def update_policy(self, policy: UniversePolicy) -> None:
         """Swap the in-memory policy.
 
         Cron strings on the running scheduler are NOT rewritten — only
@@ -279,7 +279,7 @@ class AnalysisScheduler:
     ) -> list[TradingSignal]:
         """Run the pipeline only for stocks assigned to ``category``.
 
-        Cron entry point when a :class:`WatchlistPolicy` is loaded —
+        Cron entry point when a :class:`UniversePolicy` is loaded —
         ``fast`` ticks 4x/day for short-horizon names with the fast
         bucket's :class:`PipelineConfig`; ``slow`` ticks once/day for
         long-horizon names with the slow bucket's deeper config.
@@ -342,7 +342,7 @@ class AnalysisScheduler:
         self,
         codes: Iterable[str],
         category: Category | None,
-        policy: WatchlistPolicy | None = None,
+        policy: UniversePolicy | None = None,
     ) -> list[TradingSignal]:
         """Sequentially dispatch ``codes`` through the per-stock pipeline.
 
@@ -386,7 +386,7 @@ class AnalysisScheduler:
         self,
         stock_code: str,
         category: Category | None,
-        policy: WatchlistPolicy | None = None,
+        policy: UniversePolicy | None = None,
     ) -> Category | None:
         """Return the effective category for ``stock_code``.
 
@@ -428,7 +428,7 @@ class AnalysisScheduler:
         self,
         stock_code: str,
         category: Category | None = None,
-        policy: WatchlistPolicy | None = None,
+        policy: UniversePolicy | None = None,
     ) -> TradingSignal | None:
         """Run pipeline and persist both signal and full record.
 
@@ -467,7 +467,7 @@ class AnalysisScheduler:
         self,
         stock_code: str,
         category: Category | None,
-        policy: WatchlistPolicy | None = None,
+        policy: UniversePolicy | None = None,
     ) -> TradingSignal | None:
         if self._redis is not None:
             daily_hard_breached = False
@@ -586,7 +586,7 @@ class AnalysisScheduler:
     def _resolve_services_and_timeout(
         self,
         category: Category | None,
-        policy: WatchlistPolicy | None = None,
+        policy: UniversePolicy | None = None,
     ) -> tuple[AnalysisServices, int | None]:
         """Build per-category services + timeout, or fall back to base.
 

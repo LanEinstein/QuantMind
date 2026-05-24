@@ -36,18 +36,18 @@ class TestExitCheckCLI:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         module = _load_script_module()
-        missing = tmp_path / "watchlist_policy.yaml"
+        missing = tmp_path / "universe_policy.yaml"
         rc = module.main(["--policy-path", str(missing)])
         assert rc == 2
         err = capsys.readouterr().err
-        assert "watchlist_policy.yaml not found" in err
+        assert "universe_policy.yaml not found" in err
 
     def test_arg_parser_defaults(self) -> None:
         module = _load_script_module()
         ns = module._parse_args(["--days", "3"])
         assert ns.days == 3
         assert ns.strict is False
-        assert ns.policy_path == Path("config/watchlist_policy.yaml")
+        assert ns.policy_path == Path("config/universe_policy.yaml")
 
     @pytest.mark.parametrize("bad", ["0", "31", "-1", "1000", "abc"])
     def test_days_clamped(self, bad: str) -> None:

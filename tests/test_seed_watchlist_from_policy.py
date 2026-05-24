@@ -7,6 +7,10 @@ and ``AnalysisScheduler`` would default-route them through
 ``assign_category`` — silently analysing codes the locked policy no
 longer contains. This module verifies the reconciliation behaviour
 that fixes the leak.
+
+Post-2026-05-24 amendment the universe is full-market, so the seed only
+reconciles *manually-pinned* codes (fast/slow default_codes + overrides);
+``all_watchlist_codes()`` is empty unless the owner pins codes.
 """
 
 from __future__ import annotations
@@ -17,15 +21,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backend.main import _seed_watchlist_from_policy
-from backend.services.watchlist_policy import (
-    WatchlistPolicy,
+from backend.services.universe_policy import (
+    UniversePolicy,
     load_policy,
 )
 
 VALID_YAML = """
-policy_version: 2
+policy_version: 3
 locked_decision: P0-9
-last_updated: 2026-05-12
+last_updated: 2026-05-24
 
 fast:
   cron: "0 9,11,13,15 * * mon-fri"
@@ -42,30 +46,20 @@ slow:
   default_codes:
     - "000858"
     - "510300"
-    - "510500"
-    - "159949"
 
 overrides: {}
 
-watchlist:
-  total_codes: 13
-  composition:
-    sh_main: 4
-    sz_main: 3
-    chuangye: 3
-    etf: 3
-  default_category: slow
-
-required_etfs:
-  - code: "510300"
-    name: "沪深300 ETF"
-    tracking: "沪深300指数"
-  - code: "510500"
-    name: "中证500 ETF"
-    tracking: "中证500指数"
-  - code: "159949"
-    name: "创业板50 ETF"
-    tracking: "创业板50指数"
+universe:
+  board_whitelist:
+    - sh_main
+    - sz_main
+    - chuangye
+    - etf
+  forbidden_boards:
+    - kechuang_688
+    - beijiao_8
+    - st
+    - convertible_bond
 
 exclusion_rules:
   ipo_min_trading_days: 30
@@ -93,7 +87,7 @@ direction_policy:
 
 
 @pytest.fixture()
-def policy(tmp_path: Path) -> WatchlistPolicy:
+def policy(tmp_path: Path) -> UniversePolicy:
     p = tmp_path / "policy.yaml"
     p.write_text(VALID_YAML, encoding="utf-8")
     return load_policy(p)
@@ -108,38 +102,38 @@ def _make_watchlist_service(active_rows: list[dict]) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_seed_adds_missing_codes(policy: WatchlistPolicy) -> None:
-    """Empty Mongo → every policy code is upserted, no remove_stock call."""
+async def test_seed_adds_missing_codes(policy: UniversePolicy) -> None:
+    """Empty Mongo → every pinned code is upserted, no remove_stock call."""
     svc = _make_watchlist_service([])
     await _seed_watchlist_from_policy(svc, policy)
 
     upserted = {call.args[0] for call in svc.add_stock.await_args_list}
-    assert upserted == {"600519", "000858", "510300", "510500", "159949"}
+    assert upserted == {"600519", "000858", "510300"}
     svc.remove_stock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_seed_uses_required_etf_display_names(
-    policy: WatchlistPolicy,
+async def test_seed_uses_code_as_display_name(
+    policy: UniversePolicy,
 ) -> None:
-    """ETF display names come from policy.required_etfs (P0-9 §1.2 SSoT)."""
+    """The required_etfs name SSoT was removed by the amendment; display
+    names now fall back to the code itself until a stock_metadata
+    registry is wired in (a later phase)."""
     svc = _make_watchlist_service([])
     await _seed_watchlist_from_policy(svc, policy)
 
     by_code = {c.args[0]: c.args[1] for c in svc.add_stock.await_args_list}
-    assert by_code["510300"] == "沪深300 ETF"
-    assert by_code["510500"] == "中证500 ETF"
-    assert by_code["159949"] == "创业板50 ETF"
-    # Non-ETF codes fall back to the code itself.
+    assert by_code["510300"] == "510300"
     assert by_code["600519"] == "600519"
+    assert by_code["000858"] == "000858"
 
 
 @pytest.mark.asyncio
 async def test_seed_soft_deletes_stale_codes(
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
 ) -> None:
-    """Rotation drift: codes that exist in Mongo but not in the policy
-    must be soft-deleted so the scheduler stops routing them."""
+    """Rotation drift: codes that exist in Mongo but not pinned in the
+    policy must be soft-deleted so the scheduler stops routing them."""
     active = [
         {"stock_code": "600519", "stock_name": "贵州茅台", "active": True},
         {"stock_code": "300750", "stock_name": "宁德时代", "active": True},  # stale
@@ -155,7 +149,7 @@ async def test_seed_soft_deletes_stale_codes(
 
 @pytest.mark.asyncio
 async def test_seed_handles_malformed_active_row(
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
 ) -> None:
     """A Mongo row missing stock_code must not crash the seed."""
     active = [
@@ -170,12 +164,40 @@ async def test_seed_handles_malformed_active_row(
     assert removed == {"300750"}
 
 
+@pytest.fixture()
+def empty_pin_policy(tmp_path: Path) -> UniversePolicy:
+    """A valid v3 policy with no manually-pinned codes (full-market default)."""
+    text = VALID_YAML.replace('default_codes: ["600519"]', "default_codes: []")
+    text = text.replace('    - "000858"\n    - "510300"\n', "")
+    p = tmp_path / "empty.yaml"
+    p.write_text(text, encoding="utf-8")
+    return load_policy(p)
+
+
+@pytest.mark.asyncio
+async def test_seed_skips_when_no_pinned_codes(
+    empty_pin_policy: UniversePolicy,
+) -> None:
+    """Full-market default (empty pin set) must NOT touch the watchlist:
+    neither seed a fixed list nor destructively soft-delete pre-existing
+    rows (codex L-001 P1). Screening drives the universe instead."""
+    assert empty_pin_policy.all_watchlist_codes() == frozenset()
+    active = [
+        {"stock_code": "600519", "stock_name": "贵州茅台", "active": True},
+        {"stock_code": "510300", "stock_name": "沪深300 ETF", "active": True},
+    ]
+    svc = _make_watchlist_service(active)
+    await _seed_watchlist_from_policy(svc, empty_pin_policy)
+    svc.add_stock.assert_not_awaited()
+    svc.remove_stock.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_seed_idempotent_when_state_matches(
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
 ) -> None:
-    """If Mongo already matches the policy, add_stock still runs (upsert
-    is idempotent) but remove_stock must not be called."""
+    """If Mongo already matches the pinned policy codes, add_stock still
+    runs (upsert is idempotent) but remove_stock must not be called."""
     canonical = sorted(policy.all_watchlist_codes())
     active = [
         {"stock_code": c, "stock_name": c, "active": True} for c in canonical

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -64,7 +65,12 @@ from backend.services.instruction_plan_builder import (
     check_ticket_freeze,
     check_watchlist_exclusion,
 )
-from backend.services.watchlist_policy import WatchlistPolicy, load_policy
+from backend.services.universe_policy import (
+    FORBIDDEN_BOARDS,
+    UniversePolicy,
+    UniverseRules,
+    load_policy,
+)
 
 _SH = ZoneInfo("Asia/Shanghai")
 _NOW = datetime(2026, 5, 15, 10, 30, 0, tzinfo=_SH)
@@ -78,8 +84,8 @@ _WATCHLIST_NAME = "沪深300 ETF"
 
 
 @pytest.fixture
-def policy() -> WatchlistPolicy:
-    return load_policy(Path("config/watchlist_policy.yaml"))
+def policy() -> UniversePolicy:
+    return load_policy(Path("config/universe_policy.yaml"))
 
 
 @pytest.fixture
@@ -169,7 +175,7 @@ def _candidate(
     open_tickets: tuple[ReconciliationTicket, ...] = (),
     breaker: CircuitBreaker,
     dq: DataQualityState,
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
     signal: WatchlistMarketSignal,
     now: datetime = _NOW,
 ) -> CandidateInputs:
@@ -302,7 +308,7 @@ class TestCheckDataQuality:
 
 class TestCheckWatchlistExclusion:
     def test_passing_candidate_returns_none(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         assert (
             check_watchlist_exclusion(
@@ -312,7 +318,7 @@ class TestCheckWatchlistExclusion:
         )
 
     def test_forbidden_board_star(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         result = check_watchlist_exclusion(
             "688001", "STAR Demo", policy, passing_signal
@@ -331,7 +337,7 @@ class TestCheckWatchlistExclusion:
     )
     def test_forbidden_board_other(
         self,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         code: str,
         expected_reason: str,
@@ -342,24 +348,47 @@ class TestCheckWatchlistExclusion:
         assert result.payload["forbidden_reason"] == expected_reason
 
     def test_unknown_code(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         result = check_watchlist_exclusion("999999", "demo", policy, passing_signal)
         assert result is not None
         assert result.payload["exclusion_sub_reason"] == "unknown_code"
 
-    def test_non_watchlist_code(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+    def test_board_not_whitelisted(
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
-        # 600000 (浦发银行) classifies as SH_MAIN but is not seeded into
-        # the locked watchlist in the default config.
-        result = check_watchlist_exclusion("600000", "浦发银行", policy, passing_signal)
+        # Post-2026-05-24 amendment the universe is the full market within
+        # the board whitelist, so a valid sh_main code like 600000 is NOT
+        # excluded by default. The 5th early-return only rejects a board
+        # the policy whitelist has been narrowed to exclude (defense-in-
+        # depth: honour an amendment that drops a board). Build such a
+        # policy by narrowing the whitelist to exclude sh_main.
+        narrowed = replace(
+            policy,
+            universe=UniverseRules(
+                board_whitelist=frozenset({"sz_main", "chuangye", "etf"}),
+                forbidden_boards=FORBIDDEN_BOARDS,
+            ),
+        )
+        result = check_watchlist_exclusion(
+            "600000", "浦发银行", narrowed, passing_signal
+        )
         assert result is not None
-        assert result.payload["exclusion_sub_reason"] == "non_watchlist_code"
+        assert result.payload["exclusion_sub_reason"] == "board_not_whitelisted"
         assert result.payload["board"] == "sh_main"
 
+    def test_whitelisted_board_passes(
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
+    ) -> None:
+        # A valid sh_main code now passes the board check under the full
+        # default whitelist (no more 13-code membership gate).
+        result = check_watchlist_exclusion(
+            "600000", "浦发银行", policy, passing_signal
+        )
+        assert result is None
+
     def test_is_st(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         result = check_watchlist_exclusion(
             _WATCHLIST_CODE, "*ST 沪深 ETF", policy, passing_signal
@@ -368,7 +397,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "is_st"
 
     def test_ipo_too_new(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=10,
@@ -382,7 +411,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "ipo_too_new"
 
     def test_ipo_unknown_listed_days_fails_closed(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=None,
@@ -396,7 +425,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "ipo_too_new"
 
     def test_sub_new_too_new(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=120,
@@ -410,7 +439,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "sub_new_too_new"
 
     def test_liquidity_too_low(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=passing_signal.listed_at_trading_days,
@@ -424,7 +453,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "liquidity_too_low"
 
     def test_liquidity_unknown_fails_closed(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=passing_signal.listed_at_trading_days,
@@ -438,7 +467,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "liquidity_too_low"
 
     def test_price_too_high(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=passing_signal.listed_at_trading_days,
@@ -452,7 +481,7 @@ class TestCheckWatchlistExclusion:
         assert result.payload["exclusion_sub_reason"] == "price_too_high"
 
     def test_price_unknown_fails_closed(
-        self, policy: WatchlistPolicy, passing_signal: WatchlistMarketSignal
+        self, policy: UniversePolicy, passing_signal: WatchlistMarketSignal
     ) -> None:
         signal = WatchlistMarketSignal(
             listed_at_trading_days=passing_signal.listed_at_trading_days,
@@ -470,7 +499,7 @@ class TestCheckWatchlistExclusion:
         # silently add a new sub-reason without updating consumers.
         assert WATCHLIST_SUB_REASONS == frozenset(
             {
-                "non_watchlist_code",
+                "board_not_whitelisted",
                 "forbidden_board",
                 "unknown_code",
                 "is_st",
@@ -495,7 +524,7 @@ class TestBuilderOrchestrator:
         clean_data_quality: DataQualityState,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         builder = InstructionPlanBuilder(audit_store=audit_store)
         cand = _candidate(
@@ -516,7 +545,7 @@ class TestBuilderOrchestrator:
         clean_data_quality: DataQualityState,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         # Activate every freeze source — only mode_switch (first in
         # locked order) should be reported.
@@ -565,7 +594,7 @@ class TestBuilderOrchestrator:
         clean_data_quality: DataQualityState,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         for _ in range(3):
             quiet_breaker.record_trade_result(-0.01, _NOW)
@@ -590,7 +619,7 @@ class TestBuilderOrchestrator:
         audit_store: AuditStore,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         for _ in range(3):
             quiet_breaker.record_trade_result(-0.01, _NOW)
@@ -623,7 +652,7 @@ class TestBuilderOrchestrator:
         audit_store: AuditStore,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         bad_dq = DataQualityState(
             quote_unavailable=True,
@@ -643,7 +672,7 @@ class TestBuilderOrchestrator:
             dq=bad_dq,
             policy=policy,
             signal=passing_signal,
-            code="600000",  # would trip watchlist (non_watchlist_code)
+            code="600000",  # DQ breach fires before the watchlist check
         )
         result = await builder.evaluate_candidate(cand)
         assert isinstance(result, BuilderEarlyReturn)
@@ -656,13 +685,23 @@ class TestBuilderOrchestrator:
         clean_data_quality: DataQualityState,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
+        # Narrow the whitelist to exclude sh_main so 600000 trips the
+        # watchlist (last-in-chain) check; under the full default
+        # whitelist a valid sh_main code would proceed.
+        narrowed = replace(
+            policy,
+            universe=UniverseRules(
+                board_whitelist=frozenset({"sz_main", "chuangye", "etf"}),
+                forbidden_boards=FORBIDDEN_BOARDS,
+            ),
+        )
         builder = InstructionPlanBuilder(audit_store=audit_store)
         cand = _candidate(
             breaker=quiet_breaker,
             dq=clean_data_quality,
-            policy=policy,
+            policy=narrowed,
             signal=passing_signal,
             code="600000",
             name="浦发银行",
@@ -672,7 +711,7 @@ class TestBuilderOrchestrator:
         assert result.source is FreezeSource.WATCHLIST
         docs = audit_store._mongo.documents  # type: ignore[attr-defined]
         assert docs[-1]["reason_namespace"] == REASON_WATCHLIST
-        assert docs[-1]["payload"]["exclusion_sub_reason"] == "non_watchlist_code"
+        assert docs[-1]["payload"]["exclusion_sub_reason"] == "board_not_whitelisted"
         assert docs[-1]["payload"]["stock_code"] == "600000"
 
     @pytest.mark.asyncio
@@ -682,13 +721,22 @@ class TestBuilderOrchestrator:
         clean_data_quality: DataQualityState,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
+        # Narrow the whitelist so 600000 trips the watchlist early-return
+        # and an audit event with full candidate metadata is written.
+        narrowed = replace(
+            policy,
+            universe=UniverseRules(
+                board_whitelist=frozenset({"sz_main", "chuangye", "etf"}),
+                forbidden_boards=FORBIDDEN_BOARDS,
+            ),
+        )
         builder = InstructionPlanBuilder(audit_store=audit_store)
         cand = _candidate(
             breaker=quiet_breaker,
             dq=clean_data_quality,
-            policy=policy,
+            policy=narrowed,
             signal=passing_signal,
             code="600000",
             name="浦发银行",
@@ -710,7 +758,7 @@ class TestBuilderOrchestrator:
         clean_data_quality: DataQualityState,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
     ) -> None:
         builder = InstructionPlanBuilder(audit_store=audit_store)
         cand = _candidate(
@@ -733,7 +781,7 @@ class TestBuilderOrchestrator:
 class TestCandidateValidation:
     def test_hold_candidate_rejected(
         self,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
@@ -753,7 +801,7 @@ class TestCandidateValidation:
 
     def test_naive_datetime_rejected(
         self,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,
@@ -773,7 +821,7 @@ class TestCandidateValidation:
 
     def test_malformed_code_rejected(
         self,
-        policy: WatchlistPolicy,
+        policy: UniversePolicy,
         passing_signal: WatchlistMarketSignal,
         quiet_breaker: CircuitBreaker,
         clean_data_quality: DataQualityState,

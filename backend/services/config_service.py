@@ -1,7 +1,7 @@
 """Read-only YAML config service (P0-7 / P0-10 / P1-2.C / P1-7).
 
 Phase A redline: hot-reload is disabled and runtime mutation of
-``config/{risk,broker,agent_models,watchlist_policy,data_sources,mirofish}.yaml``
+``config/{risk,broker,agent_models,universe_policy,data_sources,mirofish}.yaml``
 is forbidden. The legacy ``write_yaml`` / ``write_llm_config`` /
 ``_notify_config_change`` paths were destructively removed here; config
 changes must go through ``git diff`` + amendment + process restart.

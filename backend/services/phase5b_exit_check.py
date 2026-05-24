@@ -38,7 +38,7 @@ from backend.services.shadow_compare import (
     ShadowReport,
     compute_shadow_report,
 )
-from backend.services.watchlist_policy import WatchlistPolicy, assign_category
+from backend.services.universe_policy import UniversePolicy, assign_category
 
 # SSoT §6.972 thresholds
 FAST_COST_PER_STOCK_RMB = 0.20
@@ -135,7 +135,7 @@ def aggregate_per_run_costs(
 
 def split_runs_by_category(
     records: Iterable[Mapping[str, Any]],
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
 ) -> dict[str, list[Mapping[str, Any]]]:
     """Partition analysis_records into ``fast`` and ``slow`` buckets.
 
@@ -205,7 +205,7 @@ def compute_exit_report(
     records: Iterable[Mapping[str, Any]],
     cost_entries: Iterable[Mapping[str, Any]],
     shadow_docs: Iterable[Mapping[str, Any]],
-    policy: WatchlistPolicy,
+    policy: UniversePolicy,
     *,
     days: int,
 ) -> ExitGateReport:
