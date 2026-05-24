@@ -1,8 +1,8 @@
 # QuantMind 跨 session 协作上下文
 
 QuantMind = 多 Agent 投研信号 + 模拟实盘 + 飞书人工执行。**永禁**真实券商程序化下单。
-决策对齐期 ✅ 全完成(P0+P1+P2);**下一站 = Phase A 实施期**(或 dedicated 计划文档 session)。
-SSoT = `docs/plan.html`(93 任务,十二阶段 S/A-H/J/I/X — Phase J 2026-05-17 session #19 插入,Phase X 2026-05-18 session #21 占位 3 扩 28)。红线条文 → 对应 `docs/decisions/{编号}.md` §2。
+决策对齐期 ✅(P0+P1+P2)+ 旧 S/A-H/J/I/X 基础设施实施期 ✅;**2026-05-24 起 = 双线重构 v2 实施期(Phase K-T)** — owner 判定旧"锁定 13 标的"定位不够,重定位为**双线架构(全市场量化选股 + 持仓异动监控)+ 本地知识图谱 + 自进化多 agent**,在已建 backend 上演进。
+SSoT = `docs/plan.html`(原 S/A-H/J/I/X + 新增 Phase K-T 40 任务)。**双线重构总纲 = `docs/decisions/R0-two-line-rearch-provenance-and-single-builder-2026-05-24.md` + 6 amendment(见 §2.0)**;红线条文 → 对应 `docs/decisions/{编号}.md` §2。
 
 ## 1. 项目进度管理协议(**强制,违反 = 违规实现**)
 
@@ -18,15 +18,20 @@ SSoT = `docs/plan.html`(93 任务,十二阶段 S/A-H/J/I/X — Phase J 2026-05-1
 
 ## 2. 核心红线(违反即停;细则见 `docs/decisions/`)
 
+**2.0 双线重构 v2 amendment 总览(2026-05-24,总纲 R0)** Owner 有意推翻 4 条 + 新锁 2 条;安全地基(永禁真实下单 / 飞书人工 / 127.0.0.1 / LLM 不写决策 / RiskEngine 纯函数 / 人工 gate)**全留**。下面 §2.3/2.4/2.5/2.10/2.12 已内联 amendment 指针。
+- **推翻 4**:P0-9 13 标的→全市场筛(`P0-9-amendment-2026-05-24`)/ P0-7 +budget-adaptive+concentration_exception(`P0-7-amendment-2026-05-24`)/ P0-8 MiroFish 加分项→Line1 建议核心仍 evidence-only(`P0-8-amendment-2026-05-24`)/ P0-10 4 固定→可进化团队+≥2 交易员(`P0-10-amendment-2026-05-24`)/ P2-2 deferred→主动发现+知识图谱(`P2-2-amendment-2026-05-24`)/ P1-7 事后→真·预留+fan-out cap(`P1-7-amendment-2026-05-24`)。
+- **新红线 2**:① **PIT 数据可复现** — 全市场 `MarketDataSnapshot` 存**原始字节**+checksum(仿 BrokerSnapshot,严禁 hash-only)+ coverage manifest + SignalInputManifest(消费行血缘)+ 复权因子 artifact pin + 离线 bit-exact `replay <signal_id>`;回测/shadow/实时三路径同源。② **InstructionPlan 单一构造点** — 仅 `instruction_plan_builder` 可构造(`grep "InstructionPlan(" ⊆ {model, builder, tests}`);`side/volume/limit_price` 确定性派生,**永不**来自 LLM JSON;4 可写文本字段永不解析进数值订单字段(import 隔离证明不了字段值来源 → 升 provenance-clean + 对抗测试先写)。
+- **MVP = Phase K+L+M+N** 双线端到端 on 快照(无自进化/无 MiroFish 核心/无全异动栈)。经 Codex 2 轮红队(Conditional GO)。
+
 **2.1 模式(P0-1)** simulation_auto(always-on)+ feishu_interactive(可叠加);唯一开关 `FEISHU_INTERACTIVE_ENABLED`。旧 `AUTHORIZATION_MODE`×`QUANTMIND_PHASE` 矩阵 Phase A 一次性破坏式删除;grep 必空。切换 = 账户生命周期事件(归档 + MockBroker reset + 飞书初始化对账 + 期间冻结)。
 
 **2.2 LLM 权限(P0-10)** 可写仅 4 类:`InstructionPlan.reasoning` / `evidence_collection.content` / `agent_debate_records.{reasoning_text,conclusion}` / `risk_parameter_proposals.proposal_text`。严禁写决策字段 / `RiskCheckSummary` / `evidence_id` 命名 / MockBroker / `WatchlistPolicy` / `DataQualityState` / `ReconciliationTicket` / `AcceptanceReport` / `RiskConfig` / 飞书消息文本。单调用 30s + 0 重试;LLM 全停 1h 系统中断;¥20/日 hard 全 LLM 暂停。严禁参与回报解析 / 对账 / 验收 / 数据质量 / RiskEngine。Pydantic strict + `extra="forbid"` + lint 三层守门。
 
-**2.3 多 Agent 守门(P0-10)** 4 必经 Agent `fundamental_analyst` + `technical_analyst` + `risk_officer` + `fund_manager`,任一缺失即降级 HOLD。`fund_manager` 唯一 BUY/SELL/HOLD 倡议者;`debate_round_count ≥ 1` 必经;`fund_manager_shadow_baseline` 永不入决策路径。双层守门:Builder 五道早返 + RiskEngine 14-check 独立并行。
+**2.3 多 Agent 守门(P0-10)** 4 必经 Agent `fundamental_analyst` + `technical_analyst` + `risk_officer` + `fund_manager`,任一缺失即降级 HOLD。`fund_manager` 唯一 BUY/SELL/HOLD 倡议者;`debate_round_count ≥ 1` 必经;`fund_manager_shadow_baseline` 永不入决策路径。双层守门:Builder 五道早返 + RiskEngine 14-check 独立并行。 **(2026-05-24 P0-10-amendment:4 必经保留 + 新增 ≥2 交易员 agent 人格卡 frozen git;fund_manager 仍唯一倡议方向;LangGraph 编排,RiskEngine/Builder 作纯节点 LLM 无边可写;InstructionPlan 单一构造点见 §2.0。)**
 
-**2.4 风险 / 配置 / 路由(P0-7 / P0-9 / P1-5)** `RiskConfig` / `agent_models.yaml` / `watchlist_policy.yaml` / `broker.yaml` runtime 不可改 + hot-reload 全禁;修改 = git diff + amendment + 重启。`backend/api/{risk,watchlist,llm,agents,cost}*.py` 仅 GET;全后端仅 2 写端点(`POST /api/execution-reports` + `POST /api/reconciliation-tickets/{id}/decide`)。`backend/risk/` 严禁 `import backend.{llm,agents,mirofish,data}`,纯函数无 IO。仓位三连 单股 ≤15% / 总仓 ≤70% / 单次 ≤5 万;熔断 ≤5 单/日 + 日亏 -5% + 连亏 3 笔 + 60min 冷却(SELL 不熔断);universe 沪深主板+创业板+ETF,禁 ST/科创/北交/可转债,禁涨停 BUY / 跌停 SELL,long-only。Watchlist 锁 13 标的(4+3+3+3,必备 ETF `510300`/`510500`/`159949`);排除四件套在 Builder 第五道早返。
+**2.4 风险 / 配置 / 路由(P0-7 / P0-9 / P1-5)** `RiskConfig` / `agent_models.yaml` / `watchlist_policy.yaml` / `broker.yaml` runtime 不可改 + hot-reload 全禁;修改 = git diff + amendment + 重启。`backend/api/{risk,watchlist,llm,agents,cost}*.py` 仅 GET;全后端仅 2 写端点(`POST /api/execution-reports` + `POST /api/reconciliation-tickets/{id}/decide`)。`backend/risk/` 严禁 `import backend.{llm,agents,mirofish,data}`,纯函数无 IO。仓位三连 单股 ≤15% / 总仓 ≤70% / 单次 ≤5 万;熔断 ≤5 单/日 + 日亏 -5% + 连亏 3 笔 + 60min 冷却(SELL 不熔断);universe 沪深主板+创业板+ETF,禁 ST/科创/北交/可转债,禁涨停 BUY / 跌停 SELL,long-only。Watchlist 锁 13 标的(4+3+3+3,必备 ETF `510300`/`510500`/`159949`);排除四件套在 Builder 第五道早返。 **(2026-05-24 P0-9-amendment:13 标的 → 全市场主板+创业板+ETF universe 规则;排除四件套前移 `screening` 硬排除,Builder 早返保留为最后防御;科创/北交/ST/可转债仍永禁。P0-7-amendment:+budget-adaptive 分层 Micro<¥2k 仅 ETF / `NO_COMPLIANT_TRADE` 一等 outcome / ETF `concentration_exception` RiskEngine 独立再校验;Normal≥¥10k 三连不变。)**
 
-**2.5 数据情报(P0-8)** 主备 staleness ≤5s / divergence ≤0.3% / freshness ≥60s。全 watchlist 30s 个股快照;多域 5 源(财经 2 + 时政 1 + 全球 2),跨域不去重。MiroFish 加分非核心:事件 cap=1 + 17:00 复盘双路径;输出仅入 `evidence_collection`(MIROFISH- 前缀)不入 `RiskCheckSummary`。`evidence_id` 5 前缀 `NEWS-`/`MIROFISH-`/`MARKET-`/`RISK-`/`DEBATE-`。
+**2.5 数据情报(P0-8)** 主备 staleness ≤5s / divergence ≤0.3% / freshness ≥60s。全 watchlist 30s 个股快照;多域 5 源(财经 2 + 时政 1 + 全球 2),跨域不去重。MiroFish 加分非核心:事件 cap=1 + 17:00 复盘双路径;输出仅入 `evidence_collection`(MIROFISH- 前缀)不入 `RiskCheckSummary`。`evidence_id` 5 前缀 `NEWS-`/`MIROFISH-`/`MARKET-`/`RISK-`/`DEBATE-`。 **(2026-05-24 P0-8-amendment:MiroFish 升 Line1 建议核心,仍 evidence-only by-construction;确定性 `CandidateSelector` 出候选,MiroFish 仅合格集内有界重排 ≤1 分位、永不否决板块、top-N 后保 ≥3 量化名额、缺席量化兜底。PIT 数据可复现见 §2.0 新红线①。)**
 
 **2.6 飞书(P0-2 / P0-4)** 永禁 HTTPS 回调入站;事件订阅仅 `lark-oapi` WebSocket(3s ack);`tenant_access_token` 仅内存。备用 webhook 仅发系统告警,**绝不**发买卖 / 对账 / 澄清。纯文本 + 严格正则;不通过 = AMBIGUOUS 绝不更新 MockBroker;严禁猜 `instruction_id`。所有飞书消息必经 `renderer.py`(防 prompt injection)。
 
@@ -36,11 +41,11 @@ SSoT = `docs/plan.html`(93 任务,十二阶段 S/A-H/J/I/X — Phase J 2026-05-1
 
 **2.9 安全 / 可观测(P1-6 + P0-2-amendment-2026-05-16)** LLM 3 key + 飞书 5 凭证(`FEISHU_APP_ID`/`FEISHU_APP_SECRET`/`FEISHU_VERIFY_TOKEN`/`FEISHU_ENCRYPT_KEY`/`FEISHU_ALERT_CHAT_ID`)全 `~/.bashrc`;**P0-2 amendment 2026-05-16 锁定:owner 飞书租户禁用 custom-bot,凭证池 6→5,告警通道走自建应用同款 OpenAPI 发到 FEISHU_ALERT_CHAT_ID;`FEISHU_CUSTOM_BOT_*` 永禁存在,出现即 warning + audit**。`.env` 严禁 `LLM_KEY/FEISHU_*/FEISHU_ALERT_*` 前缀;启动期 `secrets_validator` fail-fast。fingerprint = SHA256[:8],严禁 plaintext / 末四位;5 类强制轮换 + 12 月 warning。全层 127.0.0.1 only(Backend + Vite + Mongo + Redis + Nginx),远程仅 SSH tunnel;不加本机 auth middleware;httpx 出站 `local_address="0.0.0.0"`(IPv4 only egress)。Mongo `audit_events` TTL 180 天 + JSONL 30 天双写,34 类锁定(类 5 evolution 7 类 actor=SYSTEM/SCHEDULER);LLM 严禁写 audit;调试事件走 `logs/quantmind.jsonl`。gitleaks pre-commit 强制,严禁 `--no-verify`。
 
-**2.10 成本预算(P1-7)** LLM only:日 ¥20 hard(唯一全 LLM 熔断)+ 月 ¥440 soft(50/80/100% 三节点,100% 不停)+ Kimi 日 ¥4。数据 / 运维不设 ceiling。`cost_guard` + `SoftDegradeManager` 严禁 `import backend.{llm,agents,mirofish,data}`。软触发 ¥14=70% 优先关 Kimi escalation;严禁削减 4 必经 Agent / 降 fast 频次 / 全 deepseek-only。告警仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP / Slack / Discord;Alerter dedup_15min。
+**2.10 成本预算(P1-7)** LLM only:日 ¥20 hard(唯一全 LLM 熔断)+ 月 ¥440 soft(50/80/100% 三节点,100% 不停)+ Kimi 日 ¥4。数据 / 运维不设 ceiling。`cost_guard` + `SoftDegradeManager` 严禁 `import backend.{llm,agents,mirofish,data}`。软触发 ¥14=70% 优先关 Kimi escalation;严禁削减 4 必经 Agent / 降 fast 频次 / 全 deepseek-only。告警仅飞书 + audit + Phase B 成本拆解面板;严禁 SMTP / Slack / Discord;Alerter dedup_15min。 **(2026-05-24 P1-7-amendment:¥20/日 hard 从事后 trailing-stop 升**真·预留**(preflight 预留+拒超+对账)+ `max_debates_per_day` + 红线"一次辩论/每日 shortlist 非 per candidate" + per-stage retry cap + 所有 LLM 含 Line-2 异动写同一 `llm:usage:{utc_date}` 计数器。)**
 
 **2.11 前端(P1-5)** MVP 7 + Phase B 4 页 + 决策闭环 4 分组永锁;Simulation.vue 留代码不进菜单。WS 12 类(原 6 + 新 8 - 删 2 `auth_mode_change`/`approval_update`);SSE 仅 LLM 流式。用户回报双路径同 `ExecutionReportApplier`,前端 JS 正则镜像与 `regex_patterns.py` 单一真相源,不一致 fail-closed。三层 reason 抽屉 3 tab(Builder / Engine / Broker)命名空间区分。前端不存任何**凭证**到 `localStorage`/`sessionStorage`/`cookie`(UI 偏好如 focusMode 不违规)。
 
-**2.12 自进化(P2-2,实施期 deferred)** 启用 3 路径:DSPy GEPA 离线 prompt(≤¥5/次)+ RAG provenance-gated 白名单(arxiv/semanticscholar/openreview/白名单 GitHub releases/akshare changelog)+ FinMem exemplars(≤3/prompt)。严禁 7 路径:fine-tune / online learning / RLHF / DPO / continual SFT / 自动 mutate config / 新 LLM provider / LLM 自动决策权。全人工 gate + 飞书主动通知;shadow 45 日完全沿用 P0-6;文件式 prompt registry + git + restart;严禁 MLflow/LangSmith。BrokerScheduler 第五 cron `evolution_shadow_run` 22:00 mon-fri;Phase A/B 实施期严禁写任何自进化代码。
+**2.12 自进化(P2-2,实施期 deferred)** 启用 3 路径:DSPy GEPA 离线 prompt(≤¥5/次)+ RAG provenance-gated 白名单(arxiv/semanticscholar/openreview/白名单 GitHub releases/akshare changelog)+ FinMem exemplars(≤3/prompt)。严禁 7 路径:fine-tune / online learning / RLHF / DPO / continual SFT / 自动 mutate config / 新 LLM provider / LLM 自动决策权。全人工 gate + 飞书主动通知;shadow 45 日完全沿用 P0-6;文件式 prompt registry + git + restart;严禁 MLflow/LangSmith。BrokerScheduler 第五 cron `evolution_shadow_run` 22:00 mon-fri;Phase A/B 实施期严禁写任何自进化代码。 **(2026-05-24 P2-2-amendment:deferred 解除 → Phase R 主动策略发现 + 知识图谱(SQLite+NetworkX,双时态+SUPERSEDES)+ `LiveArtifactRegistry`(startup 只认批准哈希,对抗测试先写);人工 gate + 45 日 shadow + 飞书 + git+restart 不变;7 禁不变。MVP 阶段 K-N 仍不写自进化代码。)**
 
 ## 3. 工程原则
 
@@ -54,8 +59,10 @@ SSoT = `docs/plan.html`(93 任务,十二阶段 S/A-H/J/I/X — Phase J 2026-05-1
 
 | 路径 | 用途 |
 |------|------|
-| **`docs/plan.html`** | **实施 SSoT — 任务清单 + Session Log + 维护协议** |
-| `docs/decisions/` | 18 决策 + 6 amendments;红线细则 §2 |
+| **`docs/plan.html`** | **实施 SSoT — 任务清单(原 S/A-H/J/I/X + 新 K-T)+ Session Log + 维护协议** |
+| **`docs/decisions/R0-two-line-rearch-...-2026-05-24.md`** | **双线重构 v2 总纲 + 2 新红线(PIT 可复现 / 单一构造点);先读** |
+| `docs/decisions/` | 决策 + amendments(含 2026-05-24 R0 + 6 amendment);红线细则 §2 + §2.0 |
+| `docs/research/` | 双线重构调研 dossier(冷启动+回测 / agent 架构 / 知识图谱+异动) |
 | `docs/quantmind_project_audit_2026-05-07.md` | 接手第一份必读(2026-05-08 重写) |
 | `docs/reviews/` | codex review + 阶段 summary |
 | `~/.claude/projects/-home-ps-papers-QuantMind/memory/MEMORY.md` | 跨 session 自记忆索引 |
@@ -77,6 +84,10 @@ grep -rn "from backend\.\(llm\|agents\|mirofish\|data\)" backend/risk/ backend/s
 grep -rnE "host\s*[=:]\s*['\"]?0\.0\.0\.0" frontend/vite.config.ts deploy/                       # 必空
 grep -rnE "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.example       # 必空
 grep -rnE "FEISHU_CUSTOM_BOT_(WEBHOOK_URL|SIGN_SECRET)" backend/ tests/ .env* 2>/dev/null      # 必空 (P0-2-amendment-2026-05-16)
+# 双线重构 v2(2026-05-24)新红线扫描
+grep -rn "InstructionPlan(" backend/ | grep -vE "models/instruction\.py|instruction_plan_builder\.py"   # 必空 (R0 单一构造点;tests 除外)
+grep -rnE "total_codes.*13|watchlist_size_must_equal" config/                                   # Phase L 后必空 (P0-9-amendment 全市场)
+grep -rn "import backend\.\(llm\|agents\|mirofish\)" backend/screening/ backend/budget_policy/ backend/candidate_selector/ backend/marketdata_snapshot/  # 必空 (纯量化隔离)
 ```
 
 LLM key:`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY`。
