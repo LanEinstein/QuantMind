@@ -1,5 +1,7 @@
 # QuantMind 跨 session 协作上下文
 
+> **🚀 新 session 开工**:先读 [`docs/SESSION-KICKOFF.md`](docs/SESSION-KICKOFF.md)(通用开工协议:检查上次节点 → 开工改状态 → 完成改 done+记录 → 末尾一句话指下一步),按它无缝衔接。
+
 QuantMind = 多 Agent 投研信号 + 模拟实盘 + 飞书人工执行。**永禁**真实券商程序化下单。
 决策对齐期 ✅(P0+P1+P2)+ 旧 S/A-H/J/I/X 基础设施实施期 ✅;**2026-05-24 起 = 双线重构 v2 实施期(Phase K-T)** — owner 判定旧"锁定 13 标的"定位不够,重定位为**双线架构(全市场量化选股 + 持仓异动监控)+ 本地知识图谱 + 自进化多 agent**,在已建 backend 上演进。
 SSoT = `docs/plan.html`(原 S/A-H/J/I/X + 新增 Phase K-T 40 任务)。**双线重构总纲 = `docs/decisions/R0-two-line-rearch-provenance-and-single-builder-2026-05-24.md` + 6 amendment(见 §2.0)**;红线条文 → 对应 `docs/decisions/{编号}.md` §2。
