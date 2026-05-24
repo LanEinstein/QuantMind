@@ -1189,8 +1189,23 @@ def _build_risk_summary(
     """
 
     if result.passed:
+        # On a normal pass every row has an empty message. The one
+        # exception is a granted ETF concentration exception (check 5): the
+        # engine surfaces a passed=True result carrying its rule_name +
+        # ``concentration_exception_granted`` reason, which must be
+        # preserved on the matching row for audit / Feishu confirmation
+        # (codex L-004 P2). All other rows stay empty.
+        carry = bool(result.rule_name and result.message)
         return tuple(
-            RiskCheckSummary(rule_name=name, passed=True, message="")
+            RiskCheckSummary(
+                rule_name=name,
+                passed=True,
+                message=(
+                    (result.message or "")[:256]
+                    if carry and name == result.rule_name
+                    else ""
+                ),
+            )
             for name in _RULE_NAMES_14
         )
 

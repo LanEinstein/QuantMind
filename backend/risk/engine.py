@@ -99,6 +99,7 @@ class RiskEngine:
         now: dt.datetime | None = None,
         daily_state: DailyTradingState | None = None,
         stock_meta: StockMetadata | None = None,
+        concentration_exception: bool = False,
     ) -> ValidationResult:
         """Run the 14-check validation chain. First failure short-circuits.
 
@@ -115,6 +116,13 @@ class RiskEngine:
             stock_meta: Board + ST classification. ``None`` is treated as a
                 legacy 7-check call when ``daily_state`` is also ``None``;
                 otherwise check 11 fail-closes (P0-7 §2 redline 13).
+            concentration_exception: Upstream ``BudgetTierPolicy`` intent
+                flag (P0-7-amendment-2026-05-24). It only *enables* the
+                single-stock check (check 5) to consider an over-15% ETF
+                exception; the engine still independently re-derives
+                ETF + whitelist + ≤1-lot from its own config + stock_meta,
+                so the flag alone never bypasses the limit. Defaults False
+                (every existing caller keeps the strict P0-7 15% rule).
 
         Returns:
             ValidationResult — ``passed=True`` if all (applicable) checks
@@ -162,11 +170,32 @@ class RiskEngine:
         )
 
         checks = base_checks if legacy_mode else base_checks + extended_checks
+        granted_exception: ValidationResult | None = None
         for check in checks:
-            result = check(
-                order, account, positions, prev_close, now,
-                daily_state, stock_meta,
-            )
+            # Identify check 5 by name — ``is`` on a bound method is always
+            # False (a fresh bound-method object is created on each
+            # attribute access), so compare the stable __name__ instead.
+            if check.__name__ == "_check_position_limit":
+                # Check 5 is the only budget-aware check: it takes the
+                # extra concentration_exception flag. Special-cased here so
+                # the other 13 checks keep the uniform 7-arg signature.
+                result = self._check_position_limit(
+                    order, account, positions, prev_close, now,
+                    daily_state, stock_meta, concentration_exception,
+                )
+                # Preserve a granted concentration exception so its
+                # ``concentration_exception_granted`` reason survives into
+                # the top-level result (and the builder's 14-row summary /
+                # Feishu confirmation) instead of being lost behind a bare
+                # passed=True aggregate (codex L-004 P2). A normal pass has
+                # an empty message and is not carried.
+                if result.passed and result.message:
+                    granted_exception = result
+            else:
+                result = check(
+                    order, account, positions, prev_close, now,
+                    daily_state, stock_meta,
+                )
             if not result.passed:
                 log.warning(
                     "order_rejected",
@@ -177,6 +206,8 @@ class RiskEngine:
                 return result
 
         log.info("order_validated", code=order.code, direction=order.direction)
+        if granted_exception is not None:
+            return granted_exception
         return ValidationResult(passed=True)
 
     # ------------------------------------------------------------------
@@ -348,8 +379,20 @@ class RiskEngine:
         now: dt.datetime | None,
         daily_state: DailyTradingState | None,
         stock_meta: StockMetadata | None,
+        concentration_exception: bool = False,
     ) -> ValidationResult:
-        """Check 5: single stock <= max_single_stock_pct of total_assets."""
+        """Check 5: single stock <= max_single_stock_pct of total_assets.
+
+        P0-7-amendment-2026-05-24 §2.4 (方案 A): budget-aware. When the
+        proposed position exceeds the 15% limit, a concentration exception
+        may be granted — but ONLY for a whitelisted broad ETF at ≤ the
+        absolute lot cap, and ONLY when the upstream budget policy flagged
+        it. The engine re-derives ETF + whitelist + lot from its own
+        ``stock_meta`` + config (``_grant_concentration_exception``), so
+        the flag alone is never a single-point bypass. The check count is
+        unchanged (still check 5 of 14) — the exception lives inside this
+        check, keeping the ``risk_summary`` min=max=14 schema constant.
+        """
         if order.direction == OrderDirection.SELL:
             return ValidationResult(passed=True)
         if account.total_assets <= 0:
@@ -363,11 +406,25 @@ class RiskEngine:
             (p for p in positions if p.code == order.code), None
         )
         existing_shares = existing.volume if existing else 0
-        new_value = (existing_shares + order.volume) * order.price
+        proposed_shares = existing_shares + order.volume
+        new_value = proposed_shares * order.price
         ratio = new_value / account.total_assets
         limit = self._config.position_limits.max_single_stock_pct
 
         if ratio > limit:
+            if self._grant_concentration_exception(
+                order, stock_meta, concentration_exception, proposed_shares
+            ):
+                return ValidationResult(
+                    passed=True,
+                    rule_name="position_limit",
+                    message=(
+                        f"concentration_exception_granted: {order.code} "
+                        f"({ratio:.1%} > {limit:.0%}) — whitelisted broad "
+                        f"ETF at <= {self._config.concentration_exception.max_lots} "
+                        f"lot(s)"
+                    ),
+                )
             return ValidationResult(
                 passed=False,
                 rule_name="position_limit",
@@ -377,6 +434,40 @@ class RiskEngine:
                 ),
             )
         return ValidationResult(passed=True)
+
+    def _grant_concentration_exception(
+        self,
+        order: Order,
+        stock_meta: StockMetadata | None,
+        flag: bool,
+        proposed_shares: int,
+    ) -> bool:
+        """Independently re-validate an over-15% ETF concentration exception.
+
+        Returns True only when ALL hold (defense-in-depth, P0-7-amendment
+        §2.3 — never trusts the flag alone):
+
+          * ``flag`` — the budget policy intended an exception (Micro/Small);
+          * the gate is ``enabled`` in the (trusted, runtime-immutable) config;
+          * ``stock_meta`` is present and ``board == etf`` (fail-closed on
+            None — an individual stock never gets the exception);
+          * ``order.code`` is in the engine's OWN ``etf_whitelist``
+            (re-derived, not taken from the upstream budget policy);
+          * the **resulting** position ``proposed_shares`` (existing held +
+            this order) ≤ ``max_lots × volume_lot_size``. Capping the
+            resulting position, not just this order, stops a flagged 1-lot
+            buy from stacking on top of an existing ETF holding to exceed
+            the absolute lot cap (codex L-004 P1).
+        """
+        cfg = self._config.concentration_exception
+        if not flag or not cfg.enabled:
+            return False
+        if stock_meta is None or str(stock_meta.board) != "etf":
+            return False
+        if order.code not in cfg.etf_whitelist:
+            return False
+        lot_size = self._config.position_limits.volume_lot_size
+        return proposed_shares <= cfg.max_lots * lot_size
 
     def _check_total_position_limit(
         self,

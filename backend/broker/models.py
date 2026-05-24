@@ -350,6 +350,28 @@ class UniverseConfig(BaseModel):
         return dict(value)
 
 
+class ConcentrationExceptionConfig(BaseModel):
+    """ETF concentration-exception gate (P0-7-amendment-2026-05-24 §2.3).
+
+    The RiskEngine's OWN trusted whitelist + absolute lot cap for
+    re-validating a concentration exception flagged by the budget policy.
+    Deliberately independent of ``backend.budget_policy`` (defense-in-
+    depth): the exception is granted only when this config + ``stock_meta``
+    + the order volume all confirm a whitelisted broad ETF at ≤ ``max_lots``
+    lots — never on the upstream flag alone, so the flag can never be a
+    single-point bypass (§2.3). Runtime-immutable like the rest of
+    ``RiskConfig``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(default=True)
+    etf_whitelist: tuple[str, ...] = Field(
+        default=("510300", "510500", "159949")
+    )
+    max_lots: int = Field(default=1, ge=1)
+
+
 class RiskConfig(BaseModel):
     """Complete risk engine configuration from risk.yaml (P0-7 locked)."""
 
@@ -359,6 +381,9 @@ class RiskConfig(BaseModel):
     stop_loss: StopLossConfig
     circuit_breaker: CircuitBreakerConfig
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
+    concentration_exception: ConcentrationExceptionConfig = Field(
+        default_factory=ConcentrationExceptionConfig
+    )
 
 
 def load_risk_config(yaml_path: str | Path) -> RiskConfig:

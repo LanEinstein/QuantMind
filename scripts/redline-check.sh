@@ -1021,6 +1021,48 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# L-004 / P0-7-amendment-2026-05-24 §2.4 — RiskEngine concentration_exception:
+#   * config/risk.yaml has a concentration_exception section;
+#   * its etf_whitelist matches budget_tiers.etf_whitelist (consistency —
+#     RiskEngine still re-derives at runtime, this only blocks silent drift);
+#   * the engine independently re-validates (grep _grant_concentration_exception);
+#   * risk_summary stays min=max=14 (方案 A — no new check).
+# ----------------------------------------------------------------------
+yellow "[L-004] RiskEngine concentration_exception re-validation (方案 A, 14-check)"
+L004_FAIL=0
+if ! grep -q "concentration_exception:" config/risk.yaml 2>/dev/null; then
+  red "  FAIL  config/risk.yaml missing concentration_exception section"
+  L004_FAIL=1
+fi
+if ! grep -q "_grant_concentration_exception" backend/risk/engine.py 2>/dev/null; then
+  red "  FAIL  RiskEngine missing independent _grant_concentration_exception re-validation"
+  L004_FAIL=1
+fi
+if ! grep -qE "min_length=14, max_length=14" backend/models/instruction.py 2>/dev/null; then
+  red "  FAIL  InstructionPlan.risk_summary is no longer min=max=14 (方案 A broken)"
+  L004_FAIL=1
+fi
+# Whitelist consistency: the two etf_whitelist blocks (budget_tiers +
+# concentration_exception) must enumerate the same codes.
+L004_WL="$(python3 - <<'PY' 2>/dev/null || true
+import yaml
+raw = yaml.safe_load(open("config/risk.yaml", encoding="utf-8")) or {}
+bt = set(map(str, (raw.get("budget_tiers") or {}).get("etf_whitelist") or []))
+ce = set(map(str, (raw.get("concentration_exception") or {}).get("etf_whitelist") or []))
+print("MISMATCH" if bt != ce else "OK")
+PY
+)"
+if [ "$L004_WL" != "OK" ]; then
+  red "  FAIL  budget_tiers.etf_whitelist != concentration_exception.etf_whitelist (drift)"
+  L004_FAIL=1
+fi
+if [ $L004_FAIL -eq 0 ]; then
+  green "  ok    concentration_exception config + re-validation + 14-check intact"
+else
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

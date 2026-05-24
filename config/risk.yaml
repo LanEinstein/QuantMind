@@ -48,6 +48,23 @@ budget_tiers:
     - "510500"
     - "159949"
 
+# ETF concentration-exception gate — P0-7-amendment-2026-05-24 §2.3 LOCKED.
+#
+# The RiskEngine's OWN whitelist + absolute lot cap for re-validating a
+# concentration exception that the budget policy flagged. Independent of
+# backend/budget_policy (defense-in-depth): RiskEngine grants the over-15%
+# exception only when this whitelist + stock_meta(board==etf) + order
+# volume(<= max_lots × volume_lot_size) all confirm — never on the flag
+# alone. ``etf_whitelist`` mirrors budget_tiers.etf_whitelist (redline
+# [L-004] asserts they match). Individual stocks never get the exception.
+concentration_exception:
+  enabled: true
+  etf_whitelist:
+    - "510300"
+    - "510500"
+    - "159949"
+  max_lots: 1                          # absolute one-lot cap
+
 universe:
   allowed_boards: ["sh_main", "sz_main", "chuangye", "etf"]
   forbidden_st: true
