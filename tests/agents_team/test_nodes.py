@@ -1,26 +1,21 @@
-"""agents_team node tests (Phase M-002): tool-node purity + stub contracts.
+"""agents_team tool-node tests (Phase M-002 / M-003): tool-node purity.
 
 The central invariant: the deterministic tool nodes' numeric/decision output
 depends only on the numeric state + the fund_manager's direction proposal —
 NEVER on any agent's free text. We prove it by feeding the same numeric setup
-with wildly different report text and asserting identical output.
+with wildly different report text and asserting identical output. The real LLM
+agent nodes (now in ``agents.py``) are exercised in ``test_agents.py``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 
 import pytest
 
 from backend.agents_team.nodes import (
     builder_node,
-    debate_node,
-    fund_manager_node,
-    fundamental_analyst_node,
     risk_gate_node,
-    risk_officer_node,
-    technical_analyst_node,
 )
 from backend.agents_team.state import (
     DECISION_BUILD_OK,
@@ -29,14 +24,6 @@ from backend.agents_team.state import (
     TeamContext,
     TeamState,
 )
-
-# Keys a deterministic tool node may emit (never written by an LLM/agent node).
-_TOOL_OUTPUT_KEYS = {"risk_passed", "risk_rule", "risk_message", "decision",
-                     "decision_reason"}
-# Keys agent stub nodes are allowed to write (free text + the direction proposal).
-_AGENT_OUTPUT_KEYS = {"fundamental_report", "technical_report",
-                      "risk_officer_report", "fund_manager_reasoning",
-                      "debate_history", "debate_round_count", "direction"}
 
 
 def _full_state(direction: str, **overrides) -> TeamState:
@@ -52,6 +39,7 @@ def _full_state(direction: str, **overrides) -> TeamState:
         "debate_history": "d",
         "debate_round_count": 1,
         "direction": direction,
+        "fund_manager_parse_ok": True,
         "risk_passed": False,
         "risk_rule": "",
         "risk_message": "",
@@ -60,41 +48,6 @@ def _full_state(direction: str, **overrides) -> TeamState:
     }
     base.update(overrides)  # type: ignore[typeddict-item]
     return base
-
-
-# --------------------------------------------------------------------------
-# Agent stubs only ever write text / direction — never tool output keys
-# --------------------------------------------------------------------------
-
-
-def test_agent_stubs_never_write_tool_output_keys(buy_context: TeamContext) -> None:
-    state = _full_state("BUY")
-    for node in (
-        fundamental_analyst_node,
-        technical_analyst_node,
-        risk_officer_node,
-        debate_node,
-        fund_manager_node,
-    ):
-        out = asyncio.run(node(state, buy_context))
-        assert set(out).issubset(_AGENT_OUTPUT_KEYS), f"{node.__name__} -> {out}"
-        assert not (set(out) & _TOOL_OUTPUT_KEYS), f"{node.__name__} wrote tool key"
-
-
-def test_fund_manager_is_sole_direction_proposer(buy_context: TeamContext) -> None:
-    # Only fund_manager writes `direction`; analysts/debate never do.
-    state = _full_state("")
-    for node in (fundamental_analyst_node, technical_analyst_node,
-                 risk_officer_node, debate_node):
-        out = asyncio.run(node(state, buy_context))
-        assert "direction" not in out, f"{node.__name__} wrote direction"
-    fm = asyncio.run(fund_manager_node(state, buy_context))
-    assert fm["direction"] == "BUY"  # echoes ctx.stub_direction
-
-
-def test_debate_sets_round_count_ge_1(buy_context: TeamContext) -> None:
-    out = asyncio.run(debate_node(_full_state("BUY"), buy_context))
-    assert out["debate_round_count"] >= 1
 
 
 # --------------------------------------------------------------------------

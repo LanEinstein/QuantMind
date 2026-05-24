@@ -16,9 +16,11 @@ their numeric order / decision output** (R0 §4): the analysts and fund_manager
 only write free-text + the direction proposal, and the tool nodes read the
 deterministic numeric state set at entry.
 
-MVP (M-002): the agent nodes are deterministic stubs. M-003 swaps in the real
-4 mandatory LLM agents + single-round debate; M-003/M-004 wire ``builder`` to
-``instruction_plan_builder.assemble_plan`` as the single construction point.
+M-003: the agent nodes are real LLM calls (``agents.py``) reached through the
+injected ``ctx.llm_router``; the debate is a single deterministic fan-in round.
+The N-005 end-to-end gate wires ``builder``'s BUILD_OK signal into
+``instruction_plan_builder.assemble_plan`` (the single construction point) via
+the LLM-only ``FundManagerOutput`` bridge.
 """
 
 from __future__ import annotations
@@ -34,14 +36,16 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from backend.agents_team.nodes import (
-    builder_node,
+from backend.agents_team.agents import (
     debate_node,
     fund_manager_node,
     fundamental_analyst_node,
-    risk_gate_node,
     risk_officer_node,
     technical_analyst_node,
+)
+from backend.agents_team.nodes import (
+    builder_node,
+    risk_gate_node,
 )
 from backend.agents_team.state import (
     CandidateBrief,

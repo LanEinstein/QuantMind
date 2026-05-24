@@ -53,8 +53,10 @@ class TestPublicAPI:
             "TeamContext",
             "TeamState",
             "CandidateBrief",
+            "LLMCompleter",
             "MANDATORY_AGENTS",
             "make_initial_state",
+            "to_fund_manager_output",
         ):
             assert hasattr(agents_team, name), f"missing {name}"
 

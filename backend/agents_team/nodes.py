@@ -1,25 +1,24 @@
-"""agents_team graph nodes (Phase M-002).
+"""agents_team deterministic tool nodes (Phase M-002 / M-003).
 
-Two node families:
+This module holds ONLY the deterministic, pure tool nodes
+(``risk_gate_node`` / ``builder_node``); the real LLM agent nodes live in
+``agents.py`` (M-003).
 
-* **Agent stubs** (``fundamental_analyst_node`` / ``technical_analyst_node`` /
-  ``risk_officer_node`` / ``debate_node`` / ``fund_manager_node``) — async,
-  deterministic placeholders that write ONLY free-text report / reasoning fields
-  and the ``direction`` proposal. M-003 replaces their bodies with real LLM
-  calls; the graph topology + the no-LLM-edge invariant stay identical.
+* ``risk_gate_node`` builds the :class:`Order` from the *numeric* state
+  fields (never from any agent's text) and runs the pure 14-check
+  RiskEngine.
+* ``builder_node`` applies the mandatory-agent / debate / direction / risk
+  gates and emits a terminal decision. It deliberately does NOT construct
+  an InstructionPlan — that stays the sole job of
+  ``instruction_plan_builder`` (R0 §4 red line B); the agents_team's only
+  handoff is the LLM-only ``FundManagerOutput`` bridge
+  (``agents.to_fund_manager_output``), wired into ``assemble_plan`` by the
+  N-005 end-to-end gate.
 
-* **Deterministic tool nodes** (``risk_gate_node`` / ``builder_node``) — sync,
-  pure. ``risk_gate_node`` builds the :class:`Order` from the *numeric* state
-  fields (never from any agent's text) and runs the pure 14-check RiskEngine.
-  ``builder_node`` applies the mandatory-agent / debate / direction / risk gates
-  and emits a terminal decision. It deliberately does NOT construct an
-  InstructionPlan — that stays the sole job of ``instruction_plan_builder``
-  (R0 §4 red line B), wired in M-003/M-004.
-
-The key invariant proven here: the tool nodes' numeric/decision output depends
-only on the deterministic numeric inputs + the fund_manager's direction
-proposal — feeding different agent *text* never changes the order or the risk
-result.
+The key invariant proven here: the tool nodes' numeric/decision output
+depends only on the deterministic numeric inputs + the fund_manager's
+direction proposal — feeding different agent *text* never changes the
+order or the risk result.
 """
 
 from __future__ import annotations
@@ -45,57 +44,6 @@ from backend.broker.models import (  # noqa: TID251
 log = structlog.get_logger(component="agents_team.nodes")
 
 _DIR_TO_ORDER = {"BUY": OrderDirection.BUY, "SELL": OrderDirection.SELL}
-
-
-# ---------------------------------------------------------------------------
-# Agent stubs (M-003 replaces bodies with real LLM calls; topology unchanged)
-# ---------------------------------------------------------------------------
-
-
-async def fundamental_analyst_node(state: TeamState, ctx: TeamContext) -> dict:
-    """STUB: deterministic fundamental report. M-003 → LLM fundamental_analyst."""
-    code = state.get("candidate_code", "")
-    return {"fundamental_report": f"[stub fundamental] {code}"}
-
-
-async def technical_analyst_node(state: TeamState, ctx: TeamContext) -> dict:
-    """STUB: deterministic technical report. M-003 → LLM technical_analyst."""
-    code = state.get("candidate_code", "")
-    return {"technical_report": f"[stub technical] {code}"}
-
-
-async def risk_officer_node(state: TeamState, ctx: TeamContext) -> dict:
-    """STUB: deterministic risk-officer note. M-003 → LLM risk_officer."""
-    code = state.get("candidate_code", "")
-    return {"risk_officer_report": f"[stub risk_officer] {code}"}
-
-
-async def debate_node(state: TeamState, ctx: TeamContext) -> dict:
-    """STUB: single-round debate. Sets debate_round_count ≥ 1 (P0-10 §2.3).
-
-    M-003 replaces this with the real single-round 4-agent debate.
-    """
-    history = (
-        f"[stub debate] f={bool(state.get('fundamental_report'))} "
-        f"t={bool(state.get('technical_report'))} "
-        f"r={bool(state.get('risk_officer_report'))}"
-    )
-    return {"debate_history": history, "debate_round_count": 1}
-
-
-async def fund_manager_node(state: TeamState, ctx: TeamContext) -> dict:
-    """STUB: fund_manager is the sole BUY/SELL/HOLD proposer (P0-10 §2.3).
-
-    The skeleton echoes ``ctx.stub_direction`` as the proposal + writes free-text
-    reasoning. M-003 replaces this with the real LLM fund_manager that derives
-    the direction proposal; the numeric order fields are never set here.
-    """
-    return {
-        "direction": ctx.stub_direction,
-        "fund_manager_reasoning": (
-            f"[stub fund_manager] proposes {ctx.stub_direction}"
-        ),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +152,11 @@ def builder_node(state: TeamState, ctx: TeamContext) -> dict:
       4. RiskEngine rejected → REJECTED (rule name carried).
       5. Otherwise → BUILD_OK.
 
-    M-003/M-004 replace step 5's BUILD_OK signal with a delegated
-    ``instruction_plan_builder.assemble_plan`` call — agents_team never
-    constructs the InstructionPlan itself (single construction point).
+    The N-005 end-to-end gate consumes the BUILD_OK signal by passing the
+    LLM-only ``FundManagerOutput`` bridge (``agents.to_fund_manager_output``)
+    + a full ``AssemblyContext`` to ``instruction_plan_builder.assemble_plan``
+    — agents_team never constructs the InstructionPlan itself (single
+    construction point, R0 §4 red line B / M-004).
     """
     missing = _missing_mandatory(state)
     if missing:
@@ -230,10 +180,5 @@ def _decide(decision: str, reason: str) -> dict:
 
 __all__ = [
     "builder_node",
-    "debate_node",
-    "fundamental_analyst_node",
-    "fund_manager_node",
     "risk_gate_node",
-    "risk_officer_node",
-    "technical_analyst_node",
 ]

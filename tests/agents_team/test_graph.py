@@ -23,6 +23,7 @@ from backend.agents_team.state import (
     CandidateBrief,
     TeamContext,
 )
+from tests.agents_team.conftest import FakeRouter
 
 
 @pytest.mark.asyncio
@@ -45,7 +46,7 @@ async def test_graph_runs_end_to_end_build_ok(
 async def test_graph_hold_when_fund_manager_holds(
     buy_context: TeamContext, candidate: CandidateBrief
 ) -> None:
-    hold_ctx = dataclasses.replace(buy_context, stub_direction="HOLD")
+    hold_ctx = dataclasses.replace(buy_context, llm_router=FakeRouter(action="持有"))
     result = await run_team(hold_ctx, candidate)
     assert result["decision"] == DECISION_HOLD
     # HOLD never routes → risk gate not run as a pass.
@@ -139,3 +140,61 @@ async def test_graph_runs_without_checkpointer(
         {},
     )
     assert out["decision"] == DECISION_BUILD_OK
+
+
+@pytest.mark.asyncio
+async def test_graph_degrades_hold_when_mandatory_agent_missing(
+    buy_context: TeamContext, candidate: CandidateBrief
+) -> None:
+    """A mandatory agent returning an empty report → HOLD (P0-10 §2.3)."""
+    ctx = dataclasses.replace(
+        buy_context, llm_router=FakeRouter(empty_agents=frozenset({"risk_officer"}))
+    )
+    result = await run_team(ctx, candidate)
+    assert result["decision"] == DECISION_HOLD
+    assert "mandatory_agent_missing" in result["decision_reason"]
+    assert "risk_officer" in result["decision_reason"]
+
+
+@pytest.mark.asyncio
+async def test_graph_makes_exactly_four_llm_calls(
+    buy_context: TeamContext, candidate: CandidateBrief
+) -> None:
+    """MVP cost guard: one debate per candidate = 4 LLM calls (3 analysts +
+    fund_manager); the debate fan-in is deterministic (P1-7-amendment fan-out
+    cap rationale — M-005 enforces the budget reserve)."""
+    router = FakeRouter(action="买入")
+    ctx = dataclasses.replace(buy_context, llm_router=router)
+    await run_team(ctx, candidate)
+    assert sorted(router.calls) == [
+        "fund_manager",
+        "fundamental_analyst",
+        "risk_officer",
+        "technical_analyst",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_graph_fail_closed_hold_without_router(
+    buy_context: TeamContext, candidate: CandidateBrief
+) -> None:
+    """No router → every agent empty → all mandatory missing → HOLD."""
+    ctx = dataclasses.replace(buy_context, llm_router=None)
+    result = await run_team(ctx, candidate)
+    assert result["decision"] == DECISION_HOLD
+    assert "mandatory_agent_missing" in result["decision_reason"]
+
+
+@pytest.mark.asyncio
+async def test_graph_whitespace_only_agent_cannot_reach_build_ok(
+    buy_context: TeamContext, candidate: CandidateBrief
+) -> None:
+    """A whitespace-only mandatory report degrades to HOLD, never BUILD_OK
+    (codex M-003 P2 — fail closed end-to-end)."""
+    ctx = dataclasses.replace(
+        buy_context,
+        llm_router=FakeRouter(whitespace_agents=frozenset({"technical_analyst"})),
+    )
+    result = await run_team(ctx, candidate)
+    assert result["decision"] == DECISION_HOLD
+    assert "technical_analyst" in result["decision_reason"]

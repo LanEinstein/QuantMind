@@ -17,22 +17,45 @@ Two deliberately separated carriers:
   heavy Pydantic / engine objects never enter the checkpointed state and an LLM
   node has no edge that can write them.
 
-MVP (M-002): this is the orchestration *skeleton*. Agent nodes are deterministic
-stubs (``stub_direction`` drives the fund_manager proposal); M-003 replaces them
-with the real 4 mandatory LLM agents + single-round debate, and M-003/M-004 wire
-the builder node to ``instruction_plan_builder`` as the single construction point.
+M-003: the agent nodes are real LLM calls (4 mandatory agents + a single
+deterministic debate fan-in round) reached through the injected
+:class:`LLMCompleter` (``ctx.llm_router``). ``fund_manager`` is the sole
+BUY/SELL/HOLD proposer and also emits the LLM-only ``FundManagerOutput`` bridge.
+The deterministic tool nodes (risk gate, builder) read only the numeric state,
+so no LLM edge writes the decision path (R0 §4). Wiring the builder to
+``instruction_plan_builder.assemble_plan`` with a full ``AssemblyContext`` is
+the N-005 end-to-end gate's job — agents_team never constructs an
+``InstructionPlan`` itself (single construction point, M-004).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Any, Protocol, TypedDict, runtime_checkable
 
 from backend.broker.models import AccountInfo, Position  # noqa: TID251
 from backend.risk.daily_state import DailyTradingState  # noqa: TID251
 from backend.risk.engine import RiskEngine  # noqa: TID251
 from backend.risk.stock_meta import StockMetadata  # noqa: TID251
+
+
+@runtime_checkable
+class LLMCompleter(Protocol):
+    """Minimal async chat-completion surface the agent nodes depend on.
+
+    The production :class:`backend.llm.router.LLMRouter` satisfies this
+    Protocol; tests inject a deterministic fake. Defined here (not in
+    ``agents.py``) so :class:`TeamContext` can type the injected router
+    without importing the agent module (avoids a circular import).
+    """
+
+    async def complete(
+        self,
+        agent_name: str,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> Any: ...
 
 # The four mandatory agents (P0-10 §2.3). Any missing → degrade HOLD.
 MANDATORY_AGENTS: tuple[str, ...] = (
@@ -61,7 +84,7 @@ class TeamState(TypedDict, total=False):
     proposed_volume: int
     proposed_limit_price: float
 
-    # LLM-writable text outputs (stubs in M-002).
+    # LLM-writable text outputs (real LLM in M-003).
     fundamental_report: str
     technical_report: str
     risk_officer_report: str
@@ -71,6 +94,9 @@ class TeamState(TypedDict, total=False):
 
     # fund_manager's BUY/SELL/HOLD proposal (sole proposer of direction).
     direction: str
+    # False iff the fund_manager JSON envelope failed to parse → forced
+    # HOLD when bridged to FundManagerOutput (P0-3 §2 redline 6).
+    fund_manager_parse_ok: bool
 
     # Deterministic tool-node outputs.
     risk_passed: bool
@@ -82,12 +108,17 @@ class TeamState(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class TeamContext:
-    """Injected, non-serialized bundle for the deterministic tool nodes.
+    """Injected, non-serialized bundle for the agent + tool nodes.
 
-    Carries the pure :class:`RiskEngine` + the risk-check inputs. ``now`` is
-    injectable for deterministic tests. ``stub_direction`` is the skeleton-only
-    knob the M-002 fund_manager stub echoes as its proposal; M-003 removes it
-    when the real LLM fund_manager sets ``direction``.
+    Carries the pure :class:`RiskEngine` + the risk-check inputs and the
+    injected :class:`LLMCompleter` (``llm_router``) the agent nodes call.
+    ``now`` is injectable for deterministic tests. The heavy engine /
+    account / router objects never enter the checkpointed ``TeamState``,
+    so an LLM node has no edge that can write the decision path.
+
+    ``llm_router`` is ``None``-safe: a missing router makes every agent
+    emit an empty report, which the builder's mandatory-agent gate turns
+    into a fail-closed HOLD (never a silent pass).
     """
 
     risk_engine: RiskEngine
@@ -98,7 +129,7 @@ class TeamContext:
     stock_meta: StockMetadata | None = None
     concentration_exception: bool = False
     now: dt.datetime | None = None
-    stub_direction: str = DECISION_HOLD
+    llm_router: LLMCompleter | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +161,7 @@ def make_initial_state(candidate: CandidateBrief) -> TeamState:
         debate_history="",
         debate_round_count=0,
         direction="",
+        fund_manager_parse_ok=False,
         risk_passed=False,
         risk_rule="",
         risk_message="",
@@ -144,6 +176,7 @@ __all__ = [
     "DECISION_REJECTED",
     "MANDATORY_AGENTS",
     "CandidateBrief",
+    "LLMCompleter",
     "TeamContext",
     "TeamState",
     "make_initial_state",

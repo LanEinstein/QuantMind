@@ -7,6 +7,7 @@ no hosted SaaS. fund_manager is the sole BUY/SELL/HOLD proposer; numeric order
 fields are always derived deterministically, never from LLM output.
 """
 
+from backend.agents_team.agents import to_fund_manager_output
 from backend.agents_team.graph import (
     build_team_graph,
     open_sqlite_checkpointer,
@@ -18,6 +19,7 @@ from backend.agents_team.state import (
     DECISION_REJECTED,
     MANDATORY_AGENTS,
     CandidateBrief,
+    LLMCompleter,
     TeamContext,
     TeamState,
     make_initial_state,
@@ -29,10 +31,12 @@ __all__ = [
     "DECISION_REJECTED",
     "MANDATORY_AGENTS",
     "CandidateBrief",
+    "LLMCompleter",
     "TeamContext",
     "TeamState",
     "build_team_graph",
     "make_initial_state",
     "open_sqlite_checkpointer",
     "run_team",
+    "to_fund_manager_output",
 ]
