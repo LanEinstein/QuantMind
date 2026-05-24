@@ -199,3 +199,58 @@ class TestPersistence:
         # A fresh process / store instance reads the same data offline.
         reopened = SnapshotStore(root=tmp_path)
         assert reopened.get(snap.snapshot_id).raw_payload == RAW
+
+
+# ---------------------------------------------------------------------------
+# Codex P1/P2 regressions
+# ---------------------------------------------------------------------------
+
+# Non-UTF-8 bytes — what a real parquet / gzip payload looks like. The model
+# explicitly allows encoding=parquet / compression=gzip, so the store must
+# persist these without trying to UTF-8 decode them.
+BINARY = b"\x00\x01\x02\xff\xfe\x89PNG\r\n\x1a\n\x93gzip\x00"
+
+
+class TestBinaryPayload:
+    def test_binary_payload_put_get_roundtrip(self, tmp_path: Path) -> None:
+        """P1: model_dump(mode=json) must not choke on non-UTF-8 raw bytes."""
+        store = SnapshotStore(root=tmp_path)
+        snap = MarketDataSnapshot.create(
+            vendor="tushare",
+            endpoint="daily",
+            params={"trade_date": "20260522"},
+            trade_date="20260522",
+            raw_payload=BINARY,
+            encoding="parquet",
+            compression="gzip",
+            fetch_time_utc=datetime(2026, 5, 22, 9, 30, tzinfo=UTC),
+        )
+        store.put(snap)
+        assert store.get(snap.snapshot_id).raw_payload == BINARY
+
+
+class TestVersionUniqueness:
+    def test_same_key_same_version_rejected(self, tmp_path: Path) -> None:
+        """P2: two snapshots for the same (vendor,endpoint,trade_date) with
+        the same version (distinct ids) make versions()/latest() ambiguous."""
+        store = SnapshotStore(root=tmp_path)
+        store.put(_snap(RAW, endpoint="daily", trade_date="20260522", version=1))
+        with pytest.raises(SnapshotOverwriteError):
+            store.put(
+                _snap(RAW2, endpoint="daily", trade_date="20260522", version=1)
+            )
+
+
+class TestStaleIndex:
+    def test_get_sees_write_from_other_instance(self, tmp_path: Path) -> None:
+        """P2: a long-lived reader must see a snapshot appended by another
+        store instance, not fail with a stale in-memory index."""
+        reader = SnapshotStore(root=tmp_path)  # constructed before the write
+        writer = SnapshotStore(root=tmp_path)
+        snap = _snap()
+        writer.put(snap)
+        # reader still has an empty in-memory index until it reloads on read.
+        assert reader.get(snap.snapshot_id).raw_payload == RAW
+        assert reader.latest(
+            vendor="tushare", endpoint="daily", trade_date="20260522"
+        ) is not None

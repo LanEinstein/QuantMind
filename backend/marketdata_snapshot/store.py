@@ -143,6 +143,22 @@ class SnapshotStore:
                     f"snapshot_id {sid} already stored — append-only "
                     "(a restatement must use a new id + bigger version)"
                 )
+            # The (vendor, endpoint, trade_date, version) tuple must be
+            # unique: a restatement is a NEW snapshot with a *bigger*
+            # version. Without this guard two default-version-1 snapshots
+            # for the same key would make versions()/latest() ambiguous.
+            for existing in self._index.values():
+                if (
+                    existing["vendor"] == snapshot.vendor
+                    and existing["endpoint"] == snapshot.endpoint
+                    and existing["trade_date"] == snapshot.trade_date
+                    and existing["version"] == snapshot.version
+                ):
+                    raise SnapshotOverwriteError(
+                        f"({snapshot.vendor}, {snapshot.endpoint}, "
+                        f"{snapshot.trade_date}, v{snapshot.version}) already "
+                        "stored — a restatement must use a bigger version"
+                    )
             self._write_payload(snapshot)
             row = self._to_index_row(snapshot)
             with self._index_path.open("a", encoding="utf-8") as f:
@@ -189,22 +205,47 @@ class SnapshotStore:
 
     @staticmethod
     def _to_index_row(snapshot: MarketDataSnapshot) -> dict[str, Any]:
-        dumped = snapshot.model_dump(mode="json")
+        # Exclude raw_payload before JSON serialisation: the bytes live
+        # content-addressed under payloads/, and mode="json" would try to
+        # UTF-8 decode them — fatal for parquet / gzip / zstd payloads.
+        dumped = snapshot.model_dump(mode="json", exclude={"raw_payload"})
         return {k: dumped[k] for k in _METADATA_FIELDS}
 
     # -- read ----------------------------------------------------------
 
+    def _reload_index(self) -> None:
+        """Reload the append-only index under the lock so a reader sees
+        rows appended by another store instance / process. The index is
+        append-only + snapshot_id-unique, so re-reading is idempotent."""
+        with self._lock:
+            self._index = {}
+            self._load_index()
+
     def get(self, snapshot_id: UUID) -> MarketDataSnapshot:
         """Load + verify a snapshot by id (verify-before-adopt).
+
+        Reloads the index first so a long-lived reader sees snapshots
+        appended by another instance after this one was constructed.
 
         Raises:
             SnapshotStoreError: unknown id / missing payload file.
             ChecksumMismatchError: on-disk bytes fail the checksum.
         """
+        self._reload_index()
         sid = str(snapshot_id)
         row = self._index.get(sid)
         if row is None:
             raise SnapshotStoreError(f"unknown snapshot_id {sid}")
+        return self._row_to_snapshot(row)
+
+    def _row_to_snapshot(self, row: dict[str, Any]) -> MarketDataSnapshot:
+        """Verify the on-disk payload + reconstruct the strict model.
+
+        Assumes ``row`` is already loaded from a fresh index (callers
+        reload first), so it performs no further index I/O — letting
+        ``versions()`` resolve a whole key without reloading per row.
+        """
+        sid = row["snapshot_id"]
         expected_sha = row["raw_payload_sha256"]
         path = self._payload_path(expected_sha)
         if not path.exists():
@@ -218,7 +259,6 @@ class SnapshotStore:
                 f"snapshot {sid}: on-disk sha256 {actual_sha} != stored "
                 f"{expected_sha} — refusing to adopt corrupted payload"
             )
-        # Reconstruct via the strict model (re-validates size + sha).
         # JSON-stored provenance types are converted back to native ones
         # because strict mode does not coerce str -> UUID / datetime.
         return MarketDataSnapshot(
@@ -242,7 +282,8 @@ class SnapshotStore:
         self, *, vendor: str, endpoint: str, trade_date: str
     ) -> tuple[MarketDataSnapshot, ...]:
         """All stored versions for a (vendor, endpoint, trade_date),
-        ordered by ``version`` ascending."""
+        ordered by ``version`` ascending. Reloads the index first."""
+        self._reload_index()
         matches = [
             row
             for row in self._index.values()
@@ -251,7 +292,7 @@ class SnapshotStore:
             and row["trade_date"] == trade_date
         ]
         matches.sort(key=lambda r: r["version"])
-        return tuple(self.get(UUID(r["snapshot_id"])) for r in matches)
+        return tuple(self._row_to_snapshot(r) for r in matches)
 
     def latest(
         self, *, vendor: str, endpoint: str, trade_date: str
