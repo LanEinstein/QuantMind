@@ -1134,6 +1134,50 @@ else
   green "  ok    InstructionPlan only constructed in model + builder (AST, alias-aware)"
 fi
 
+# ----------------------------------------------------------------------
+# M-005 / P1-7-amendment-2026-05-24 — cost_guard pre-call reservation +
+# fan-out cap. The ¥20/day hard cap must be enforced as a real pre-call
+# reservation (reserve_budget / settle_budget), the debate must be gated by
+# the max_debates_per_day fan-out cap (reserve_debate_slot), and the 4
+# original P1-7 ceiling constants must be unchanged. The reservation key
+# stays in the unified ``llm:usage`` namespace (amendment §2.4).
+# ----------------------------------------------------------------------
+echo
+yellow "[M-005] cost_guard pre-call reservation + fan-out cap (P1-7-amendment-2026-05-24)"
+M005_FAIL=0
+CG="backend/services/cost_guard.py"
+for sym in "def reserve_budget" "def settle_budget" "def reserve_debate_slot" \
+           "_DEFAULT_MAX_DEBATES_PER_DAY" "_DEFAULT_MAX_ANOMALY_LLM_PER_DAY"; do
+  if ! grep -q "$sym" "$CG" 2>/dev/null; then
+    red "  FAIL  cost_guard missing: $sym"
+    M005_FAIL=1
+  fi
+done
+# The 4 P1-7 ceiling constants must keep their locked values (amendment §2.1
+# changes execution semantics, NOT the numbers).
+for kv in "_DEFAULT_DAILY_BUDGET_RMB = 20.0" "_DEFAULT_SOFT_CEIL_PCT = 0.7" \
+          "_DEFAULT_MONTHLY_BUDGET_RMB = 440.0" "_DEFAULT_KIMI_DAILY_CAP_RMB = 4.0"; do
+  if ! grep -qF "$kv" "$CG" 2>/dev/null; then
+    red "  FAIL  cost_guard P1-7 constant changed/missing: $kv"
+    M005_FAIL=1
+  fi
+done
+# The reservation counter must live in the unified llm:usage namespace.
+if ! grep -qE '_RESERVED_KEY_PREFIX *= *"llm:usage"' "$CG" 2>/dev/null; then
+  red "  FAIL  reservation key not in unified llm:usage namespace (amendment §2.4)"
+  M005_FAIL=1
+fi
+# agents_team debate orchestration must go through the reservation API.
+if ! grep -q "reserve_debate_slot" backend/agents_team/graph.py 2>/dev/null; then
+  red "  FAIL  agents_team/graph.py does not claim a debate slot (fan-out cap bypass)"
+  M005_FAIL=1
+fi
+if [ $M005_FAIL -eq 0 ]; then
+  green "  ok    cost_guard reserve/settle + fan-out cap present; 4 ceilings unchanged"
+else
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

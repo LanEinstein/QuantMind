@@ -26,10 +26,11 @@ the LLM-only ``FundManagerOutput`` bridge.
 from __future__ import annotations
 
 import functools
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -53,8 +54,22 @@ from backend.agents_team.state import (
     TeamState,
     make_initial_state,
 )
+from backend.services.cost_guard import (  # noqa: TID251
+    reserve_budget,
+    reserve_debate_slot,
+    settle_budget,
+)
+
+if TYPE_CHECKING:
+    import redis.asyncio
 
 log = structlog.get_logger(component="agents_team.graph")
+
+# Conservative per-debate cost estimate reserved BEFORE any LLM call
+# (actual 4-agent debate ≈ ¥0.4-0.8; reserve ¥1.0 of headroom). The
+# reservation — not this estimate's accuracy — is what keeps spend under the
+# ¥20 hard cap: settle releases it and track_usage records the real cost.
+_DEBATE_COST_ESTIMATE_RMB = 1.0
 
 
 def _bind(node: Any, ctx: TeamContext) -> Any:
@@ -155,8 +170,79 @@ async def run_team(
     return result  # type: ignore[return-value]
 
 
+@dataclass(frozen=True)
+class ShortlistDebateResult:
+    """Outcome of one budgeted shortlist debate (``run_shortlist``).
+
+    ``candidate`` is the candidate that was actually debated (MVP: the
+    top-ranked one); ``state`` is its terminal :class:`TeamState`;
+    ``debate_slot`` is the 1-based debate index claimed for the UTC day.
+    """
+
+    candidate: CandidateBrief
+    state: TeamState
+    debate_slot: int
+
+
+async def run_shortlist(
+    ctx: TeamContext,
+    shortlist: Sequence[CandidateBrief],
+    *,
+    redis_client: redis.asyncio.Redis,
+    checkpointer: BaseCheckpointSaver | None = None,
+    thread_id: str | None = None,
+) -> ShortlistDebateResult:
+    """Run exactly ONE budgeted 4-agent debate for a converged shortlist.
+
+    P1-7-amendment-2026-05-24 (fan-out cap): a debate runs **once per daily
+    shortlist, never once per candidate** — a 20-candidate shortlist still
+    triggers a single debate. Order of guards (all BEFORE any LLM call, so a
+    refused budget means the crossing call never happens):
+
+    1. ``reserve_budget`` — pre-call ¥20 hard-cap reservation (raises
+       :class:`DailyBudgetExceededError` and runs nothing if it would cross).
+    2. ``reserve_debate_slot`` — the ``max_debates_per_day`` fan-out cap
+       (raises if the day's debate budget is exhausted).
+    3. one ``run_team`` debate on the lead (top-ranked) candidate; the
+       reservation is always settled in ``finally`` (no leaked reservation,
+       even on a mid-run error). MVP debates the lead candidate only; richer
+       multi-candidate deliberation in one debate is a Phase T enhancement.
+
+    Raises:
+        ValueError: empty shortlist.
+        DailyBudgetExceededError: ¥20 reservation or debate-slot cap refused.
+    """
+    if not shortlist:
+        raise ValueError("run_shortlist requires a non-empty shortlist")
+
+    reservation = await reserve_budget(
+        redis_client,
+        agent_name="agents_team:debate",
+        estimated_rmb=_DEBATE_COST_ESTIMATE_RMB,
+    )
+    try:
+        debate_slot = await reserve_debate_slot(redis_client)
+        lead = shortlist[0]
+        log.info(
+            "shortlist_debate_started",
+            shortlist_size=len(shortlist),
+            lead_code=lead.code,
+            debate_slot=debate_slot,
+        )
+        state = await run_team(
+            ctx, lead, checkpointer=checkpointer, thread_id=thread_id
+        )
+    finally:
+        await settle_budget(redis_client, reservation)
+    return ShortlistDebateResult(
+        candidate=lead, state=state, debate_slot=debate_slot
+    )
+
+
 __all__ = [
+    "ShortlistDebateResult",
     "build_team_graph",
     "open_sqlite_checkpointer",
+    "run_shortlist",
     "run_team",
 ]

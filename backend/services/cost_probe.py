@@ -220,12 +220,16 @@ async def _parse_usage_key(
     date_str: str,
 ) -> CostProbeEntry | None:
     try:
+        # Validate the key shape BEFORE hgetall so the pre-call reservation
+        # counter (``llm:usage:{date}:reserved``, a plain string written by
+        # cost_guard.reserve_budget — P1-7-amendment-2026-05-24) is skipped
+        # without triggering a WRONGTYPE error on every scan.
+        parts = key.split(":")
+        if len(parts) < 5:
+            return None
         raw = await redis_client.hgetall(key)
         data = _normalize_hash(raw)
         if not data:
-            return None
-        parts = key.split(":")
-        if len(parts) < 5:
             return None
         agent_name = parts[3]
         provider = parts[4]

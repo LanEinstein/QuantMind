@@ -29,6 +29,7 @@ Module red lines (P1-7 §2 / P0-10 propagation):
 
 from __future__ import annotations
 
+import datetime
 import math
 import os
 from dataclasses import dataclass
@@ -69,6 +70,31 @@ KIMI_PROVIDER_NAME = "kimi"
 
 MONTHLY_MILESTONE_FRACTIONS: tuple[float, ...] = (0.50, 0.80, 1.00)
 """Three audit-only milestones; 100% NEVER stops LLM (P1-7 §1.7)."""
+
+# P1-7-amendment-2026-05-24 — fan-out caps. The real budget killer is the
+# multiplicative fan-out (¥0.8 × 20 candidates = ¥16), not a single ~¥0.4
+# debate; these caps + the "one debate per daily shortlist, not per
+# candidate" red line bound the worst case well under the ¥20 daily hard cap.
+_DEFAULT_MAX_DEBATES_PER_DAY = 8
+"""Max multi-agent debate runs per UTC day (Line-1 slow 09:00 + fast
+09/11/13/15 ≈ 5, plus headroom). One debate runs on the converged shortlist —
+NEVER once per candidate (P1-7-amendment §2.2)."""
+
+_DEFAULT_MAX_ANOMALY_LLM_PER_DAY = 10
+"""Max Line-2 anomaly-triggered LLM calls per UTC day (N-004). Line-2 is a
+pure-quant poll (zero LLM); the LLM fires only on a deduped trigger up to this
+cap, writing the same ``llm:usage:{utc_date}`` counter (P1-7-amendment §2.2)."""
+
+# Pre-call reservation key + TTL. Reservations are transient (released by
+# ``settle_budget`` after the call); the TTL guarantees a crashed caller's
+# stale reservation cannot wedge the daily counter forever.
+_RESERVED_KEY_PREFIX = "llm:usage"
+_RESERVATION_TTL_SECONDS = 3600
+
+# Per-UTC-day debate-count key (fan-out cap). TTL spans the trading day plus
+# slack so the counter resets next day without a scheduler sweep.
+_DEBATE_COUNT_KEY_PREFIX = "llm:debates"
+_DEBATE_COUNT_TTL_SECONDS = 36 * 3600
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +267,15 @@ async def get_daily_budget_state(
             status="hard_breach",
         )
 
-    spent_today = round(raw_spent, 4)
+    # Fold in-flight pre-call reservations into the effective spend so the
+    # ¥20 hard cap holds for EVERY caller — including legacy ones that still
+    # use ``assert_budget_allows`` (analysis_scheduler / shadow / GEPA). Without
+    # this, ¥19 actual + a ¥1 in-flight debate reservation would read < ¥20 on
+    # the legacy path and let another paid call start, defeating the cap
+    # (codex M-005 P1). ``reserve_budget`` itself keeps using ``get_daily_spent``
+    # + its own counter read, so there is no double-count.
+    reserved = await get_daily_reserved(redis_client)
+    spent_today = round(raw_spent + reserved, 4)
     status = _classify_daily(spent_today, soft_ceiling, hard_ceiling)
     return DailyBudgetState(
         daily_budget=daily_budget,
@@ -403,10 +437,235 @@ async def assert_kimi_budget_allows(
     return state
 
 
+# ---------------------------------------------------------------------------
+# P1-7-amendment-2026-05-24 — pre-call reservation (真·预留) + fan-out caps
+# ---------------------------------------------------------------------------
+
+
+def get_max_debates_per_day() -> int:
+    """Max multi-agent debate runs per UTC day (runtime-immutable at boot)."""
+    return int(
+        _read_env_float(
+            "QUANTMIND_MAX_DEBATES_PER_DAY",
+            float(_DEFAULT_MAX_DEBATES_PER_DAY),
+            minimum=1.0,
+        )
+    )
+
+
+def get_max_anomaly_llm_per_day() -> int:
+    """Max Line-2 anomaly-triggered LLM calls per UTC day (N-004)."""
+    return int(
+        _read_env_float(
+            "QUANTMIND_MAX_ANOMALY_LLM_PER_DAY",
+            float(_DEFAULT_MAX_ANOMALY_LLM_PER_DAY),
+            minimum=0.0,
+        )
+    )
+
+
+def _utc_date_str(today: datetime.date | None = None) -> str:
+    base = today or datetime.datetime.now(tz=datetime.UTC).date()
+    return base.isoformat()
+
+
+def _reserved_key(date_str: str) -> str:
+    """The per-UTC-day reservation counter (same ``llm:usage`` namespace as
+    spend, so it is auditable alongside actual cost; ``cost_probe`` skips it
+    because it is a plain string, not a per-agent hash)."""
+    return f"{_RESERVED_KEY_PREFIX}:{date_str}:reserved"
+
+
+async def get_daily_reserved(
+    redis_client: redis.asyncio.Redis,
+    *,
+    today: datetime.date | None = None,
+) -> float:
+    """Sum of in-flight pre-call reservations for the UTC day (0 if none).
+
+    Read by :func:`get_daily_budget_state` so the legacy budget path accounts
+    for reservations too (codex M-005 P1). Fail-open: an unreadable / invalid
+    counter returns 0.0 — the dependable enforcement is ``reserve_budget``'s own
+    atomic check; this only folds the in-flight amount into the shared state.
+    """
+    key = _reserved_key(_utc_date_str(today))
+    try:
+        raw = await redis_client.get(key)
+    except Exception as exc:  # noqa: BLE001 — fail-open, reserve_budget is primary
+        log.warning("reserved_read_failed", key=key, error=str(exc))
+        return 0.0
+    if raw is None:
+        return 0.0
+    if isinstance(raw, bytes | bytearray):
+        raw = raw.decode("utf-8", "ignore")
+    # Only accept real scalar return types from Redis. Anything else
+    # (e.g. a test double whose __float__ defaults to 1.0) reads as 0.0 so
+    # it cannot silently inflate the effective spend.
+    if not isinstance(raw, str | int | float) or isinstance(raw, bool):
+        return 0.0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(val) or val < 0:
+        return 0.0
+    return round(val, 4)
+
+
+@dataclass(frozen=True)
+class BudgetReservation:
+    """Handle for an in-flight pre-call LLM budget reservation.
+
+    Returned by :func:`reserve_budget`; passed to :func:`settle_budget` to
+    release the reservation after the call completes. ``amount_rmb`` is the
+    estimated cost that was reserved (released verbatim on settle — the
+    *actual* spend is recorded separately by the LLM router's track_usage).
+    """
+
+    key: str
+    amount_rmb: float
+    agent_name: str
+    date: str
+
+
+async def reserve_budget(
+    redis_client: redis.asyncio.Redis,
+    *,
+    agent_name: str,
+    estimated_rmb: float,
+    today: datetime.date | None = None,
+) -> BudgetReservation:
+    """Reserve ``estimated_rmb`` against the daily ¥20 hard cap BEFORE the call.
+
+    P1-7-amendment-2026-05-24: this replaces the old post-hoc trailing-stop
+    (``assert_budget_allows`` only raised once spend had *already* crossed
+    ¥20, letting the crossing call complete). Here the estimate is reserved
+    atomically first; if ``spent + reserved`` would exceed the hard ceiling
+    the reservation is rolled back and :class:`DailyBudgetExceededError` is
+    raised — **the crossing call never happens**.
+
+    Every LLM-spending path (debate / MiroFish / Line-2 anomaly / Phase R)
+    MUST reserve here so the unified ``llm:usage:{utc_date}`` counter governs
+    the whole system (amendment §2.4). Fail-closed: a non-finite/negative
+    observed spend is treated as already over budget.
+    """
+    if not math.isfinite(estimated_rmb) or estimated_rmb < 0:
+        raise ValueError(f"estimated_rmb must be finite and >= 0, got {estimated_rmb}")
+    daily_budget = _read_env_float(
+        "QUANTMIND_DAILY_BUDGET", _DEFAULT_DAILY_BUDGET_RMB, minimum=0.0
+    )
+    date_str = _utc_date_str(today)
+    key = _reserved_key(date_str)
+
+    new_reserved = await redis_client.incrbyfloat(key, estimated_rmb)
+    # Best-effort TTL so a crashed caller's reservation cannot wedge the
+    # counter past the trading day.
+    try:
+        await redis_client.expire(key, _RESERVATION_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — TTL is hygiene, not correctness
+        log.warning("reservation_expire_failed", key=key, error=str(exc))
+
+    try:
+        reserved_val = float(new_reserved)
+    except (TypeError, ValueError):
+        reserved_val = estimated_rmb
+
+    spent = await get_daily_spent(redis_client, today=today)
+    if not math.isfinite(spent) or spent < 0:
+        log.error("reserve_invalid_spent", raw=spent, action="fail_closed")
+        spent = daily_budget + 1.0
+
+    projected = round(spent + reserved_val, 4)
+    if projected > daily_budget:
+        # Roll back this reservation — the crossing call must not run.
+        await redis_client.incrbyfloat(key, -estimated_rmb)
+        log.error(
+            "daily_budget_reservation_refused",
+            agent=agent_name,
+            estimated=estimated_rmb,
+            spent=round(spent, 4),
+            already_reserved=round(reserved_val - estimated_rmb, 4),
+            budget=daily_budget,
+        )
+        raise DailyBudgetExceededError(
+            f"Reservation of {estimated_rmb:.4f} CNY for {agent_name} would "
+            f"cross the daily budget {daily_budget:.2f} CNY "
+            f"(spent {spent:.4f} + reserved {reserved_val:.4f}); call refused"
+        )
+    return BudgetReservation(
+        key=key, amount_rmb=estimated_rmb, agent_name=agent_name, date=date_str
+    )
+
+
+def _debate_count_key(date_str: str) -> str:
+    return f"{_DEBATE_COUNT_KEY_PREFIX}:{date_str}"
+
+
+async def reserve_debate_slot(
+    redis_client: redis.asyncio.Redis,
+    *,
+    today: datetime.date | None = None,
+) -> int:
+    """Claim one of the day's debate slots — the multiplicative fan-out cap.
+
+    P1-7-amendment-2026-05-24 §2.2: a debate runs **once per converged daily
+    shortlist, never once per candidate** (¥0.8 × 20 candidates = ¥16 would
+    otherwise eat the day in one fan-out). Callers MUST claim a slot before a
+    debate; a 20-candidate shortlist still claims exactly ONE slot per
+    ``run_shortlist`` invocation. Atomically increments
+    ``llm:debates:{utc_date}`` and raises :class:`DailyBudgetExceededError`
+    (rolling the counter back) when it would exceed ``max_debates_per_day`` —
+    the crossing debate does not run.
+    """
+    cap = get_max_debates_per_day()
+    date_str = _utc_date_str(today)
+    key = _debate_count_key(date_str)
+    new_count = await redis_client.incr(key)
+    try:
+        await redis_client.expire(key, _DEBATE_COUNT_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — TTL is hygiene, not correctness
+        log.warning("debate_count_expire_failed", key=key, error=str(exc))
+    try:
+        count = int(new_count)
+    except (TypeError, ValueError):
+        count = cap + 1  # fail closed
+    if count > cap:
+        await redis_client.decr(key)
+        log.error("max_debates_per_day_reached", cap=cap, attempted=count)
+        raise DailyBudgetExceededError(
+            f"max_debates_per_day {cap} reached for {date_str}; debate refused"
+        )
+    return count
+
+
+async def settle_budget(
+    redis_client: redis.asyncio.Redis,
+    reservation: BudgetReservation,
+) -> None:
+    """Release an in-flight reservation after the call completes.
+
+    The *actual* spend is recorded by the LLM router's ``track_usage`` into
+    the per-agent ``llm:usage:{date}:{agent}:{provider}`` hashes; ``settle``
+    only frees the transient reservation so ``reserved`` reflects pending
+    calls only. Idempotent-ish: never raises (a transient Redis error must
+    not crash the post-call path — the TTL backstops a missed release).
+    """
+    try:
+        await redis_client.incrbyfloat(reservation.key, -reservation.amount_rmb)
+    except Exception as exc:  # noqa: BLE001 — TTL backstops a missed release
+        log.warning(
+            "reservation_settle_failed",
+            key=reservation.key,
+            agent=reservation.agent_name,
+            error=str(exc),
+        )
+
+
 # Internal helpers re-exported for tests + redline scanner.
 _classify = _classify_daily
 
 __all__ = [
+    "BudgetReservation",
     "BudgetState",  # alias kept for legacy callers
     "DailyBudgetExceededError",
     "DailyBudgetState",
@@ -425,7 +684,13 @@ __all__ = [
     "assert_kimi_budget_allows",
     "get_budget_state",
     "get_daily_budget_state",
+    "get_daily_reserved",
     "get_full_budget_state",
     "get_kimi_budget_state",
+    "get_max_anomaly_llm_per_day",
+    "get_max_debates_per_day",
     "get_monthly_budget_state",
+    "reserve_budget",
+    "reserve_debate_slot",
+    "settle_budget",
 ]
