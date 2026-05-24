@@ -82,7 +82,7 @@ Owner 2026-05-24 **有意推翻**以下 4 条(`AskUserQuestion` 全选确认);�
 | 知识图谱 | **SQLite + NetworkX** 起步;LightRAG **离线只读**先行 | LadybugDB / LightRAG-live / GraphRAG 推迟(Kùzu 被 Apple 收购归档) |
 | 异动 | MVP 仅 **z-score / 布林** + 一个无监督检测器 | IsolationForest / HMM / ruptures / OFI 按需加 |
 | 仓位 | 固定分数(Van Tharp)+ ATR 移动止损;**禁马丁格尔、熊市禁补** | 全过 RiskEngine + 飞书人工 |
-| 数据源 | 全市场扫描 = **Tushare Pro 5000 档** + `daily_vip` / `fina_indicator_vip`(全市场单次拉取)+ akshare/baostock/adata 兜底 + 新闻 | 数据成本不设 ceiling(P1-7) |
+| 数据源 | 全市场扫描 = **Tushare Pro 5000 档**(2026-05-24 实测通过):`daily`/`daily_basic`/`adj_factor`(按 trade_date 全市场单次 ~5400 行)+ `fina_indicator_vip`(按 period 全市场单次 7194 行,**5000 档 vip 确认**)+ `index_daily`/`fund_daily` + akshare/baostock/adata 兜底 + 新闻 | 数据成本不设 ceiling(P1-7) |
 
 > **数据调用方式锁定(2026-05-24 owner 确认)**:Tushare 走**官方 Python SDK**(`ts.pro_api(token)` → `pro.daily/daily_basic/fina_indicator_vip/...`),**确定性后端调用**(`backend/data/tushare_client.py`,`asyncio.to_thread` 包同步调用),原始 payload 喂 `MarketDataSnapshot`(§3)。**严禁 MCP server / agent-skill 等"LLM 推理时取数"模式进运行时数据路径** —— 它们撞 4 条红线:§3 PIT 可复现(LLM 临时取数无法快照/replay)、§4 LLM-数据隔离(`screening`/`marketdata_snapshot` 禁 import LLM)、L-002 全市场纯量化筛 0 LLM、P1-7 ¥20/日成本(5000 标的走 LLM 工具循环成本荒谬)。MCP 顶多作开发期交互探查的可选工具,不进产品代码路径。
 

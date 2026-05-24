@@ -2207,7 +2207,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "SDK `ts.pro_api` 全市场单日 daily/daily_basic/fina_indicator_vip 各 1 次拉全(5000 档 vip)+ 原始 DataFrame/payload 直接喂 K-002 快照 + 兜底链不变 + TUSHARE_TOKEN 仅 os.environ + fingerprint log;`grep -rn 'mcp\\|tushare.*skill' backend/` 运行时取数路径必空;数据成本不设 ceiling(P1-7)。",
         tests: "单测 vip 全市场拉取(mock SDK)+ 兜底回退 + secrets_validator 异质凭证软警告 + .env 禁放 TUSHARE_TOKEN;httpx/SDK 出站 IPv4-only;断言无 MCP 客户端在数据路径。",
         sources: "R0 §6(SDK only 锁定), P1-7(数据不设 ceiling), 数据源调研 dossier",
-        commit: "", session_date: "", notes: "owner 2026-05-24 确认 SDK over MCP/skill:MCP/skill 是 LLM 工具调用模式,撞 PIT 可复现+LLM-数据隔离+纯量化筛+成本 4 红线。data_sources.yaml 改动走 amendment + git diff + 重启。TUSHARE_TOKEN 异质池不计入 LLM 3+飞书 5(EXPECTED_POOL_SIZE 仍 8,GITHUB_TOKEN 同款 HETEROGENEOUS 模式)。"
+        commit: "", session_date: "", notes: "owner 2026-05-24 确认 SDK over MCP/skill:MCP/skill 是 LLM 工具调用模式,撞 PIT 可复现+LLM-数据隔离+纯量化筛+成本 4 红线。data_sources.yaml 改动走 amendment + git diff + 重启。TUSHARE_TOKEN 异质池不计入 LLM 3+飞书 5(EXPECTED_POOL_SIZE 仍 8,GITHUB_TOKEN 同款 HETEROGENEOUS 模式)。**2026-05-24 实测通过(token fp 6f52f00a,tushare 1.4.29)**:daily/daily_basic/adj_factor by trade_date 全市场 ~5400 行(亚 2s)、fina_indicator_vip period 全市场 7194 行(5000 档确认,2.7s)、index_daily/fund_daily OK;`daily_basic_vip` 接口名不存在 → 用 `daily_basic(trade_date)` 已全市场,vip 后缀仅财务类需要。"
       },
       {
         id: "K-002", phase: "K 数据地基", status: "todo", priority: "P0",
