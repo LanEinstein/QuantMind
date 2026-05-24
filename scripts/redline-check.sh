@@ -963,6 +963,31 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# L-002 / P0-9-amendment-2026-05-24 §4 red line 8 — screening (+ the other
+# pure-quant Line-1 modules) must never import backend.{llm,agents,
+# mirofish}. backend.data/risk/marketdata_snapshot ARE allowed (board
+# classification, risk types, PIT snapshots) — those are not scanned here.
+# ----------------------------------------------------------------------
+yellow "[L-002] pure-quant module isolation (no backend.{llm,agents,mirofish})"
+L002_DIRS=""
+for d in backend/screening backend/budget_policy backend/candidate_selector; do
+  [ -d "$d" ] && L002_DIRS="$L002_DIRS $d"
+done
+if [ -z "$L002_DIRS" ]; then
+  green "  ok    no pure-quant modules present yet (skip)"
+else
+  # shellcheck disable=SC2086
+  L002_OUT="$(grep -rnE 'import +backend\.(llm|agents|mirofish)|from +backend\.(llm|agents|mirofish)' $L002_DIRS 2>/dev/null || true)"
+  if [ -n "$L002_OUT" ]; then
+    red "  FAIL  pure-quant module imports a forbidden subpackage:"
+    printf '%s\n' "$L002_OUT" | sed 's/^/        /'
+    FAIL=$((FAIL + 1))
+  else
+    green "  ok    screening/budget_policy/candidate_selector free of llm/agents/mirofish"
+  fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."
