@@ -1063,6 +1063,77 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# M-004 / R0 §4 new red line B — InstructionPlan single construction point
+#
+# Only the model definition (backend/models/instruction.py) and the sole
+# builder (backend/services/instruction_plan_builder.py) may name the
+# ``InstructionPlan(`` constructor anywhere under backend/. Any other
+# backend file constructing it is a provenance breach: side / volume /
+# limit_price must be deterministically derived by the builder from
+# non-LLM inputs, never assembled elsewhere and never from LLM JSON
+# (CLAUDE.md §2.0 red line B). Import isolation alone cannot prove field
+# provenance — the single construction point + the adversarial tests in
+# tests/test_instructionplan_provenance.py are the real boundary.
+# ----------------------------------------------------------------------
+echo
+yellow "[M-004] InstructionPlan single construction point (R0 §4 red line B)"
+# AST scan (not raw grep): resolve InstructionPlan construction calls including
+# aliased imports (``import InstructionPlan as Plan; Plan(...)``) and attribute
+# calls (``module.InstructionPlan(...)``) so the gate cannot be evaded by an
+# alias (codex M-004 P2). A raw-text grep misses both.
+M004_OUT="$(python3 - <<'PY' 2>/dev/null || echo "SCANNER_ERROR"
+import ast, pathlib
+
+ALLOWED = {
+    pathlib.Path("backend/services/instruction_plan_builder.py"),
+    pathlib.Path("backend/models/instruction.py"),
+}
+violations = []
+for py in sorted(pathlib.Path("backend").rglob("*.py")):
+    try:
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        continue
+    # Local names bound to the InstructionPlan class. Seed from ANY
+    # ``from ... import InstructionPlan [as X]`` regardless of module so a
+    # re-export alias (``from backend.models import InstructionPlan as Plan``)
+    # is not missed (codex M-004 verify finding). The repo has exactly one
+    # InstructionPlan class, so matching the imported name is safe; a
+    # type-hint-only import with no construction Call is never flagged.
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name == "InstructionPlan":
+                    names.add(a.asname or a.name)
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in names:
+            found = True
+            break
+        if isinstance(f, ast.Attribute) and f.attr == "InstructionPlan":
+            found = True
+            break
+    if found and py not in ALLOWED:
+        violations.append(str(py))
+print("\n".join(violations))
+PY
+)"
+if [ "$M004_OUT" = "SCANNER_ERROR" ]; then
+  red "  FAIL  [M-004] InstructionPlan AST scanner error"
+  FAIL=$((FAIL + 1))
+elif [ -n "$M004_OUT" ]; then
+  red "  FAIL  InstructionPlan constructed outside {models/instruction.py, instruction_plan_builder.py}:"
+  printf '%s\n' "$M004_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    InstructionPlan only constructed in model + builder (AST, alias-aware)"
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."
