@@ -73,24 +73,37 @@ value here is dead config but not a startup blocker."""
 
 HETEROGENEOUS_CREDENTIAL_NAMES: tuple[str, ...] = (
     "GITHUB_TOKEN",  # X-010 GitHub releases crawler PAT (Q3 — not in LLM/Feishu pool)
+    "TUSHARE_TOKEN",  # K-001 Tushare Pro data source (P0-8-amendment-2026-05-24)
 )
-"""Heterogeneous credentials (P2-2 §1.13 Q3): credentials that are NOT
-part of the LLM 3 + Feishu 5 pool but that ``secrets_validator`` still
-inspects with a *soft* warning at boot. The GitHub PAT is the first
-member — Q3 of P2-2-implementation-plan-2026-05-18 keeps it outside
-the canonical pool because it serves a different purpose (crawler
-auth, not LLM / chat), is owned by GitHub not by an internal vendor,
-and has its own rotation cadence. We still soft-warn at boot when the
-env var is set but the value does not look like a GitHub PAT
-(``ghp_`` / ``github_pat_`` prefix) so an obvious paste error is
-visible before the crawler call fails downstream."""
+"""Heterogeneous credentials (P2-2 §1.13 Q3 / P0-8-amendment-2026-05-24):
+credentials that are NOT part of the LLM 3 + Feishu 5 pool but that
+``secrets_validator`` still inspects with a *soft* warning at boot.
+
+* ``GITHUB_TOKEN`` — Q3 of P2-2-implementation-plan-2026-05-18 keeps it
+  outside the canonical pool because it serves a different purpose
+  (crawler auth, not LLM / chat), is owned by GitHub not by an internal
+  vendor, and has its own rotation cadence.
+* ``TUSHARE_TOKEN`` — K-001 full-market data source token. Owned by
+  Tushare (data vendor, not LLM / chat), points-based sponsorship with
+  its own cadence; data cost has no ceiling (P1-7), so it never enters
+  the LLM budget either.
+
+We still soft-warn at boot when the env var is set but the value does
+not look right (per-credential shape regex) so an obvious paste error
+surfaces before the downstream call fails. Absence is *not* a warning
+here — the consuming client fails fast if its source is enabled."""
 
 _GITHUB_PAT_RE = re.compile(r"\A(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}\Z")
 """GitHub PAT shape — covers both classic (``ghp_``) and fine-grained
 (``github_pat_``) formats. Anchored so trailing whitespace is rejected."""
 
+_TUSHARE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9]{32,}\Z")
+"""Tushare token shape — a long (≥32) alphanumeric string. Anchored so
+a stray space / quote / obviously-wrong paste is flagged."""
+
 _HETEROGENEOUS_PATTERNS: Mapping[str, re.Pattern[str]] = {
     "GITHUB_TOKEN": _GITHUB_PAT_RE,
+    "TUSHARE_TOKEN": _TUSHARE_TOKEN_RE,
 }
 
 # Total pool size = 3 LLM + 5 Feishu = 8 names. The two CUSTOM_BOT_*
@@ -123,7 +136,7 @@ _FEISHU_CREDENTIAL_PATTERNS: Mapping[str, re.Pattern[str]] = {
 # (codex X-027 R4 follow-up — P1 finding fix).
 _ASSIGNMENT_RE = re.compile(
     r"^\s*(?P<name>(?:DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|"
-    r"FEISHU_[A-Z_]+|GITHUB_TOKEN))\s*="
+    r"FEISHU_[A-Z_]+|GITHUB_TOKEN|TUSHARE_TOKEN))\s*="
 )
 
 _FEISHU_FLAG_ENV = "FEISHU_INTERACTIVE_ENABLED"

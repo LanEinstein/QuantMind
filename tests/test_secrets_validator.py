@@ -332,6 +332,56 @@ class TestHeterogeneousCredentials:
             "GITHUB_TOKEN" in e and ".env" in e for e in result.errors
         )
 
+    # -- TUSHARE_TOKEN (K-001 / P0-8-amendment-2026-05-24) --------------
+
+    def test_tushare_token_listed_outside_canonical_pool(self) -> None:
+        """Data-source token stays heterogeneous — pool size unchanged."""
+        assert "TUSHARE_TOKEN" in HETEROGENEOUS_CREDENTIAL_NAMES
+        assert "TUSHARE_TOKEN" not in LLM_API_KEY_NAMES
+        assert "TUSHARE_TOKEN" not in FEISHU_CREDENTIAL_NAMES
+        assert EXPECTED_POOL_SIZE == 8
+
+    def test_tushare_token_well_formed_no_warning(self) -> None:
+        """A long alphanumeric token emits no warning and never enters
+        the fingerprints map (it is not a pool credential)."""
+        env = _baseline_env()
+        env["TUSHARE_TOKEN"] = "a" * 40
+        result = SecretsValidator(env=env).validate()
+        assert result.ok is True
+        for w in result.warnings:
+            assert w.resource_id != "TUSHARE_TOKEN"
+        assert "TUSHARE_TOKEN" not in result.fingerprints
+
+    def test_tushare_token_malformed_emits_soft_warning(self) -> None:
+        env = _baseline_env()
+        env["TUSHARE_TOKEN"] = "short space"  # space + too short
+        result = SecretsValidator(env=env).validate()
+        assert result.ok is True  # warnings never block startup
+        warns = [w for w in result.warnings if w.resource_id == "TUSHARE_TOKEN"]
+        assert len(warns) == 1
+        assert warns[0].reason_namespace == "malformed_heterogeneous_credential"
+        assert len(warns[0].payload["fingerprint"]) == 8
+        assert "short space" not in warns[0].payload["fingerprint"]
+
+    def test_tushare_token_unset_no_warning(self) -> None:
+        result = SecretsValidator(env=_baseline_env()).validate()
+        for w in result.warnings:
+            assert w.resource_id != "TUSHARE_TOKEN"
+
+    def test_env_with_tushare_token_assignment_rejects(
+        self, tmp_path: Path
+    ) -> None:
+        """`.env` must reject TUSHARE_TOKEN=... — secrets live in ~/.bashrc."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("TUSHARE_TOKEN=" + "a" * 40 + "\n", encoding="utf-8")
+        result = SecretsValidator(
+            env=_baseline_env(), env_file=env_file
+        ).validate()
+        assert result.ok is False
+        assert any(
+            "TUSHARE_TOKEN" in e and ".env" in e for e in result.errors
+        )
+
 
 # -----------------------------------------------------------------------------
 # .env scanner — credential assignments forbidden, comments allowed

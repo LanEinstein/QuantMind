@@ -1,9 +1,30 @@
 # Data source configuration
+#
+# runtime-immutable: changes go through an amendment + git diff + restart
+# (P0-7 config red line). No hot-reload.
 
 market_data:
   primary: adata
   fallback: akshare
   refresh_interval_seconds: 30
+
+# Tushare Pro full-market scan layer (K-001 / R0 §6 / P0-8-amendment-2026-05-24).
+# Official Python SDK only (ts.pro_api -> pro.<endpoint>); MCP / skill
+# fetch-at-LLM-inference is forbidden in the runtime data path. Token is the
+# heterogeneous TUSHARE_TOKEN (os.environ only, never .env). Data cost has no
+# ceiling (P1-7); akshare/baostock/adata remain the best-effort fallback.
+tushare:
+  enabled: true
+  token_env: TUSHARE_TOKEN
+  # full-market single-pull endpoints
+  endpoints:
+    daily: { vip: false, key: trade_date }
+    daily_basic: { vip: false, key: trade_date }
+    adj_factor: { vip: false, key: trade_date }
+    fina_indicator_vip: { vip: true, key: period }
+    index_daily: { vip: false, key: ts_code }
+    fund_daily: { vip: false, key: trade_date }
+  fallback: [akshare, baostock, adata]
 
 history_data:
   primary: adata

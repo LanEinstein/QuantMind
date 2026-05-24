@@ -39,6 +39,35 @@ class NewsConfig(BaseModel):
     importance_threshold: int = 5
 
 
+class TushareEndpointConfig(BaseModel):
+    """A single Tushare Pro endpoint descriptor (K-001).
+
+    ``vip`` marks the 5000档 endpoints; ``key`` is the primary query
+    argument (``trade_date`` / ``period`` / ``ts_code``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    vip: bool = False
+    key: str
+
+
+class TushareConfig(BaseModel):
+    """Tushare Pro full-market scan layer (K-001 / P0-8-amendment-2026-05-24).
+
+    Official SDK only; ``token_env`` names the os.environ var holding the
+    heterogeneous ``TUSHARE_TOKEN`` (never .env). ``fallback`` lists the
+    best-effort degrade providers in priority order.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    token_env: str = "TUSHARE_TOKEN"
+    endpoints: dict[str, TushareEndpointConfig] = {}
+    fallback: tuple[str, ...] = ()
+
+
 class DataSourcesConfig(BaseModel):
     """Root configuration loaded from data_sources.yaml."""
 
@@ -47,6 +76,7 @@ class DataSourcesConfig(BaseModel):
     market_data: MarketDataConfig
     history_data: HistoryDataConfig
     news: NewsConfig
+    tushare: TushareConfig | None = None
 
 
 def load_data_sources_config(yaml_path: str | Path) -> DataSourcesConfig:
