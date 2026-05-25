@@ -244,6 +244,45 @@ class MessageRenderer:
         ]
         return "\n".join(lines)
 
+    def render_add_position(
+        self,
+        plan: InstructionPlan,
+        *,
+        add_rationale: str,
+        stop_price: float,
+    ) -> str:
+        """Render a Line-2 add-position (补仓) signal (N-003).
+
+        BUY-only — an ADD is a disciplined scale-in onto a held position. The
+        banner carries the four-condition rationale + the ATR trailing-stop
+        price; the shared 7-section body follows. Fails closed unless the plan
+        is a Line-2 BUY (``LINE2-MON-`` signal_id) so an ordinary Line-1 BUY is
+        never mislabeled as a monitoring add. ``add_rationale`` is a
+        deterministic string but is still collapsed to a single printable line
+        (anti header-spoof, P2-1 / CLAUDE.md §2.6).
+        """
+        if plan.side is not InstructionSide.BUY:
+            raise ValueError(
+                f"render_add_position is BUY-only, got {plan.side.value}"
+            )
+        if not plan.signal_id.startswith(_MONITORING_SIGNAL_PREFIX):
+            raise ValueError(
+                f"render_add_position requires a Line-2 plan "
+                f"(signal_id {plan.signal_id!r} lacks {_MONITORING_SIGNAL_PREFIX!r})"
+            )
+        self._assert_dispatchable(plan)
+        if not _INSTRUCTION_ID_RE.fullmatch(plan.instruction_id):
+            raise ValueError(
+                f"instruction_id {plan.instruction_id!r} fails canonical pattern"
+            )
+        lines = [
+            "【QuantMind 持仓监控 · 补仓信号】",
+            f"补仓依据: {_single_line(add_rationale)}",
+            f"移动止损: {_format_money(stop_price)} CNY",
+            *self._dispatch_body_lines(plan),
+        ]
+        return "\n".join(lines)
+
     def render_no_compliant_trade(
         self,
         *,
