@@ -978,6 +978,184 @@ class InstructionPlanBuilder:
             timestamp=context.now,
         )
 
+    # =====================================================================
+    # N-002 / N-003 — Line-2 monitoring deterministic construction
+    # (P0-10-amendment-2026-05-25 — no 4-agent gate; direction from a
+    # deterministic detector, NOT fund_manager)
+    # =====================================================================
+
+    async def assemble_monitoring_plan(
+        self, context: MonitoringAssemblyContext
+    ) -> MonitoringBuilderResult:
+        """Construct a Line-2 SELL/ADD InstructionPlan deterministically.
+
+        The second line is zero-LLM (R0 §8): the ``side`` comes from a
+        deterministic anomaly / add-position evaluator, so this path runs
+        **no** 4-agent gate and consumes no ``FundManagerOutput`` — yet the
+        plan is STILL built here (single construction point, R0 §4) and STILL
+        passes the freeze early-returns + RiskEngine 14-check + (downstream)
+        the Feishu human gate.
+
+        Early-return chain (side-aware): mode_switch → ticket_freeze →
+        circuit_breaker (auto-skips SELL) → data_quality, and the watchlist
+        exclusion (#5) ONLY for BUY/ADD — a SELL is an *exit* and must never
+        be trapped by an entry-universe rule. On any freeze a
+        BUILDER_EARLY_RETURN audit event is written and no plan is built.
+
+        Returns :class:`BuilderEarlyReturn` (a freeze fired) or
+        :class:`MonitoringPlan` (VALIDATED on RiskEngine pass / REJECTED on
+        fail). Raises ``ValueError`` for a HOLD side, a missing
+        ``data_snapshot``, or a ``signal_id`` lacking the locked
+        ``LINE2-MON-`` prefix (so a Line-1 plan cannot use this no-debate path).
+        """
+        if context.side is InstructionSide.HOLD:
+            raise ValueError(
+                "assemble_monitoring_plan handles BUY (ADD) / SELL only, not HOLD"
+            )
+        if not context.signal_id.startswith(MONITORING_SIGNAL_PREFIX):
+            raise ValueError(
+                f"monitoring signal_id {context.signal_id!r} must start with "
+                f"{MONITORING_SIGNAL_PREFIX!r} (audit discriminator)"
+            )
+        if context.data_snapshot is None:
+            raise ValueError("MonitoringAssemblyContext.data_snapshot is required")
+
+        candidate = CandidateInputs(
+            stock_code=context.stock_code,
+            stock_name=context.stock_name,
+            side=context.side,
+            now=context.now,
+            open_tickets=context.open_tickets,
+            circuit_breaker=context.circuit_breaker,
+            data_quality=context.data_quality,
+            watchlist_policy=context.watchlist_policy,
+            watchlist_signal=context.watchlist_signal,
+        )
+
+        early = self._monitoring_early_returns(candidate)
+        if early is not None:
+            await self._record_audit(early, candidate)
+            return early
+
+        order = _derive_pending_order(
+            stock_code=context.stock_code,
+            side=context.side,
+            volume=context.proposed_volume,
+            limit_price=context.proposed_limit_price,
+            now=context.now,
+        )
+        engine_result = context.risk_engine.validate_order(
+            order,
+            context.account,
+            context.positions,
+            prev_close=context.prev_close,
+            now=context.now,
+            daily_state=context.daily_state,
+            stock_meta=context.stock_meta,
+            concentration_exception=context.concentration_exception,
+        )
+        risk_summary = _build_risk_summary(engine_result)
+        if engine_result.passed:
+            plan = self._build_monitoring_plan(
+                context, risk_summary,
+                status=InstructionStatus.VALIDATED, rejection_reason=None,
+            )
+        else:
+            plan = self._build_monitoring_plan(
+                context, risk_summary,
+                status=InstructionStatus.REJECTED,
+                rejection_reason=(
+                    f"{engine_result.rule_name}: {engine_result.message}"
+                )[:256],
+            )
+        return MonitoringPlan(plan=plan)
+
+    def _monitoring_early_returns(
+        self, candidate: CandidateInputs
+    ) -> BuilderEarlyReturn | None:
+        """Side-aware freeze chain for Line-2 (SELL skips watchlist #5).
+
+        Uses the builder's injected ``mode_switch`` probe so a D-005
+        mode-switch lifecycle freezes Line-2 too (the 5 freeze sources run
+        independently across both lines — amendment §2.5 / P0-5).
+        """
+        early = check_mode_switch(self._mode_switch)
+        if early is not None:
+            return early
+        early = check_ticket_freeze(candidate.open_tickets)
+        if early is not None:
+            return early
+        early = check_circuit_breaker(
+            candidate.circuit_breaker, candidate.side, candidate.now
+        )
+        if early is not None:
+            return early
+        early = check_data_quality(candidate.data_quality)
+        if early is not None:
+            return early
+        if candidate.side is InstructionSide.BUY:
+            # ADD (BUY) must respect the entry universe; a SELL exit must not.
+            early = check_watchlist_exclusion(
+                candidate.stock_code,
+                candidate.stock_name,
+                candidate.watchlist_policy,
+                candidate.watchlist_signal,
+            )
+            if early is not None:
+                return early
+        return None
+
+    def _build_monitoring_plan(
+        self,
+        context: MonitoringAssemblyContext,
+        risk_summary: tuple[RiskCheckSummary, ...],
+        *,
+        status: InstructionStatus,
+        rejection_reason: str | None,
+    ) -> InstructionPlan:
+        """Construct the Line-2 SELL/ADD InstructionPlan from non-LLM inputs.
+
+        Mirrors :meth:`_build_buy_sell_plan` but takes ``side`` directly (no
+        FundManagerOutput) and stamps the Line-2 markers: ``debate_round_count``
+        = the deterministic monitoring evaluation round, and the ``LINE2-MON-``
+        ``signal_id`` namespace.
+        """
+        side = context.side
+        instruction_id = make_instruction_id(
+            context.now, context.stock_code, side, context.seq
+        )
+        position_summary = _derive_position_summary(
+            account=context.account,
+            positions=context.positions,
+            order_code=context.stock_code,
+            order_volume=context.proposed_volume,
+            order_price=context.proposed_limit_price,
+            side=side,
+        )
+        assert context.data_snapshot is not None  # noqa: S101 — guarded in caller
+        return InstructionPlan(
+            instruction_id=instruction_id,
+            created_at=context.now,
+            valid_until=_derive_valid_until(context.now),
+            trade_date=_derive_trade_date(context.now),
+            stock_code=context.stock_code,
+            stock_name=context.stock_name,
+            side=side,
+            volume=context.proposed_volume,
+            limit_price=context.proposed_limit_price,
+            data_snapshot=context.data_snapshot,
+            evidence_ids=context.evidence_ids,
+            position_summary=position_summary,
+            risk_summary=risk_summary,
+            risk_validation_id=context.risk_validation_id,
+            signal_id=context.signal_id,
+            analysis_record_id=context.analysis_record_id,
+            debate_round_count=_MONITORING_DEBATE_ROUND_COUNT,
+            invalidation_summary=context.invalidation_summary,
+            status=status,
+            rejection_reason=rejection_reason,
+        )
+
 
 # ---------------------------------------------------------------------------
 # D-004 — Result envelopes / inputs / pure helpers
@@ -1348,6 +1526,91 @@ def _derive_trade_date(now: datetime) -> str:
     return now.astimezone(_SH).strftime("%Y-%m-%d")
 
 
+# =====================================================================
+# N-002 / N-003 — Line-2 monitoring deterministic construction
+# (P0-10-amendment-2026-05-25; R0 §1 Line-2 / §4 single construction point)
+# =====================================================================
+
+MONITORING_SIGNAL_PREFIX = "LINE2-MON-"
+"""Locked ``signal_id`` namespace for every Line-2 monitoring plan. Audit /
+reconciliation discriminate the two lines by this prefix (Line-1 uses the
+plain signal_id format); ``assemble_monitoring_plan`` rejects a signal_id
+without it so a Line-1 plan can never be smuggled through the deterministic
+(no-debate) path."""
+
+_MONITORING_DEBATE_ROUND_COUNT = 1
+"""Line-2 plans carry ``debate_round_count=1`` — the single *deterministic
+monitoring evaluation* round (NOT an LLM debate). The schema floor
+``Field(ge=1)`` is unchanged; the "zero rounds = LLM bypass" motive is a
+Line-1 concern and Line-2 has no LLM in its decision path
+(P0-10-amendment-2026-05-25 §2.3)."""
+
+
+@dataclass(frozen=True)
+class MonitoringAssemblyContext:
+    """Inputs for the Line-2 deterministic SELL/ADD construction.
+
+    Distinct from :class:`AssemblyContext` (Line-1): there is **no**
+    ``FundManagerOutput`` / ``MandatoryAgentRecords`` because Line-2 is
+    zero-LLM (R0 §8 / P0-10-amendment-2026-05-25). ``side`` comes from a
+    deterministic :class:`backend.monitoring.anomaly.AnomalyDetector` (SELL)
+    or AddPositionEvaluator (BUY/ADD); ``proposed_volume`` /
+    ``proposed_limit_price`` are derived from ``available_volume`` (T+1
+    settled) + sizing rules — never from any LLM output.
+    """
+
+    stock_code: str
+    stock_name: str
+    side: InstructionSide  # BUY (ADD) or SELL — never HOLD
+    now: datetime
+
+    # 5-early-return inputs (D-003). For SELL the watchlist exclusion (#5)
+    # is skipped — an exit must not be trapped by an entry-universe rule.
+    open_tickets: tuple[ReconciliationTicket, ...]
+    circuit_breaker: CircuitBreaker
+    data_quality: DataQualityState
+    watchlist_policy: UniversePolicy
+    watchlist_signal: WatchlistMarketSignal
+
+    # 14-check inputs (D-001)
+    risk_engine: RiskEngine
+    account: AccountInfo
+    positions: tuple[Position, ...]
+    prev_close: float | None
+    daily_state: DailyTradingState | None
+    stock_meta: RiskStockMetadata | None
+
+    # Deterministic sizing (monitoring evaluator + available_volume)
+    proposed_volume: int
+    proposed_limit_price: float
+    concentration_exception: bool = False
+
+    # Correlation / persistence
+    seq: int = 1
+    signal_id: str = ""
+    analysis_record_id: str = ""
+    risk_validation_id: str = ""
+
+    # Plan body (non-LLM-derived)
+    evidence_ids: tuple[str, ...] = ()
+    data_snapshot: DataSnapshot | None = None
+    invalidation_summary: str = ""
+
+
+@dataclass(frozen=True)
+class MonitoringPlan:
+    """Successful Line-2 assemble_monitoring_plan outcome.
+
+    No ``fund_manager_output`` (Line-2 has no LLM proposer) — that is the
+    structural marker distinguishing it from the Line-1 :class:`BuilderPlan`.
+    """
+
+    plan: InstructionPlan
+
+
+MonitoringBuilderResult = BuilderEarlyReturn | MonitoringPlan
+
+
 __all__ = [
     "REASON_CIRCUIT_BREAKER",
     "REASON_DATA_QUALITY",
@@ -1356,6 +1619,7 @@ __all__ = [
     "REASON_MODE_SWITCH",
     "REASON_TICKET_OPEN",
     "REASON_WATCHLIST",
+    "MONITORING_SIGNAL_PREFIX",
     "WATCHLIST_SUB_REASONS",
     "AssemblyContext",
     "BuilderDegrade",
@@ -1368,6 +1632,9 @@ __all__ = [
     "InstructionPlanBuilder",
     "MandatoryAgentRecords",
     "ModeSwitchProbe",
+    "MonitoringAssemblyContext",
+    "MonitoringBuilderResult",
+    "MonitoringPlan",
     "WatchlistMarketSignal",
     "check_circuit_breaker",
     "check_data_quality",

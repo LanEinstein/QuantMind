@@ -198,6 +198,52 @@ class MessageRenderer:
             lines.append(f"确认执行请回复:确认 {plan.instruction_id}")
         return "\n".join(lines)
 
+    def render_monitoring_sell(
+        self,
+        plan: InstructionPlan,
+        *,
+        anomaly_reason: str,
+    ) -> str:
+        """Render a Line-2 monitoring SELL signal (N-002).
+
+        Distinct header + an anomaly-trigger banner make it unmistakable that
+        this is a position-management exit (Line-2), not a Line-1 stock pick;
+        the shared 7-section dispatch body is reused so the operator sees the
+        same order / risk / position sections. SELL-only — a BUY/HOLD plan is a
+        fail-closed ``ValueError``.
+
+        ``anomaly_reason`` is a deterministic detector string (never LLM) but
+        is still collapsed to a single printable line so no embedded newline
+        can spoof a 【QuantMind …】 header (P2-1 / CLAUDE.md §2.6). The
+        instruction_id is re-validated against the canonical regex
+        (defence-in-depth — the classic injection / leakage point).
+        """
+        if plan.side is not InstructionSide.SELL:
+            raise ValueError(
+                f"render_monitoring_sell is SELL-only, got {plan.side.value}"
+            )
+        if not plan.signal_id.startswith(_MONITORING_SIGNAL_PREFIX):
+            # Fail closed: an ordinary Line-1 SELL must never be mislabeled with
+            # the Line-2 monitoring header. The LINE2-MON- discriminator is the
+            # builder's construction marker (P0-10-amendment-2026-05-25); the
+            # renderer re-checks it so the wire text cannot diverge from it
+            # (codex N-002 P3).
+            raise ValueError(
+                f"render_monitoring_sell requires a Line-2 plan "
+                f"(signal_id {plan.signal_id!r} lacks {_MONITORING_SIGNAL_PREFIX!r})"
+            )
+        self._assert_dispatchable(plan)
+        if not _INSTRUCTION_ID_RE.fullmatch(plan.instruction_id):
+            raise ValueError(
+                f"instruction_id {plan.instruction_id!r} fails canonical pattern"
+            )
+        lines = [
+            "【QuantMind 持仓监控 · 卖出信号】",
+            f"异动触发: {_single_line(anomaly_reason)}",
+            *self._dispatch_body_lines(plan),
+        ]
+        return "\n".join(lines)
+
     def render_no_compliant_trade(
         self,
         *,
@@ -574,6 +620,11 @@ def _strip_controls(text: str) -> str:
 # --- regex / constant tables -----------------------------------------
 
 _INSTRUCTION_ID_RE = re.compile(r"^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL|HOLD)-\d{3}$")
+_MONITORING_SIGNAL_PREFIX = "LINE2-MON-"
+"""Line-2 ``signal_id`` discriminator (mirrors
+``instruction_plan_builder.MONITORING_SIGNAL_PREFIX``). Inlined here so the
+renderer stays decoupled from backend.services; ``render_monitoring_sell`` /
+``render_add_position`` fail closed unless the plan carries it."""
 _RECONCILIATION_ID_RE = re.compile(r"^RECON-\d{8}-\d{3}$")
 _TRADE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STOCK_CODE_RE = re.compile(r"^\d{6}$")
