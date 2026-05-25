@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 

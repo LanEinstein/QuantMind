@@ -55,13 +55,18 @@ class TestEvaluateSignalAccuracy:
 
     @pytest.mark.asyncio
     async def test_buy_correct_when_price_rose(
-        self, evaluator: SignalEvaluator, mock_mongodb: AsyncMock, mock_history: AsyncMock
+        self,
+        evaluator: SignalEvaluator,
+        mock_mongodb: AsyncMock,
+        mock_history: AsyncMock,
     ) -> None:
         mock_mongodb.query_signals.return_value = [
             _make_signal(action="买入", trade_date="2026-04-01"),
         ]
         # Price rose from 100 → 105 (correct for buy)
-        mock_history.get_kline.return_value = _make_kline([100.0, 101.0, 103.0, 104.0, 105.0])
+        mock_history.get_kline.return_value = _make_kline(
+            [100.0, 101.0, 103.0, 104.0, 105.0]
+        )
 
         result = await evaluator.evaluate(lookback_days=30, horizon_days=5)
 
@@ -71,13 +76,18 @@ class TestEvaluateSignalAccuracy:
 
     @pytest.mark.asyncio
     async def test_sell_correct_when_price_fell(
-        self, evaluator: SignalEvaluator, mock_mongodb: AsyncMock, mock_history: AsyncMock
+        self,
+        evaluator: SignalEvaluator,
+        mock_mongodb: AsyncMock,
+        mock_history: AsyncMock,
     ) -> None:
         mock_mongodb.query_signals.return_value = [
             _make_signal(action="卖出", trade_date="2026-04-01"),
         ]
         # Price fell from 100 → 95 (correct for sell)
-        mock_history.get_kline.return_value = _make_kline([100.0, 98.0, 97.0, 96.0, 95.0])
+        mock_history.get_kline.return_value = _make_kline(
+            [100.0, 98.0, 97.0, 96.0, 95.0]
+        )
 
         result = await evaluator.evaluate(lookback_days=30, horizon_days=5)
 
@@ -87,7 +97,10 @@ class TestEvaluateSignalAccuracy:
 
     @pytest.mark.asyncio
     async def test_hold_excluded_from_accuracy(
-        self, evaluator: SignalEvaluator, mock_mongodb: AsyncMock, mock_history: AsyncMock
+        self,
+        evaluator: SignalEvaluator,
+        mock_mongodb: AsyncMock,
+        mock_history: AsyncMock,
     ) -> None:
         mock_mongodb.query_signals.return_value = [
             _make_signal(action="持有", trade_date="2026-04-01"),
@@ -102,7 +115,10 @@ class TestEvaluateSignalAccuracy:
 
     @pytest.mark.asyncio
     async def test_returns_report_structure(
-        self, evaluator: SignalEvaluator, mock_mongodb: AsyncMock, mock_history: AsyncMock
+        self,
+        evaluator: SignalEvaluator,
+        mock_mongodb: AsyncMock,
+        mock_history: AsyncMock,
     ) -> None:
         mock_mongodb.query_signals.return_value = [
             _make_signal(action="买入", trade_date="2026-04-01"),
@@ -131,7 +147,10 @@ class TestEvaluateSignalAccuracy:
 
     @pytest.mark.asyncio
     async def test_skips_signals_without_price_data(
-        self, evaluator: SignalEvaluator, mock_mongodb: AsyncMock, mock_history: AsyncMock
+        self,
+        evaluator: SignalEvaluator,
+        mock_mongodb: AsyncMock,
+        mock_history: AsyncMock,
     ) -> None:
         mock_mongodb.query_signals.return_value = [
             _make_signal(action="买入", trade_date="2026-04-01"),

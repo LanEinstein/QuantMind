@@ -13,7 +13,6 @@ from backend.llm.cost_tracker import (
     flush_to_mongodb,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -126,7 +125,9 @@ class TestFlushToMongoDB:
         from backend.llm.cost_tracker import CostSummary
 
         entries = (
-            DailyCostEntry("2026-04-13", "news_crawler", "deepseek", 500, 200, 3, 0.001),
+            DailyCostEntry(
+                "2026-04-13", "news_crawler", "deepseek", 500, 200, 3, 0.001
+            ),
             DailyCostEntry("2026-04-13", "fund_manager", "qwen", 1000, 500, 2, 0.005),
         )
         summary = CostSummary(

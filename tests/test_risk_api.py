@@ -182,7 +182,10 @@ class TestGetRiskConfig:
 
 
 class TestRiskConfigWriteRemoved:
-    """POST /api/risk/config was destructively deleted (P1-5: only 2 write endpoints)."""
+    """POST /api/risk/config was destructively deleted.
+
+    P1-5: only 2 write endpoints remain.
+    """
 
     async def test_post_config_returns_404_or_405(self, client: AsyncClient) -> None:
         resp = await client.post(

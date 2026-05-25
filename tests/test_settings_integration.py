@@ -8,12 +8,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backend.llm.cost_tracker import (
-    CostSummary,
     aggregate_costs,
     calculate_cost,
 )
 from backend.services.config_service import ConfigService
-
 
 SAMPLE_LLM_YAML = """\
 # LLM Router core configuration

@@ -127,7 +127,10 @@ class TestSettingsWriteRoutesRemoved:
     @pytest.mark.parametrize(
         "path, body",
         [
-            ("/api/settings/llm-config", {"agents": {"news_crawler": {"provider": "qwen"}}}),
+            (
+                "/api/settings/llm-config",
+                {"agents": {"news_crawler": {"provider": "qwen"}}},
+            ),
             ("/api/settings/llm-config/test", {"provider": "deepseek"}),
             ("/api/settings/data-sources/test", {"source": "redis"}),
             ("/api/settings/mirofish", {"agent_count": 500}),

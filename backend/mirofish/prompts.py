@@ -159,7 +159,8 @@ INFLECTION_POINT_PROMPT = """\
         {
             "day": 天数,
             "event": "拐点描述",
-            "inflection_type": "sentiment_reversal|narrative_convergence|cascade_trigger|exhaustion",
+            "inflection_type":
+                "sentiment_reversal|narrative_convergence|cascade_trigger|exhaustion",
             "before_sentiment": {"bullish": 0.xx, "bearish": 0.xx, "neutral": 0.xx},
             "after_sentiment": {"bullish": 0.xx, "bearish": 0.xx, "neutral": 0.xx},
             "confidence": 0到1之间

@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from backend.services.analysis_stream import AnalysisStreamHub, Job
+from backend.services.analysis_stream import AnalysisStreamHub
 
 
 def _fake_event(event_type: str = "agent_completed") -> dict:

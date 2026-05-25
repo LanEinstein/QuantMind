@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +20,6 @@ from backend.broker.models import (
     Trade,
 )
 from backend.main import app
-
 
 # ---------------------------------------------------------------------------
 # Test data factories
@@ -68,7 +67,7 @@ def _make_trades(
                 stamp_tax=2.5,
                 slippage_cost=0.5,
                 net_amount=pnl,
-                traded_at=datetime(d.year, d.month, d.day, 10, 0, tzinfo=timezone.utc),
+                traded_at=datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC),
             )
         )
     return tuple(trades)

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from datetime import UTC, datetime
 
 from backend.agents.models import TradingSignal
 from backend.agents.records import AnalysisRecord, AnalysisRunResult

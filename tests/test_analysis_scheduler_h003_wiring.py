@@ -118,7 +118,7 @@ async def test_soft_breach_activates_kimi_block(
         return_value=_monthly_state(None),
     ), patch(
         "backend.data.analysis_scheduler.SoftDegradeManager"
-    ) as MgrCls, patch(
+    ) as mgr_cls, patch(
         "backend.data.analysis_scheduler.run_analysis",
         new_callable=AsyncMock,
         return_value=_sample_result(),
@@ -126,7 +126,7 @@ async def test_soft_breach_activates_kimi_block(
         mgr_instance = MagicMock()
         mgr_instance.activate_kimi_escalation_block = activate
         mgr_instance.maybe_fire_monthly_milestone = fire
-        MgrCls.return_value = mgr_instance
+        mgr_cls.return_value = mgr_instance
         await scheduler._run_and_persist("600519")
 
     activate.assert_awaited_once()
@@ -157,7 +157,7 @@ async def test_monthly_milestone_dispatches_via_alert_dispatcher(
         return_value=_monthly_state(0.50),
     ), patch(
         "backend.data.analysis_scheduler.SoftDegradeManager"
-    ) as MgrCls, patch(
+    ) as mgr_cls, patch(
         "backend.data.analysis_scheduler.run_analysis",
         new_callable=AsyncMock,
         return_value=_sample_result(),
@@ -165,7 +165,7 @@ async def test_monthly_milestone_dispatches_via_alert_dispatcher(
         mgr_instance = MagicMock()
         mgr_instance.activate_kimi_escalation_block = activate
         mgr_instance.maybe_fire_monthly_milestone = fire
-        MgrCls.return_value = mgr_instance
+        mgr_cls.return_value = mgr_instance
         await scheduler._run_and_persist("600519")
 
     fire.assert_awaited_once()
@@ -198,7 +198,7 @@ async def test_milestone_skipped_when_not_fired(
         return_value=_monthly_state(0.50),
     ), patch(
         "backend.data.analysis_scheduler.SoftDegradeManager"
-    ) as MgrCls, patch(
+    ) as mgr_cls, patch(
         "backend.data.analysis_scheduler.run_analysis",
         new_callable=AsyncMock,
         return_value=_sample_result(),
@@ -206,7 +206,7 @@ async def test_milestone_skipped_when_not_fired(
         mgr_instance = MagicMock()
         mgr_instance.maybe_fire_monthly_milestone = fire
         mgr_instance.activate_kimi_escalation_block = AsyncMock(return_value=False)
-        MgrCls.return_value = mgr_instance
+        mgr_cls.return_value = mgr_instance
         await scheduler._run_and_persist("600519")
     scheduler._alert_dispatcher.fire.assert_not_awaited()
 
@@ -233,7 +233,7 @@ async def test_hard_breach_still_evaluates_monthly_milestone(
         return_value=_monthly_state(1.00),
     ), patch(
         "backend.data.analysis_scheduler.SoftDegradeManager"
-    ) as MgrCls, patch(
+    ) as mgr_cls, patch(
         "backend.data.analysis_scheduler.run_analysis",
         new_callable=AsyncMock,
         return_value=_sample_result(),
@@ -241,7 +241,7 @@ async def test_hard_breach_still_evaluates_monthly_milestone(
         mgr_instance = MagicMock()
         mgr_instance.maybe_fire_monthly_milestone = fire
         mgr_instance.activate_kimi_escalation_block = AsyncMock(return_value=False)
-        MgrCls.return_value = mgr_instance
+        mgr_cls.return_value = mgr_instance
         signal = await scheduler._run_and_persist("600519")
 
     # Hard breach: analysis skipped + cost-skip record persisted.

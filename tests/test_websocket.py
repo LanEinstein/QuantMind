@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from backend.api.websocket import (
     ConnectionManager,
     _translate_redis_message,
-    manager,
 )
 from backend.data.publisher import CHANNEL_MARKET, CHANNEL_NEWS, CHANNEL_PORTFOLIO
-
 
 # ---------------------------------------------------------------------------
 # ConnectionManager tests
