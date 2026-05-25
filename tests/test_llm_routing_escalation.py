@@ -304,14 +304,17 @@ async def test_cost_tracker_aggregate_uses_utc_date() -> None:
 
 
 @pytest.mark.integration
-def test_production_routing_locked_to_fund_manager_only() -> None:
-    """Production routing config must enable tiered routing only on
-    agents whose prompt produces JSON with a top-level ``confidence``.
+def test_production_routing_has_no_tiered_agents() -> None:
+    """P0-10-amendment-2026-05-25: the double-line go-live routes every
+    mandatory agent directly to qwen, so NO production agent uses tiered
+    (triage→escalation) routing.
 
-    Currently that is fund_manager alone — bull/bear/risk/intelligence
-    emit prose. Wiring those agents would force ``parse_failed`` on
-    every triage call and double cost instead of saving (codex R1/R4
-    P1). This test pins the contract.
+    Previously fund_manager carried a qwen-triage→kimi-escalation block
+    (the only JSON-confidence agent). The amendment drops it: fund_manager
+    now calls qwen3.7-max directly for stronger deep reasoning, and the 3
+    other mandatory agents call qwen3.6-plus directly. This test pins the
+    new contract — any reintroduced tiered routing must be a deliberate
+    amendment, not a silent regression.
     """
     from backend.llm.providers import load_router_config
 
@@ -321,17 +324,23 @@ def test_production_routing_locked_to_fund_manager_only() -> None:
     routed = {
         name for name, agent in cfg.agents.items() if agent.routing is not None
     }
-    assert routed == {"fund_manager"}, (
-        "Tiered routing must only target JSON-emitting agents; "
-        f"unexpected: {routed - {'fund_manager'}}"
+    assert routed == set(), (
+        "No production agent should use tiered routing after the qwen "
+        f"go-live amendment; unexpected: {routed}"
     )
 
+    # The 4 mandatory agents are direct qwen with deepseek fallback;
+    # fund_manager uses the stronger qwen3.7-max deep-reasoning model.
+    for name in ("fundamental_analyst", "technical_analyst", "risk_officer"):
+        agent = cfg.agents[name]
+        assert agent.provider == "qwen"
+        assert agent.model == "qwen3.6-plus"
+        assert agent.routing is None
     fm = cfg.agents["fund_manager"]
-    assert fm.routing.triage_provider == "qwen"
-    assert fm.routing.triage_model == "qwen3.6-plus"
-    assert fm.routing.escalation_provider == "kimi"
-    assert fm.routing.escalation_model == "kimi-k2.6"
-    assert fm.routing.escalation_condition.confidence_lt == 0.6
+    assert fm.provider == "qwen"
+    assert fm.model == "qwen3.7-max"
+    assert fm.routing is None
+    assert fm.fallback.provider == "deepseek"
 
 
 @pytest.mark.unit

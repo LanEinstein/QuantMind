@@ -146,34 +146,36 @@ agents:
     frequency: "per_trading_day"
     task: "构建看空论点、寻找下跌风险"
 
+  # P0-10-amendment-2026-05-25: double-line MVP go-live routes all 4
+  # mandatory agents to qwen with deepseek fallback (kimi → qwen). The 3
+  # analyst/risk agents use qwen3.6-plus (DashScope free quota → ~¥0/day);
+  # fund_manager (final decision) uses qwen3.7-max for stronger deep
+  # reasoning (owner pick; GPQA Diamond 92.3% > kimi 90.5%). fund_manager
+  # routing block dropped (triage/escalation meaningless once base is qwen;
+  # shadow_baseline already proves a routing-less block is valid). thinking
+  # disabled (qwen emits no reasoning_content). cost_guard ¥20/day hard +
+  # pre-reservation unchanged. Runtime-immutable: git diff + amendment + restart.
   risk_officer:
     name: "风控官"
-    provider: kimi
-    model: kimi-k2.6
-    fallback: { provider: qwen, model: qwen3.6-plus }
+    provider: qwen
+    model: qwen3.6-plus
+    fallback: { provider: deepseek, model: deepseek-v4-pro }
     thinking:
-      type: enabled
-      max_tokens: 6000
-      keep: last_round
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "per_trading_day"
     task: "投组风险评估、仓位建议、否决权"
 
   fund_manager:
     name: "基金经理（终局决策）"
-    provider: kimi
-    model: kimi-k2.6
+    provider: qwen
+    model: qwen3.7-max
     fallback: { provider: deepseek, model: deepseek-v4-pro }
-    routing:
-      triage_provider: qwen
-      triage_model: qwen3.6-plus
-      escalation_provider: kimi
-      escalation_model: kimi-k2.6
-      escalation_condition:
-        confidence_lt: 0.6
     thinking:
-      type: enabled
-      max_tokens: 8000
-      keep: last_round
+      type: disabled
+      max_tokens: 0
+      keep: none
     frequency: "per_trading_day"
     task: "综合所有Agent报告，输出最终买卖信号"
 

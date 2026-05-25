@@ -325,8 +325,11 @@ _PROD_THINKING_TABLE: dict[str, tuple[str, int, str]] = {
     "intelligence_officer": ("enabled", 10_000, "last_round"),
     "bull_researcher": ("enabled", 8_000, "all"),
     "bear_researcher": ("enabled", 8_000, "all"),
-    "risk_officer": ("enabled", 6_000, "last_round"),
-    "fund_manager": ("enabled", 8_000, "last_round"),
+    # P0-10-amendment-2026-05-25: risk_officer + fund_manager routed to
+    # qwen for the double-line go-live (kimi → qwen); qwen emits no
+    # reasoning_content, so thinking is disabled like the other qwen agents.
+    "risk_officer": ("disabled", 0, "none"),
+    "fund_manager": ("disabled", 0, "none"),
     # Phase 5B exit shadow-test baseline — kimi-only clone of
     # fund_manager (no routing block) consumed only by
     # backend.services.shadow_runner. Same thinking config so the
