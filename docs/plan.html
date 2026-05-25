@@ -2426,7 +2426,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "5a314dd", session_date: "2026-05-24", notes: "飞书 BUY 4 视觉区分模板全经 renderer.py(LLM 不拼接 wire text):BuySignalTemplate(NORMAL_COMPLIANT/ETF_CONCENTRATION_EXCEPTION/NO_COMPLIANT_TRADE/PAPER_ONLY)。render_buy_signal(3 含单的模板共享 7 段 body=抽出的 _dispatch_body_lines,既有 render_instruction_plan golden snapshot 不变;ETF 例外追加确认块嵌入 ^QM- 正则校验 instruction_id;BUY-only + VALIDATED/DISPATCHED 守门)+ render_no_compliant_trade(无单结果 + _single_line 防 newline 伪造 header)。candidate_selector + agents_team 子任务 CLAUDE.md todo→done(模块隔离由既有 AST contract 测试覆盖,[L-002] 绿)。codex 1-cycle+verify PASS:1 P1(StrEnum 原始字符串模板 id 过 membership/header 查找但 ETF 身份比较 by-identity 为假→静默丢弃确认块)→ render_buy_signal 入口 coerce template 为 enum(非法 fail-closed)+ 3 回归。43 renderer/buy-signal 测试;全量 3506 passed;ruff+redline 绿。ETF_CONCENTRATION_EXCEPTION 确认流是 instruction_id 泄漏经典点,须合规正则。"
       },
       {
-        id: "N-001", phase: "N 持仓监控", status: "todo", priority: "P0",
+        id: "N-001", phase: "N 持仓监控", status: "doing", priority: "P0",
         title: "Line-2 异动检测(z-score/EWMA/布林,MVP)",
         summary: "持仓盘面/量能/return 异动:rolling z-score/EWMA/布林(MVP 只这些 + 可选一个无监督检测器);30s 快照节奏 × 持仓数,实时可行。读 K 快照。",
         scope: "backend/monitoring/anomaly.py",
@@ -2434,10 +2434,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "z-score/EWMA/布林异动检出 + 30s 节奏实时 + 可解释 + 读版本化快照;无监督检测器可选。",
         tests: "异动注入检出 + 30s 节奏 + 误报率门槛(精度优先)。",
         sources: "P0-8(监控数据), 知识图谱+异动调研 dossier, Codex round-2 §7(异动分级)",
-        commit: "", session_date: "", notes: "Codex:MVP 不上 IsolationForest/HMM/ruptures/OFI(Phase T);监控需精度>模型多样性防告警疲劳。"
+        commit: "", session_date: "2026-05-25", notes: "Codex:MVP 不上 IsolationForest/HMM/ruptures/OFI(Phase T);监控需精度>模型多样性防告警疲劳。"
       },
       {
-        id: "N-002", phase: "N 持仓监控", status: "todo", priority: "P0",
+        id: "N-002", phase: "N 持仓监控", status: "doing", priority: "P0",
         title: "异动 → 飞书 SELL 信号(卖出价/量,读 available_volume)",
         summary: "异动触发 → 飞书 SELL 提醒含卖出价/量;SELL 读 available_volume(T+1 已结算,非总持仓)。经 renderer.py;走决策群非告警群。",
         scope: "backend/monitoring/sell_signal.py, backend/integrations/feishu/renderer.py",
@@ -2445,10 +2445,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "SELL 读 available_volume(已结算)+ 经 renderer + 决策群 + instruction_id 合规 + 经 RiskEngine。",
         tests: "T+1 可卖股数正确 + 模板 golden + 风控通过。",
         sources: "R0 §8(T+1 已建 mock_broker.py:592), 异动调研 dossier",
-        commit: "", session_date: "", notes: "T+1 已建:available_volume :392 + advance_trading_day :592 + RiskEngine Check4 :331。"
+        commit: "", session_date: "2026-05-25", notes: "T+1 已建:available_volume :392 + advance_trading_day :592 + RiskEngine Check4 :331。"
       },
       {
-        id: "N-003", phase: "N 持仓监控", status: "todo", priority: "P0",
+        id: "N-003", phase: "N 持仓监控", status: "doing", priority: "P0",
         title: "补仓检测(Van Tharp + ATR;禁马丁格尔/熊市禁补)→ 飞书 ADD",
         summary: "补仓 = 固定分数(Van Tharp)sizing + ATR 移动止损;要求 oversold + 量能企稳 + 无结构性破位 + 仓位余量;禁马丁格尔;熊市禁补。→ 飞书 ADD 提醒,经 RiskEngine + 人工。",
         scope: "backend/monitoring/add_position.py",
@@ -2456,10 +2456,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "补仓四条件齐 + 禁马丁格尔 + 熊市(regime)禁补 + 经 RiskEngine 14-check + 飞书人工。",
         tests: "补仓条件 + 马丁格尔拒绝 + 熊市禁补 + 风控通过。",
         sources: "异动调研 dossier(Van Tharp/ATR), P0-7(风控)",
-        commit: "", session_date: "", notes: "Codex/调研:martingale forbidden,bear regime 禁补。"
+        commit: "", session_date: "2026-05-25", notes: "Codex/调研:martingale forbidden,bear regime 禁补。"
       },
       {
-        id: "N-004", phase: "N 持仓监控", status: "todo", priority: "P0",
+        id: "N-004", phase: "N 持仓监控", status: "doing", priority: "P0",
         title: "suspension 接入降级 + 异动 LLM 触发式(同一 utc_date 计数器)",
         summary: "停牌持仓 → Line-2 SELL 干净降级(非失败订单);suspension 作快照字段。Line-2 纯量化轮询(零 LLM);LLM 仅触发式(去重 + max_anomaly_llm_per_day),写同一 llm:usage:{utc_date} 计数器。",
         scope: "backend/monitoring/degrade.py, backend/data/suspension.py(接入), backend/services/cost_guard.py",
@@ -2467,10 +2467,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "停牌持仓干净降级 + Line-2 轮询零 LLM + 触发式 LLM 去重+日上限+写同一计数器。",
         tests: "停牌降级非失败 + 轮询 0 LLM + 触发式计入 utc_date 计数器。",
         sources: "P1-7-amendment-2026-05-24, R0 §8, Codex round-2 §(b)",
-        commit: "", session_date: "", notes: "Codex:Line-2 每异动调 LLM 会 10:00 前烧爆预算;须触发式 + 同一计数器防绕过。"
+        commit: "", session_date: "2026-05-25", notes: "Codex:Line-2 每异动调 LLM 会 10:00 前烧爆预算;须触发式 + 同一计数器防绕过。"
       },
       {
-        id: "N-005", phase: "N 持仓监控", status: "todo", priority: "P0",
+        id: "N-005", phase: "N 持仓监控", status: "doing", priority: "P0",
         title: "backend/monitoring/ 模块 + CLAUDE.md + ★MVP gate 双线端到端",
         summary: "monitoring 子任务 CLAUDE.md + import 隔离。★MVP gate:双线端到端(全市场筛→预算→候选→4 agent 辩论→14-check→飞书 BUY;持仓异动→飞书 SELL/ADD)全跑在版本化快照上,N 日预演 harness(复用 J-005)验证。",
         scope: "backend/monitoring/CLAUDE.md, tests/monitoring/, scripts/simulate_n_trading_days.py(复用)",
@@ -2478,7 +2478,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "双线端到端跑通 on 快照 + N 日预演无误触 reset + 0 真实 LLM(stub)+ import 隔离 + 覆盖率 ≥80%。",
         tests: "端到端 5/10 日预演 + 双线信号产出 + 红线全绿(单一构造点 + provenance + 预算 + 隔离)。",
         sources: "R0 §7 MVP, P0-6(验收框架复用), J-005",
-        commit: "", session_date: "", notes: "MVP 里程碑(Owner 2026-05-24 确认):无自进化/无 MiroFish 核心/无全异动栈。"
+        commit: "", session_date: "2026-05-25", notes: "MVP 里程碑(Owner 2026-05-24 确认):无自进化/无 MiroFish 核心/无全异动栈。"
       },
       {
         id: "O-001", phase: "O MiroFish 核心", status: "todo", priority: "P1",
