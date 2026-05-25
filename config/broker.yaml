@@ -3,7 +3,12 @@
 active: mock  # mock / qmt / vnpy
 
 mock:
-  initial_capital: 1000000
+  # P1-2.A-amendment-2026-05-25: mirrors owner's THS simulated account
+  # (¥100k budget). 1,000,000 → 100,000. Changing this is an account
+  # lifecycle event (archive MODE_SWITCH_RESET + reset_to_snapshot +
+  # restart), NOT a bare edit — recovery.py uses snapshot.initial_capital
+  # when a snapshot exists. ¥100k = Normal budget tier (P0-7 trio applies).
+  initial_capital: 100000
   commission_rate: 0.0003          # 0.03%
   stamp_tax_rate: 0.001            # 0.1% (sell only)
   slippage_bps: 2                  # Legacy fallback when board lookup misses
