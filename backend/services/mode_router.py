@@ -1,12 +1,18 @@
 """ModeRouter — run-mode lifecycle owner (D-005 / P0-1 §1).
 
-Two run modes are locked by P0-1 (CLAUDE.md §2.1):
+Two run modes are locked by P0-1 (CLAUDE.md §2.1). They are **mutually
+exclusive outbound routing targets**, not an overlay (U-B2 fix, Codex
+P0 #4 — see :func:`backend.services.run_mode.resolve_route_mode`):
 
-* ``simulation_auto`` — always-on. Every VALIDATED InstructionPlan is
-  routed through :class:`SimulationExecutor` to the MockBroker.
-* ``feishu_interactive`` — opt-in overlay; toggled by
-  ``FEISHU_INTERACTIVE_ENABLED``. Adds the human-in-loop Feishu fan-out
-  on top of the simulation route.
+* ``simulation_auto`` — always-on baseline. While it owns the route, every
+  VALIDATED InstructionPlan is auto-filled through
+  :class:`SimulationExecutor` onto the MockBroker.
+* ``feishu_interactive`` — opt-in, toggled by ``FEISHU_INTERACTIVE_ENABLED``
+  and gated by acceptance. While it owns the route, the human-in-loop
+  Feishu dispatch sends the plan to the owner's decision group for manual
+  execution; the SimulationExecutor must **not** auto-fill the same plan
+  (doing both would double-execute). ``simulation_auto`` still backs the
+  broker / acceptance loop, but it no longer auto-routes plans.
 
 The toggle between the two modes is treated as an account lifecycle
 event:
