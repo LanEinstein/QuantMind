@@ -685,6 +685,8 @@ class InstructionPlanBuilder:
         self,
         early: BuilderEarlyReturn,
         candidate: CandidateInputs,
+        *,
+        extra_payload: dict[str, str | int | float | bool | None] | None = None,
     ) -> None:
         """Persist a BUILDER_EARLY_RETURN audit event for the early return.
 
@@ -693,6 +695,11 @@ class InstructionPlanBuilder:
         can list every candidate the Builder bounced. ``resource_id``
         carries the candidate code so the front-end Reason drawer can
         join Builder events with the matching watchlist tile.
+
+        ``extra_payload`` lets the Line-2 monitoring path stamp the
+        ``LINE2-MON-`` ``signal_id`` so a bounced Line-2 candidate is
+        distinguishable from a Line-1 freeze in the audit trail
+        (amendment §2.3 — codex N-005 review).
         """
 
         merged_payload: dict[str, str | int | float | bool | None] = {
@@ -701,6 +708,8 @@ class InstructionPlanBuilder:
             "side": candidate.side.value,
             "evaluated_at": candidate.now.astimezone(_SH).isoformat(),
         }
+        if extra_payload:
+            merged_payload.update(extra_payload)
         merged_payload.update(early.payload)
 
         log.warning(
@@ -1034,7 +1043,12 @@ class InstructionPlanBuilder:
 
         early = self._monitoring_early_returns(candidate)
         if early is not None:
-            await self._record_audit(early, candidate)
+            # Stamp the LINE2-MON- signal_id so a bounced Line-2 candidate is
+            # distinguishable from a Line-1 freeze in the audit trail.
+            await self._record_audit(
+                early, candidate,
+                extra_payload={"signal_id": context.signal_id, "line": "line2"},
+            )
             return early
 
         order = _derive_pending_order(
@@ -1124,14 +1138,27 @@ class InstructionPlanBuilder:
         instruction_id = make_instruction_id(
             context.now, context.stock_code, side, context.seq
         )
-        position_summary = _derive_position_summary(
-            account=context.account,
-            positions=context.positions,
-            order_code=context.stock_code,
-            order_volume=context.proposed_volume,
-            order_price=context.proposed_limit_price,
-            side=side,
-        )
+        if context.account.total_assets <= 0:
+            # A degenerate NAV (e.g. a degraded MTM zeroing the broker mirror)
+            # must not crash a Line-2 SELL exit: RiskEngine checks 5/8 early-
+            # return passed=True for SELL, so a SELL reaches here without the
+            # zero-NAV guard that _derive_position_summary asserts (codex N-005
+            # review). Degrade to a zeroed summary rather than raising.
+            position_summary = PositionSummary(
+                pre_position_pct=0.0, post_position_pct=0.0,
+                pre_total_position_pct=0.0, post_total_position_pct=0.0,
+                pre_cash=max(0.0, context.account.available_cash),
+                post_cash=max(0.0, context.account.available_cash),
+            )
+        else:
+            position_summary = _derive_position_summary(
+                account=context.account,
+                positions=context.positions,
+                order_code=context.stock_code,
+                order_volume=context.proposed_volume,
+                order_price=context.proposed_limit_price,
+                side=side,
+            )
         assert context.data_snapshot is not None  # noqa: S101 — guarded in caller
         return InstructionPlan(
             instruction_id=instruction_id,

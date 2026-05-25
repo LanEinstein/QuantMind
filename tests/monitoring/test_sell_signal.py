@@ -366,6 +366,104 @@ async def test_sell_frozen_by_open_ticket(
     assert result.source is FreezeSource.TICKET_OPEN
 
 
+async def test_sell_freeze_audit_stamps_line2_signal_id(
+    tmp_path, held_position, account, risk_engine, stock_meta, daily_state,
+    policy, passing_signal, quiet_breaker, clean_data_quality,
+) -> None:
+    # A bounced Line-2 candidate's audit event must carry the LINE2-MON-
+    # signal_id so it is distinguishable from a Line-1 freeze (codex N-005).
+    collection = InMemoryAuditCollection()
+    own_builder = InstructionPlanBuilder(
+        audit_store=AuditStore(collection, jsonl_path=tmp_path / "a.jsonl")
+    )
+    ticket = ReconciliationTicket(
+        ticket_id="RECON-20260515-002", trade_date="2026-05-15", created_at=_NOW,
+        deviation_report=DeviationReport(
+            ticket_id="RECON-20260515-002", overall_passed=False,
+            deviations=(FieldDeviation(
+                field="cash", expected="90000.00", actual="89998.00",
+                abs_diff=2.0, threshold=1.0, passed=False),),
+        ),
+        expected_snapshot_id="s", actual_reconciliation_id="r",
+        status=ReconciliationTicketStatus.OPEN,
+    )
+    intent = evaluate_sell_intents(_down_scan(), (held_position,))[0]
+    ctx = make_sell_context(
+        intent, now=_NOW, signal_id="LINE2-MON-20260515-9", seq=1,
+        snapshot_at=_SNAP_AT, account=account, positions=(held_position,),
+        prev_close=4.5, daily_state=daily_state, stock_meta=stock_meta,
+        risk_engine=risk_engine, open_tickets=(ticket,),
+        circuit_breaker=quiet_breaker, data_quality=clean_data_quality,
+        watchlist_policy=policy, watchlist_signal=passing_signal,
+    )
+    result = await own_builder.assemble_monitoring_plan(ctx)
+    assert isinstance(result, BuilderEarlyReturn)
+    assert collection.documents
+    payload = collection.documents[-1]["payload"]
+    assert payload["signal_id"] == "LINE2-MON-20260515-9"
+    assert payload["line"] == "line2"
+
+
+async def test_sell_zero_nav_degrades_not_crash(
+    builder, held_position, risk_engine, stock_meta, daily_state, policy,
+    passing_signal, quiet_breaker, clean_data_quality,
+) -> None:
+    # A degenerate NAV (total_assets=0) must NOT crash a SELL exit (RiskEngine
+    # checks 5/8 pass SELL without a zero-NAV guard) — it degrades to a zeroed
+    # position summary (codex N-005). RiskEngine check 5 fails with zero assets
+    # for... SELL passes check 5; the plan builds with a zeroed summary.
+    zero_account = AccountInfo(
+        total_assets=0.0, available_cash=0.0, frozen_cash=0.0, market_value=0.0,
+        total_pnl=0.0, total_pnl_pct=0.0, initial_capital=100_000.0,
+    )
+    intent = evaluate_sell_intents(_down_scan(), (held_position,))[0]
+    ctx = make_sell_context(
+        intent, now=_NOW, signal_id="LINE2-MON-20260515-1", seq=7,
+        snapshot_at=_SNAP_AT, account=zero_account, positions=(held_position,),
+        prev_close=4.5, daily_state=daily_state, stock_meta=stock_meta,
+        risk_engine=risk_engine, open_tickets=(), circuit_breaker=quiet_breaker,
+        data_quality=clean_data_quality, watchlist_policy=policy,
+        watchlist_signal=passing_signal,
+    )
+    # Must not raise ValueError — returns a MonitoringPlan (REJECTED by the
+    # engine's zero-assets check, or VALIDATED with a zeroed summary).
+    result = await builder.assemble_monitoring_plan(ctx)
+    assert isinstance(result, MonitoringPlan)
+    assert result.plan.side is InstructionSide.SELL
+
+
+async def test_suffixed_position_code_sells_end_to_end(
+    builder, account, risk_engine, stock_meta, daily_state, policy,
+    passing_signal, clean_data_quality, quiet_breaker,
+) -> None:
+    # A position whose code carries a .SH suffix must (1) match the anomaly
+    # detector's bare-6-digit code so an intent is produced, AND (2) be
+    # normalised in the context so RiskEngine exact-matches the bare order code
+    # downstream — otherwise the SELL is rejected as "No position" (codex N-005
+    # end-to-end suffix safety, not just the intent lookup).
+    suffixed = Position(
+        code="510300.SH", volume=300, available_volume=300, cost_price=4.6,
+        market_value=1296.0, unrealized_pnl=0.0, unrealized_pnl_pct=0.0,
+    )
+    intents = evaluate_sell_intents(_down_scan(), (suffixed,))
+    assert len(intents) == 1 and intents[0].code == _CODE
+    ctx = make_sell_context(
+        intents[0], now=_NOW, signal_id="LINE2-MON-20260515-1", seq=1,
+        snapshot_at=_SNAP_AT, account=account, positions=(suffixed,),
+        prev_close=4.5, daily_state=daily_state, stock_meta=stock_meta,
+        risk_engine=risk_engine, open_tickets=(), circuit_breaker=quiet_breaker,
+        data_quality=clean_data_quality, watchlist_policy=policy,
+        watchlist_signal=passing_signal,
+    )
+    # The downstream positions tuple is normalised to bare codes.
+    assert all("." not in p.code for p in ctx.positions)
+    result = await builder.assemble_monitoring_plan(ctx)
+    # RiskEngine fund_sufficiency now finds the holding (bare match) → VALIDATED.
+    assert isinstance(result, MonitoringPlan)
+    assert result.plan.status is InstructionStatus.VALIDATED
+    assert result.plan.stock_code == _CODE
+
+
 async def test_sell_rejected_when_risk_engine_blocks(
     builder, held_position, account, risk_engine, stock_meta,
     policy, passing_signal, quiet_breaker, clean_data_quality,

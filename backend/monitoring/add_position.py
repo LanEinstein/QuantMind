@@ -51,6 +51,7 @@ from backend.broker.models import AccountInfo, Position  # noqa: TID251
 from backend.data.data_quality import DataQualityState  # noqa: TID251
 from backend.marketdata_snapshot import MarketDataSnapshot
 from backend.models.instruction import DataSnapshot, InstructionSide
+from backend.monitoring.sell_signal import normalize_position_codes
 from backend.risk.circuit_breaker import CircuitBreaker  # noqa: TID251
 from backend.risk.daily_state import DailyTradingState  # noqa: TID251
 from backend.risk.engine import RiskEngine  # noqa: TID251
@@ -407,7 +408,10 @@ def evaluate_add_intents(
     """
     cfg = config or AddConfig()
     names = name_by_code or {}
-    pos_by_code = {p.code: p for p in positions}
+    # Normalise the position code suffix (.SH/.SZ) so the series lookup matches
+    # parse_held_series' bare-6-digit codes (the downstream positions tuple is
+    # normalised the same way in make_add_context — codex N-005).
+    pos_by_code = {p.code.split(".")[0].strip(): p for p in positions}
 
     intents: list[AddIntent] = []
     rejections: list[AddRejection] = []
@@ -545,7 +549,9 @@ def make_add_context(
         watchlist_signal=watchlist_signal,
         risk_engine=risk_engine,
         account=account,
-        positions=positions,
+        # Bare-code positions so RiskEngine exact-matches the bare order code
+        # for a suffixed holding (end-to-end suffix safety — codex N-005).
+        positions=normalize_position_codes(positions),
         prev_close=prev_close,
         daily_state=daily_state,
         stock_meta=stock_meta,

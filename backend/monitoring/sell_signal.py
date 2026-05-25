@@ -80,6 +80,32 @@ class SellIntent:
     trigger_kind: AnomalyKind
 
 
+def _bare(code: str) -> str:
+    """Strip a ``.SH`` / ``.SZ`` suffix → bare 6-digit code."""
+    return code.split(".")[0].strip()
+
+
+def normalize_position_codes(
+    positions: tuple[Position, ...],
+) -> tuple[Position, ...]:
+    """Return ``positions`` with every code reduced to its bare 6-digit form.
+
+    The anomaly detector + the deterministic intents use bare codes, but
+    ``Position.code`` is an unconstrained ``str``; a suffixed holding (e.g.
+    ``510300.SH``) would otherwise NOT exact-match the order code inside
+    RiskEngine (``_check_fund_sufficiency`` / ``_check_position_limit``) and a
+    valid SELL exit would be rejected as "No position" (codex N-005). Normalising
+    the tuple BEFORE it flows into the builder keeps the intent / order /
+    positions / stock_meta code identity aligned end-to-end. A position whose
+    code is already bare is returned unchanged.
+    """
+    out: list[Position] = []
+    for p in positions:
+        bare = _bare(p.code)
+        out.append(p if bare == p.code else p.model_copy(update={"code": bare}))
+    return tuple(out)
+
+
 def is_sell_trigger(signal: AnomalySignal) -> bool:
     """True if an anomaly is an adverse (DOWN) risk-exit trigger."""
     return (
@@ -103,7 +129,10 @@ def evaluate_sell_intents(
     stable, replayable results.
     """
     names = name_by_code or {}
-    pos_by_code = {p.code: p for p in positions}
+    # Normalise the position code suffix (.SH/.SZ) so the lookup matches the
+    # anomaly detector's bare-6-digit codes (the downstream positions tuple is
+    # normalised the same way in make_sell_context — codex N-005).
+    pos_by_code = {_bare(p.code): p for p in positions}
 
     strongest: dict[str, AnomalySignal] = {}
     for sig in scan_result.signals:
@@ -200,7 +229,9 @@ def make_sell_context(
         watchlist_signal=watchlist_signal,
         risk_engine=risk_engine,
         account=account,
-        positions=positions,
+        # Bare-code positions so RiskEngine exact-matches the bare order code
+        # for a suffixed holding (end-to-end suffix safety — codex N-005).
+        positions=normalize_position_codes(positions),
         prev_close=prev_close,
         daily_state=daily_state,
         stock_meta=stock_meta,
@@ -233,4 +264,5 @@ __all__ = [
     "evaluate_sell_intents",
     "is_sell_trigger",
     "make_sell_context",
+    "normalize_position_codes",
 ]

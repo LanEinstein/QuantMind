@@ -1178,6 +1178,38 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ----------------------------------------------------------------------
+# N-005 / P0-10-amendment-2026-05-25 §2.5 — Line-2 monitoring module
+# isolation. backend/monitoring must never import backend.{llm,agents,
+# agents_team,mirofish}: the SELL/ADD direction is a deterministic quant
+# observation, never an LLM output (the triggered LLM is reached only via
+# cost_guard + Redis, orchestrated OUTSIDE this module). agents_team is the
+# Line-1 LLM debate path (run_shortlist / fund_manager) — forbidding it stops
+# the multi-agent LLM debate leaking back into Line-2 (codex N-005).
+# backend.{broker,data,risk,services,integrations,marketdata_snapshot,models}
+# ARE allowed and not scanned. The regex covers dotted, name-level
+# (``from backend import llm``) and relative (``from ..agents import x``)
+# forms; the AST pytest (tests/monitoring/test_module_contract.py) is the
+# authoritative guard and this grep is the standalone-CI fast gate.
+# ----------------------------------------------------------------------
+echo
+yellow "[N-005] Line-2 monitoring isolation (no backend.{llm,agents,agents_team,mirofish})"
+if [ -d backend/monitoring ]; then
+  _N005_NAMES='llm|agents_team|agents|mirofish'
+  N005_OUT="$(grep -rnE \
+    "import +backend\.($_N005_NAMES)\b|from +backend\.($_N005_NAMES)\b|from +backend +import +.*\b($_N005_NAMES)\b|from +\.+($_N005_NAMES)\b|from +\.+ +import +.*\b($_N005_NAMES)\b" \
+    backend/monitoring 2>/dev/null || true)"
+  if [ -n "$N005_OUT" ]; then
+    red "  FAIL  monitoring module imports a forbidden subpackage:"
+    printf '%s\n' "$N005_OUT" | sed 's/^/        /'
+    FAIL=$((FAIL + 1))
+  else
+    green "  ok    backend/monitoring free of llm/agents/agents_team/mirofish (Line-2 pure quant)"
+  fi
+else
+  green "  ok    no monitoring module present yet (skip)"
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."
