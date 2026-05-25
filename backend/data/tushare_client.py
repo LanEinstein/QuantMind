@@ -94,6 +94,7 @@ class TusharePro(Protocol):
     def fina_indicator_vip(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_daily(self, **kwargs: Any) -> pd.DataFrame: ...
     def fund_daily(self, **kwargs: Any) -> pd.DataFrame: ...
+    def stock_basic(self, **kwargs: Any) -> pd.DataFrame: ...
 
 
 @runtime_checkable
@@ -257,6 +258,24 @@ class TushareClient:
         """Full-market ETF/LOF daily OHLCV for a trade date."""
         self._check_trade_date(trade_date)
         return await self._fetch("fund_daily", {"trade_date": trade_date})
+
+    async def stock_basic(
+        self,
+        *,
+        list_status: str = "L",
+        fields: str = "ts_code,name,list_date",
+    ) -> pd.DataFrame:
+        """Listed-stock reference table (``ts_code`` / ``name`` / ``list_date``).
+
+        Not date-specific — it is the current listing roster. The Line-1
+        frame assembler (U-B1) joins it to per-date ``daily`` rows for the
+        display name and the listing-age exclusion (IPO / sub-new). Tushare
+        ``stock_basic`` is rate-limited to ~50 calls/min, so the assembler
+        fetches it once per run (and reuses the PIT snapshot on re-runs).
+        """
+        return await self._fetch(
+            "stock_basic", {"list_status": list_status, "fields": fields}
+        )
 
 
 __all__ = [
