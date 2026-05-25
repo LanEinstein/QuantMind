@@ -96,6 +96,15 @@ _RESERVATION_TTL_SECONDS = 3600
 _DEBATE_COUNT_KEY_PREFIX = "llm:debates"
 _DEBATE_COUNT_TTL_SECONDS = 36 * 3600
 
+# Line-2 anomaly-triggered LLM gate (N-004). The count key bounds the daily
+# trigger budget (max_anomaly_llm_per_day); the dedup SET stops the same
+# (code, kind) trigger from firing twice in one UTC day. Both live in the
+# ``llm:anomaly`` namespace, and the actual spend still reserves on the unified
+# ``llm:usage`` counter via reserve_budget so Line-2 cannot bypass the ¥20 cap.
+_ANOMALY_COUNT_KEY_PREFIX = "llm:anomaly"
+_ANOMALY_DEDUP_KEY_PREFIX = "llm:anomaly:dedup"
+_ANOMALY_TTL_SECONDS = 36 * 3600
+
 
 # ---------------------------------------------------------------------------
 # State envelopes
@@ -229,8 +238,21 @@ def _classify_kimi(spent: float, cap: float) -> str:
 
 async def get_daily_budget_state(
     redis_client: redis.asyncio.Redis,
+    *,
+    today: datetime.date | None = None,
 ) -> DailyBudgetState:
-    """Build the current daily-budget state from Redis."""
+    """Build the current daily-budget state from Redis.
+
+    ``today`` pins the UTC day for the in-flight **reservation** read (defaults
+    to the real UTC day in production, where it is never pinned). Threading it
+    lets a test read the reservation counter for the same day it reserved on,
+    instead of the real-today key — the prior implicit real-today read made the
+    M-005 reservation fold date-brittle (it broke on any day != the test's
+    pinned date). Actual spend (``get_daily_spent``) is read for the real day in
+    production and is mocked deterministically under test, so it is intentionally
+    not re-pinned here (that would force every spend mock to grow a ``today``
+    kwarg for no production benefit).
+    """
     daily_budget = _read_env_float(
         "QUANTMIND_DAILY_BUDGET",
         _DEFAULT_DAILY_BUDGET_RMB,
@@ -274,7 +296,7 @@ async def get_daily_budget_state(
     # the legacy path and let another paid call start, defeating the cap
     # (codex M-005 P1). ``reserve_budget`` itself keeps using ``get_daily_spent``
     # + its own counter read, so there is no double-count.
-    reserved = await get_daily_reserved(redis_client)
+    reserved = await get_daily_reserved(redis_client, today=today)
     spent_today = round(raw_spent + reserved, 4)
     status = _classify_daily(spent_today, soft_ceiling, hard_ceiling)
     return DailyBudgetState(
@@ -384,13 +406,16 @@ async def assert_budget_allows(
     redis_client: redis.asyncio.Redis,
     *,
     agent_name: str,
+    today: datetime.date | None = None,
 ) -> DailyBudgetState:
     """Return the daily ``BudgetState`` or raise on ``hard_breach``.
 
     Callers should treat ``status == "soft_breach"`` as a cue to
     activate Kimi escalation block via :class:`SoftDegradeManager`.
+    ``today`` pins the UTC day (defaults to the real day) so the gate sees the
+    same day's spend + in-flight reservations deterministically.
     """
-    state = await get_daily_budget_state(redis_client)
+    state = await get_daily_budget_state(redis_client, today=today)
     if state.status == "hard_breach":
         log.error(
             "daily_budget_breached",
@@ -638,6 +663,114 @@ async def reserve_debate_slot(
     return count
 
 
+def _anomaly_count_key(date_str: str) -> str:
+    return f"{_ANOMALY_COUNT_KEY_PREFIX}:{date_str}"
+
+
+def _anomaly_dedup_key(date_str: str) -> str:
+    return f"{_ANOMALY_DEDUP_KEY_PREFIX}:{date_str}"
+
+
+async def reserve_anomaly_llm_slot(
+    redis_client: redis.asyncio.Redis,
+    *,
+    trigger_key: str,
+    estimated_rmb: float,
+    today: datetime.date | None = None,
+) -> BudgetReservation | None:
+    """Gate an OPTIONAL Line-2 anomaly-triggered LLM enrichment call (N-004).
+
+    Line-2 is a pure-quant poll (zero LLM); an LLM fires only on a deduplicated
+    trigger, bounded by ``max_anomaly_llm_per_day``, and the spend reserves on
+    the SAME ``llm:usage:{utc_date}`` counter as every other LLM path so the
+    ¥20/day hard cap cannot be bypassed (P1-7-amendment §2.4 / N-004).
+
+    Returns a :class:`BudgetReservation` when the call is permitted, or ``None``
+    when it must be **skipped** — already fired today for this ``trigger_key``
+    (dedup), the daily anomaly cap is exhausted, or the ¥20 reservation refuses.
+    The LLM here is non-decision enrichment, so any limit simply skips it; this
+    function never raises (the caller treats ``None`` as "do not call the LLM").
+    """
+    date_str = _utc_date_str(today)
+    dedup_key = _anomaly_dedup_key(date_str)
+    count_key = _anomaly_count_key(date_str)
+
+    try:
+        added = int(await redis_client.sadd(dedup_key, trigger_key))
+    except Exception as exc:  # noqa: BLE001 — fail-closed: skip optional LLM
+        log.warning("anomaly_dedup_failed", trigger=trigger_key, error=str(exc))
+        return None
+    await _safe_expire(redis_client, dedup_key, _ANOMALY_TTL_SECONDS)
+    if added == 0:
+        # Already fired today for this (code, kind) trigger — dedup skip.
+        return None
+
+    cap = get_max_anomaly_llm_per_day()
+    try:
+        new_count = int(await redis_client.incr(count_key))
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        log.warning("anomaly_count_failed", trigger=trigger_key, error=str(exc))
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        return None
+    await _safe_expire(redis_client, count_key, _ANOMALY_TTL_SECONDS)
+    if new_count > cap:
+        # Daily anomaly-LLM budget exhausted — roll back the count; leave the
+        # dedup member so a re-eval of the same trigger is a no-op (deduped).
+        await _safe_decr(redis_client, count_key)
+        log.info("anomaly_llm_cap_reached", cap=cap, attempted=new_count)
+        return None
+
+    try:
+        return await reserve_budget(
+            redis_client,
+            agent_name=f"line2:anomaly:{trigger_key}"[:64],
+            estimated_rmb=estimated_rmb,
+            today=today,
+        )
+    except DailyBudgetExceededError:
+        # ¥20 hard cap would be crossed — skip the optional enrichment and roll
+        # back the anomaly count so it reflects fired calls only. Leave the
+        # dedup member: the day's budget is exhausted, a same-day retry is moot.
+        await _safe_decr(redis_client, count_key)
+        log.info("anomaly_llm_budget_skip", trigger=trigger_key)
+        return None
+    except Exception as exc:  # noqa: BLE001 — fail-closed: never raise on this
+        # A non-budget reservation failure (e.g. a raw Redis error inside
+        # reserve_budget) must NOT propagate from this optional Line-2 path —
+        # the whole gate is fail-closed (codex N-004 P2). Roll back BOTH the
+        # count and the dedup member so a later poll can retry the (transient)
+        # failure rather than being silently deduped out.
+        log.warning("anomaly_reserve_failed", trigger=trigger_key, error=str(exc))
+        await _safe_decr(redis_client, count_key)
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        return None
+
+
+async def _safe_expire(
+    redis_client: redis.asyncio.Redis, key: str, ttl: int
+) -> None:
+    try:
+        await redis_client.expire(key, ttl)
+    except Exception as exc:  # noqa: BLE001 — TTL is hygiene, not correctness
+        log.warning("expire_failed", key=key, error=str(exc))
+
+
+async def _safe_decr(redis_client: redis.asyncio.Redis, key: str) -> None:
+    try:
+        await redis_client.decr(key)
+    except Exception as exc:  # noqa: BLE001 — best-effort rollback
+        log.warning("decr_failed", key=key, error=str(exc))
+
+
+async def _safe_srem(
+    redis_client: redis.asyncio.Redis, key: str, member: str
+) -> None:
+    try:
+        await redis_client.srem(key, member)
+    except Exception as exc:  # noqa: BLE001 — best-effort rollback
+        log.warning("srem_failed", key=key, error=str(exc))
+
+
 async def settle_budget(
     redis_client: redis.asyncio.Redis,
     reservation: BudgetReservation,
@@ -690,6 +823,7 @@ __all__ = [
     "get_max_anomaly_llm_per_day",
     "get_max_debates_per_day",
     "get_monthly_budget_state",
+    "reserve_anomaly_llm_slot",
     "reserve_budget",
     "reserve_debate_slot",
     "settle_budget",

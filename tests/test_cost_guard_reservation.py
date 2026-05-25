@@ -288,12 +288,16 @@ async def test_daily_state_includes_in_flight_reservation(patch_spent) -> None:
     redis = _GetRedis()
     # A debate reserves ¥1 (in flight, not yet settled).
     await reserve_budget(redis, agent_name="debate", estimated_rmb=1.0, today=_DATE)
-    # Legacy path now sees 19 + 1 = 20 = hard_breach.
-    state = await get_daily_budget_state(redis)
+    # Legacy path now sees 19 + 1 = 20 = hard_breach. Pin ``today`` so the
+    # spend + reservation reads stay on the same UTC day as the reservation
+    # above (otherwise the test is date-brittle across a midnight rollover).
+    state = await get_daily_budget_state(redis, today=_DATE)
     assert state.spent_today == pytest.approx(20.0)
     assert state.status == "hard_breach"
     with pytest.raises(DailyBudgetExceededError):
-        await assert_budget_allows(redis, agent_name="legacy_scheduler")
+        await assert_budget_allows(
+            redis, agent_name="legacy_scheduler", today=_DATE
+        )
 
 
 @pytest.mark.asyncio
