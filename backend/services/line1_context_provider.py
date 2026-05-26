@@ -61,7 +61,7 @@ from backend.data.stock_metadata import (
 from backend.marketdata_snapshot import MarketDataSnapshot
 from backend.models.instruction import DataSnapshot
 from backend.monitoring.add_position import parse_held_series
-from backend.orchestration.line1_runner import Line1LeadContext
+from backend.orchestration.line1_runner import CommittedBuy, Line1LeadContext
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.daily_state import DailyTradingState
 from backend.risk.engine import RiskEngine
@@ -99,6 +99,62 @@ _FUND_SUFFICIENCY_BUFFER = 1.001
 def _bare_code(code: str) -> str:
     """Strip an exchange suffix (``600000.SH`` → ``600000``)."""
     return code.split(".")[0].strip()
+
+
+def _apply_committed(
+    account: AccountInfo,
+    positions: tuple[Position, ...],
+    committed: tuple[CommittedBuy, ...],
+) -> tuple[AccountInfo, tuple[Position, ...]]:
+    """Fold basket BUYs already routed this run into account + positions.
+
+    Each committed BUY debits cash by its *check-4 cost* (``volume × price ×
+    fee buffer`` — the same ``× 1.001`` RiskEngine check 4 applies, so later
+    candidates do not see cash overstated by the prior orders' fees, codex P2)
+    and adds the shares (valued at notional) to ``positions`` (same-code
+    merged). ``total_assets`` is recomputed (it drops by the cumulative fees —
+    a real draw-down). Sizing + the authoritative 14-check then see the
+    in-flight basket, so a multi-candidate BASKET stays collectively ≤ available
+    cash (check 4) and ≤ the 70% total-position cap (check 8) —
+    P1-7-amendment-2026-05-26 §2.3. Empty ``committed`` returns the inputs
+    unchanged (SINGLE mode / the first BASKET candidate = U-D1b path).
+    """
+    if not committed:
+        return account, positions
+    notional = sum(cb.volume * cb.limit_price for cb in committed)
+    cash_debit = notional * _FUND_SUFFICIENCY_BUFFER  # mirror check 4 (price×vol×1.001)
+    adj_cash = account.available_cash - cash_debit
+    adj_market_value = account.market_value + notional
+    adj_account = account.model_copy(
+        update={
+            "available_cash": adj_cash,
+            "market_value": adj_market_value,
+            # Recompute net worth: the cumulative fees are a real draw-down.
+            "total_assets": adj_cash + account.frozen_cash + adj_market_value,
+        }
+    )
+    by_code: dict[str, Position] = {p.code: p for p in positions}
+    for cb in committed:
+        add_value = cb.volume * cb.limit_price
+        existing = by_code.get(cb.code)
+        if existing is not None:
+            by_code[cb.code] = existing.model_copy(
+                update={
+                    "volume": existing.volume + cb.volume,
+                    "market_value": existing.market_value + add_value,
+                }
+            )
+        else:
+            by_code[cb.code] = Position(
+                code=cb.code,
+                volume=cb.volume,
+                available_volume=0,  # bought today; T+1 unsettled (SELL N/A)
+                cost_price=cb.limit_price,
+                market_value=add_value,
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+            )
+    return adj_account, tuple(by_code.values())
 
 
 def max_compliant_buy_volume(
@@ -225,7 +281,11 @@ class Line1ContextProvider:
         return last_price * get_lot_size(board)
 
     def build_lead_context(
-        self, lead: CandidateRow, *, concentration_exception: bool = False
+        self,
+        lead: CandidateRow,
+        *,
+        concentration_exception: bool = False,
+        committed: tuple[CommittedBuy, ...] = (),
     ) -> Line1LeadContext:
         """Build the TeamContext + AssemblyContext factory for the lead.
 
@@ -235,8 +295,15 @@ class Line1ContextProvider:
         plan) AND the ``AssemblyContext`` (the authoritative 14-check). The
         RiskEngine still independently re-derives ETF + whitelist + ≤max_lots,
         so the flag never bypasses the cap on its own (U-C4).
+
+        ``committed`` are the BUYs already routed earlier in this BASKET run;
+        they are folded into the account (cash ↓) + positions (value ↑) so this
+        candidate is sized + validated against the post-commitment state, and
+        the basket stays collectively cash- + 70%-compliant
+        (P1-7-amendment-2026-05-26 §2.3).
         """
         rs = self._run
+        account, positions = _apply_committed(rs.account, rs.positions, committed)
         bare = _bare_code(lead.code)
         limit_price = round(lead.last_price, 2)
         prev_close = self._prev_close_from_frame(bare, fallback=limit_price)
@@ -245,17 +312,17 @@ class Line1ContextProvider:
         # OTHER positions at their snapshot market_value) so the sizing math
         # mirrors the gate it must pass.
         existing_shares = sum(
-            p.volume for p in rs.positions if p.code == lead.code
+            p.volume for p in positions if p.code == lead.code
         )
         other_positions_value = sum(
-            p.market_value for p in rs.positions if p.code != lead.code
+            p.market_value for p in positions if p.code != lead.code
         )
         limits = rs.risk_config.position_limits
         exception = rs.risk_config.concentration_exception
         volume = max_compliant_buy_volume(
             last_price=limit_price,
-            total_assets=rs.account.total_assets,
-            available_cash=rs.account.available_cash,
+            total_assets=account.total_assets,
+            available_cash=account.available_cash,
             other_positions_value=other_positions_value,
             existing_shares=existing_shares,
             lot_size=limits.volume_lot_size,
@@ -267,7 +334,11 @@ class Line1ContextProvider:
         )
         stock_meta = risk_meta_for(bare, lead.name)
         daily_state = DailyTradingState(
-            today_new_instruction_count=rs.today_instruction_count,
+            # Count the BUYs already routed earlier in this BASKET run so the
+            # ≤5-orders/day cap (check 10) binds ACROSS the basket, not just the
+            # day's pre-run count (codex P1) — otherwise a partially-used day
+            # could route more than its remaining order slots.
+            today_new_instruction_count=rs.today_instruction_count + len(committed),
             # Daily-loss + consecutive-loss breaker inputs default to 0/(): a
             # pre-open / morning-open BUY scan is unaffected (real day-open NAV +
             # ledger PnLs wired in U-D3 for the breaker to bind a BUY).
@@ -290,8 +361,8 @@ class Line1ContextProvider:
         )
         team_context = TeamContext(
             risk_engine=rs.risk_engine,
-            account=rs.account,
-            positions=rs.positions,
+            account=account,
+            positions=positions,
             prev_close=prev_close,
             daily_state=daily_state,
             stock_meta=stock_meta,
@@ -318,8 +389,8 @@ class Line1ContextProvider:
                 watchlist_policy=rs.watchlist_policy,
                 watchlist_signal=watchlist_signal,
                 risk_engine=rs.risk_engine,
-                account=rs.account,
-                positions=rs.positions,
+                account=account,
+                positions=positions,
                 prev_close=prev_close,
                 daily_state=daily_state,
                 stock_meta=stock_meta,

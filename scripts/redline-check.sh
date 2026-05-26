@@ -1135,15 +1135,17 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# M-005 / P1-7-amendment-2026-05-24 — cost_guard pre-call reservation +
-# fan-out cap. The ¥20/day hard cap must be enforced as a real pre-call
-# reservation (reserve_budget / settle_budget), the debate must be gated by
-# the max_debates_per_day fan-out cap (reserve_debate_slot), and the 4
-# original P1-7 ceiling constants must be unchanged. The reservation key
-# stays in the unified ``llm:usage`` namespace (amendment §2.4).
+# M-005 / P1-7-amendment-2026-05-24 (+ 2026-05-26) — cost_guard pre-call
+# reservation + fan-out cap. The daily hard cap must be enforced as a real
+# pre-call reservation (reserve_budget / settle_budget), the debate must be
+# gated by the max_debates_per_day fan-out cap (reserve_debate_slot), and the
+# 4 P1-7 ceiling constants must keep their locked values. P1-7-amendment
+# 2026-05-26 raised ONLY the daily hard cap ¥20 → ¥100 (the sole full-LLM
+# circuit breaker); soft 0.7 / monthly ¥440 / Kimi ¥4 are unchanged. The
+# reservation key stays in the unified ``llm:usage`` namespace (amendment §2.4).
 # ----------------------------------------------------------------------
 echo
-yellow "[M-005] cost_guard pre-call reservation + fan-out cap (P1-7-amendment-2026-05-24)"
+yellow "[M-005] cost_guard pre-call reservation + fan-out cap (P1-7-amendment 2026-05-24/26)"
 M005_FAIL=0
 CG="backend/services/cost_guard.py"
 for sym in "def reserve_budget" "def settle_budget" "def reserve_debate_slot" \
@@ -1153,9 +1155,11 @@ for sym in "def reserve_budget" "def settle_budget" "def reserve_debate_slot" \
     M005_FAIL=1
   fi
 done
-# The 4 P1-7 ceiling constants must keep their locked values (amendment §2.1
-# changes execution semantics, NOT the numbers).
-for kv in "_DEFAULT_DAILY_BUDGET_RMB = 20.0" "_DEFAULT_SOFT_CEIL_PCT = 0.7" \
+# The 4 P1-7 ceiling constants must keep their locked values. The 2026-05-24
+# amendment changed execution semantics (not the numbers); the 2026-05-26
+# amendment raised ONLY the daily hard cap ¥20 → ¥100 (soft 0.7 / monthly ¥440
+# / Kimi ¥4 unchanged). Any further drift = unauthorized red-line change.
+for kv in "_DEFAULT_DAILY_BUDGET_RMB = 100.0" "_DEFAULT_SOFT_CEIL_PCT = 0.7" \
           "_DEFAULT_MONTHLY_BUDGET_RMB = 440.0" "_DEFAULT_KIMI_DAILY_CAP_RMB = 4.0"; do
   if ! grep -qF "$kv" "$CG" 2>/dev/null; then
     red "  FAIL  cost_guard P1-7 constant changed/missing: $kv"

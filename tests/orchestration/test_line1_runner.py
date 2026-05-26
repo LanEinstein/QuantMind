@@ -15,7 +15,7 @@ as the U-D1 scheduler will build them in production.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +48,7 @@ from backend.orchestration.line1_runner import (
     Line1LeadContext,
     Line1Outcome,
     Line1Runner,
+    Line1SelectionMode,
 )
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteMode
 from backend.risk.circuit_breaker import CircuitBreaker
@@ -237,10 +238,17 @@ def _clean_dq() -> DataQualityState:
 
 @dataclass
 class FakeProvider:
-    """Builds TeamContext + AssemblyContext for the lead candidate.
+    """Builds TeamContext + AssemblyContext for each shortlist candidate.
 
     Structurally satisfies ``Line1ContextProvider`` (duck-typed, no Protocol
     inheritance to keep the dataclass machinery simple).
+
+    ``reject_codes`` forces a RiskEngine REJECT for the named codes (an
+    oversized proposed_volume blows the ¥50k single-instruction cap, check 9),
+    so a basket walk can be driven past a rejected lead onto the next name.
+    The fake accepts (and ignores) ``committed`` — the real provider's
+    cash-threading is unit-tested in ``test_line1_context_provider``; here the
+    fixed small volume keeps every candidate affordable, isolating the loop.
     """
 
     cash: float
@@ -249,6 +257,9 @@ class FakeProvider:
     hold_lead: bool = False
     proposed_volume: int = 200
     board: RiskBoard = RiskBoard.SH_MAIN
+    reject_codes: frozenset[str] = frozenset()
+    today_instruction_count: int = 0
+    blocking_data_quality: bool = False
 
     @property
     def available_cash(self) -> float:
@@ -258,10 +269,19 @@ class FakeProvider:
         return last_price * self.lot_size
 
     def build_lead_context(
-        self, lead: CandidateRow, *, concentration_exception: bool = False
+        self,
+        lead: CandidateRow,
+        *,
+        concentration_exception: bool = False,
+        committed: tuple = (),
     ) -> Line1LeadContext:
         risk_engine = _risk_engine()
         limit_price = round(lead.last_price, 2)
+        # An oversized order for a reject_code fails RiskEngine check 9 (single
+        # instruction ≤ ¥50k) → status REJECTED → the basket falls through.
+        proposed_volume = (
+            10_000_000 if lead.code in self.reject_codes else self.proposed_volume
+        )
         account = AccountInfo(
             total_assets=self.cash + 2_000.0,
             available_cash=self.cash,
@@ -291,7 +311,9 @@ class FakeProvider:
         )
         prev_close = round(lead.last_price * 0.99, 2)
         daily_state = DailyTradingState(
-            today_new_instruction_count=0,
+            # Mirror the real provider: count BUYs already routed this BASKET run
+            # so the ≤5-orders/day cap (check 10) binds across the basket.
+            today_new_instruction_count=self.today_instruction_count + len(committed),
             today_portfolio_pnl_pct=0.0,
             last_3_trade_pnls=(),
             current_price=limit_price,
@@ -310,7 +332,7 @@ class FakeProvider:
         brief = CandidateBrief(
             code=lead.code,
             name=lead.name,
-            proposed_volume=self.proposed_volume,
+            proposed_volume=proposed_volume,
             proposed_limit_price=limit_price,
         )
         team_ctx = TeamContext(
@@ -325,6 +347,14 @@ class FakeProvider:
             llm_router=self.router,
         )
         policy = load_policy(Path("config/universe_policy.yaml"))
+        # A blocking data-quality state makes the Builder five-early-return
+        # freeze fire (run-level) → EARLY_RETURN, used to assert the basket
+        # walk stops instead of debating the rest of the shortlist.
+        dq = (
+            replace(_clean_dq(), quote_unavailable=True)
+            if self.blocking_data_quality
+            else _clean_dq()
+        )
 
         def make_assembly_context(
             *,
@@ -340,7 +370,7 @@ class FakeProvider:
                 now=_NOW,
                 open_tickets=(),
                 circuit_breaker=CircuitBreaker(CircuitBreakerConfig()),
-                data_quality=_clean_dq(),
+                data_quality=dq,
                 watchlist_policy=policy,
                 watchlist_signal=WatchlistMarketSignal(
                     listed_at_trading_days=720,
@@ -353,7 +383,7 @@ class FakeProvider:
                 prev_close=prev_close,
                 daily_state=daily_state,
                 stock_meta=stock_meta,
-                proposed_volume=self.proposed_volume,
+                proposed_volume=proposed_volume,
                 proposed_limit_price=limit_price,
                 concentration_exception=concentration_exception,
                 seq=seq,
@@ -410,6 +440,7 @@ def _make_runner(
     sender: FakeFeishuSender,
     builder: InstructionPlanBuilder,
     tmp_path: Path,
+    selection_mode: Line1SelectionMode = Line1SelectionMode.BASKET,
 ) -> Line1Runner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -450,6 +481,7 @@ def _make_runner(
         coordinator=coordinator,
         ledger=ledger,
         redis_client=_FakeRedis(),
+        selection_mode=selection_mode,
     )
 
 
@@ -483,7 +515,9 @@ async def builder(tmp_path: Path) -> InstructionPlanBuilder:
 # ---------------------------------------------------------------------------
 
 
-async def test_feishu_mode_routes_validated_buy(builder, tmp_path) -> None:
+async def test_feishu_mode_routes_validated_buy_basket(builder, tmp_path) -> None:
+    # BASKET default (P1-7-amendment-2026-05-26): every VALIDATED BUY in the
+    # shortlist is routed + sent, not just the lead.
     sender = FakeFeishuSender()
     runner = _make_runner(
         mode=RouteMode.FEISHU_INTERACTIVE,
@@ -498,15 +532,20 @@ async def test_feishu_mode_routes_validated_buy(builder, tmp_path) -> None:
         now=_NOW,
     )
     assert result.outcome is Line1Outcome.ROUTED
-    # The deterministic screener picks the strongest *percentage* momentum
-    # (lowest base, same absolute step) — assert dynamically, not a guess.
+    # 3 screened candidates, all VALIDATED → a 3-name basket.
+    assert len(result.routed_buys) == 3
+    assert all(rb.plan.side.value == "BUY" for rb in result.routed_buys)
+    # The deterministic screener ranks by *percentage* momentum (lowest base,
+    # same absolute step) — the lead is the strongest, processed first.
     assert result.lead_code in {"600000", "600004", "600006"}
+    assert result.plan is not None and result.plan.stock_code == result.lead_code
     assert result.route_outcome is not None
     assert result.route_outcome.action == "dispatched"
-    # The BUY message reached the decision group.
-    assert len(sender.calls) == 1
-    assert "【QuantMind 买入信号 · 合规】" in sender.calls[0]["content"]
-    assert f"-{result.lead_code}-BUY-" in sender.calls[0]["content"]
+    # Each BUY reached the decision group with a distinct instruction_id.
+    assert len(sender.calls) == 3
+    assert all("【QuantMind 买入信号 · 合规】" in c["content"] for c in sender.calls)
+    ids = {rb.plan.instruction_id for rb in result.routed_buys}
+    assert len(ids) == 3  # distinct ids (code segment differs per candidate)
 
 
 async def test_small_tier_etf_routes_concentration_exception_template(
@@ -553,7 +592,10 @@ async def test_small_tier_etf_routes_concentration_exception_template(
     assert f"确认执行请回复:确认 {result.plan.instruction_id}" in content
 
 
-async def test_exactly_one_debate_not_per_candidate(builder, tmp_path) -> None:
+async def test_basket_debates_each_shortlist_candidate(builder, tmp_path) -> None:
+    # P1-7-amendment-2026-05-26 OVERTURNS "one debate per daily shortlist": the
+    # basket debates EACH candidate (4 agent calls × N candidates), each via the
+    # single construction point. RiskEngine still independently validates each.
     sender = FakeFeishuSender()
     runner = _make_runner(
         mode=RouteMode.FEISHU_INTERACTIVE,
@@ -567,10 +609,189 @@ async def test_exactly_one_debate_not_per_candidate(builder, tmp_path) -> None:
         provider=FakeProvider(cash=98_000.0, router=router),
         now=_NOW,
     )
-    # 3 screened candidates, but exactly ONE 4-agent debate (P1-7-amendment
-    # fan-out cap: one debate per daily shortlist, never per candidate).
-    assert len(result.shortlist) >= 2
-    assert router.calls == 4
+    n = len(result.shortlist)
+    assert n == 3
+    assert router.calls == 4 * n  # one 4-agent debate per candidate
+    assert len(result.routed_buys) == n
+    # Single construction point holds for EVERY basket BUY: the deterministic
+    # provider volume (200), never a number parsed from the LLM "买入" text.
+    assert all(rb.plan.volume == 200 for rb in result.routed_buys)
+
+
+async def test_basket_falls_through_rejected_lead_to_next(builder, tmp_path) -> None:
+    # The top-ranked lead is REJECTED by the RiskEngine (oversized order) → the
+    # basket falls through and still routes the remaining VALIDATED names.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    # 600006 is the strongest %-momentum lead (lowest base) → reject it.
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0, router=router, reject_codes=frozenset({"600006"})
+        ),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert result.lead_code == "600006"  # the rejected top remains the lead
+    routed_codes = {rb.plan.stock_code for rb in result.routed_buys}
+    assert "600006" not in routed_codes  # rejected → not routed
+    assert routed_codes == {"600000", "600004"}  # fell through to the rest
+    assert router.calls == 12  # every candidate still debated (3 × 4)
+
+
+async def test_basket_all_rejected_zero_buy_graceful(builder, tmp_path) -> None:
+    # Whole shortlist REJECTED → 0 BUY, graceful terminal (no crash, no send).
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0,
+            router=router,
+            reject_codes=frozenset({"600000", "600004", "600006"}),
+        ),
+        now=_NOW,
+    )
+    assert result.routed_buys == ()
+    assert result.outcome is Line1Outcome.REJECTED  # last candidate's terminal
+    assert sender.calls == []
+
+
+async def test_basket_stops_when_daily_budget_exhausted(
+    builder, tmp_path, monkeypatch
+) -> None:
+    # ¥100 daily hard cap already spent → the first reservation is refused
+    # (the crossing call never runs) → 0 BUY, BUDGET_EXHAUSTED, no crash.
+    async def _spent(_redis, *, today=None):  # noqa: ANN001
+        return 100.0  # at the hard ceiling
+
+    monkeypatch.setattr(cost_guard, "get_daily_spent", _spent)
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.BUDGET_EXHAUSTED
+    assert result.routed_buys == ()
+    assert router.calls == 0  # the refused reservation ran no debate
+    assert sender.calls == []
+
+
+async def test_basket_stops_when_debate_slots_exhausted(
+    builder, tmp_path, monkeypatch
+) -> None:
+    # max_debates_per_day = 1 → 1st candidate debates + routes, 2nd candidate's
+    # debate-slot claim is refused → walk stops fail-closed, keeping the 1 BUY.
+    monkeypatch.setenv("QUANTMIND_MAX_DEBATES_PER_DAY", "1")
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED  # ≥1 routed → ROUTED
+    assert len(result.routed_buys) == 1
+    assert router.calls == 4  # only the first candidate's debate completed
+    assert len(sender.calls) == 1
+
+
+async def test_basket_bounded_by_daily_order_cap(builder, tmp_path) -> None:
+    # codex P1: with 4 orders already used today, only 1 daily slot remains
+    # (check 10 ≤ 5/day). The basket threads each routed BUY into the next
+    # candidate's count, so it routes exactly 1 and the rest are REJECTED.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0, router=router, today_instruction_count=4
+        ),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) == 1  # only the 5th-order slot was free
+    assert len(sender.calls) == 1
+
+
+async def test_basket_stops_on_run_level_freeze(builder, tmp_path) -> None:
+    # codex P2: a Builder five-early-return freeze (here a blocking data-quality
+    # state) is run-level — the basket must STOP after the first candidate
+    # rather than burn debates on names that would all freeze identically.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0, router=router, blocking_data_quality=True
+        ),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.EARLY_RETURN
+    assert result.routed_buys == ()
+    assert router.calls == 4  # only the FIRST candidate was debated, then stop
+    assert sender.calls == []
+
+
+async def test_single_mode_returns_first_validated_buy(builder, tmp_path) -> None:
+    # SINGLE mode stops at the first VALIDATED BUY — no further debates.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        selection_mode=Line1SelectionMode.SINGLE,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) == 1
+    assert len(result.shortlist) >= 2  # more candidates existed, not debated
+    assert router.calls == 4  # exactly one debate
+    assert len(sender.calls) == 1
 
 
 async def test_no_compliant_trade_when_budget_blocks(builder, tmp_path) -> None:
@@ -609,7 +830,11 @@ async def test_simulation_mode_auto_fills_no_feishu(builder, tmp_path) -> None:
         now=_NOW,
     )
     assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) == 3  # basket auto-filled
     assert result.route_outcome.action == "simulation_routed"
+    assert all(
+        rb.route_outcome.action == "simulation_routed" for rb in result.routed_buys
+    )
     assert sender.calls == []  # no Feishu send in simulation_auto
 
 
@@ -664,9 +889,11 @@ async def test_dry_run_renders_only(builder, tmp_path) -> None:
         now=_NOW,
     )
     assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) == 3  # basket rendered to the dry-run sink
     assert result.route_outcome.action == "dry_run_rendered"
     assert sender.calls == []  # never sent
-    assert sink and "【QuantMind 买入信号 · 合规】" in sink[0]
+    assert len(sink) == 3
+    assert "【QuantMind 买入信号 · 合规】" in sink[0]
 
 
 async def test_hold_recommendation_not_routed(builder, tmp_path) -> None:

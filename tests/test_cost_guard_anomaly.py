@@ -126,9 +126,10 @@ async def test_daily_cap_exhausted_returns_none(patch_spent) -> None:
 
 @pytest.mark.asyncio
 async def test_budget_exhausted_skips_and_rolls_back(patch_spent) -> None:
-    # Daily spend already at the ¥20 hard cap → the ¥20 reservation refuses →
-    # the optional anomaly LLM is skipped (None) and the count is rolled back.
-    patch_spent(20.0)
+    # Daily spend already at the ¥100 hard cap (P1-7-amendment-2026-05-26) →
+    # the reservation refuses → the optional anomaly LLM is skipped (None) and
+    # the count is rolled back.
+    patch_spent(100.0)
     redis = FakeRedis()
     res = await reserve_anomaly_llm_slot(
         redis, trigger_key="600519:price_zscore", estimated_rmb=0.1, today=_DATE

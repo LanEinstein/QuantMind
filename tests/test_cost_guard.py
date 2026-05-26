@@ -198,8 +198,9 @@ class TestGetBudgetState:
         monkeypatch.delenv("QUANTMIND_SOFT_CEIL_PCT", raising=False)
         patch_aggregate.return_value = _summary(0.0)
         state = await get_budget_state(redis_client=AsyncMock())
-        assert state.daily_budget == 20.0
-        assert state.soft_ceiling == 14.0  # 20 * 0.7
+        # P1-7-amendment-2026-05-26: default daily hard cap ¥20 → ¥100.
+        assert state.daily_budget == 100.0
+        assert state.soft_ceiling == 70.0  # 100 * 0.7
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

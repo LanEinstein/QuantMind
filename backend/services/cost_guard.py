@@ -53,11 +53,15 @@ log = structlog.get_logger(component="cost_guard")
 # P1-7 locked defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DAILY_BUDGET_RMB = 20.0
-"""P1-7 daily hard ceiling — ONLY full-LLM circuit breaker."""
+_DEFAULT_DAILY_BUDGET_RMB = 100.0
+"""P1-7 daily hard ceiling — ONLY full-LLM circuit breaker. P1-7-amendment
+2026-05-26 raised it ¥20 → ¥100 so Line-1 can debate multiple shortlist
+candidates per day (multi-candidate fall-through). Still a hard ceiling: the
+crossing call never happens (真·预留). Override via ``QUANTMIND_DAILY_BUDGET``."""
 
 _DEFAULT_SOFT_CEIL_PCT = 0.7
-"""¥14 soft threshold = 0.70 × ¥20."""
+"""Soft threshold ratio = 0.70 × daily hard (auto-scales: ¥70 at the ¥100
+hard). Unchanged by the 2026-05-26 amendment (it is a fraction, not ¥14)."""
 
 _DEFAULT_MONTHLY_BUDGET_RMB = 440.0
 """P1-7 monthly soft budget = 22 trading days × ¥20."""
@@ -71,14 +75,19 @@ KIMI_PROVIDER_NAME = "kimi"
 MONTHLY_MILESTONE_FRACTIONS: tuple[float, ...] = (0.50, 0.80, 1.00)
 """Three audit-only milestones; 100% NEVER stops LLM (P1-7 §1.7)."""
 
-# P1-7-amendment-2026-05-24 — fan-out caps. The real budget killer is the
-# multiplicative fan-out (¥0.8 × 20 candidates = ¥16), not a single ~¥0.4
-# debate; these caps + the "one debate per daily shortlist, not per
-# candidate" red line bound the worst case well under the ¥20 daily hard cap.
+# P1-7-amendment-2026-05-24 introduced fan-out caps; P1-7-amendment-2026-05-26
+# REVOKED its "one debate per daily shortlist, not per candidate" rule. Line-1
+# now debates shortlist candidates one-by-one (REJECTED → fall through to the
+# next) until a routable BUY basket is built. The multiplicative fan-out is now
+# bounded by TWO independent fail-closed guards: this per-day debate cap + the
+# daily ¥100 pre-reservation. One 4-agent debate costs ~¥0.08–0.4, so 8 debates
+# ≈ ¥3.2 ≪ ¥100 — the debate cap binds first.
 _DEFAULT_MAX_DEBATES_PER_DAY = 8
-"""Max multi-agent debate runs per UTC day (Line-1 slow 09:00 + fast
-09/11/13/15 ≈ 5, plus headroom). One debate runs on the converged shortlist —
-NEVER once per candidate (P1-7-amendment §2.2)."""
+"""Max multi-agent debate runs per UTC day. Each shortlist candidate Line-1
+debates claims ONE slot (basket mode debates several per day, P1-7-amendment
+2026-05-26 §2.3). RiskEngine check-10 (≤5 orders/day) + the 15%/70% caps bound
+the routable basket to ≈5, so the default 8 leaves headroom. Raise via
+``QUANTMIND_MAX_DEBATES_PER_DAY`` (env override is amendment-blessed)."""
 
 _DEFAULT_MAX_ANOMALY_LLM_PER_DAY = 10
 """Max Line-2 anomaly-triggered LLM calls per UTC day (N-004). Line-2 is a
@@ -633,14 +642,14 @@ async def reserve_debate_slot(
 ) -> int:
     """Claim one of the day's debate slots — the multiplicative fan-out cap.
 
-    P1-7-amendment-2026-05-24 §2.2: a debate runs **once per converged daily
-    shortlist, never once per candidate** (¥0.8 × 20 candidates = ¥16 would
-    otherwise eat the day in one fan-out). Callers MUST claim a slot before a
-    debate; a 20-candidate shortlist still claims exactly ONE slot per
-    ``run_shortlist`` invocation. Atomically increments
+    P1-7-amendment-2026-05-26 §2.3 (revoking the 2026-05-24 "one debate per
+    daily shortlist" rule): Line-1 debates shortlist candidates one-by-one, so
+    each ``run_shortlist`` invocation (one candidate) claims ONE slot. This
+    per-day cap is now one of the two guards (with the ¥100 reservation) that
+    bound the multi-candidate fan-out. Atomically increments
     ``llm:debates:{utc_date}`` and raises :class:`DailyBudgetExceededError`
     (rolling the counter back) when it would exceed ``max_debates_per_day`` —
-    the crossing debate does not run.
+    the crossing debate does not run, so the basket loop stops fail-closed.
     """
     cap = get_max_debates_per_day()
     date_str = _utc_date_str(today)

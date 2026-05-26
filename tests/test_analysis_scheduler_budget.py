@@ -98,7 +98,7 @@ class TestCostGuardIntegration:
             "backend.data.analysis_scheduler.assert_budget_allows",
             new_callable=AsyncMock,
             side_effect=DailyBudgetExceededError(
-                "Daily budget 20.00 CNY exceeded (spent 25.00); skipping pipeline"
+                "Daily budget 100.00 CNY exceeded (spent 125.00); skipping pipeline"
             ),
         ), patch(
             "backend.data.analysis_scheduler.run_analysis",

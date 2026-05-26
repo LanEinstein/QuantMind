@@ -80,8 +80,11 @@ async def test_reservation_settled_after_debate(
 async def test_over_budget_refuses_before_any_llm_call(
     buy_context: TeamContext, patch_spent
 ) -> None:
-    """spent 19.5 + estimate 1.0 > ¥20 → refused; no LLM call happens."""
-    patch_spent(19.5)
+    """spent 99.5 + estimate 1.0 > ¥100 → refused; no LLM call happens.
+
+    (P1-7-amendment-2026-05-26 raised the daily hard cap ¥20 → ¥100.)
+    """
+    patch_spent(99.5)
     router = FakeRouter(action="买入")
     ctx = dataclasses.replace(buy_context, llm_router=router)
     redis = FakeRedis()

@@ -38,7 +38,11 @@ from backend.candidate_selector.selector import CandidateSelector, SelectorConfi
 from backend.data.stock_metadata import Board
 from backend.integrations.feishu.renderer import MessageRenderer
 from backend.marketdata_snapshot import MarketDataSnapshot
-from backend.orchestration.line1_runner import Line1Outcome, Line1Runner
+from backend.orchestration.line1_runner import (
+    CommittedBuy,
+    Line1Outcome,
+    Line1Runner,
+)
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteMode
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.engine import RiskEngine
@@ -538,6 +542,73 @@ async def test_build_lead_context_derives_prev_close_and_volume() -> None:
     assert ctx.data_snapshot.snapshot_at == frame.fetch_time_utc
 
 
+def _lead_600000() -> CandidateRow:
+    closes = _uptrend(10.0)
+    return CandidateRow(
+        code="600000",
+        name="浦发银行",
+        board=Board.SH_MAIN,
+        score=0.9,
+        last_price=closes[-1],
+        factors=FactorVector(
+            momentum_20d=0.2,
+            ma_ratio_5_20=1.05,
+            volatility_20d=0.01,
+            rsi_14=60.0,
+            avg_amount_20d=3e8,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_lead_context_committed_threads_cash_and_positions() -> None:
+    # P1-7-amendment-2026-05-26: a basket BUY already routed this run is folded
+    # into the next candidate's account (cash ↓ by notional, market_value ↑,
+    # total_assets preserved) + positions, so the basket stays collectively
+    # cash- + 70%-compliant. RiskEngine then re-validates against this state.
+    provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
+    )
+    committed = (CommittedBuy(code="600004", volume=2_000, limit_price=10.0),)  # ¥20k
+    ctx = provider.build_lead_context(_lead_600000(), committed=committed)
+    acct = ctx.team_context.account
+    # Cash is debited by the check-4 cost (notional × 1.001 fee buffer) so a
+    # later candidate is not handed overstated cash (codex P2).
+    assert acct.available_cash == pytest.approx(98_000.0 - 20_000.0 * 1.001)
+    assert acct.market_value == pytest.approx(20_000.0)  # shares valued at notional
+    # total_assets drops by the cumulative fees (a real draw-down).
+    assert acct.total_assets == pytest.approx(98_000.0 - 20_000.0 * 0.001)
+    held = {p.code: p for p in ctx.team_context.positions}
+    assert "600004" in held
+    assert held["600004"].volume == 2_000
+    assert held["600004"].market_value == pytest.approx(20_000.0)
+    # The committed BUY is counted toward the ≤5-orders/day cap (codex P1).
+    assert ctx.team_context.daily_state.today_new_instruction_count == 1
+    # Empty committed = the U-D1b path (unchanged account / positions / count).
+    base = provider.build_lead_context(_lead_600000())
+    assert base.team_context.account.available_cash == pytest.approx(98_000.0)
+    assert base.team_context.positions == ()
+    assert base.team_context.daily_state.today_new_instruction_count == 0
+
+
+@pytest.mark.asyncio
+async def test_build_lead_context_committed_shrinks_volume_toward_total_cap() -> None:
+    # Committing ~61% of assets to another name squeezes the 70% total-position
+    # headroom, so the next candidate is sized SMALLER than the uncommitted
+    # baseline (RiskEngine check 8 binds, not the 15% single-stock cap) — the
+    # basket cannot collectively breach the 70% cap.
+    provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
+    )
+    baseline = provider.build_lead_context(_lead_600000()).brief.proposed_volume
+    committed = (CommittedBuy(code="600004", volume=6_000, limit_price=10.0),)  # ¥60k
+    shrunk = provider.build_lead_context(
+        _lead_600000(), committed=committed
+    ).brief.proposed_volume
+    assert shrunk < baseline
+    assert shrunk % 100 == 0 and shrunk >= 100  # still a whole lot ≥ 1 lot
+
+
 # ---------------------------------------------------------------------------
 # End-to-end — real runner + real provider + stub LLM (0 real network)
 # ---------------------------------------------------------------------------
@@ -619,11 +690,24 @@ async def test_provider_runner_routes_validated_buy(builder, tmp_path) -> None:
     assert result.plan is not None
     assert result.plan.side.value == "BUY"
     assert result.plan.status.value == "VALIDATED"
-    # Exactly the 4 mandatory-agent calls — one debate per shortlist, 0 network.
-    assert router.calls == 4
-    # The compliant BUY reached the decision group.
-    assert len(sender.calls) == 1
-    assert "【QuantMind 买入信号 · 合规】" in sender.calls[0]["content"]
+    # BASKET (P1-7-amendment-2026-05-26): every shortlist candidate is debated
+    # (4 agent calls each) and the VALIDATED ones routed — 0 real network.
+    assert len(result.routed_buys) >= 1
+    assert router.calls == 4 * len(result.shortlist)
+    assert all(
+        rb.plan.side.value == "BUY" and rb.plan.status.value == "VALIDATED"
+        for rb in result.routed_buys
+    )
+    # The cash-threading invariant: the routed basket stays collectively within
+    # the 70% total-position cap (total_assets = ¥98k, no opening positions).
+    basket_notional = sum(
+        (rb.plan.volume or 0) * (rb.plan.limit_price or 0.0)
+        for rb in result.routed_buys
+    )
+    assert basket_notional <= 0.70 * 98_000.0
+    # Each compliant BUY reached the decision group with a distinct id.
+    assert len(sender.calls) == len(result.routed_buys)
+    assert all("【QuantMind 买入信号 · 合规】" in c["content"] for c in sender.calls)
     assert f"-{result.lead_code}-BUY-" in sender.calls[0]["content"]
 
 

@@ -1,9 +1,10 @@
 """M-005 — cost_guard pre-call reservation + fan-out cap (P1-7-amendment).
 
-The ¥20/day hard cap is enforced as a *pre-call reservation* (the crossing
-call never runs), not a post-hoc trailing-stop, and the multiplicative
-fan-out is bounded by ``max_debates_per_day``. The 4 P1-7 ceiling constants
-keep their locked values — only the execution semantics change.
+The ¥100/day hard cap (¥20 before P1-7-amendment-2026-05-26) is enforced as a
+*pre-call reservation* (the crossing call never runs), not a post-hoc
+trailing-stop, and the multiplicative fan-out is bounded by
+``max_debates_per_day``. The 4 P1-7 ceiling constants keep their locked values;
+the 2026-05-26 amendment raised ONLY the daily hard cap.
 """
 
 from __future__ import annotations
@@ -88,9 +89,9 @@ async def test_reserve_under_cap_succeeds(patch_spent) -> None:
 
 @pytest.mark.asyncio
 async def test_reserve_crossing_cap_is_refused_and_rolled_back(patch_spent) -> None:
-    """The call that would cross ¥20 never happens — and the reservation is
+    """The call that would cross ¥100 never happens — and the reservation is
     rolled back so it does not wedge the counter (真·预留, not trailing-stop)."""
-    patch_spent(19.5)
+    patch_spent(99.5)  # ¥100 daily hard cap (P1-7-amendment-2026-05-26)
     redis = FakeRedis()
     with pytest.raises(DailyBudgetExceededError):
         await reserve_budget(redis, agent_name="x", estimated_rmb=1.0, today=_DATE)
@@ -100,12 +101,12 @@ async def test_reserve_crossing_cap_is_refused_and_rolled_back(patch_spent) -> N
 
 @pytest.mark.asyncio
 async def test_reserve_exactly_at_cap_allowed(patch_spent) -> None:
-    patch_spent(19.0)
+    patch_spent(99.0)
     redis = FakeRedis()
     res = await reserve_budget(
         redis, agent_name="x", estimated_rmb=1.0, today=_DATE
     )
-    assert res.amount_rmb == 1.0  # 19 + 1 == 20, not over
+    assert res.amount_rmb == 1.0  # 99 + 1 == 100, not over
 
 
 @pytest.mark.asyncio
@@ -141,14 +142,14 @@ async def test_reserve_rejects_negative_estimate(patch_spent) -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_reservations_sum_against_cap(patch_spent) -> None:
-    """Two in-flight reservations sum: 0 spent + 19 reserved + 2 → refused."""
+    """Two in-flight reservations sum: 0 spent + 99 reserved + 2 → refused."""
     patch_spent(0.0)
     redis = FakeRedis()
-    await reserve_budget(redis, agent_name="a", estimated_rmb=19.0, today=_DATE)
+    await reserve_budget(redis, agent_name="a", estimated_rmb=99.0, today=_DATE)
     with pytest.raises(DailyBudgetExceededError):
         await reserve_budget(redis, agent_name="b", estimated_rmb=2.0, today=_DATE)
     # The refused second reservation rolled back; the first remains.
-    assert redis.store[_RESERVED_KEY] == pytest.approx(19.0)
+    assert redis.store[_RESERVED_KEY] == pytest.approx(99.0)
 
 
 # --------------------------------------------------------------------------
@@ -281,18 +282,18 @@ class _GetRedis(FakeRedis):
 
 @pytest.mark.asyncio
 async def test_daily_state_includes_in_flight_reservation(patch_spent) -> None:
-    """¥19 actual spent + ¥1 in-flight reservation → the shared daily state
-    reads ¥20 = hard_breach, so a legacy caller cannot start another call
+    """¥99 actual spent + ¥1 in-flight reservation → the shared daily state
+    reads ¥100 = hard_breach, so a legacy caller cannot start another call
     while a debate reservation is in flight (codex M-005 P1)."""
-    patch_spent(19.0)
+    patch_spent(99.0)
     redis = _GetRedis()
     # A debate reserves ¥1 (in flight, not yet settled).
     await reserve_budget(redis, agent_name="debate", estimated_rmb=1.0, today=_DATE)
-    # Legacy path now sees 19 + 1 = 20 = hard_breach. Pin ``today`` so the
+    # Legacy path now sees 99 + 1 = 100 = hard_breach. Pin ``today`` so the
     # spend + reservation reads stay on the same UTC day as the reservation
     # above (otherwise the test is date-brittle across a midnight rollover).
     state = await get_daily_budget_state(redis, today=_DATE)
-    assert state.spent_today == pytest.approx(20.0)
+    assert state.spent_today == pytest.approx(100.0)
     assert state.status == "hard_breach"
     with pytest.raises(DailyBudgetExceededError):
         await assert_budget_allows(
@@ -302,15 +303,15 @@ async def test_daily_state_includes_in_flight_reservation(patch_spent) -> None:
 
 @pytest.mark.asyncio
 async def test_daily_state_reserved_released_after_settle(patch_spent) -> None:
-    patch_spent(19.0)
+    patch_spent(99.0)
     redis = _GetRedis()
     res = await reserve_budget(
         redis, agent_name="debate", estimated_rmb=1.0, today=_DATE
     )
     await settle_budget(redis, res)
-    # Reservation released → legacy path back to actual ¥19 (soft, not hard).
+    # Reservation released → legacy path back to actual ¥99 (soft ≥¥70, not hard).
     state = await get_daily_budget_state(redis)
-    assert state.spent_today == pytest.approx(19.0)
+    assert state.spent_today == pytest.approx(99.0)
     assert state.status == "soft_breach"
 
 

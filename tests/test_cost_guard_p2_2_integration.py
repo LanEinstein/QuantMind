@@ -2,11 +2,12 @@
 
 This file is the **dedicated** assertion that every P2-2 self-evolution
 LLM out-bound flows through :func:`backend.services.cost_guard.assert_budget_allows`
-and inherits the P1-7 daily ¥20 hard cap.
+and inherits the daily hard cap (¥100 since P1-7-amendment-2026-05-26).
 
-The 4 cost-guard constants locked by P1-7 §1.1-1.4 (and never to drift):
+The 4 cost-guard constants locked by P1-7 §1.1-1.4. P1-7-amendment-2026-05-26
+raised ONLY the daily hard cap ¥20 → ¥100 (the others never drift):
 
-* ``_DEFAULT_DAILY_BUDGET_RMB`` = 20.0
+* ``_DEFAULT_DAILY_BUDGET_RMB`` = 100.0  (was 20.0, amendment 2026-05-26)
 * ``_DEFAULT_SOFT_CEIL_PCT``    = 0.70
 * ``_DEFAULT_MONTHLY_BUDGET_RMB`` = 440.0
 * ``_DEFAULT_KIMI_DAILY_CAP_RMB`` = 4.0
@@ -92,7 +93,7 @@ def at_zero_spend(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def at_hard_breach(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _over_daily(_client: object) -> float:
-        return 25.0
+        return 125.0  # > ¥100 daily hard cap (P1-7-amendment-2026-05-26)
 
     async def _zero(_client: object) -> float:
         return 0.0
@@ -126,8 +127,9 @@ def at_kimi_breach(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestP17ConstantsLocked:
-    def test_daily_budget_is_20(self) -> None:
-        assert cg._DEFAULT_DAILY_BUDGET_RMB == 20.0
+    def test_daily_budget_is_100(self) -> None:
+        # P1-7-amendment-2026-05-26 raised the daily hard cap ¥20 → ¥100.
+        assert cg._DEFAULT_DAILY_BUDGET_RMB == 100.0
 
     def test_soft_pct_is_0_70(self) -> None:
         assert cg._DEFAULT_SOFT_CEIL_PCT == 0.70
@@ -160,7 +162,7 @@ class TestAssertBudgetAllows:
             agent_name="x_017_test",
         )
         assert state.status == "ok"
-        assert state.daily_budget == 20.0
+        assert state.daily_budget == 100.0
 
     @pytest.mark.asyncio
     async def test_over_budget_raises(
@@ -171,7 +173,7 @@ class TestAssertBudgetAllows:
                 stub_redis,  # type: ignore[arg-type]
                 agent_name="x_017_test",
             )
-        assert "Daily budget 20.00" in str(exc_info.value)
+        assert "Daily budget 100.00" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_kimi_under_returns_state(
@@ -648,8 +650,8 @@ class TestConstantsSurviveEnvAbsence:
             stub_redis,  # type: ignore[arg-type]
             agent_name="x_017_test",
         )
-        assert state.daily_budget == 20.0
-        assert state.soft_ceiling == round(20.0 * 0.70, 4)
+        assert state.daily_budget == 100.0
+        assert state.soft_ceiling == round(100.0 * 0.70, 4)
 
     @pytest.mark.asyncio
     async def test_kimi_default_used(

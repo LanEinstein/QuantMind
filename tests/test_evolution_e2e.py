@@ -13,7 +13,7 @@ BrokerScheduler tick:
 Five paths covered (the X-020 acceptance):
 
 1. **Happy path** — passing verdict → draft on disk + notify + 3 audit rows.
-2. **cost_guard budget breach** — GEPA refused under daily ¥20 hard cap.
+2. **cost_guard budget breach** — GEPA refused under daily ¥100 hard cap.
 3. **RAG non-whitelist rejection** — ingester records rejection audit row.
 4. **R1 sample limit breach** — GEPA refuses over-100 examples.
 5. **R3 retrieval-precision floor breach** — assert_precision_floor raises.
@@ -169,7 +169,7 @@ def at_zero_spend(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def at_hard_breach(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _over(_client: object) -> float:
-        return 25.0
+        return 125.0  # > ¥100 daily hard cap (P1-7-amendment-2026-05-26)
 
     async def _zero(_client: object) -> float:
         return 0.0

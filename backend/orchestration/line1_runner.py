@@ -53,6 +53,7 @@ from backend.models.instruction import (
 from backend.orchestration.instruction_dispatcher import OutboundSignal
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteOutcome
 from backend.screening.screener import CandidateRow, Screener
+from backend.services.cost_guard import DailyBudgetExceededError
 from backend.services.instruction_plan_builder import (
     AssemblyContext,
     BuilderDegrade,
@@ -87,6 +88,49 @@ class Line1Outcome(StrEnum):
     """4-agent gate degraded (a mandatory agent was silent) — fail-closed HOLD."""
     EARLY_RETURN = "early_return"
     """A Builder five-early-return freeze blocked routing (data quality, etc.)."""
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    """The ¥100 daily reservation or the max_debates_per_day fan-out cap stopped
+    the shortlist walk before any (further) candidate could be debated
+    (P1-7-amendment-2026-05-26). Fail-closed: already-routed BUYs are kept."""
+
+
+class Line1SelectionMode(StrEnum):
+    """How many routable BUYs Line-1 collects from the shortlist per run.
+
+    P1-7-amendment-2026-05-26 §2.2 (owner AskUserQuestion): default ``BASKET``.
+    """
+
+    BASKET = "basket"
+    """Walk the whole shortlist, collecting EVERY VALIDATED BUY (a REJECTED /
+    HOLD / DEGRADED / non-BUY candidate falls through to the next). Bounded by
+    max_debates_per_day + the ¥100 reservation + P0-7 ≤5 orders/day +
+    RiskEngine 15%/70% caps (cash threaded across the basket)."""
+    SINGLE = "single"
+    """Return at the FIRST VALIDATED BUY — debate no further candidates."""
+
+
+@dataclass(frozen=True)
+class CommittedBuy:
+    """A basket BUY already routed this run, threaded into later candidates.
+
+    Flow-level only (taken off the routed plan), so the runner stays
+    import-clean. The provider folds these into the next candidate's account
+    (cash ↓ by notional) + positions (value ↑) so the basket stays collectively
+    ≤ available cash and ≤ the 70% total-position cap — RiskEngine then
+    re-validates each candidate against the post-commitment state
+    (P1-7-amendment-2026-05-26 §2.3)."""
+
+    code: str
+    volume: int
+    limit_price: float
+
+
+@dataclass(frozen=True)
+class RoutedBuy:
+    """One VALIDATED BUY that was rendered + handed to the RouteCoordinator."""
+
+    plan: InstructionPlan
+    route_outcome: RouteOutcome
 
 
 @runtime_checkable
@@ -141,7 +185,11 @@ class Line1ContextProvider(Protocol):
         ...
 
     def build_lead_context(
-        self, lead: CandidateRow, *, concentration_exception: bool = False
+        self,
+        lead: CandidateRow,
+        *,
+        concentration_exception: bool = False,
+        committed: tuple[CommittedBuy, ...] = (),
     ) -> Line1LeadContext:
         """Build the TeamContext + AssemblyContext factory for the lead.
 
@@ -152,13 +200,26 @@ class Line1ContextProvider(Protocol):
         ``AssemblyContext`` (the authoritative 14-check). RiskEngine still
         re-derives ETF + whitelist + ≤max_lots, so the flag never bypasses the
         cap on its own (U-C4 / codex P2).
+
+        ``committed`` are the BUYs already routed earlier in THIS basket run
+        (P1-7-amendment-2026-05-26 §2.3). The provider folds them into the
+        candidate's account (cash ↓ by notional) + positions (value ↑) so this
+        candidate is sized + 14-check-validated against the post-commitment
+        state — keeping the basket collectively ≤ cash and ≤ the 70% cap. Empty
+        for SINGLE mode and the first BASKET candidate (identical to U-D1b).
         """
         ...
 
 
 @dataclass(frozen=True)
 class Line1RunResult:
-    """Audit-grade summary of one Line-1 run."""
+    """Audit-grade summary of one Line-1 run.
+
+    ``routed_buys`` holds EVERY VALIDATED BUY routed this run (BASKET mode;
+    ≤1 in SINGLE mode). ``plan`` / ``route_outcome`` mirror the FIRST routed
+    BUY for backward compatibility — when 0 BUYs route they carry the last
+    processed candidate's terminal plan (e.g. a discarded SELL) for audit.
+    """
 
     signal_id: str
     outcome: Line1Outcome
@@ -167,6 +228,16 @@ class Line1RunResult:
     lead_code: str | None = None
     route_outcome: RouteOutcome | None = None
     plan: InstructionPlan | None = None
+    routed_buys: tuple[RoutedBuy, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CandidateResult:
+    """One shortlist candidate's terminal after debate + assemble + route."""
+
+    outcome: Line1Outcome
+    plan: InstructionPlan | None = None
+    route_outcome: RouteOutcome | None = None
 
 
 class Line1Runner:
@@ -184,6 +255,7 @@ class Line1Runner:
         ledger: DecisionLedgerService,
         redis_client: Any,
         pilot: bool = False,
+        selection_mode: Line1SelectionMode = Line1SelectionMode.BASKET,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -196,6 +268,9 @@ class Line1Runner:
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
         self._pilot = pilot
+        # BASKET (default, owner 2026-05-26): collect every VALIDATED BUY in the
+        # shortlist; SINGLE: stop at the first (P1-7-amendment-2026-05-26 §2.2).
+        self._selection_mode = selection_mode
 
     async def run(
         self,
@@ -205,7 +280,15 @@ class Line1Runner:
         now: datetime,
         signal_id: str | None = None,
     ) -> Line1RunResult:
-        """Run Line-1 once on the T-1 frame; route at most one BUY."""
+        """Run Line-1 once on the T-1 frame; route a BUY basket.
+
+        Walks the deterministic shortlist (P1-7-amendment-2026-05-26): each
+        candidate is debated → assembled (single construction point) → routed;
+        a RiskEngine REJECT / HOLD / DEGRADE / non-BUY falls through to the next
+        name. BASKET mode collects every VALIDATED BUY (SINGLE stops at the
+        first). The walk stops fail-closed when the ¥100 reservation or the
+        max_debates_per_day cap is exhausted — already-routed BUYs are kept.
+        """
         sid = signal_id or f"SIG-{frame.trade_date}-line1"
 
         # 1. Full-market screen (PIT, deterministic, 0 LLM).
@@ -242,74 +325,144 @@ class Line1Runner:
         if not selection.shortlist:
             return self._short(sid, Line1Outcome.EMPTY_SHORTLIST, tier=assessment.tier)
 
-        # 4. ONE 4-agent debate (真·预留 + fan-out cap inside run_shortlist).
-        lead_code = selection.shortlist[0]
-        lead = by_code[lead_code]
-        lead_afford = afford_by_code.get(lead_code)
-        lead_concentration_exception = bool(
-            lead_afford is not None and lead_afford.concentration_exception
+        # 4-6. Walk the shortlist: debate → assemble (single construction
+        # point) → route each candidate; REJECT/HOLD/DEGRADE/non-BUY falls
+        # through to the next. Collect the VALIDATED BUY basket (cash threaded
+        # across it so it stays collectively ≤ cash + ≤ 70%).
+        routed: list[RoutedBuy] = []
+        committed: list[CommittedBuy] = []
+        last: _CandidateResult | None = None
+        budget_stopped = False
+        for seq, code in enumerate(selection.shortlist, start=1):
+            afford = afford_by_code.get(code)
+            concentration_exception = bool(
+                afford is not None and afford.concentration_exception
+            )
+            try:
+                last = await self._process_candidate(
+                    provider,
+                    by_code[code],
+                    concentration_exception=concentration_exception,
+                    committed=tuple(committed),
+                    signal_id=sid,
+                    seq=seq,
+                    now=now,
+                )
+            except DailyBudgetExceededError as exc:
+                # ¥100 reservation OR max_debates_per_day cap refused this
+                # debate (the crossing call never ran). Stop fail-closed and
+                # keep the basket built so far (P1-7-amendment-2026-05-26 §2.3).
+                log.warning(
+                    "line1_budget_exhausted",
+                    signal_id=sid,
+                    code=code,
+                    routed=len(routed),
+                    error=str(exc),
+                )
+                budget_stopped = True
+                break
+            if last.outcome is Line1Outcome.EARLY_RETURN:
+                # A Builder five-early-return freeze (data quality / mode switch
+                # / open reconciliation ticket / circuit-breaker cooldown / EOD
+                # pipeline) is RUN-LEVEL: the same inputs gate every candidate,
+                # so stop the walk instead of burning debates + budget on names
+                # that would all freeze identically, and surface the freeze
+                # rather than a misleading BUDGET_EXHAUSTED (codex P2).
+                log.info("line1_run_frozen", signal_id=sid, code=code)
+                break
+            if (
+                last.outcome is Line1Outcome.ROUTED
+                and last.plan is not None
+                and last.route_outcome is not None
+            ):
+                routed.append(
+                    RoutedBuy(plan=last.plan, route_outcome=last.route_outcome)
+                )
+                committed.append(
+                    CommittedBuy(
+                        code=last.plan.stock_code,
+                        volume=int(last.plan.volume or 0),
+                        limit_price=float(last.plan.limit_price or 0.0),
+                    )
+                )
+                if self._selection_mode is Line1SelectionMode.SINGLE:
+                    break
+
+        return self._aggregate(
+            signal_id=sid,
+            shortlist=selection.shortlist,
+            tier=assessment.tier,
+            routed=routed,
+            last=last,
+            budget_stopped=budget_stopped,
         )
-        # The flag enters at the single point (build_lead_context): the
-        # provider threads it into BOTH the debate TeamContext and the
-        # AssemblyContext so the debate decision cannot contradict the routed
-        # plan (codex U-C4 P2).
+
+    async def _process_candidate(
+        self,
+        provider: Line1ContextProvider,
+        candidate: CandidateRow,
+        *,
+        concentration_exception: bool,
+        committed: tuple[CommittedBuy, ...],
+        signal_id: str,
+        seq: int,
+        now: datetime,
+    ) -> _CandidateResult:
+        """Debate + assemble (single construction point) + route one candidate.
+
+        Raises :class:`DailyBudgetExceededError` (out of ``run_shortlist``) when
+        the ¥100 reservation or the debate-slot cap refuses — the caller stops
+        the basket walk. The ``concentration_exception`` flag and ``committed``
+        basket enter at the single point (``build_lead_context``) so the debate,
+        the sizing and the authoritative 14-check all see the same state.
+        """
         lead_ctx = provider.build_lead_context(
-            lead, concentration_exception=lead_concentration_exception
+            candidate,
+            concentration_exception=concentration_exception,
+            committed=committed,
         )
         debate = await run_shortlist(
             lead_ctx.team_context, [lead_ctx.brief], redis_client=self._redis
         )
-
-        # 5. Single construction point (14-check) via the LLM-only bridge.
         fmo = to_fund_manager_output(debate.state)
-        records = _mandatory_records_from_state(debate.state, sid)
+        records = _mandatory_records_from_state(
+            debate.state, f"{signal_id}-{candidate.code}"
+        )
         context = lead_ctx.make_assembly_context(
-            signal_id=sid,
-            seq=1,
+            signal_id=signal_id,
+            seq=seq,
             debate_round_count=int(debate.state.get("debate_round_count", 0)),
-            analysis_record_id=f"{sid}-debate",
-            risk_validation_id=f"{sid}-rv",
+            analysis_record_id=f"{signal_id}-{candidate.code}-debate",
+            risk_validation_id=f"{signal_id}-{candidate.code}-rv",
         )
         built = await self._builder.assemble_plan(
             fund_manager_output=fmo, mandatory_records=records, context=context
         )
-
-        # 6. Route at most one VALIDATED BUY.
-        return await self._route(
-            built,
-            signal_id=sid,
-            lead_code=lead_code,
-            shortlist=selection.shortlist,
-            tier=assessment.tier,
-            now=now,
+        return await self._route_candidate(
+            built, signal_id=signal_id, code=candidate.code, now=now
         )
 
-    async def _route(
+    async def _route_candidate(
         self,
         built: object,
         *,
         signal_id: str,
-        lead_code: str,
-        shortlist: tuple[str, ...],
-        tier: BudgetTier,
+        code: str,
         now: datetime,
-    ) -> Line1RunResult:
+    ) -> _CandidateResult:
         """Render + route a VALIDATED BUY; classify every other terminal."""
-        common: dict[str, Any] = {
-            "signal_id": signal_id,
-            "tier": tier,
-            "shortlist": shortlist,
-            "lead_code": lead_code,
-        }
         if isinstance(built, BuilderDegrade):
             log.info(
-                "line1_degraded", signal_id=signal_id, reason=built.reason_namespace
+                "line1_degraded",
+                signal_id=signal_id,
+                code=code,
+                reason=built.reason_namespace,
             )
-            return Line1RunResult(outcome=Line1Outcome.DEGRADED, **common)
+            return _CandidateResult(outcome=Line1Outcome.DEGRADED)
         if not isinstance(built, BuilderPlan):
             # A five-early-return freeze (data quality / circuit breaker / etc.).
-            log.info("line1_early_return", signal_id=signal_id)
-            return Line1RunResult(outcome=Line1Outcome.EARLY_RETURN, **common)
+            log.info("line1_early_return", signal_id=signal_id, code=code)
+            return _CandidateResult(outcome=Line1Outcome.EARLY_RETURN)
 
         # Open the decision-ledger entry for every constructed plan (the
         # production "plan drafted" step — idempotent PLAN_DRAFTED). Both
@@ -321,9 +474,9 @@ class Line1Runner:
         await self._ledger.open_for_plan(plan, at=now)
 
         if plan.side is InstructionSide.HOLD:
-            return Line1RunResult(outcome=Line1Outcome.HOLD, plan=plan, **common)
+            return _CandidateResult(outcome=Line1Outcome.HOLD, plan=plan)
         if plan.status is not InstructionStatus.VALIDATED:
-            return Line1RunResult(outcome=Line1Outcome.REJECTED, plan=plan, **common)
+            return _CandidateResult(outcome=Line1Outcome.REJECTED, plan=plan)
         # Line-1 is the BUY (selection) line. A VALIDATED non-BUY (a SELL the
         # fund_manager proposed on a held screening name) must NOT reach the
         # BUY-only renderer (it would raise + crash the daily run), and must
@@ -336,8 +489,8 @@ class Line1Runner:
                 instruction_id=plan.instruction_id,
                 side=plan.side.value,
             )
-            return Line1RunResult(
-                outcome=Line1Outcome.NON_BUY_DISCARDED, plan=plan, **common
+            return _CandidateResult(
+                outcome=Line1Outcome.NON_BUY_DISCARDED, plan=plan
             )
 
         # VALIDATED BUY → pick the template from the ENGINE's authoritative
@@ -367,9 +520,50 @@ class Line1Runner:
             action=outcome.action,
             mode=outcome.mode.value,
         )
-        return Line1RunResult(
-            outcome=Line1Outcome.ROUTED, plan=plan, route_outcome=outcome, **common
+        return _CandidateResult(
+            outcome=Line1Outcome.ROUTED, plan=plan, route_outcome=outcome
         )
+
+    def _aggregate(
+        self,
+        *,
+        signal_id: str,
+        shortlist: tuple[str, ...],
+        tier: BudgetTier,
+        routed: list[RoutedBuy],
+        last: _CandidateResult | None,
+        budget_stopped: bool,
+    ) -> Line1RunResult:
+        """Fold the per-candidate walk into one audit-grade run result."""
+        common: dict[str, Any] = {
+            "signal_id": signal_id,
+            "tier": tier,
+            "shortlist": shortlist,
+            "lead_code": shortlist[0] if shortlist else None,
+        }
+        if routed:
+            # ROUTED whenever ≥1 BUY made it (even if the walk later stopped on
+            # budget). plan/route_outcome mirror the FIRST routed BUY.
+            first = routed[0]
+            return Line1RunResult(
+                outcome=Line1Outcome.ROUTED,
+                plan=first.plan,
+                route_outcome=first.route_outcome,
+                routed_buys=tuple(routed),
+                **common,
+            )
+        if budget_stopped:
+            # 0 BUYs and the budget stopped the walk → surface BUDGET_EXHAUSTED
+            # (raise the cap / rerun next day) over a candidate's terminal.
+            return Line1RunResult(outcome=Line1Outcome.BUDGET_EXHAUSTED, **common)
+        if last is not None:
+            # 0 BUYs, walk completed: reflect the last candidate's terminal
+            # (all-HOLD → HOLD, all-rejected → REJECTED, …) + its plan for audit.
+            return Line1RunResult(
+                outcome=last.outcome, plan=last.plan, **common
+            )
+        # Unreachable (the shortlist is non-empty), kept fail-closed.
+        return Line1RunResult(outcome=Line1Outcome.EMPTY_SHORTLIST, **common)
 
     @staticmethod
     def _short(
@@ -425,9 +619,12 @@ def _mandatory_records_from_state(
 
 __all__ = [
     "AssemblyContextFactory",
+    "CommittedBuy",
     "Line1ContextProvider",
     "Line1LeadContext",
     "Line1Outcome",
     "Line1RunResult",
     "Line1Runner",
+    "Line1SelectionMode",
+    "RoutedBuy",
 ]
