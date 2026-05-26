@@ -74,7 +74,7 @@ from backend.data.trading_calendar import (
     prev_trading_day,
 )
 from backend.marketdata_snapshot import MarketDataSnapshot, SnapshotStore
-from backend.orchestration.line1_runner import Line1Outcome, Line1RunResult
+from backend.orchestration.line1_runner import Line1RunResult
 from backend.orchestration.line2_daily_runner import SellRouteOutcome
 from backend.orchestration.line2_intraday_runner import TriggerRouteOutcome
 from backend.orchestration.route_coordinator import RouteMode
@@ -365,11 +365,18 @@ async def _run_line1(ctx: DryRunContext, now: dt.datetime) -> None:
     # record() is invoked from a sink-shim wrapped around the run instead.
     result = await ctx.line1_runner.run(frame=ctx.frame, provider=provider, now=now)
     ctx.line1_results.append(result)
-    if result.outcome is Line1Outcome.ROUTED and result.plan is not None:
+    # Label EVERY routed BUY in the basket (P1-7-amendment-2026-05-26): Line-1
+    # now produces a multi-name basket, so each rendered wire text must pair
+    # with its own metadata (else the 2nd+ stay line="unknown" and the
+    # line1_rendered count + owner-reviewed artifact under-report the basket),
+    # and each consumes a check-10 daily order slot.
+    for routed in result.routed_buys:
         ctx.today_instruction_count += 1  # prereq 2 — engage check-10
         ctx.collector.label(
-            result.plan.instruction_id, line="line1", side="BUY",
-            code=result.lead_code or result.plan.stock_code,
+            routed.plan.instruction_id,
+            line="line1",
+            side="BUY",
+            code=routed.plan.stock_code,
         )
 
 

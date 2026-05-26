@@ -411,6 +411,26 @@ async def test_empty_universe_does_not_crash(tmp_path) -> None:
     assert router.calls == 0  # no debate spun up — no LLM spend on empty screen
 
 
+async def test_line1_basket_all_buys_labeled_line1(tmp_path) -> None:
+    # P1-7-amendment-2026-05-26 basket: EVERY routed BUY (not just the first)
+    # must be labeled line1 so line1_rendered + the owner-reviewed artifact
+    # reflect the whole basket — before the harness fix the 2nd+ stayed
+    # line="unknown" and were under-counted.
+    router = _StubRouter(action="买入")
+    ctx = await _make_ctx(frame=_buy_frame(), router=router, tmp_path=tmp_path)
+    outcome = await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=tmp_path / "a.json"
+    )
+    basket = ctx.line1_results[0].routed_buys
+    assert len(basket) >= 2, "the fixture should yield a multi-name basket"
+    # All basket BUYs labeled → none counted as line="unknown".
+    assert outcome.line1_rendered == len(basket)
+    line1_codes = {s.code for s in ctx.collector.signals if s.line == "line1"}
+    assert line1_codes == {rb.plan.stock_code for rb in basket}
+    # Each basket BUY consumed a check-10 daily order slot.
+    assert ctx.today_instruction_count >= len(basket)
+
+
 async def test_hold_recommendation_not_routed(tmp_path) -> None:
     # fund_manager proposes HOLD → never routes/renders (CLAUDE.md §2.7).
     router = _StubRouter(action="持有")
