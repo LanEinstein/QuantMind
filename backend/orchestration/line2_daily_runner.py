@@ -143,12 +143,16 @@ class Line2DailyRunner:
         renderer: MessageRenderer,
         coordinator: RouteCoordinator,
         ledger: DecisionLedgerService,
+        pilot: bool = False,
     ) -> None:
         self._detector = anomaly_detector
         self._builder = builder
         self._renderer = renderer
         self._coordinator = coordinator
         self._ledger = ledger
+        # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
+        # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
+        self._pilot = pilot
 
     async def run(
         self,
@@ -236,7 +240,7 @@ class Line2DailyRunner:
             return SellRoute(outcome=SellRouteOutcome.REJECTED, plan=plan, **common)
 
         wire = self._renderer.render_monitoring_sell(
-            plan, anomaly_reason=intent.anomaly_reason
+            plan, anomaly_reason=intent.anomaly_reason, pilot=self._pilot
         )
         outcome = await self._coordinator.route(
             OutboundSignal(plan=plan, wire_text=wire), now=now

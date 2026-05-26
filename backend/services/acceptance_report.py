@@ -32,7 +32,7 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
 import structlog
@@ -223,6 +223,65 @@ def _build_metric(
     )
 
 
+# ---------------------------------------------------------------------------
+# Tier-aware go-live gate (P0-6-amendment-2026-05-25 §2.2 / §2.3 / §2.4)
+# ---------------------------------------------------------------------------
+
+
+class GoLiveTier(StrEnum):
+    """The two go-live tiers of the acceptance gate.
+
+    PILOT — bounded double-line pilot on the SIM account with owner-in-loop
+    manual execution (amendment §2.3, 11-condition minimal set). FULL — the
+    original P0-6 45-trading-day rolling window + 5 stability + 3 strategy
+    gates (amendment §2.4). A PILOT pass NEVER satisfies FULL (§2.4 / §4 #2).
+    """
+
+    PILOT = "pilot"
+    FULL = "full"
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """Result of :meth:`AcceptanceService.can_switch_to_feishu_on`.
+
+    ``allowed`` is the ONLY authoritative switch sanction (P0-6 §2 redline 5 —
+    no env-var / CLI bypass). ``reasons`` names every unmet condition so the
+    caller can surface a fail-closed explanation; it is empty when allowed.
+    ``tier`` echoes the evaluated tier so a PILOT decision can never be
+    mistaken for a FULL one downstream (amendment §4 #2).
+    """
+
+    tier: GoLiveTier
+    allowed: bool
+    reasons: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        """Truthiness == ``allowed`` (fail-closed defence-in-depth).
+
+        All known callers read ``.allowed`` explicitly, but a missed/legacy
+        ``if await gate.can_switch_to_feishu_on():`` would otherwise treat the
+        always-truthy dataclass as a pass. Mirroring ``allowed`` here means
+        such a caller still fails closed on a denied decision (Codex U-D2 P1).
+        """
+        return self.allowed
+
+
+@runtime_checkable
+class PilotReadinessProbeProtocol(Protocol):
+    """Duck-typed probe consulted for the PILOT branch.
+
+    Kept as a Protocol so ``acceptance_report`` does not import the concrete
+    :mod:`backend.services.pilot_readiness` (which reaches into the broker /
+    reconciliation surfaces) — the acceptance path stays import-clean of those
+    and of the LLM stack (CLAUDE.md §2.8). ``evaluate`` is async (it does
+    reconciliation / data-quality / cost-guard I/O) and returns the tuple of
+    unmet PILOT condition reasons; empty == all 11 conditions met.
+    """
+
+    async def evaluate(self) -> tuple[str, ...]: ...
+
+
 class AcceptanceService:
     """Computes + persists AcceptanceReport rows.
 
@@ -242,6 +301,20 @@ class AcceptanceService:
     ) -> None:
         self._repo = repository or InMemoryAcceptanceRepository()
         self._reset_state: WindowResetState = WindowResetState()
+        self._pilot_probe: PilotReadinessProbeProtocol | None = None
+
+    def set_pilot_probe(
+        self, probe: PilotReadinessProbeProtocol | None
+    ) -> None:
+        """Wire (or clear) the PILOT readiness probe at startup.
+
+        Wiring-time setter (mirrors :meth:`set_reset_state`): the concrete
+        probe needs live broker / reconciliation / cost-guard refs that are
+        only built after the orchestration layer is up — later than this
+        service is constructed. Simulation-only / unit-test contexts leave it
+        ``None`` → PILOT is fail-closed there (no probe == not ready).
+        """
+        self._pilot_probe = probe
 
     def record_reset(self, *, when: dt.datetime, reason: str) -> None:
         """Mark the rolling window as reset; subsequent compute() starts fresh.
@@ -472,32 +545,87 @@ class AcceptanceService:
     async def latest(self) -> AcceptanceReport | None:
         return await self._repo.latest()
 
-    async def can_switch_to_feishu_on(self) -> bool:
-        """Return True iff the most recent report has ``outcome=PASS``
-        AND no acceptance reset has fired on/after the report's trade
-        date.
+    async def can_switch_to_feishu_on(
+        self, target_tier: GoLiveTier | str = GoLiveTier.FULL
+    ) -> GateDecision:
+        """Return the :class:`GateDecision` for ``target_tier``.
 
-        Environment-variable / CLI bypass is forbidden — this method is
-        the only sanctioned switching gate (P0-6 §2 redline 5).
+        The ONLY sanctioned switching gate (P0-6 §2 redline 5) — env-var / CLI
+        bypass is forbidden. ``target_tier`` only selects WHICH tier's gate to
+        evaluate; it never bypasses the ``allowed`` verdict (amendment §4 #1).
 
-        Codex cycle 3 P1 fix — without the reset-state check, a stale
-        PASS report from before a J-004 reset could authorise Feishu
-        interactive mode even after the rolling window was invalidated.
-        The check uses Asia/Shanghai trade dates so a reset at
-        2026-05-14 16:30 UTC (= 2026-05-15 in Shanghai) correctly
-        invalidates a PASS dated 2026-05-15 in the same calendar.
+        * FULL  — most-recent report ``PASS`` AND no acceptance reset on/after
+          the report's trade date (the original 45-day rolling-window
+          semantics, unchanged).
+        * PILOT — the 11-condition minimal set (amendment §2.3) via the
+          injected readiness probe; fail-closed — no probe wired, a probe
+          error, or any unmet condition → ``allowed=False`` with the reasons
+          named.
+
+        Backward-compat: a no-arg call evaluates FULL, preserving the original
+        "bare boolean == 45-day FULL pass" contract so a legacy caller can
+        never be fooled by a PILOT pass (amendment §2.3 / §4 #2).
+        """
+        tier = GoLiveTier(target_tier)
+        if tier is GoLiveTier.PILOT:
+            return await self._evaluate_pilot()
+        return await self._evaluate_full()
+
+    async def _evaluate_full(self) -> GateDecision:
+        """FULL tier — the original 45-day rolling-window gate.
+
+        Codex cycle 3 P1 invariant preserved — without the reset-state check a
+        stale PASS report from before a J-004 reset could authorise Feishu
+        interactive mode after the rolling window was invalidated. Asia/Shanghai
+        trade dates are used so a reset at 2026-05-14 16:30 UTC
+        (= 2026-05-15 Shanghai) correctly invalidates a PASS dated 2026-05-15.
         """
         latest = await self.latest()
-        if latest is None or latest.outcome is not AcceptanceOutcome.PASS:
-            return False
-        if self._reset_state.last_reset_at is not None:
+        reasons: list[str] = []
+        if latest is None:
+            reasons.append("full:no_acceptance_report")
+        elif latest.outcome is not AcceptanceOutcome.PASS:
+            reasons.append(f"full:latest_outcome_{latest.outcome.value}")
+        elif self._reset_state.last_reset_at is not None:
             reset_date = self._reset_state.last_reset_at.astimezone(
                 SHANGHAI
             ).date()
             pass_date = dt.date.fromisoformat(latest.trade_date)
             if reset_date >= pass_date:
-                return False
-        return True
+                reasons.append("full:reset_on_or_after_latest_pass")
+        return GateDecision(
+            tier=GoLiveTier.FULL,
+            allowed=not reasons,
+            reasons=tuple(reasons),
+        )
+
+    async def _evaluate_pilot(self) -> GateDecision:
+        """PILOT tier — delegate the 11-condition minimal set to the probe.
+
+        Fail-closed: no probe wired (simulation-only / tests) or a probe that
+        raises → not allowed. A PILOT decision can NEVER satisfy FULL — the
+        ``tier`` field on the result makes that explicit downstream.
+        """
+        if self._pilot_probe is None:
+            return GateDecision(
+                tier=GoLiveTier.PILOT,
+                allowed=False,
+                reasons=("pilot:readiness_probe_not_wired",),
+            )
+        try:
+            unmet = tuple(await self._pilot_probe.evaluate())
+        except Exception as exc:  # noqa: BLE001 — fail-closed
+            log.warning("pilot_probe_evaluate_raised", error=str(exc))
+            return GateDecision(
+                tier=GoLiveTier.PILOT,
+                allowed=False,
+                reasons=("pilot:readiness_probe_error",),
+            )
+        return GateDecision(
+            tier=GoLiveTier.PILOT,
+            allowed=not unmet,
+            reasons=unmet,
+        )
 
 
 # ---------------------------------------------------------------------------

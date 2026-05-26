@@ -14,6 +14,8 @@ from fastapi import FastAPI, Request
 
 if TYPE_CHECKING:
     from backend.data.watchlist import WatchlistService
+    from backend.services.acceptance_report import GoLiveTier
+    from backend.services.pilot_readiness import PilotReadinessProbe
     from backend.services.universe_policy import UniversePolicy
 
 from backend.api.acceptance import router as acceptance_router
@@ -44,6 +46,94 @@ from backend.services.config_service import ConfigService
 log = structlog.get_logger()
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+# P0-6-amendment-2026-05-25 §2.2 — which go-live tier's acceptance gate the
+# startup + switch paths evaluate. This env var ONLY selects which tier's gate
+# to evaluate; it NEVER bypasses the gate's ``allowed`` verdict (amendment §4
+# #1 — the acceptance gate stays the single switch authority). Default FULL is
+# the fail-safe: a missing / typo value never silently runs PILOT.
+FEISHU_TIER_ENV = "QUANTMIND_FEISHU_TIER"
+
+
+def _resolve_feishu_tier() -> GoLiveTier:
+    """Resolve the configured go-live tier (default FULL, fail-safe).
+
+    An unrecognised value aborts startup loudly rather than defaulting
+    silently — a typo must never downgrade the gate.
+    """
+    from backend.services.acceptance_report import GoLiveTier
+
+    raw = os.environ.get(FEISHU_TIER_ENV, "").strip().lower()
+    if not raw:
+        return GoLiveTier.FULL
+    try:
+        return GoLiveTier(raw)
+    except ValueError:
+        raise SystemExit(
+            f"Refusing to start: {FEISHU_TIER_ENV}={raw!r} is not a valid "
+            "go-live tier. Use 'pilot' or 'full' (default full). This env var "
+            "only selects which tier's acceptance gate to evaluate — it can "
+            "never bypass the gate's verdict (P0-6-amendment §4 #1)."
+        ) from None
+
+
+def _build_pilot_probe(
+    application: FastAPI, broker: object
+) -> PilotReadinessProbe:
+    """Wire the live PILOT readiness probe from the running app's surfaces.
+
+    Each live check is fail-closed: a missing ``app.state`` dependency or a
+    raising call counts as the condition UNMET (the probe's ``_safe_*``
+    wrappers enforce this). cond 9 (data-quality) is wired fail-closed until
+    U-D3 connects the per-code ``data_quality_provider`` against the real
+    Tushare frame (the carry-forward note on U-D1/U-D1b) — a global all-clear
+    aggregate does not exist yet, and fail-closed is the correct default until
+    it does.
+    """
+    from backend.broker.mock_broker import MockBroker
+    from backend.services.cost_guard import get_daily_budget_state
+    from backend.services.pilot_readiness import PilotReadinessProbe
+
+    def _is_sim_broker() -> bool:
+        return isinstance(broker, MockBroker)
+
+    async def _reconciliation_clear() -> bool:
+        repo = getattr(
+            application.state, "reconciliation_ticket_repository", None
+        )
+        if repo is None:
+            return False
+        return not await repo.list_all_open()
+
+    async def _data_quality_clear() -> bool:
+        # TODO(U-D3): aggregate per-code DataQualityState against the real
+        # Tushare frame. Fail-closed until then.
+        return False
+
+    async def _llm_timeout_ok() -> bool:
+        # TODO(U-D4): read a CURRENT/daily LLM-timeout counter. This must NOT
+        # be derived from the FULL 45-day acceptance report (Codex U-D2 P2):
+        # before the window completes those reports are INSUFFICIENT_DATA with
+        # no metrics (would wrongly block PILOT), and a zero-denominator report
+        # could pass on FULL telemetry rather than current health. Fail-closed
+        # until a live timeout counter is wired (the U-D1b carry-forward).
+        return False
+
+    async def _cost_guard_hard_reserve_active() -> bool:
+        redis = getattr(application.state, "redis", None)
+        if redis is None:
+            return False
+        state = await get_daily_budget_state(redis)
+        return state.daily.status != "hard_breach"
+
+    return PilotReadinessProbe(
+        is_sim_broker=_is_sim_broker,
+        reconciliation_clear=_reconciliation_clear,
+        data_quality_clear=_data_quality_clear,
+        llm_timeout_within_ceiling=_llm_timeout_ok,
+        cost_guard_hard_reserve_active=_cost_guard_hard_reserve_active,
+        env=os.environ,
+    )
 
 
 class _LazyAuditCollection:
@@ -262,6 +352,7 @@ async def _init_line2_runners(
     ledger: object,
     simulation_executor: object,
     market_meta: object,
+    pilot: bool = False,
 ) -> tuple[
     Callable[[datetime], Awaitable[None]],
     Callable[[datetime], Awaitable[None]],
@@ -378,6 +469,7 @@ async def _init_line2_runners(
         renderer=renderer,
         coordinator=coordinator,
         ledger=ledger,
+        pilot=pilot,
     )
     intraday_runner = Line2IntradayRunner(
         builder=builder,
@@ -386,6 +478,7 @@ async def _init_line2_runners(
         ledger=ledger,
         snapshot_store=snapshot_store,
         manifest_store=manifest_store,
+        pilot=pilot,
     )
 
     application.state.instruction_dispatcher = dispatcher
@@ -441,6 +534,7 @@ async def _init_line2_runners(
         coordinator=coordinator,
         ledger=ledger,
         redis_client=getattr(application.state, "redis", None),
+        pilot=pilot,
     )
     application.state.line1_runner = line1_runner
 
@@ -1083,6 +1177,17 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # environments can opt out via ``QUANTMIND_BROKER_SKIP_RS_GATE=1``
     # — the helper below resolves the gate object once.
     from backend.broker.scheduler import BrokerScheduler
+    from backend.services.acceptance_report import GoLiveTier
+
+    # U-D2 — resolve the go-live tier once (default FULL). PILOT prepends the
+    # "模拟盘·人工·试点" banner to every order-bearing Feishu message; it is
+    # threaded into all three runners at construction so the renderer single
+    # source (P0-6-amendment-2026-05-25 §2.3) is the only place the banner is
+    # composed. Stored on app.state so the startup feishu gate + the
+    # mode-switch lifecycle below require the SAME tier's acceptance gate.
+    feishu_tier = _resolve_feishu_tier()
+    application.state.feishu_go_live_tier = feishu_tier
+    pilot_banner = feishu_tier is GoLiveTier.PILOT
 
     # U-D1 / U-D1b — build the double-line production runners + their shared
     # RouteCoordinator and get the three cron callbacks before constructing the
@@ -1094,9 +1199,17 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         broker=broker,
         audit_store=audit_store,
         ledger=ledger_service,
+        pilot=pilot_banner,
         simulation_executor=simulation_executor,
         market_meta=market_meta,
     )
+
+    # U-D2 — wire the live PILOT readiness probe onto the acceptance service.
+    # The reconciliation ticket repo is already on app.state (attached before
+    # the runners); broker / redis / acceptance_service are live too. The probe
+    # is consulted only on the PILOT branch of can_switch_to_feishu_on; in the
+    # FULL / simulation_auto default it is dormant. Each check is fail-closed.
+    acceptance_service.set_pilot_probe(_build_pilot_probe(application, broker))
 
     replica_set_gate = (
         None
@@ -1565,14 +1678,28 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # 45 trading days of stability + strategy checks.
     if application.state.feishu_client is not None:
         gate = getattr(application.state, "acceptance_service", None)
-        if gate is None or not await gate.can_switch_to_feishu_on():
+        startup_tier = getattr(
+            application.state, "feishu_go_live_tier", None
+        ) or _resolve_feishu_tier()
+        gate_decision = (
+            await gate.can_switch_to_feishu_on(startup_tier)
+            if gate is not None
+            else None
+        )
+        if gate is None or gate_decision is None or not gate_decision.allowed:
+            unmet = (
+                ", ".join(gate_decision.reasons)
+                if gate_decision is not None
+                else "acceptance_service_unwired"
+            )
             raise SystemExit(
-                "Refusing to start: FEISHU_INTERACTIVE_ENABLED=true but "
-                "the AcceptanceService gate has not returned PASS. The "
-                "45-trading-day acceptance window (P0-6 §2 红线 5) must "
-                "clear before the overlay can be activated. Run the "
-                "simulation_auto path until the latest acceptance_report "
-                "outcome is PASS, then restart."
+                "Refusing to start: FEISHU_INTERACTIVE_ENABLED=true but the "
+                f"{startup_tier.value} acceptance gate did not pass "
+                f"(unmet: {unmet}). For FULL the 45-trading-day window (P0-6 "
+                "§2 红线 5) must clear; for PILOT the 11-condition minimal set "
+                "(P0-6-amendment-2026-05-25 §2.3) must all be met. This env "
+                "var only selects which tier's gate to evaluate — it can never "
+                "bypass the verdict. Fix the unmet conditions, then restart."
             )
 
         # Codex Cycle 5 P2 fix: starting the receiver without a
@@ -1607,6 +1734,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 reason="acceptance_gate_passed_at_startup",
                 initiated_by="lifespan",
                 when=datetime.now(tz=SHANGHAI_TZ),
+                feishu_tier=startup_tier,
             )
 
         # Gate passed: build + start the long-connection receiver with a

@@ -101,7 +101,10 @@ async def get_latest_acceptance_report(request: Request) -> dict[str, Any]:
 
     try:
         latest = await service.latest()
-        can_switch = await service.can_switch_to_feishu_on()
+        # FULL graduation badge — the read-only page mirrors the 45-day FULL
+        # gate (no-arg == FULL, amendment §2.3). PILOT is an explicit
+        # opt-in at the switch/startup path, never surfaced as "可切换" here.
+        can_switch = (await service.can_switch_to_feishu_on()).allowed
     except Exception as exc:  # pragma: no cover — defensive only
         log.warning("acceptance_latest_failed", error=str(exc))
         return _ok(

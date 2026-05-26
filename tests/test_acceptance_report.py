@@ -12,11 +12,26 @@ from backend.services.acceptance_report import (
     AcceptanceOutcome,
     AcceptanceReport,
     AcceptanceService,
+    GateDecision,
+    GoLiveTier,
     InMemoryAcceptanceRepository,
     StabilityCounters,
     StrategyCounters,
     WindowResetState,
 )
+
+
+class _StubProbe:
+    """Duck-typed PILOT probe returning a fixed unmet-reason tuple."""
+
+    def __init__(self, unmet: tuple[str, ...] = (), *, raises: bool = False) -> None:
+        self._unmet = unmet
+        self._raises = raises
+
+    async def evaluate(self) -> tuple[str, ...]:
+        if self._raises:
+            raise RuntimeError("probe boom")
+        return self._unmet
 
 
 def _passing_stability() -> StabilityCounters:
@@ -143,14 +158,14 @@ class TestRepositoryAndSwitchGate:
     @pytest.mark.asyncio
     async def test_can_switch_returns_false_when_no_reports(self) -> None:
         service = AcceptanceService()
-        assert await service.can_switch_to_feishu_on() is False
+        assert (await service.can_switch_to_feishu_on()).allowed is False
 
     @pytest.mark.asyncio
     async def test_can_switch_returns_true_only_on_pass(self) -> None:
         service = AcceptanceService()
         passing = service.compute(_payload())
         await service.upsert(passing)
-        assert await service.can_switch_to_feishu_on() is True
+        assert (await service.can_switch_to_feishu_on()).allowed is True
 
     @pytest.mark.asyncio
     async def test_can_switch_returns_false_on_fail(self) -> None:
@@ -160,7 +175,7 @@ class TestRepositoryAndSwitchGate:
         )
         failing = service.compute(_payload(strategy=strategy))
         await service.upsert(failing)
-        assert await service.can_switch_to_feishu_on() is False
+        assert (await service.can_switch_to_feishu_on()).allowed is False
 
     @pytest.mark.asyncio
     async def test_upsert_is_idempotent_by_trade_date(self) -> None:
@@ -247,14 +262,14 @@ async def test_can_switch_to_feishu_on_invalidated_by_post_pass_reset() -> None:
         ),
     )
     await service.upsert(pass_report)
-    assert await service.can_switch_to_feishu_on() is True
+    assert (await service.can_switch_to_feishu_on()).allowed is True
 
     # Now fire a reset; gate must flip False.
     service.record_reset(
         when=dt.datetime(2026, 5, 15, 10, 0, tzinfo=dt.UTC),
         reason="LLM_FULL_STOP_1H",
     )
-    assert await service.can_switch_to_feishu_on() is False
+    assert (await service.can_switch_to_feishu_on()).allowed is False
 
 
 @pytest.mark.asyncio
@@ -284,7 +299,7 @@ async def test_can_switch_to_feishu_on_stays_true_when_pass_after_reset() -> Non
         ),
     )
     await service.upsert(pass_report)
-    assert await service.can_switch_to_feishu_on() is True
+    assert (await service.can_switch_to_feishu_on()).allowed is True
 
 
 def test_set_reset_state_rejects_naive_datetime() -> None:
@@ -373,3 +388,114 @@ def test_set_reset_state_is_monotonic() -> None:
     service.set_reset_state(earlier)  # no-op
     assert service.reset_state().last_reset_at == later.last_reset_at
     assert service.reset_state().last_reset_reason == "LLM_FULL_STOP_1H"
+
+
+# ---------------------------------------------------------------------------
+# U-D2 — tier-aware go-live gate (P0-6-amendment-2026-05-25 §2.2/§2.3/§2.4)
+# ---------------------------------------------------------------------------
+
+
+class TestTierAwareGate:
+    @pytest.mark.asyncio
+    async def test_no_arg_call_is_full_and_returns_gate_decision(self) -> None:
+        service = AcceptanceService()
+        decision = await service.can_switch_to_feishu_on()
+        assert isinstance(decision, GateDecision)
+        assert decision.tier is GoLiveTier.FULL
+        assert decision.allowed is False  # no report yet
+        assert "full:no_acceptance_report" in decision.reasons
+
+    @pytest.mark.asyncio
+    async def test_full_allowed_on_pass(self) -> None:
+        service = AcceptanceService()
+        await service.upsert(service.compute(_payload()))
+        decision = await service.can_switch_to_feishu_on(GoLiveTier.FULL)
+        assert decision.tier is GoLiveTier.FULL
+        assert decision.allowed is True
+        assert decision.reasons == ()
+
+    @pytest.mark.asyncio
+    async def test_full_string_arg_accepted(self) -> None:
+        service = AcceptanceService()
+        await service.upsert(service.compute(_payload()))
+        assert (await service.can_switch_to_feishu_on("full")).allowed is True
+
+    @pytest.mark.asyncio
+    async def test_pilot_fail_closed_when_no_probe(self) -> None:
+        service = AcceptanceService()
+        decision = await service.can_switch_to_feishu_on(GoLiveTier.PILOT)
+        assert decision.tier is GoLiveTier.PILOT
+        assert decision.allowed is False
+        assert decision.reasons == ("pilot:readiness_probe_not_wired",)
+
+    @pytest.mark.asyncio
+    async def test_pilot_allowed_when_probe_clean(self) -> None:
+        service = AcceptanceService()
+        service.set_pilot_probe(_StubProbe(unmet=()))
+        decision = await service.can_switch_to_feishu_on("pilot")
+        assert decision.tier is GoLiveTier.PILOT
+        assert decision.allowed is True
+        assert decision.reasons == ()
+
+    @pytest.mark.asyncio
+    async def test_pilot_surfaces_unmet_reasons(self) -> None:
+        service = AcceptanceService()
+        service.set_pilot_probe(_StubProbe(unmet=("cond1:active_broker_not_mock",)))
+        decision = await service.can_switch_to_feishu_on(GoLiveTier.PILOT)
+        assert decision.allowed is False
+        assert decision.reasons == ("cond1:active_broker_not_mock",)
+
+    @pytest.mark.asyncio
+    async def test_pilot_probe_error_is_fail_closed(self) -> None:
+        service = AcceptanceService()
+        service.set_pilot_probe(_StubProbe(raises=True))
+        decision = await service.can_switch_to_feishu_on(GoLiveTier.PILOT)
+        assert decision.allowed is False
+        assert decision.reasons == ("pilot:readiness_probe_error",)
+
+    @pytest.mark.asyncio
+    async def test_pilot_pass_never_satisfies_full(self) -> None:
+        # PILOT ≠ FULL (amendment §2.4 / §4 #2): a clean PILOT probe must NOT
+        # make the FULL gate pass — there is no 45-day PASS report here.
+        service = AcceptanceService()
+        service.set_pilot_probe(_StubProbe(unmet=()))
+        pilot = await service.can_switch_to_feishu_on(GoLiveTier.PILOT)
+        full = await service.can_switch_to_feishu_on(GoLiveTier.FULL)
+        assert pilot.allowed is True
+        assert full.allowed is False
+        assert "full:no_acceptance_report" in full.reasons
+
+    @pytest.mark.asyncio
+    async def test_full_pass_does_not_authorise_pilot_without_probe(self) -> None:
+        # Symmetric guard: a FULL PASS does not back-door PILOT — PILOT still
+        # needs its own probe (fail-closed when unwired).
+        service = AcceptanceService()
+        await service.upsert(service.compute(_payload()))
+        full = await service.can_switch_to_feishu_on(GoLiveTier.FULL)
+        pilot = await service.can_switch_to_feishu_on(GoLiveTier.PILOT)
+        assert full.allowed is True
+        assert pilot.allowed is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_tier_raises(self) -> None:
+        service = AcceptanceService()
+        with pytest.raises(ValueError):
+            await service.can_switch_to_feishu_on("staging")
+
+    @pytest.mark.asyncio
+    async def test_denied_decision_is_falsey(self) -> None:
+        # Codex U-D2 P1 — a denied decision must be falsey so a missed/legacy
+        # ``if await gate.can_switch_to_feishu_on():`` still fails closed.
+        service = AcceptanceService()
+        decision = await service.can_switch_to_feishu_on()
+        assert decision.allowed is False
+        assert bool(decision) is False
+        assert not decision
+
+    @pytest.mark.asyncio
+    async def test_allowed_decision_is_truthy(self) -> None:
+        service = AcceptanceService()
+        await service.upsert(service.compute(_payload()))
+        decision = await service.can_switch_to_feishu_on()
+        assert bool(decision) is True
+        assert decision

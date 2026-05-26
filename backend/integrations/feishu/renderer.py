@@ -151,6 +151,7 @@ class MessageRenderer:
         plan: InstructionPlan,
         *,
         template: BuySignalTemplate,
+        pilot: bool = False,
     ) -> str:
         """Render a BUY signal in one of the three order-bearing templates.
 
@@ -190,7 +191,7 @@ class MessageRenderer:
 
         header, banner = _BUY_SIGNAL_HEADERS[template]
         body = self._dispatch_body_lines(plan)
-        lines = [header, banner, *body]
+        lines = [*self._pilot_prefix(pilot), header, banner, *body]
         if template is BuySignalTemplate.ETF_CONCENTRATION_EXCEPTION:
             # Confirmation block — the operator must explicitly confirm the
             # ETF concentration exception before it executes.
@@ -203,6 +204,7 @@ class MessageRenderer:
         plan: InstructionPlan,
         *,
         anomaly_reason: str,
+        pilot: bool = False,
     ) -> str:
         """Render a Line-2 monitoring SELL signal (N-002).
 
@@ -238,6 +240,7 @@ class MessageRenderer:
                 f"instruction_id {plan.instruction_id!r} fails canonical pattern"
             )
         lines = [
+            *self._pilot_prefix(pilot),
             "【QuantMind 持仓监控 · 卖出信号】",
             f"异动触发: {_single_line(anomaly_reason)}",
             *self._dispatch_body_lines(plan),
@@ -250,6 +253,7 @@ class MessageRenderer:
         *,
         add_rationale: str,
         stop_price: float,
+        pilot: bool = False,
     ) -> str:
         """Render a Line-2 add-position (补仓) signal (N-003).
 
@@ -276,6 +280,7 @@ class MessageRenderer:
                 f"instruction_id {plan.instruction_id!r} fails canonical pattern"
             )
         lines = [
+            *self._pilot_prefix(pilot),
             "【QuantMind 持仓监控 · 补仓信号】",
             f"补仓依据: {_single_line(add_rationale)}",
             f"移动止损: {_format_money(stop_price)} CNY",
@@ -307,6 +312,17 @@ class MessageRenderer:
                 f"原因: {_single_line(reason)}",
             ]
         )
+
+    @staticmethod
+    def _pilot_prefix(pilot: bool) -> list[str]:
+        """Single-source PILOT banner prefix (P0-6-amendment-2026-05-25 §2.3).
+
+        Returns the banner as the leading line when the active go-live tier is
+        PILOT, else an empty list (FULL / simulation paths are unchanged). The
+        banner is a code constant — never interpolated — so it cannot be
+        spoofed or drift across the three order-bearing renderers.
+        """
+        return [_PILOT_BANNER] if pilot else []
 
     @staticmethod
     def _assert_dispatchable(plan: InstructionPlan) -> None:
@@ -667,6 +683,14 @@ renderer stays decoupled from backend.services; ``render_monitoring_sell`` /
 _RECONCILIATION_ID_RE = re.compile(r"^RECON-\d{8}-\d{3}$")
 _TRADE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STOCK_CODE_RE = re.compile(r"^\d{6}$")
+
+# PILOT go-live banner (P0-6-amendment-2026-05-25 §2.3). Single-source
+# constant — the renderer is the ONLY place this string is composed so the
+# "模拟盘·人工执行·试点" framing can never drift or be spoofed (it is a code
+# constant, never interpolated). Prepended as the FIRST line of every
+# order-bearing Feishu message while the active go-live tier is PILOT, so the
+# operator can never mistake a試点 signal for a real / fully-graduated one.
+_PILOT_BANNER = "「模拟盘 · 人工执行 · 试点」"
 
 # (header, banner) per order-bearing BUY template (M-006). Snapshot-locked in
 # tests/test_feishu_buy_signal.py — the headers are the at-a-glance visual

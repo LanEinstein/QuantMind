@@ -248,6 +248,7 @@ class Line2IntradayRunner:
         trigger_config: IntradayTriggerConfig | None = None,
         add_config: AddConfig | None = None,
         tick_timeout_seconds: float = 10.0,
+        pilot: bool = False,
     ) -> None:
         self._builder = builder
         self._renderer = renderer
@@ -258,6 +259,9 @@ class Line2IntradayRunner:
         self._trigger_cfg = trigger_config or IntradayTriggerConfig()
         self._add_cfg = add_config or AddConfig()
         self._tick_timeout = tick_timeout_seconds
+        # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
+        # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
+        self._pilot = pilot
         # Invariant 1: a single cooperative in-flight flag. The scheduler runs
         # ticks on one event loop, so a boolean check-then-set is race-free for
         # this cooperative-scheduling use (no thread preemption between the
@@ -660,11 +664,14 @@ class Line2IntradayRunner:
 
         if side is InstructionSide.SELL:
             wire = self._renderer.render_monitoring_sell(
-                plan, anomaly_reason=intent.anomaly_reason
+                plan, anomaly_reason=intent.anomaly_reason, pilot=self._pilot
             )
         else:
             wire = self._renderer.render_add_position(
-                plan, add_rationale=intent.rationale, stop_price=intent.stop_price
+                plan,
+                add_rationale=intent.rationale,
+                stop_price=intent.stop_price,
+                pilot=self._pilot,
             )
         outcome = await self._coordinator.route(
             OutboundSignal(plan=plan, wire_text=wire), now=now

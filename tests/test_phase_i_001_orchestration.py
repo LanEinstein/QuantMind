@@ -776,7 +776,7 @@ async def test_simulation_auto_5_day_loop_yields_daily_acceptance_reports(
     latest = await acceptance_repo.latest()
     assert latest is not None
     assert latest.outcome is not AcceptanceOutcome.PASS
-    assert await acceptance_service.can_switch_to_feishu_on() is False
+    assert (await acceptance_service.can_switch_to_feishu_on()).allowed is False
 
 
 # ===========================================================================
@@ -875,7 +875,7 @@ async def test_orchestration_layer_attaches_components(
     # False, which is the locked precondition for the feishu_interactive
     # SystemExit gate.
     assert (
-        await app.state.acceptance_service.can_switch_to_feishu_on() is False
+        (await app.state.acceptance_service.can_switch_to_feishu_on()).allowed is False
     )
 
     # Codex Cycle 1 P2 regression — the dual-write cache shared between

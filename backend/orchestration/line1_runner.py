@@ -183,6 +183,7 @@ class Line1Runner:
         coordinator: RouteCoordinator,
         ledger: DecisionLedgerService,
         redis_client: Any,
+        pilot: bool = False,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -192,6 +193,9 @@ class Line1Runner:
         self._coordinator = coordinator
         self._ledger = ledger
         self._redis = redis_client
+        # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
+        # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
+        self._pilot = pilot
 
     async def run(
         self,
@@ -350,7 +354,9 @@ class Line1Runner:
             if _concentration_exception_granted(plan)
             else BuySignalTemplate.NORMAL_COMPLIANT
         )
-        wire = self._renderer.render_buy_signal(plan, template=template)
+        wire = self._renderer.render_buy_signal(
+            plan, template=template, pilot=self._pilot
+        )
         outcome = await self._coordinator.route(
             OutboundSignal(plan=plan, wire_text=wire), now=now
         )

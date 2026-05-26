@@ -48,6 +48,7 @@ from backend.audit.store import AuditStore
 from backend.broker.mock_broker import MockBroker
 from backend.broker.persistence.events import BrokerEventType
 from backend.broker.persistence.store import BrokerEventStore
+from backend.services.acceptance_report import GateDecision, GoLiveTier
 
 
 @runtime_checkable
@@ -55,13 +56,19 @@ class _AcceptanceGate(Protocol):
     """Narrow protocol for the P0-6 §2 redline 5 acceptance gate.
 
     ModeRouter must consult this before switching to ``feishu_interactive``;
-    the env-var ``FEISHU_INTERACTIVE_ENABLED`` alone is NOT a valid
-    sanction. Production passes
-    :class:`backend.services.acceptance_report.AcceptanceService`;
-    tests pass an in-memory stub that returns the boolean directly.
+    the env-var ``FEISHU_INTERACTIVE_ENABLED`` alone is NOT a valid sanction.
+    Production passes
+    :class:`backend.services.acceptance_report.AcceptanceService`; tests pass
+    an in-memory stub. The gate is tier-aware
+    (P0-6-amendment-2026-05-25 §2.2): the caller MUST pass ``target_tier`` and
+    read ``GateDecision.allowed``. (``GateDecision.__bool__`` also mirrors
+    ``allowed`` as fail-closed defence-in-depth, but reading ``.allowed``
+    explicitly is the contract.)
     """
 
-    async def can_switch_to_feishu_on(self) -> bool: ...
+    async def can_switch_to_feishu_on(
+        self, target_tier: GoLiveTier | str = ...
+    ) -> GateDecision: ...
 
 log = structlog.get_logger(component="services.mode_router")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -138,9 +145,10 @@ class AcceptanceGateMissingError(RuntimeError):
 
 
 class AcceptanceGateRejectedError(RuntimeError):
-    """Raised when ``can_switch_to_feishu_on()`` returned False. The
-    operator must wait for the 45-trading-day acceptance window to
-    clear or accept the most recent report."""
+    """Raised when the tier-aware gate returned ``allowed=False``. For FULL
+    the operator must wait for the 45-trading-day acceptance window to clear;
+    for PILOT the 11-condition minimal set (amendment §2.3) must all be met.
+    The message names the unmet conditions."""
 
 
 @dataclass(frozen=True)
@@ -191,6 +199,7 @@ class ModeRouter:
         reason: str,
         initiated_by: str,
         when: datetime,
+        feishu_tier: GoLiveTier = GoLiveTier.FULL,
     ) -> ModeSwitchResult:
         """Execute a full mode-switch lifecycle.
 
@@ -200,6 +209,10 @@ class ModeRouter:
             initiated_by: CLI / FRONTEND_USER actor identifier.
             when: lifecycle start timestamp; used for both audit + the
                 BrokerEvent occurred_at.
+            feishu_tier: which go-live tier's acceptance gate to require when
+                ``to_mode == feishu_interactive`` (PILOT or FULL). Defaults to
+                FULL so a non-opting caller can never be sanctioned by a PILOT
+                pass (amendment §2.3 / §4 #2). Ignored for other modes.
         """
         if to_mode not in VALID_MODES:
             raise ValueError(f"unknown run mode {to_mode!r}")
@@ -208,11 +221,14 @@ class ModeRouter:
                 f"mode switch noop: already in {self._current_mode!r}"
             )
 
-        # P0-6 §2 redline 5 — switching to feishu_interactive requires
-        # the AcceptanceService gate to return True. Env-var bypass is
-        # explicitly forbidden (codex P1). The gate is optional in
-        # constructor so existing tests + simulation-only environments
-        # keep working; production wiring always injects it.
+        # P0-6 §2 redline 5 — switching to feishu_interactive requires the
+        # tier-aware AcceptanceService gate to ALLOW the target tier. Env-var
+        # bypass is explicitly forbidden (codex P1; amendment §4 #1 — env only
+        # selects which tier's gate to evaluate, never bypasses ``allowed``).
+        # The gate is optional in the constructor so existing tests +
+        # simulation-only environments keep working; production always injects
+        # it. ``feishu_tier`` defaults to FULL so a caller that does not opt in
+        # to PILOT can never be fooled by a PILOT pass (amendment §2.3 / §4 #2).
         if to_mode == FEISHU_INTERACTIVE:
             if self._acceptance_gate is None:
                 raise AcceptanceGateMissingError(
@@ -220,16 +236,30 @@ class ModeRouter:
                     "gate wired. P0-6 §2 redline 5 forbids env-var "
                     "bypass; AcceptanceService must be injected."
                 )
-            sanctioned = await self._acceptance_gate.can_switch_to_feishu_on()
-            if not sanctioned:
+            decision = await self._acceptance_gate.can_switch_to_feishu_on(
+                feishu_tier
+            )
+            if not decision.allowed:
+                unmet = ", ".join(decision.reasons) or "(none reported)"
                 raise AcceptanceGateRejectedError(
-                    "Cannot switch to feishu_interactive: the latest "
-                    "AcceptanceReport is not PASS. The 45-trading-day "
-                    "8-metric gate (P0-6 §1) must clear before the "
-                    "human-in-loop overlay is sanctioned."
+                    "Cannot switch to feishu_interactive: the "
+                    f"{decision.tier.value} acceptance gate did not pass "
+                    f"(unmet: {unmet}). For FULL this is the 45-trading-day "
+                    "8-metric window (P0-6 §1); for PILOT the 11-condition "
+                    "minimal set (amendment §2.3). P0-6 §2 redline 5 forbids "
+                    "env-var bypass."
                 )
 
         from_mode = self._current_mode
+
+        # The accepted go-live tier is recorded on every audit row + the
+        # broker reset event so a PILOT switch is auditable as ``tier=pilot``
+        # and never indistinguishable from a FULL graduation
+        # (P0-6-amendment-2026-05-25 §2.3 / §4 #5). Only meaningful when
+        # entering feishu_interactive; ``None`` for rollback to simulation_auto.
+        go_live_tier = (
+            feishu_tier.value if to_mode == FEISHU_INTERACTIVE else None
+        )
 
         # 1. Activate switch flag — Builder + Executor freeze takes effect.
         self._mode_state.activate(
@@ -249,6 +279,7 @@ class ModeRouter:
                 "to_mode": to_mode,
                 "reason": reason,
                 "initiated_by": initiated_by,
+                "go_live_tier": go_live_tier,
             },
             outcome=AuditOutcome.SUCCESS,
             reason_namespace="mode_switch_in_progress",
@@ -274,6 +305,7 @@ class ModeRouter:
                 "cash": account.initial_capital,
                 "initial_capital": account.initial_capital,
                 "frozen_cash": 0.0,
+                "go_live_tier": go_live_tier,
             }
             event = await self._events.append(
                 event_type=BrokerEventType.MODE_SWITCH_RESET,
@@ -300,6 +332,7 @@ class ModeRouter:
                     "from_mode": from_mode,
                     "to_mode": to_mode,
                     "broker_event_sequence": event.sequence,
+                    "go_live_tier": go_live_tier,
                 },
                 outcome=AuditOutcome.SUCCESS,
                 reason_namespace="mode_switch_reset",
@@ -317,6 +350,7 @@ class ModeRouter:
                     "from_mode": from_mode,
                     "to_mode": to_mode,
                     "broker_event_sequence": event.sequence,
+                    "go_live_tier": go_live_tier,
                 },
                 outcome=AuditOutcome.SUCCESS,
                 reason_namespace="mode_switch_completed",

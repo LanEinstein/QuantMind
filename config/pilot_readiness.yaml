@@ -1,0 +1,27 @@
+# PILOT go-live readiness sign-offs — P0-6-amendment-2026-05-25 §2.3.
+#
+# The PILOT tier of the tier-aware acceptance gate
+# (backend/services/acceptance_report.AcceptanceService.can_switch_to_feishu_on)
+# requires 11 conditions. Six of them are NOT live-probeable at gate-eval time
+# (they are owner/test sign-offs produced by later Phase-U tasks); they live
+# here as explicit, git-committed, fail-closed attestations. The other five
+# (SIM account / owner authorization / reconciliation green / data-quality /
+# LLM-timeout+cost-guard) are probed live and do NOT appear in this file.
+#
+# FAIL-CLOSED CONTRACT (CLAUDE.md §2.8 + amendment §4 redline 4):
+#   * Missing file, malformed YAML, missing key, non-bool value, or extra key
+#     → that condition counts as UNMET → PILOT gate denied + reason names it.
+#   * Each flag flips to `true` ONLY after the named task lands AND the
+#     evidence is signed off. NEVER hand-flip without the evidence — this file
+#     is an auditable ledger, not a convenience switch.
+#   * This file gates PILOT only. It can NEVER satisfy the FULL tier
+#     (45-trading-day rolling window) — PILOT ≠ FULL (amendment §2.4 / §4 #2).
+#
+# Each entry: <bool>  # cond N — <what proves it> (produced by <task>)
+
+dry_run_double_line_pass: false        # cond 3  — 1 real-trading-day render-only dry-run PASS, owner-reviewed (U-D3)
+feishu_send_recv_smoke_pass: false     # cond 4  — 1 real Feishu send + 1 report parsed by strict regex (U-D4)
+outbox_restart_idempotent: false       # cond 5  — same instruction_id not re-sent across restart (U-D4)
+no_double_execution_invariant: false   # cond 6  — every VALIDATED id mutually-exclusive single-route (U-D4)
+all_report_templates_parse_apply: false  # cond 7  — all report templates parse/apply, AMBIGUOUS never mutates (U-D4)
+rollback_simulation_only_ready: false  # cond 11 — one-click rollback to simulation-only drilled (account lifecycle reset)

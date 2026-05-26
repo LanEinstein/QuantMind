@@ -28,6 +28,7 @@ from backend.models.instruction import (
     PositionSummary,
     RiskCheckSummary,
 )
+from backend.services.acceptance_report import GateDecision, GoLiveTier
 from backend.services.ledger import (
     DecisionLedgerService,
     InMemoryLedgerRepository,
@@ -47,13 +48,19 @@ from backend.services.simulation_executor import (
 
 
 class _PassingAcceptanceGate:
-    """Test stub that mimics AcceptanceService.can_switch_to_feishu_on."""
+    """Test stub that mimics the tier-aware AcceptanceService gate."""
 
     def __init__(self, sanctioned: bool = True) -> None:
         self._sanctioned = sanctioned
 
-    async def can_switch_to_feishu_on(self) -> bool:
-        return self._sanctioned
+    async def can_switch_to_feishu_on(
+        self, target_tier: GoLiveTier | str = GoLiveTier.FULL
+    ) -> GateDecision:
+        return GateDecision(
+            tier=GoLiveTier(target_tier),
+            allowed=self._sanctioned,
+            reasons=() if self._sanctioned else ("stub:not_sanctioned",),
+        )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -383,6 +390,53 @@ class TestModeRouter:
         account = await broker.get_account()
         assert account.available_cash == pytest.approx(1_000_000.0)
         assert (await broker.get_positions()) == ()
+
+    @pytest.mark.asyncio
+    async def test_pilot_tier_persisted_in_audit_and_reset_event(
+        self, tmp_path: Path
+    ) -> None:
+        # Codex U-D2 P2 — a PILOT switch must be auditable as tier=pilot
+        # (amendment §2.3 / §4 #5): the tier lands on every MODE_SWITCH_* audit
+        # row + the MODE_SWITCH_RESET broker event, not just the gate call.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=1_000_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 9, 30, tzinfo=SHANGHAI),
+        )
+        event_coll = _FakeCollection()
+        event_store = BrokerEventStore(_FakeClient(), event_coll)
+        audit_coll = InMemoryAuditCollection()
+        audit_store = AuditStore(audit_coll, jsonl_path=tmp_path / "audit.jsonl")
+        router = ModeRouter(
+            broker=broker, event_store=event_store, audit_store=audit_store,
+            initial_mode=SIMULATION_AUTO,
+            acceptance_gate=_PassingAcceptanceGate(sanctioned=True),
+        )
+
+        await router.switch_mode(
+            to_mode=FEISHU_INTERACTIVE,
+            reason="pilot go-live",
+            initiated_by="lifespan",
+            when=dt.datetime(2026, 5, 15, 16, 30, tzinfo=SHANGHAI),
+            feishu_tier=GoLiveTier.PILOT,
+        )
+
+        # Every mode-switch + reset audit row carries go_live_tier=pilot.
+        switch_rows = [
+            d for d in audit_coll.documents
+            if d["event_type"] in {
+                AuditEventType.MODE_SWITCH_INITIATED.value,
+                AuditEventType.MOCKBROKER_RESET.value,
+                AuditEventType.MODE_SWITCH_COMPLETED.value,
+            }
+        ]
+        assert switch_rows
+        assert all(r["payload"]["go_live_tier"] == "pilot" for r in switch_rows)
+        # The broker reset event also carries it.
+        reset_event = next(
+            d for d in event_coll.docs
+            if d["event_type"] == BrokerEventType.MODE_SWITCH_RESET.value
+        )
+        assert reset_event["payload"]["go_live_tier"] == "pilot"
 
     @pytest.mark.asyncio
     async def test_switch_to_same_mode_raises(
