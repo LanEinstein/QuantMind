@@ -140,8 +140,19 @@ class Line1ContextProvider(Protocol):
         """One A-share lot cost in ¥ (``last_price × lot_size``)."""
         ...
 
-    def build_lead_context(self, lead: CandidateRow) -> Line1LeadContext:
-        """Build the TeamContext + AssemblyContext factory for the lead."""
+    def build_lead_context(
+        self, lead: CandidateRow, *, concentration_exception: bool = False
+    ) -> Line1LeadContext:
+        """Build the TeamContext + AssemblyContext factory for the lead.
+
+        ``concentration_exception`` is the lead's budget-tier flag (over-15%
+        whitelisted ETF in Micro/Small). The provider threads it into BOTH the
+        debate ``TeamContext`` (so the debate's risk-gate node does not record
+        a REJECTED decision that contradicts the routed plan) AND the
+        ``AssemblyContext`` (the authoritative 14-check). RiskEngine still
+        re-derives ETF + whitelist + ≤max_lots, so the flag never bypasses the
+        cap on its own (U-C4 / codex P2).
+        """
         ...
 
 
@@ -212,6 +223,10 @@ class Line1Runner:
                 sid, Line1Outcome.NO_COMPLIANT_TRADE, tier=assessment.tier
             )
         affordable_codes = {a.code for a in assessment.affordable}
+        # Per-code affordability so the lead's budget-tier concentration flag
+        # (over-15% whitelisted ETF in Micro/Small) threads into the 14-check
+        # single construction point (U-C4). RiskEngine still re-validates it.
+        afford_by_code = {a.code: a for a in assessment.affordable}
 
         # 3. Deterministic selection over the affordable quant set.
         quant = [
@@ -226,7 +241,17 @@ class Line1Runner:
         # 4. ONE 4-agent debate (真·预留 + fan-out cap inside run_shortlist).
         lead_code = selection.shortlist[0]
         lead = by_code[lead_code]
-        lead_ctx = provider.build_lead_context(lead)
+        lead_afford = afford_by_code.get(lead_code)
+        lead_concentration_exception = bool(
+            lead_afford is not None and lead_afford.concentration_exception
+        )
+        # The flag enters at the single point (build_lead_context): the
+        # provider threads it into BOTH the debate TeamContext and the
+        # AssemblyContext so the debate decision cannot contradict the routed
+        # plan (codex U-C4 P2).
+        lead_ctx = provider.build_lead_context(
+            lead, concentration_exception=lead_concentration_exception
+        )
         debate = await run_shortlist(
             lead_ctx.team_context, [lead_ctx.brief], redis_client=self._redis
         )
@@ -311,17 +336,21 @@ class Line1Runner:
                 outcome=Line1Outcome.NON_BUY_DISCARDED, plan=plan, **common
             )
 
-        # VALIDATED BUY → NORMAL_COMPLIANT. The over-15% ETF
-        # concentration-exception template is intentionally NOT selected here:
-        # the assemble_plan BUY path does not thread the concentration flag
-        # into the RiskEngine 14-check (only the Line-2 monitoring path does),
-        # so such a buy fails closed to REJECTED above and never validates.
-        # Threading the flag through the single construction point is a
-        # documented builder follow-on (reported to owner); it is out of the
-        # Normal-tier (¥10万) MVP scope where the exception is never granted.
-        wire = self._renderer.render_buy_signal(
-            plan, template=BuySignalTemplate.NORMAL_COMPLIANT
+        # VALIDATED BUY → pick the template from the ENGINE's authoritative
+        # result (U-C4): if RiskEngine check 5 granted an over-15% ETF
+        # concentration exception it surfaces a passed=True position_limit row
+        # carrying ``concentration_exception_granted`` in ``risk_summary``. We
+        # key off that (not a re-derived affordability flag) so the human-
+        # confirm template can never diverge from what the engine actually
+        # allowed. Otherwise it is a normal compliant order. The flag now
+        # threads through assemble_plan's single construction point, so the
+        # over-15% whitelisted-ETF buy VALIDATES instead of failing closed.
+        template = (
+            BuySignalTemplate.ETF_CONCENTRATION_EXCEPTION
+            if _concentration_exception_granted(plan)
+            else BuySignalTemplate.NORMAL_COMPLIANT
         )
+        wire = self._renderer.render_buy_signal(plan, template=template)
         outcome = await self._coordinator.route(
             OutboundSignal(plan=plan, wire_text=wire), now=now
         )
@@ -342,6 +371,27 @@ class Line1Runner:
     ) -> Line1RunResult:
         log.info("line1_short_circuit", signal_id=signal_id, outcome=outcome.value)
         return Line1RunResult(signal_id=signal_id, outcome=outcome, tier=tier)
+
+
+_CONCENTRATION_EXCEPTION_GRANTED = "concentration_exception_granted"
+"""RiskEngine check-5 marker (mirrors ``backend.risk.engine``): a passed=True
+``position_limit`` row carrying this string means the over-15% ETF
+concentration exception was granted (P0-7-amendment-2026-05-24 §2.3 / U-C4)."""
+
+
+def _concentration_exception_granted(plan: InstructionPlan) -> bool:
+    """True iff RiskEngine granted an over-15% ETF concentration exception.
+
+    Reads the authoritative engine result off ``plan.risk_summary`` (the
+    builder preserves the granted marker on the ``position_limit`` row) rather
+    than re-deriving the upstream affordability flag — the wire template must
+    match what the engine actually allowed.
+    """
+    return any(
+        row.passed is True
+        and _CONCENTRATION_EXCEPTION_GRANTED in (row.message or "")
+        for row in plan.risk_summary
+    )
 
 
 def _mandatory_records_from_state(

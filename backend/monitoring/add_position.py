@@ -510,6 +510,7 @@ def make_add_context(
     data_quality: DataQualityState,
     watchlist_policy: UniversePolicy,
     watchlist_signal: WatchlistMarketSignal,
+    concentration_exception: bool = False,
     quote_source: str = "marketdata_snapshot",
     analysis_record_id: str = "",
     risk_validation_id: str = "",
@@ -520,6 +521,14 @@ def make_add_context(
     handles embed code+seq (a multi-code add-scan shares the scan signal_id).
     The BUY path runs ALL five early-returns (incl. watchlist — an ADD must
     respect the entry universe) + RiskEngine 14-check downstream.
+
+    ``concentration_exception`` is the upstream budget-tier intent flag
+    (P0-7-amendment-2026-05-24 §2.3 / U-C4): an ADD is an *entry*, so an
+    over-15% buy of a whitelisted broad ETF in Micro/Small tier may carry it
+    so RiskEngine check 5 can grant the exception. It defaults False (the
+    strict 15% rule); the engine still independently re-validates ETF +
+    whitelist + ≤max_lots, so the flag alone never bypasses the cap. (A SELL
+    exit never needs it — ``make_sell_context`` leaves it False.)
     """
     if not signal_id.startswith(MONITORING_SIGNAL_PREFIX):
         raise ValueError(
@@ -557,6 +566,7 @@ def make_add_context(
         stock_meta=stock_meta,
         proposed_volume=intent.add_volume,
         proposed_limit_price=intent.limit_price,
+        concentration_exception=concentration_exception,
         seq=seq,
         signal_id=signal_id,
         analysis_record_id=(

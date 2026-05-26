@@ -228,10 +228,14 @@ def _build_context(
     proposed_limit_price: float = 4.5,
     open_tickets: tuple = (),
     seq: int = 1,
+    stock_code: str = _CODE,
+    stock_name: str = _NAME,
+    prev_close: float = 4.5,
+    concentration_exception: bool = False,
 ) -> AssemblyContext:
     return AssemblyContext(
-        stock_code=_CODE,
-        stock_name=_NAME,
+        stock_code=stock_code,
+        stock_name=stock_name,
         now=_NOW,
         open_tickets=open_tickets,
         circuit_breaker=quiet_breaker,
@@ -241,11 +245,12 @@ def _build_context(
         risk_engine=risk_engine,
         account=fat_account,
         positions=empty_positions,
-        prev_close=4.5,
+        prev_close=prev_close,
         daily_state=daily_state,
         stock_meta=stock_meta,
         proposed_volume=proposed_volume,
         proposed_limit_price=proposed_limit_price,
+        concentration_exception=concentration_exception,
         seq=seq,
         signal_id="sig-2026-05-15-001",
         analysis_record_id="ar-2026-05-15-001",
@@ -830,3 +835,201 @@ class TestBuySellPath:
         assert plan.status is InstructionStatus.VALIDATED
         assert plan.position_summary is not None
         assert plan.position_summary.pre_position_pct > 0.0
+
+
+# ---------------------------------------------------------------------------
+# U-C4 — concentration_exception threads into the Line-1 BUY 14-check
+# ---------------------------------------------------------------------------
+
+
+def _small_account() -> AccountInfo:
+    """A few-thousand-yuan account where a single 1-lot ETF buy tops 15%."""
+    return AccountInfo(
+        total_assets=2_000.0,
+        available_cash=2_000.0,
+        frozen_cash=0.0,
+        market_value=0.0,
+        total_pnl=0.0,
+        total_pnl_pct=0.0,
+        initial_capital=2_000.0,
+    )
+
+
+class TestConcentrationExceptionThreading:
+    """The exception flag must reach RiskEngine via the BUY single
+    construction point — yet the engine stays the sole grantor (the flag
+    alone never bypasses the 15% limit; P0-7-amendment §2.3 / U-C4)."""
+
+    @pytest.mark.asyncio
+    async def test_buy_over_15pct_whitelisted_etf_granted_with_flag(
+        self,
+        audit_store: AuditStore,
+        risk_engine: RiskEngine,
+        empty_positions: tuple[Position, ...],
+        daily_state: DailyTradingState,
+        stock_meta: RiskStockMetadata,
+        quiet_breaker: CircuitBreaker,
+        clean_data_quality: DataQualityState,
+        policy: UniversePolicy,
+        passing_signal: WatchlistMarketSignal,
+        data_snapshot: DataSnapshot,
+        all_records_present: MandatoryAgentRecords,
+    ) -> None:
+        # 1 lot of 510300 (¥450) on a ¥2,000 account = 22.5% > 15%; whitelisted
+        # broad ETF, board=etf, ≤1 lot, flag=True → check 5 grants the
+        # exception and the BUY VALIDATES (it would otherwise fail-close).
+        ctx = _build_context(
+            risk_engine=risk_engine,
+            fat_account=_small_account(),
+            empty_positions=empty_positions,
+            daily_state=daily_state,
+            stock_meta=stock_meta,
+            quiet_breaker=quiet_breaker,
+            clean_data_quality=clean_data_quality,
+            policy=policy,
+            passing_signal=passing_signal,
+            data_snapshot=data_snapshot,
+            proposed_volume=100,
+            proposed_limit_price=4.5,
+            concentration_exception=True,
+        )
+        builder = InstructionPlanBuilder(audit_store=audit_store)
+        result = await builder.assemble_plan(
+            fund_manager_output=FundManagerOutput(
+                side=InstructionSide.BUY, proposal_text="buy the broad ETF"
+            ),
+            mandatory_records=all_records_present,
+            context=ctx,
+        )
+        assert isinstance(result, BuilderPlan)
+        plan = result.plan
+        assert plan.side is InstructionSide.BUY
+        assert plan.status is InstructionStatus.VALIDATED
+        # The granted-exception reason is preserved on the position_limit row
+        # for audit + the Feishu confirmation banner.
+        granted = [
+            row
+            for row in plan.risk_summary
+            if row.passed is True
+            and "concentration_exception_granted" in (row.message or "")
+        ]
+        assert len(granted) == 1
+        assert granted[0].rule_name == "position_limit"
+
+    @pytest.mark.asyncio
+    async def test_buy_over_15pct_whitelisted_etf_rejected_without_flag(
+        self,
+        audit_store: AuditStore,
+        risk_engine: RiskEngine,
+        empty_positions: tuple[Position, ...],
+        daily_state: DailyTradingState,
+        stock_meta: RiskStockMetadata,
+        quiet_breaker: CircuitBreaker,
+        clean_data_quality: DataQualityState,
+        policy: UniversePolicy,
+        passing_signal: WatchlistMarketSignal,
+        data_snapshot: DataSnapshot,
+        all_records_present: MandatoryAgentRecords,
+    ) -> None:
+        # Same over-15% ETF buy, but the budget policy did NOT flag it →
+        # RiskEngine rejects at the single-stock limit (the default behaviour
+        # every Normal-tier caller keeps).
+        ctx = _build_context(
+            risk_engine=risk_engine,
+            fat_account=_small_account(),
+            empty_positions=empty_positions,
+            daily_state=daily_state,
+            stock_meta=stock_meta,
+            quiet_breaker=quiet_breaker,
+            clean_data_quality=clean_data_quality,
+            policy=policy,
+            passing_signal=passing_signal,
+            data_snapshot=data_snapshot,
+            proposed_volume=100,
+            proposed_limit_price=4.5,
+            concentration_exception=False,
+        )
+        builder = InstructionPlanBuilder(audit_store=audit_store)
+        result = await builder.assemble_plan(
+            fund_manager_output=FundManagerOutput(
+                side=InstructionSide.BUY, proposal_text="buy the broad ETF"
+            ),
+            mandatory_records=all_records_present,
+            context=ctx,
+        )
+        assert isinstance(result, BuilderPlan)
+        plan = result.plan
+        assert plan.side is InstructionSide.BUY
+        assert plan.status is InstructionStatus.REJECTED
+        assert plan.rejection_reason is not None
+        assert plan.rejection_reason.startswith("position_limit")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("stock_code", "stock_name", "board"),
+        [
+            ("600000", "浦发银行", RiskBoard.SH_MAIN),  # individual stock
+            ("510999", "非白名单ETF", RiskBoard.ETF),  # ETF off the whitelist
+        ],
+    )
+    async def test_flag_alone_never_bypasses_for_ineligible_code(
+        self,
+        audit_store: AuditStore,
+        risk_engine: RiskEngine,
+        empty_positions: tuple[Position, ...],
+        daily_state: DailyTradingState,
+        quiet_breaker: CircuitBreaker,
+        clean_data_quality: DataQualityState,
+        policy: UniversePolicy,
+        passing_signal: WatchlistMarketSignal,
+        data_snapshot: DataSnapshot,
+        all_records_present: MandatoryAgentRecords,
+        stock_code: str,
+        stock_name: str,
+        board: RiskBoard,
+    ) -> None:
+        # Adversarial red-line guard: an individual stock or a non-whitelisted
+        # ETF over 15% with the flag set is STILL rejected — the engine
+        # re-derives eligibility from its own config + stock_meta, so the
+        # upstream flag can never be a single-point bypass (§2.3).
+        meta = RiskStockMetadata(
+            code=stock_code,
+            name=stock_name,
+            board=board,
+            is_st=False,
+            instrument_type="etf" if board is RiskBoard.ETF else "stock",
+        )
+        ctx = _build_context(
+            risk_engine=risk_engine,
+            fat_account=_small_account(),
+            empty_positions=empty_positions,
+            daily_state=daily_state,
+            stock_meta=meta,
+            quiet_breaker=quiet_breaker,
+            clean_data_quality=clean_data_quality,
+            policy=policy,
+            passing_signal=passing_signal,
+            data_snapshot=data_snapshot,
+            proposed_volume=100,
+            proposed_limit_price=4.5,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            concentration_exception=True,
+        )
+        builder = InstructionPlanBuilder(audit_store=audit_store)
+        result = await builder.assemble_plan(
+            fund_manager_output=FundManagerOutput(
+                side=InstructionSide.BUY, proposal_text="buy over the cap"
+            ),
+            mandatory_records=all_records_present,
+            context=ctx,
+        )
+        assert isinstance(result, BuilderPlan)
+        plan = result.plan
+        assert plan.status is InstructionStatus.REJECTED
+        assert plan.rejection_reason is not None
+        assert plan.rejection_reason.startswith("position_limit")
+        assert all(
+            "concentration_exception_granted" not in (row.message or "")
+            for row in plan.risk_summary
+        )

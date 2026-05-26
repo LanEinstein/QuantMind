@@ -850,6 +850,7 @@ class InstructionPlanBuilder:
             now=context.now,
             daily_state=context.daily_state,
             stock_meta=context.stock_meta,
+            concentration_exception=context.concentration_exception,
         )
 
         risk_summary = _build_risk_summary(engine_result)
@@ -1278,6 +1279,14 @@ class AssemblyContext:
     evidence_ids: tuple[str, ...]
     data_snapshot: DataSnapshot
     invalidation_summary: str
+
+    # Budget-tier intent flag (P0-7-amendment-2026-05-24 §2.3 / U-C4). Set by
+    # the upstream BudgetTierPolicy ONLY for an over-15% whitelisted broad ETF
+    # in Micro/Small tier; forwarded into RiskEngine check 5, which still
+    # independently re-derives ETF + whitelist + ≤max_lots (the flag alone is
+    # never a single-point bypass). Defaults False so the strict P0-7 15% rule
+    # holds for every Normal-tier / individual-stock candidate.
+    concentration_exception: bool = False
 
 
 @dataclass(frozen=True)

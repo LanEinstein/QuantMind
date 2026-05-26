@@ -425,6 +425,92 @@ def test_make_add_context_rejects_non_line2_signal_id(
         )
 
 
+def _small_account() -> AccountInfo:
+    """Few-thousand-yuan account where one 1-lot ETF add tops the 15% cap."""
+    return AccountInfo(
+        total_assets=2_000.0, available_cash=2_000.0, frozen_cash=0.0,
+        market_value=0.0, total_pnl=0.0, total_pnl_pct=0.0,
+        initial_capital=2_000.0,
+    )
+
+
+async def test_add_over_15pct_whitelisted_etf_granted_with_flag(
+    builder, risk_engine, stock_meta, policy, passing_signal,
+    clean_data_quality, quiet_breaker,
+) -> None:
+    # U-C4: an ADD (entry) onto a whitelisted broad ETF that tops 15% on a
+    # small account must thread the budget-policy concentration flag into the
+    # 14-check so it VALIDATES (it would otherwise fail-close to REJECTED). The
+    # intent is built directly — the deterministic evaluator caps to headroom,
+    # so the over-cap case is exercised at the construction-point seam.
+    account = _small_account()
+    intent = AddIntent(
+        code=_CODE, name=_NAME, add_volume=100, limit_price=4.5, atr=0.05,
+        stop_price=4.3, rsi=30.0, rationale="broad ETF dip add",
+    )
+    ds = DailyTradingState(
+        today_new_instruction_count=0, today_portfolio_pnl_pct=0.0,
+        last_3_trade_pnls=(), current_price=4.5,
+        is_in_halt_cooldown=False, halt_until=None,
+    )
+    ctx = make_add_context(
+        intent, now=_NOW, signal_id="LINE2-MON-20260515-1", seq=1,
+        snapshot_at=_SNAP_AT, account=account, positions=(),
+        prev_close=4.5, daily_state=ds, stock_meta=stock_meta,
+        risk_engine=risk_engine, open_tickets=(), circuit_breaker=quiet_breaker,
+        data_quality=clean_data_quality, watchlist_policy=policy,
+        watchlist_signal=passing_signal, concentration_exception=True,
+    )
+    assert ctx.concentration_exception is True
+    result = await builder.assemble_monitoring_plan(ctx)
+    assert isinstance(result, MonitoringPlan)
+    plan = result.plan
+    assert plan.side is InstructionSide.BUY
+    assert plan.status is InstructionStatus.VALIDATED
+    assert any(
+        row.passed is True
+        and "concentration_exception_granted" in (row.message or "")
+        for row in plan.risk_summary
+    )
+
+
+async def test_add_individual_stock_flag_alone_still_rejected(
+    builder, risk_engine, policy, passing_signal, clean_data_quality,
+    quiet_breaker,
+) -> None:
+    # Adversarial red-line guard: an individual stock ADD over 15% with the
+    # flag set is STILL rejected — the exception is ETF-only, re-derived
+    # independently by RiskEngine (个股不享有；flag 非绕过).
+    account = _small_account()
+    meta = RiskStockMetadata(
+        code="600000", name="浦发银行", board=RiskBoard.SH_MAIN, is_st=False,
+        instrument_type="stock",
+    )
+    intent = AddIntent(
+        code="600000", name="浦发银行", add_volume=100, limit_price=4.5,
+        atr=0.05, stop_price=4.3, rsi=30.0, rationale="stock dip add",
+    )
+    ds = DailyTradingState(
+        today_new_instruction_count=0, today_portfolio_pnl_pct=0.0,
+        last_3_trade_pnls=(), current_price=4.5,
+        is_in_halt_cooldown=False, halt_until=None,
+    )
+    ctx = make_add_context(
+        intent, now=_NOW, signal_id="LINE2-MON-20260515-2", seq=1,
+        snapshot_at=_SNAP_AT, account=account, positions=(),
+        prev_close=4.5, daily_state=ds, stock_meta=meta,
+        risk_engine=risk_engine, open_tickets=(), circuit_breaker=quiet_breaker,
+        data_quality=clean_data_quality, watchlist_policy=policy,
+        watchlist_signal=passing_signal, concentration_exception=True,
+    )
+    result = await builder.assemble_monitoring_plan(ctx)
+    assert isinstance(result, MonitoringPlan)
+    plan = result.plan
+    assert plan.status is InstructionStatus.REJECTED
+    assert plan.rejection_reason is not None
+    assert plan.rejection_reason.startswith("position_limit")
+
+
 def test_renderer_add_position_rejects_sell_and_non_line2() -> None:
     from backend.models.instruction import (
         DataSnapshot,

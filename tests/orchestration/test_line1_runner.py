@@ -111,6 +111,28 @@ def _snapshot() -> MarketDataSnapshot:
     )
 
 
+def _etf_snapshot() -> MarketDataSnapshot:
+    """Single whitelisted broad-ETF row whose 1 lot tops 15% of a Small tier.
+
+    Uptrend ending at 12.0 → per-lot cost ¥1,200 (> 15% of ¥5,000 cash) so the
+    budget policy flags a concentration exception for the over-15% ETF buy.
+    """
+    frame = "\n".join([_HEADER, _row("510300", "沪深300ETF", _uptrend(9.1))])
+    raw = frame.encode("utf-8")
+    return MarketDataSnapshot(
+        vendor="quantmind",
+        endpoint="line1_screener_frame",
+        params={"as_of": "20260514"},
+        trade_date="20260514",
+        raw_payload=raw,
+        size=len(raw),
+        encoding="csv",
+        compression="none",
+        raw_payload_sha256=hashlib.sha256(raw).hexdigest(),
+        fetch_time_utc=datetime(2026, 5, 14, 9, 0, 0, tzinfo=UTC),
+    )
+
+
 def _empty_snapshot() -> MarketDataSnapshot:
     """A structurally-valid frame whose only row is ST → excluded → empty."""
     frame = "\n".join([_HEADER, _row("600000", "ST浦发", _uptrend(10.0))])
@@ -225,6 +247,8 @@ class FakeProvider:
     router: _StubRouter
     lot_size: int = 100
     hold_lead: bool = False
+    proposed_volume: int = 200
+    board: RiskBoard = RiskBoard.SH_MAIN
 
     @property
     def available_cash(self) -> float:
@@ -233,7 +257,9 @@ class FakeProvider:
     def per_lot_cost(self, code: str, last_price: float) -> float:
         return last_price * self.lot_size
 
-    def build_lead_context(self, lead: CandidateRow) -> Line1LeadContext:
+    def build_lead_context(
+        self, lead: CandidateRow, *, concentration_exception: bool = False
+    ) -> Line1LeadContext:
         risk_engine = _risk_engine()
         limit_price = round(lead.last_price, 2)
         account = AccountInfo(
@@ -275,16 +301,16 @@ class FakeProvider:
         stock_meta = RiskStockMetadata(
             code=lead.code,
             name=lead.name,
-            board=RiskBoard.SH_MAIN,
+            board=self.board,
             is_st=False,
-            instrument_type="stock",
+            instrument_type="etf" if self.board is RiskBoard.ETF else "stock",
         )
         from backend.agents_team.state import CandidateBrief, TeamContext
 
         brief = CandidateBrief(
             code=lead.code,
             name=lead.name,
-            proposed_volume=200,
+            proposed_volume=self.proposed_volume,
             proposed_limit_price=limit_price,
         )
         team_ctx = TeamContext(
@@ -294,6 +320,7 @@ class FakeProvider:
             prev_close=prev_close,
             daily_state=daily_state,
             stock_meta=stock_meta,
+            concentration_exception=concentration_exception,
             now=_NOW,
             llm_router=self.router,
         )
@@ -326,8 +353,9 @@ class FakeProvider:
                 prev_close=prev_close,
                 daily_state=daily_state,
                 stock_meta=stock_meta,
-                proposed_volume=200,
+                proposed_volume=self.proposed_volume,
                 proposed_limit_price=limit_price,
+                concentration_exception=concentration_exception,
                 seq=seq,
                 signal_id=signal_id,
                 analysis_record_id=analysis_record_id,
@@ -479,6 +507,50 @@ async def test_feishu_mode_routes_validated_buy(builder, tmp_path) -> None:
     assert len(sender.calls) == 1
     assert "【QuantMind 买入信号 · 合规】" in sender.calls[0]["content"]
     assert f"-{result.lead_code}-BUY-" in sender.calls[0]["content"]
+
+
+async def test_small_tier_etf_routes_concentration_exception_template(
+    builder, tmp_path
+) -> None:
+    # U-C4: a Small-tier (¥5,000) buy of a whitelisted broad ETF whose 1 lot
+    # tops the 15% single-stock cap must thread the budget-policy
+    # concentration flag through assemble_plan's 14-check → VALIDATE → render
+    # with the ETF concentration-exception template (human-confirm block),
+    # NOT the normal-compliant template.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_etf_snapshot(),
+        provider=FakeProvider(
+            cash=5_000.0,
+            router=router,
+            proposed_volume=100,  # exactly 1 lot (the exception's absolute cap)
+            board=RiskBoard.ETF,
+        ),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert result.tier is not None and result.tier.value == "small"
+    assert result.lead_code == "510300"
+    assert result.route_outcome is not None
+    # The over-15% ETF VALIDATED only because the exception was granted.
+    assert result.plan is not None
+    assert any(
+        row.passed is True
+        and "concentration_exception_granted" in (row.message or "")
+        for row in result.plan.risk_summary
+    )
+    # The wire text uses the ETF concentration-exception template + confirm.
+    assert len(sender.calls) == 1
+    content = sender.calls[0]["content"]
+    assert "【QuantMind 买入信号 · ETF 集中度例外 · 需确认】" in content
+    assert f"确认执行请回复:确认 {result.plan.instruction_id}" in content
 
 
 async def test_exactly_one_debate_not_per_candidate(builder, tmp_path) -> None:
