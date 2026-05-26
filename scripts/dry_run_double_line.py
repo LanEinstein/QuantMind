@@ -661,6 +661,22 @@ async def build_real_context(*, start_date: dt.date) -> DryRunContext:
     # reserve budget, which fail-closes the debate (the owner-driven run has the
     # live 127.0.0.1 Redis).
     redis_client = build_redis_or_none()
+    # Simulate a FRESH trading day: clear the transient fan-out / reservation
+    # gate counters (debate-slot, in-flight reservation, anomaly) that normally
+    # reset at the 00:00 BrokerScheduler cron. Without this a second same-day
+    # dry-run inherits the first run's debate-slot count and spuriously trips
+    # max_debates_per_day (the audited LLM spend is left intact).
+    # Guard (codex P2): NEVER clear live gates if a production run is active —
+    # the dry-run is a pre-go-live, render-only validation tool and must not
+    # touch a live backend's in-flight reservation / fan-out gates. In a normal
+    # (non-prod) dry-run QUANTMIND_PROD_RUN is unset, so the fresh-day reset
+    # runs and the harness is reproducible.
+    if redis_client is not None and os.environ.get("QUANTMIND_PROD_RUN"):
+        log.warning("dry_run_skip_gate_reset_prod_active")
+    elif redis_client is not None:
+        from backend.services.cost_guard import reset_daily_gate_counters
+
+        await reset_daily_gate_counters(redis_client)
     llm_router = LLMRouter(config_path="config/agent_models.yaml")
     await llm_router.initialize(redis_client=redis_client)
     llm_models = resolve_llm_models()

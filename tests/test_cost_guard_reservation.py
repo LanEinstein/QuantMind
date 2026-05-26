@@ -23,6 +23,7 @@ from backend.services.cost_guard import (
     get_max_debates_per_day,
     reserve_budget,
     reserve_debate_slot,
+    reset_daily_gate_counters,
     settle_budget,
 )
 
@@ -53,6 +54,15 @@ class FakeRedis:
     async def expire(self, key: str, ttl: int) -> bool:
         self.expires[key] = ttl
         return True
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            if key in self.store:
+                del self.store[key]
+                removed += 1
+            self.expires.pop(key, None)
+        return removed
 
 
 @pytest.fixture
@@ -167,6 +177,37 @@ async def test_debate_slot_caps_at_max(monkeypatch) -> None:
         await reserve_debate_slot(redis, today=_DATE)
     # Counter rolled back to the cap (not left at 3).
     assert redis.store[_DEBATE_KEY] == 2
+
+
+@pytest.mark.asyncio
+async def test_reset_daily_gate_counters_clears_gates_not_spend() -> None:
+    # The dry-run "fresh trading day" reset clears the transient gate counters
+    # (debate-slot, reservation, anomaly) but never the audited spend hash.
+    redis = FakeRedis()
+    redis.store[_DEBATE_KEY] = 7  # day's debate slots already used
+    redis.store[_RESERVED_KEY] = 3.5  # in-flight reservation residue
+    redis.store["llm:anomaly:2026-05-24"] = 4
+    redis.store["llm:anomaly:dedup:2026-05-24"] = 1
+    spend_key = "llm:usage:2026-05-24"  # audited spend — must NOT be cleared
+    redis.store[spend_key] = 12.0
+
+    await reset_daily_gate_counters(redis, today=_DATE)
+
+    assert _DEBATE_KEY not in redis.store  # fresh day → can debate again
+    assert _RESERVED_KEY not in redis.store
+    assert "llm:anomaly:2026-05-24" not in redis.store
+    assert "llm:anomaly:dedup:2026-05-24" not in redis.store
+    assert redis.store[spend_key] == 12.0  # audited spend preserved
+
+
+@pytest.mark.asyncio
+async def test_reset_daily_gate_counters_fail_open() -> None:
+    # A Redis hiccup during reset is logged, never raised (the dry-run runs on).
+    class _DeleteRaises(FakeRedis):
+        async def delete(self, *keys: str) -> int:
+            raise RuntimeError("delete boom")
+
+    await reset_daily_gate_counters(_DeleteRaises(), today=_DATE)  # no raise
 
 
 @pytest.mark.asyncio

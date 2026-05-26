@@ -672,6 +672,37 @@ async def reserve_debate_slot(
     return count
 
 
+async def reset_daily_gate_counters(
+    redis_client: redis.asyncio.Redis,
+    *,
+    today: datetime.date | None = None,
+) -> None:
+    """Clear the day's TRANSIENT fan-out / reservation gate counters.
+
+    Deletes the debate-slot counter, the in-flight reservation counter, and the
+    Line-2 anomaly count + dedup keys for the UTC day — the gates that normally
+    reset at the BrokerScheduler 00:00 cron. It does NOT touch the audited LLM
+    *spend* (the ``llm:usage:{date}`` per-agent hashes), so budget history is
+    preserved.
+
+    Used by the render-only dry-run harness so each invocation simulates a
+    FRESH trading day (otherwise a second same-day dry-run inherits the first
+    run's debate-slot count and fails ``max_debates_per_day`` spuriously).
+    Fail-open: a Redis hiccup is logged, never raised — the dry-run still runs.
+    """
+    date_str = _utc_date_str(today)
+    keys = (
+        _debate_count_key(date_str),
+        _reserved_key(date_str),
+        _anomaly_count_key(date_str),
+        _anomaly_dedup_key(date_str),
+    )
+    try:
+        await redis_client.delete(*keys)
+    except Exception as exc:  # noqa: BLE001 — best-effort fresh-day reset
+        log.warning("reset_daily_gate_counters_failed", error=str(exc))
+
+
 def _anomaly_count_key(date_str: str) -> str:
     return f"{_ANOMALY_COUNT_KEY_PREFIX}:{date_str}"
 
@@ -835,5 +866,6 @@ __all__ = [
     "reserve_anomaly_llm_slot",
     "reserve_budget",
     "reserve_debate_slot",
+    "reset_daily_gate_counters",
     "settle_budget",
 ]
