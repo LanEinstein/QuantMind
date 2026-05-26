@@ -822,11 +822,19 @@ async def test_orchestration_layer_attaches_components(
     # BrokerScheduler replica-set fence cannot run. Opt out of the
     # gate for these tests (production never sets the env var).
     monkeypatch.setenv("QUANTMIND_BROKER_SKIP_RS_GATE", "1")
+    # U-D1 — keep the Line-2 file stores (constructed by _init_line2_runners)
+    # out of the repo working tree during the test.
+    monkeypatch.setenv(
+        "QUANTMIND_LINE2_SNAPSHOT_ROOT", str(tmp_path / "line2_snaps")
+    )
+    monkeypatch.setenv(
+        "QUANTMIND_INTRADAY_MANIFEST_ROOT", str(tmp_path / "line2_manifests")
+    )
 
     await _init_orchestration_layer(app)
 
     # Each slot below must be populated; the test fails noisily if any
-    # of the 8 + 6 components were dropped.
+    # of the 18 I-001 + 4 U-D1 Line-2 components were dropped.
     must_have = [
         "broker_event_store",
         "broker_snapshot_store",
@@ -846,6 +854,11 @@ async def test_orchestration_layer_attaches_components(
         "daily_reconciliation_store",
         "broker_snapshot_lookup",
         "execution_report_orchestrator",
+        # U-D1 Line-2 orchestration slots.
+        "instruction_dispatcher",
+        "route_coordinator",
+        "line2_daily_runner",
+        "line2_intraday_runner",
     ]
     for name in must_have:
         assert getattr(app.state, name, None) is not None, (

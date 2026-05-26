@@ -43,11 +43,20 @@ ORCHESTRATION_REQUIRED_SLOTS: tuple[str, ...] = (
     "daily_reconciliation_store",
     "broker_snapshot_lookup",
     "execution_report_orchestrator",
+    # U-D1 — Line-2 production orchestration (deterministic SELL/ADD lines).
+    # The single mutually-exclusive routing edge + the two Line-2 runners must
+    # be wired so the BrokerScheduler cron callbacks have something to invoke.
+    # (Line-1 runner is wired in U-D1b alongside its 4-agent debate provider.)
+    "instruction_dispatcher",
+    "route_coordinator",
+    "line2_daily_runner",
+    "line2_intraday_runner",
 )
-"""The 18 ``_init_orchestration_layer`` slots that must be non-None
-after lifespan startup. Order is the documented enumeration order
-inside ``backend.main`` so a quick visual scan against the source
-catches drops."""
+"""The 22 ``_init_orchestration_layer`` slots that must be non-None
+after lifespan startup (18 I-001 slots + 4 U-D1 Line-2 orchestration
+slots). Order is the documented enumeration order inside
+``backend.main`` so a quick visual scan against the source catches
+drops."""
 
 
 LIFESPAN_BASE_SLOTS: tuple[str, ...] = (

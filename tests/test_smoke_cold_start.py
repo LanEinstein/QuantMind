@@ -127,8 +127,15 @@ async def test_llm_router_complete_does_not_call_provider_when_stubbed(
 
 
 def test_orchestration_required_slots_locked_count() -> None:
-    """The I-001 must_have list documents 18 slots; J-002 reuses it."""
-    assert len(ORCHESTRATION_REQUIRED_SLOTS) == 18
+    """18 I-001 slots + 4 U-D1 Line-2 orchestration slots = 22; J-002 reuses it."""
+    assert len(ORCHESTRATION_REQUIRED_SLOTS) == 22
+    for slot in (
+        "instruction_dispatcher",
+        "route_coordinator",
+        "line2_daily_runner",
+        "line2_intraday_runner",
+    ):
+        assert slot in ORCHESTRATION_REQUIRED_SLOTS
 
 
 def test_orchestration_required_slots_no_duplicates() -> None:

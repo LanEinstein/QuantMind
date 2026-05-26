@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -252,6 +252,293 @@ async def _seed_watchlist_from_policy(
             codes=sorted(canonical),
             deactivated=sorted(stale),
         )
+
+
+async def _init_line2_runners(
+    application: FastAPI,
+    *,
+    broker: object,
+    audit_store: object,
+    ledger: object,
+    simulation_executor: object,
+    market_meta: object,
+) -> tuple[
+    Callable[[datetime], Awaitable[None]],
+    Callable[[datetime], Awaitable[None]],
+]:
+    """U-D1 — construct the Line-2 daily + 30s intraday production runners.
+
+    Builds the import-isolated runners + their single mutually-exclusive
+    :class:`RouteCoordinator`, attaches them to ``app.state`` (cold-start smoke
+    slots), and returns the two scheduler cron callbacks. The heavy per-code
+    risk/broker context is supplied by the production providers in
+    ``backend.services.line2_context_providers``.
+
+    The callbacks read live state from ``app.state`` lazily at cron-fire time
+    (so the analysis-layer ``watchlist_policy``, wired *after* this function,
+    is present by then) and degrade to a clean skip until the T-1 EOD frame
+    source is wired (real Tushare frame = U-D3) — so simulation_auto boots with
+    the loop structurally complete, not hollow.
+
+    Line-1 (the 4-agent debate provider) is deferred to U-D1b; only the
+    deterministic, zero-LLM Line-2 lines are wired here.
+    """
+    from backend.broker.models import CircuitBreakerConfig
+    from backend.integrations.feishu.renderer import MessageRenderer
+    from backend.marketdata_snapshot import SnapshotStore
+    from backend.monitoring.anomaly import AnomalyDetector
+    from backend.orchestration.instruction_dispatcher import (
+        InMemoryOutboxRepository,
+        InstructionDispatcher,
+    )
+    from backend.orchestration.intraday_manifest import IntradayTriggerManifestStore
+    from backend.orchestration.line2_daily_runner import Line2DailyRunner
+    from backend.orchestration.line2_intraday_runner import Line2IntradayRunner
+    from backend.orchestration.route_coordinator import RouteCoordinator
+    from backend.risk.circuit_breaker import CircuitBreaker
+    from backend.risk.engine import RiskEngine
+    from backend.services.instruction_plan_builder import InstructionPlanBuilder
+    from backend.services.line2_context_providers import (
+        Line2DailyProvider,
+        Line2IntradayProvider,
+        build_line2_code_contexts,
+        build_line2_run_state,
+    )
+    from backend.services.run_mode import RouteMode, resolve_route_mode
+
+    renderer = MessageRenderer()
+    # Inject the live mode-switch probe so the builder's mode_switch early
+    # return fires during a D-005 ModeRouter switch window. Without it the
+    # feishu_interactive dispatch path (which does not re-check the switch
+    # freeze the way SimulationExecutor does) could send a Line-2 instruction
+    # mid-switch (Codex U-D1 P1). mode_router is already on app.state by now.
+    mode_router = getattr(application.state, "mode_router", None)
+    builder = InstructionPlanBuilder(
+        audit_store=audit_store,
+        mode_switch_probe=(
+            mode_router.mode_state if mode_router is not None else None
+        ),
+    )
+
+    route_mode = resolve_route_mode(getattr(application.state, "run_mode", None))
+    decision_chat = os.environ.get("FEISHU_DECISION_CHAT_ID", "").strip()
+
+    # Fail-closed by construction (Codex U-D1 review): when the route mode is
+    # FEISHU_INTERACTIVE the RouteCoordinator WILL call the dispatcher, so a
+    # placeholder decision chat must never be wired — otherwise a Line-2 cron
+    # firing in the window before the lifespan feishu gate SystemExits could
+    # send to a fake chat id. The lifespan gate also enforces this, but it runs
+    # AFTER broker_scheduler.start(); enforce it here (before the scheduler
+    # starts) so the invariant holds by construction, not by ordering.
+    if route_mode is RouteMode.FEISHU_INTERACTIVE and not decision_chat:
+        raise SystemExit(
+            "Refusing to wire Line-2 runners: route mode is feishu_interactive "
+            "but FEISHU_DECISION_CHAT_ID is unset. Set it to the decision "
+            "group's open_chat_id (P0-2-amendment-2026-05-16 §4) and restart."
+        )
+
+    # Dispatcher (feishu_interactive path only). In the simulation_auto / dry_run
+    # baseline the RouteCoordinator routes to the SimulationExecutor (or renders
+    # only) and NEVER calls the dispatcher, so a placeholder decision chat keeps
+    # it constructible without any risk of a real send (the guard above proves
+    # decision_chat is non-empty whenever the mode actually uses the dispatcher).
+    # NOTE (U-D2/U-D4 follow-on): the outbox is in-memory here — a durable Mongo
+    # outbox is required before feishu go-live so the at-most-once claim survives
+    # a restart.
+    dispatcher = InstructionDispatcher(
+        feishu_client=getattr(application.state, "feishu_client", None),
+        decision_chat_id=decision_chat or "SIMULATION_AUTO_NO_DECISION_CHAT",
+        outbox=InMemoryOutboxRepository(),
+        ledger=ledger,
+        audit_store=audit_store,
+    )
+
+    coordinator = RouteCoordinator(
+        mode=route_mode,
+        simulation_executor=simulation_executor,
+        dispatcher=dispatcher,
+    )
+
+    snapshot_root = os.environ.get(
+        "QUANTMIND_LINE2_SNAPSHOT_ROOT", "data/line2_intraday_snapshots"
+    )
+    manifest_root = os.environ.get(
+        "QUANTMIND_INTRADAY_MANIFEST_ROOT", "data/intraday_manifests"
+    )
+    snapshot_store = SnapshotStore(root=snapshot_root)
+    manifest_store = IntradayTriggerManifestStore(manifest_root)
+
+    daily_runner = Line2DailyRunner(
+        anomaly_detector=AnomalyDetector(),
+        builder=builder,
+        renderer=renderer,
+        coordinator=coordinator,
+        ledger=ledger,
+    )
+    intraday_runner = Line2IntradayRunner(
+        builder=builder,
+        renderer=renderer,
+        coordinator=coordinator,
+        ledger=ledger,
+        snapshot_store=snapshot_store,
+        manifest_store=manifest_store,
+    )
+
+    application.state.instruction_dispatcher = dispatcher
+    application.state.route_coordinator = coordinator
+    application.state.line2_daily_runner = daily_runner
+    application.state.line2_intraday_runner = intraday_runner
+    application.state.intraday_trigger_manifest_store = manifest_store
+
+    def _risk_engine_or_none() -> RiskEngine | None:
+        cfg = getattr(application.state, "risk_config", None)
+        return RiskEngine(cfg) if cfg is not None else None
+
+    def _circuit_breaker() -> CircuitBreaker:
+        cb = getattr(application.state, "circuit_breaker", None)
+        return cb if cb is not None else CircuitBreaker(CircuitBreakerConfig())
+
+    def _names(positions: object) -> dict[str, str]:
+        # Key by BARE code (Codex U-D1 review): the monitoring detectors +
+        # build_line2_code_contexts look names up by the suffix-stripped code,
+        # so a full-code key ("600000.SH") would never match and the map would
+        # be dead. TODO(U-D3): real display names from a stock_metadata
+        # registry; the bare code is a safe fallback (renderer + risk-meta
+        # tolerate it).
+        out: dict[str, str] = {}
+        for p in positions:  # type: ignore[attr-defined]
+            bare = p.code.split(".")[0].strip()
+            out[bare] = bare
+        return out
+
+    async def _open_tickets_or_skip() -> tuple[object, ...] | None:
+        """Load OPEN/EXPIRED reconciliation tickets so the builder's
+        ``ticket_freeze`` early return can fire (P0-5). Returns ``None`` to
+        tell the caller to SKIP the whole run.
+
+        Fail-closed in BOTH directions because the simulation_auto
+        SimulationExecutor does not itself check tickets, so a missed freeze
+        here auto-fills during a reconciliation hold (Codex U-D1 P1 + verify):
+        a missing repo (the orchestration layer wires it before the scheduler
+        starts, but guard the startup window anyway) AND a lookup failure both
+        skip the run rather than proceeding with an empty (no-freeze) view.
+        """
+        repo = getattr(application.state, "reconciliation_ticket_repository", None)
+        if repo is None:
+            log.warning("line2_skipped_ticket_repo_unavailable")
+            return None
+        try:
+            return tuple(await repo.list_all_open())
+        except Exception as exc:  # noqa: BLE001 — fail-closed on unknown freeze
+            log.warning("line2_skipped_ticket_lookup_failed", error=str(exc))
+            return None
+
+    async def _line2_daily_callback(now: datetime) -> None:
+        frame = getattr(application.state, "line2_daily_frame", None)
+        if frame is None:
+            # T-1 EOD screener frame source (Line1FrameAssembler / Tushare) is
+            # wired in U-D3 — skip cleanly until then (fail-open, not hollow).
+            log.info("line2_daily_skipped_no_frame")
+            return
+        risk_engine = _risk_engine_or_none()
+        policy = getattr(application.state, "watchlist_policy", None)
+        if risk_engine is None or policy is None:
+            log.info(
+                "line2_daily_skipped_missing_config",
+                has_risk=risk_engine is not None,
+                has_policy=policy is not None,
+            )
+            return
+        open_tickets = await _open_tickets_or_skip()
+        if open_tickets is None:
+            return
+        run_state = await build_line2_run_state(
+            broker=broker,
+            risk_engine=risk_engine,
+            circuit_breaker=_circuit_breaker(),
+            watchlist_policy=policy,
+            now=now,
+            open_tickets=open_tickets,
+        )
+        if not run_state.positions:
+            return
+        names = _names(run_state.positions)
+        contexts = await build_line2_code_contexts(
+            codes=[p.code for p in run_state.positions],
+            name_by_code=names,
+            market_meta=market_meta,
+            frame=frame,
+            data_quality_provider=getattr(
+                application.state, "data_quality_provider", None
+            ),
+            now=now,
+        )
+        provider = Line2DailyProvider(
+            run_state=run_state,
+            code_contexts=contexts,
+            name_by_code=names,
+            snapshot_at=frame.fetch_time_utc,
+        )
+        await daily_runner.run(frame=frame, provider=provider, now=now)
+
+    async def _line2_intraday_callback(now: datetime) -> None:
+        frame = getattr(application.state, "line2_daily_frame", None)
+        if frame is None:
+            return  # ATR / recent-high frame source = U-D3
+        risk_engine = _risk_engine_or_none()
+        policy = getattr(application.state, "watchlist_policy", None)
+        if risk_engine is None or policy is None:
+            return
+        open_tickets = await _open_tickets_or_skip()
+        if open_tickets is None:
+            return
+        run_state = await build_line2_run_state(
+            broker=broker,
+            risk_engine=risk_engine,
+            circuit_breaker=_circuit_breaker(),
+            watchlist_policy=policy,
+            now=now,
+            open_tickets=open_tickets,
+        )
+        if not run_state.positions:
+            return
+        names = _names(run_state.positions)
+        contexts = await build_line2_code_contexts(
+            codes=[p.code for p in run_state.positions],
+            name_by_code=names,
+            market_meta=market_meta,
+            frame=frame,
+            data_quality_provider=getattr(
+                application.state, "data_quality_provider", None
+            ),
+            now=now,
+        )
+        market_data = getattr(application.state, "market_data", None)
+        # Benchmark index closes (bear-regime ADD ban) source = U-D3; empty →
+        # classify_regime returns NEUTRAL (no bear ban) conservatively.
+        index_closes: tuple[float, ...] = ()
+
+        async def _fetch_spots(codes: object) -> dict[str, object]:
+            if market_data is None:
+                return {}
+            # Tag the batch strictly before the tick ``now`` so the runner's
+            # filter_fresh_quotes (snapshot_at < now) accepts a fresh quote.
+            snap_at = now - timedelta(seconds=1)
+            rows = await market_data.get_watchlist_snapshot(list(codes), snap_at)
+            return {row.code: row for row in rows}
+
+        provider = Line2IntradayProvider(
+            run_state=run_state,
+            code_contexts=contexts,
+            name_by_code=names,
+            daily_frame=frame,
+            index_closes=index_closes,
+            fetch_spots_fn=_fetch_spots,
+        )
+        await intraday_runner.run(provider=provider, now=now)
+
+    log.info("line2_runners_initialized", route_mode=route_mode.value)
+    return _line2_daily_callback, _line2_intraday_callback
 
 
 async def _init_orchestration_layer(application: FastAPI) -> None:
@@ -593,6 +880,13 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     ticket_repo = MongoTicketRepository(db)
     mongo_daily_store = MongoDailyReconciliationStore(db)
     snapshot_lookup = MongoSnapshotLookup(db)
+    # Attach the ticket repo to app.state BEFORE _init_line2_runners +
+    # broker_scheduler.start() below (Codex U-D1 verify P1). The Line-2 cron
+    # callbacks read reconciliation_ticket_repository to feed the builder's
+    # ticket_freeze early return; if the repo were attached only after start()
+    # a cron firing in the startup window would see None, fail-open to no
+    # tickets, and bypass the reconciliation freeze.
+    application.state.reconciliation_ticket_repository = ticket_repo
 
     async def _has_open_reconciliation_ticket() -> bool:
         """Return True iff Mongo holds ANY OPEN / EXPIRED ticket.
@@ -689,6 +983,18 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # — the helper below resolves the gate object once.
     from backend.broker.scheduler import BrokerScheduler
 
+    # U-D1 — build the Line-2 production runners + their RouteCoordinator and
+    # get the two cron callbacks before constructing the scheduler. simulation_
+    # executor / ledger_service / market_meta are all live by now.
+    line2_daily_cb, line2_intraday_cb = await _init_line2_runners(
+        application,
+        broker=broker,
+        audit_store=audit_store,
+        ledger=ledger_service,
+        simulation_executor=simulation_executor,
+        market_meta=market_meta,
+    )
+
     replica_set_gate = (
         None
         if os.environ.get("QUANTMIND_BROKER_SKIP_RS_GATE", "").strip() == "1"
@@ -705,6 +1011,12 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         intraday_mtm_callback=_intraday_mtm_callback,
         eod_close_callback=_eod_close_callback,
         acceptance_callback=_acceptance_callback,
+        line2_daily_runner_callback=line2_daily_cb,
+        line2_intraday_runner_callback=line2_intraday_cb,
+        # U-A2 / U-D1 — align the scheduler's NAV fallback to the ¥100k
+        # 同花顺模拟盘 the broker config loads (recovery still wins when a
+        # snapshot exists).
+        initial_capital=broker._initial_capital,  # noqa: SLF001
     )
     # Codex Cycle 6 P1 fix: DO NOT swallow start() failures. The
     # replica_set_gate is the only Mongo-multi-document-transaction
@@ -770,7 +1082,9 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
 
     daily_store = _DualWriteDailyStore(mongo_daily_store, daily_cache)
 
-    application.state.reconciliation_ticket_repository = ticket_repo
+    # reconciliation_ticket_repository was attached earlier (before start()
+    # per Codex U-D1 verify P1); the remaining two repos are read-only GET
+    # surfaces with no startup-window race.
     application.state.daily_reconciliation_store = daily_store
     application.state.broker_snapshot_lookup = snapshot_lookup
 

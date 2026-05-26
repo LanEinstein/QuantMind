@@ -335,6 +335,189 @@ class TestSchedulerCronCallbacks:
         )
 
 
+def _scheduler_with(
+    *,
+    tmp_path: Path,
+    now: dt.datetime,
+    line2_daily_runner_callback=None,  # noqa: ANN001
+    line2_intraday_runner_callback=None,  # noqa: ANN001
+) -> BrokerScheduler:
+    """Build a BrokerScheduler pinned to ``now`` with optional Line-2 callbacks."""
+    broker = MockBroker(
+        config=BrokerConfig(initial_capital=100_000.0), now_func=lambda: now
+    )
+    client = _FakeClient()
+    audit_store = AuditStore(
+        InMemoryAuditCollection(), jsonl_path=tmp_path / "audit.jsonl"
+    )
+    return BrokerScheduler(
+        broker=broker,
+        event_store=BrokerEventStore(client, _FakeCollection()),
+        snapshot_store=BrokerSnapshotStore(client, _FakeCollection()),
+        audit_store=audit_store,
+        line2_daily_runner_callback=line2_daily_runner_callback,
+        line2_intraday_runner_callback=line2_intraday_runner_callback,
+        now_func=lambda: now,
+    )
+
+
+class TestInitialCapitalDefault:
+    """U-D1 — the BrokerScheduler default aligns to the ¥100k 同花顺模拟盘."""
+
+    def test_default_initial_capital_is_100k(self, tmp_path: Path) -> None:
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 16, 0, tzinfo=SHANGHAI),
+        )
+        assert sched._initial_capital == 100_000.0  # noqa: SLF001
+
+
+class TestAdvanceDayHolidayGating:
+    """U-D1 / Codex P1 — advance_day must not unlock T+1 on a weekday holiday."""
+
+    @pytest.mark.asyncio
+    async def test_advance_day_skipped_on_weekday_holiday(
+        self, tmp_path: Path
+    ) -> None:
+        # 2026-05-01 (Fri) is 劳动节 — a weekday exchange holiday.
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 1, 16, 30, tzinfo=SHANGHAI),
+        )
+        await sched._advance_day_job()  # noqa: SLF001
+        # No DAY_ADVANCED event — the holiday session never happened.
+        # ``_scheduler_with`` does not retain the event collection, so assert
+        # via the broker: advance_day was never called, so the trade day did
+        # not roll. Re-build with an inspectable event collection instead.
+        client = _FakeClient()
+        event_coll = _FakeCollection()
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 1, 16, 30, tzinfo=SHANGHAI),
+        )
+        audit_store = AuditStore(
+            InMemoryAuditCollection(), jsonl_path=tmp_path / "a2.jsonl"
+        )
+        sched2 = BrokerScheduler(
+            broker=broker,
+            event_store=BrokerEventStore(client, event_coll),
+            snapshot_store=BrokerSnapshotStore(client, _FakeCollection()),
+            audit_store=audit_store,
+            now_func=lambda: dt.datetime(2026, 5, 1, 16, 30, tzinfo=SHANGHAI),
+        )
+        await sched2._advance_day_job()  # noqa: SLF001
+        assert not any(
+            doc["event_type"] == BrokerEventType.DAY_ADVANCED.value
+            for doc in event_coll.docs
+        )
+
+
+class TestLine2RunnerCrons:
+    """U-D1 — Line-2 daily + 30s intraday cron callbacks + gating."""
+
+    @pytest.mark.asyncio
+    async def test_line2_daily_no_op_when_callback_missing(
+        self, tmp_path: Path
+    ) -> None:
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 9, 0, tzinfo=SHANGHAI),
+        )
+        await sched._line2_daily_job()  # noqa: SLF001 — must not raise
+
+    @pytest.mark.asyncio
+    async def test_line2_daily_runs_on_trading_day(self, tmp_path: Path) -> None:
+        calls: list[dt.datetime] = []
+
+        async def cb(now: dt.datetime) -> None:
+            calls.append(now)
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            # 09:35 Fri — inside trading hours so the runner's RiskEngine
+            # trading-hours gate passes (Codex U-D1 P1).
+            now=dt.datetime(2026, 5, 15, 9, 35, tzinfo=SHANGHAI),
+            line2_daily_runner_callback=cb,
+        )
+        await sched._line2_daily_job()  # noqa: SLF001
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_line2_daily_skipped_on_weekday_holiday(
+        self, tmp_path: Path
+    ) -> None:
+        calls: list[dt.datetime] = []
+
+        async def cb(now: dt.datetime) -> None:
+            calls.append(now)
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 1, 9, 0, tzinfo=SHANGHAI),  # 劳动节 holiday
+            line2_daily_runner_callback=cb,
+        )
+        await sched._line2_daily_job()  # noqa: SLF001
+        assert calls == []  # holiday → no daily scan
+
+    @pytest.mark.asyncio
+    async def test_line2_intraday_no_op_when_callback_missing(
+        self, tmp_path: Path
+    ) -> None:
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 10, 30, tzinfo=SHANGHAI),
+        )
+        await sched._line2_intraday_job()  # noqa: SLF001 — must not raise
+
+    @pytest.mark.asyncio
+    async def test_line2_intraday_runs_in_trading_hours(
+        self, tmp_path: Path
+    ) -> None:
+        calls: list[dt.datetime] = []
+
+        async def cb(now: dt.datetime) -> None:
+            calls.append(now)
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 10, 30, tzinfo=SHANGHAI),  # in session
+            line2_intraday_runner_callback=cb,
+        )
+        await sched._line2_intraday_job()  # noqa: SLF001
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_line2_intraday_skipped_off_hours(
+        self, tmp_path: Path
+    ) -> None:
+        calls: list[dt.datetime] = []
+
+        async def cb(now: dt.datetime) -> None:
+            calls.append(now)
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 16, 0, tzinfo=SHANGHAI),  # after close
+            line2_intraday_runner_callback=cb,
+        )
+        await sched._line2_intraday_job()  # noqa: SLF001
+        assert calls == []  # off-hours → no tick (runner re-checks too)
+
+    @pytest.mark.asyncio
+    async def test_line2_daily_failure_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        async def boom(now: dt.datetime) -> None:
+            raise RuntimeError("line2 daily outage")
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 9, 0, tzinfo=SHANGHAI),
+            line2_daily_runner_callback=boom,
+        )
+        await sched._line2_daily_job()  # noqa: SLF001 — best-effort, no raise
+
+
 class TestReplicaSetGate:
     @pytest.mark.asyncio
     async def test_start_calls_replica_gate(self, env: _Env) -> None:
