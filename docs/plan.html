@@ -2778,11 +2778,23 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         notes: "**单点修复(dry-run 脚本层,零生产代码改动)**。① t_minus_1_eod_utc(as_of):把 dry-run frame.fetch_time_utc 锚到 T-1 EOD 收盘(as_of 15:00 Asia/Shanghai→UTC=07:00 UTC),严格早于回放运行日 09:30 created_at;经 Line1FrameAssembler 已有 now_utc 注入口注入。frame.fetch_time_utc 是两线 snapshot_at 单一源(Line-1 line1_context_provider:339 + Line-2 daily dry_run_double_line:412 Line2DailyProvider),一处锚定同修两线。PIT 契约不破(R0 §3 红线 A):fetch_time_utc 是纯 provenance,不进 snapshot checksum(只算 raw_payload,snapshot.py:105)也不进 replay 摘要;生产 Line1FrameAssembler 仍默认墙钟。**codex review --uncommitted 1 cycle(2 findings 全修)+ verify clean**:P1=重跑会复用 data/dry_run/frames 里 #43 墙钟戳派生帧(fetch_time 非 SnapshotStore 复用键,append-only 原样返回)→ 注入时钟不生效→新增 _frame_store_root() 默认 tempfile.mkdtemp() fresh store(env QUANTMIND_DRYRUN_FRAME_ROOT 未设时),owner 可 pin 持久 store;P2=data/dry_run/ 生成态加 .gitignore + 删旧帧。报告 docs/reviews/U-D4b-codex-review-summary.md。门禁:ruff + redline(M-004/X-018/N-005/L-004/K-006 不破)绿,全量 **3828 passed/13 skipped**(基线 3824→+4 回归测试),cov 90.42%。**真重跑验证(真 Tushare+真 qwen,fresh store,render-only,0 发送)**:不再 crash(5522 标的帧组装 + 4-agent 辩论跑通 + fund_manager qwen3.7-max + 正常 verdict 写 artifact data/dry_run/20260526_double_line.json),cost ¥0.0839≪¥20。**verdict 仍 FAIL 但属真实数据巧合 + 红线正确执行(非 ① 非 ②)**:当日唯一被辩论的 lead 600584 fund_manager 提 BUY(方向正确,② 的未持仓 SELL 本次未复现),但 600584 当日涨停(current 80.17≥upper 80.17)→ RiskEngine limit_up_down_block 正确拒单(禁涨停 BUY)→ 0 BUY rendered → harness 按设计判 FAIL 供 owner 调查。**未擅改 harness/prompt 凑 PASS,未翻 pilot_readiness cond3(仅 owner 审信号后翻)**。架构观察(供 owner 决策,U-D4b 范围外):Line-1 每日仅辩论 top-1 lead(成本红线『一次辩论/每日 shortlist』),单个 lead 不可路由(今日涨停 / 或上次未持仓 SELL)即全天 0 BUY;owner 可决定是否新开 U-D4c(如 screening 前移排除涨停候选 / 拒单后 fallthrough 到下一 shortlist)。次要观察:build_data_layer 的 load_data_sources_config() 缺 yaml_path 参→市场数据层降级 None(U-D3 既有,文档化 fallback,Line-2 intraday 不见实时报价;非本任务引入,候选 follow-up)。"
       },
       {
+        id: "U-D4c", phase: "U 生产编排上线", status: "doing", priority: "P0",
+        title: "信号产出修复 — Line-1 按 shortlist 多候选辩论 + 日 ¥20→¥100",
+        summary: "#44 真 dry-run 暴露:Line-1 每日只辩论 top-1 lead(line1_runner.py:246 lead_code=selection.shortlist[0]),lead 被 RiskEngine 正确拒单(600584 涨停 limit_up_down_block)即全天 0 BUY → 系统选不出股、dry-run 必 FAIL。owner 推翻 2 条红线(仅这 2 条,安全地基全留):① 取消『一次辩论/每日 shortlist 非 per candidate』→ Line-1 按 shortlist 顺序多候选辩论直到产出可路由 BUY;② 日 LLM hard ¥20→¥100。落 P1-7-amendment-2026-05-26。收集语义=basket(owner AskUserQuestion 拍板)。",
+        scope: "backend/orchestration/line1_runner.py, backend/services/cost_guard.py, scripts/redline-check.sh, tests/orchestration/",
+        depends: "U-D4b",
+        acceptance: "Line-1 run() 遍历 selection.shortlist:每只 build_lead_context→run_shortlist(单元素辩论)→to_fund_manager_output→assemble_plan(14-check 单一构造点不破)→_route;REJECTED/HOLD/DEGRADED/非-BUY/早返→fallthrough 下一只;VALIDATED BUY 收集(basket 收齐所有);DailyBudgetExceededError(预留/debate-slot 拒超)→fail-closed 停止遍历返回已收集结果不崩。cost_guard _DEFAULT_DAILY_BUDGET_RMB 20.0→100.0;redline M-005 断言同步 100.0(其余 3 常量不变)。",
+        tests: "(a) lead 被拒→fallthrough 下一只产出 BUY;(b) 全 shortlist 被拒→0 BUY 优雅收尾不崩;(c) 日 ¥100 预留上限正确 bound;(d) max_debates_per_day 耗尽→停止遍历不崩;(e) basket 多只 BUY 各走单一构造点(LLM 文本未入数值字段);(f) single 模式遇首个 BUY 即停。pytest --cov-fail-under=70 + ruff + redline(M-004/X-018/N-005/L-004/K-006 + 更新后 M-005)全绿 + codex review.",
+        sources: "P1-7-amendment-2026-05-26-multi-candidate-debate-and-100rmb-budget, owner directive 2026-05-26(推翻 2 红线), #44 真 dry-run FAIL 根因",
+        commit: "", session_date: "2026-05-26",
+        notes: "安全地基红线全留(永禁真实下单/飞书人工/127.0.0.1/LLM 不写决策/RiskEngine 纯函数 14-check 权威/单一构造点 M-004/人工 gate);RiskEngine 红线全留(禁涨停 BUY/禁跌停 SELL/long-only/仓位三连/熔断)——lead 涨停被拒=正确履职,fallthrough 下一只绝不绕过拒单。"
+      },
+      {
         id: "U-D5", phase: "U 生产编排上线", status: "todo", priority: "P0",
         title: "★双线生产 e2e + redline/CLAUDE.md + SSoT 收官",
         summary: "test_mvp_e2e 升真适配器 + 注入 fake(0 真实网络)双线生产 e2e;module-contract/redline-check 加 orchestration 隔离;backend/orchestration/CLAUDE.md;plan.html SESSION_LOG + 修订记录 docs commit(记 re-scope I-002 + Phase U 收官)。",
         scope: "tests/orchestration/, scripts/redline-check.sh, backend/orchestration/CLAUDE.md, docs/plan.html",
-        depends: "U-D4",
+        depends: "U-D4c",
         acceptance: "双线生产 e2e 0 真实网络 + redline 全绿(含 orchestration 隔离 + 单一构造点 + monitoring 隔离)+ CLAUDE.md + SSoT 收官。",
         tests: "生产 e2e 双线 + redline-check 全绿 + 全量回归。",
         sources: "R0 §7 MVP, N-005 蓝图",
