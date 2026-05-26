@@ -1,0 +1,552 @@
+"""Tests for the U-D3 render-only double-line dry-run harness.
+
+NO network, NO real LLM, NO Mongo/Redis: every external seam is a fake —
+* a canned :class:`MarketDataSnapshot` screener frame (no Tushare pull),
+* a stub LLM router with canned 4-agent debate responses (no real qwen),
+* an in-memory fake redis for the debate's budget reservation,
+* a collecting ``dry_run_sink`` so the rendered wire texts can be inspected.
+
+These assert the harness's structural contract:
+  (a) it runs 1 day render-only — the DRY_RUN coordinator's executor +
+      dispatcher stubs are NEVER called (asserted via call-recording stubs),
+  (b) the artifact JSON is written with the rendered wire texts +
+      ``real_sends == 0`` + ``pass == false`` + ``owner_reviewed == false``,
+  (c) BOTH lines are exercised (Line-1 BUY + Line-2 daily SELL render),
+  (d) a HOLD / empty-universe path does not crash.
+
+The REAL run (real Tushare frame + real qwen + cost) is the owner's, not CI's,
+so the few paths that would need real network/LLM are ``@pytest.mark.skip``
+(default-skip) and documented.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from backend.broker.mock_broker import MockBroker
+from backend.broker.models import (
+    BrokerConfig,
+    CircuitBreakerConfig,
+    PositionLimitsConfig,
+    RiskConfig,
+    StopLossConfig,
+    UniverseConfig,
+)
+from backend.marketdata_snapshot import MarketDataSnapshot
+from backend.risk.circuit_breaker import CircuitBreaker
+from backend.risk.engine import RiskEngine
+from backend.services import cost_guard
+from backend.services.universe_policy import ExclusionRules, load_policy
+from scripts import dry_run_double_line as harness
+
+_HEADER = "ts_code,name,listed_trading_days,closes,amounts"
+_RISK_YAML = "config/risk.yaml"
+_SELECTOR_YAML = "config/candidate_weights/v1.yaml"
+_POLICY = "config/universe_policy.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Canned market frame (mirrors tests/orchestration/test_line1_runner.py)
+# ---------------------------------------------------------------------------
+
+
+def _uptrend(base: float, n: int = 30) -> list[float]:
+    return [base + 0.10 * i for i in range(n)]
+
+
+def _crash(n: int = 30) -> list[float]:
+    closes = [4.5 + (0.001 if i % 2 else -0.001) for i in range(n)]
+    closes[-1] = closes[-2] * 0.96  # -4% adverse (oversold, not limit-down)
+    return closes
+
+
+def _row(code: str, name: str, closes: list[float]) -> str:
+    cs = "|".join(repr(v) for v in closes)
+    am = "|".join(repr(3e8) for _ in closes)
+    return f"{code},{name},400,{cs},{am}"
+
+
+def _frame(rows: list[str]) -> MarketDataSnapshot:
+    raw = "\n".join([_HEADER, *rows]).encode("utf-8")
+    return MarketDataSnapshot(
+        vendor="quantmind",
+        endpoint="line1_screener_frame",
+        params={"as_of": "20260514"},
+        trade_date="20260514",
+        raw_payload=raw,
+        size=len(raw),
+        encoding="csv",
+        compression="none",
+        raw_payload_sha256=hashlib.sha256(raw).hexdigest(),
+        fetch_time_utc=datetime(2026, 5, 14, 9, 0, 0, tzinfo=UTC),
+        metadata={"parent_snapshot_ids": ["raw-1", "raw-2"]},
+    )
+
+
+def _buy_frame() -> MarketDataSnapshot:
+    """Liquid sh_main uptrend stocks + one held crashing ETF (Line-2 daily)."""
+    return _frame(
+        [
+            _row("600000", "浦发银行", _uptrend(10.0)),
+            _row("600004", "白云机场", _uptrend(9.0)),
+            _row("600006", "东风汽车", _uptrend(8.0)),
+            _row("510300", "沪深300ETF", _crash()),  # held → Line-2 SELL
+        ]
+    )
+
+
+def _empty_frame() -> MarketDataSnapshot:
+    """Only an ST name → excluded → empty universe (HOLD/empty path)."""
+    return _frame([_row("600000", "ST浦发", _uptrend(10.0))])
+
+
+# ---------------------------------------------------------------------------
+# Stub LLM router + fake redis (mirrors test_line1_runner)
+# ---------------------------------------------------------------------------
+
+
+class _StubRouter:
+    """4-agent debate stub. ``action`` is configurable (买入/卖出/持有)."""
+
+    def __init__(self, *, action: str = "买入") -> None:
+        self.calls = 0
+        self._action = action
+
+    async def complete(
+        self, agent_name: str, messages: list[dict[str, str]], **_: Any
+    ) -> Any:
+        self.calls += 1
+        if agent_name == "fund_manager":
+            content = f'{{"action": "{self._action}", "reasoning": "stub thesis"}}'
+        else:
+            content = f"{agent_name} stub analysis report"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
+
+class _FakeMarketMeta:
+    """Returns a fixed prev_close per code (the live MarketMetaProvider analogue).
+
+    Offline the harness has no live market_meta; the SELL 14-check's
+    ``limit_up_down_block`` needs a prev_close, so the test injects one — exactly
+    what the real owner-driven run gets from the Mongo-backed provider.
+    """
+
+    def __init__(self, prev_close_by_code: dict[str, float]) -> None:
+        self._prev = prev_close_by_code
+
+    async def get_prev_close(self, code: str) -> float | None:
+        return self._prev.get(code.split(".")[0].strip())
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, float] = {}
+
+    async def incrbyfloat(self, key: str, amount: float) -> float:
+        self.store[key] = float(self.store.get(key, 0.0)) + float(amount)
+        return self.store[key]
+
+    async def incr(self, key: str) -> int:
+        self.store[key] = int(self.store.get(key, 0)) + 1
+        return int(self.store[key])
+
+    async def decr(self, key: str) -> int:
+        self.store[key] = int(self.store.get(key, 0)) - 1
+        return int(self.store[key])
+
+    async def get(self, key: str):  # noqa: ANN201
+        v = self.store.get(key)
+        return None if v is None else str(v)
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# DryRunContext builder over fakes (no network, no real LLM)
+# ---------------------------------------------------------------------------
+
+
+def _risk_config() -> RiskConfig:
+    return RiskConfig(
+        position_limits=PositionLimitsConfig(),
+        stop_loss=StopLossConfig(),
+        circuit_breaker=CircuitBreakerConfig(),
+        universe=UniverseConfig(),
+    )
+
+
+async def _make_ctx(
+    *,
+    frame: MarketDataSnapshot,
+    router: _StubRouter,
+    tmp_path: Path,
+    held_positions: tuple[Any, ...] = (),
+    market_meta: Any = None,
+) -> harness.DryRunContext:
+    """Assemble a DryRunContext with fakes (the offline analogue of
+    :func:`harness.build_real_context`)."""
+    collector = harness.DryRunCollector()
+    coordinator, executor, dispatcher = harness._build_coordinator(collector)
+    policy = load_policy(Path(_POLICY))
+    line1, line2_daily, line2_intraday, snapshot_store = harness._build_runners(
+        coordinator=coordinator,
+        exclusion_rules=ExclusionRules(),
+        risk_yaml=_RISK_YAML,
+        selector_yaml=_SELECTOR_YAML,
+        redis_client=_FakeRedis(),
+    )
+
+    broker = MockBroker(config=BrokerConfig(initial_capital=harness._INITIAL_CAPITAL))
+    if held_positions:
+        await broker.seed_from_recovery(
+            cash=harness._INITIAL_CAPITAL,
+            frozen_cash=0.0,
+            initial_capital=harness._INITIAL_CAPITAL,
+            positions=held_positions,
+        )
+
+    risk_config = _risk_config()
+    return harness.DryRunContext(
+        collector=collector,
+        executor=executor,
+        dispatcher=dispatcher,
+        line1_runner=line1,
+        line2_daily_runner=line2_daily,
+        line2_intraday_runner=line2_intraday,
+        broker=broker,
+        risk_engine=RiskEngine(risk_config),
+        risk_config=risk_config,
+        circuit_breaker=CircuitBreaker(CircuitBreakerConfig()),
+        watchlist_policy=policy,
+        llm_router=router,
+        frame=frame,
+        index_closes=(),  # NEUTRAL — no bear-regime ADD ban (prereq 4 fallback)
+        market_meta=market_meta,
+        market_data=None,  # offline → empty spots (no intraday triggers)
+        data_quality_provider=None,  # clean fallback (prereq 1)
+        snapshot_store=snapshot_store,
+        run_trade_date="20260515",
+        frame_trade_date=frame.trade_date,
+        token_fingerprint="abcd1234",
+        llm_models=("qwen-stub",),
+        redis_client=None,
+    )
+
+
+def _held_etf() -> tuple[Any, ...]:
+    """A held crashing ETF position to exercise the Line-2 daily SELL scan."""
+    return (
+        SimpleNamespace(
+            code="510300", volume=300, today_bought_volume=0, cost_price=4.55
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _zero_spend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep the debate budget reservation under the ¥20 cap with a fake redis,
+    and redirect every scratch path the harness writes into ``tmp_path`` so the
+    test never touches the repo's ``data/`` tree."""
+
+    async def _spent(_redis, *, today=None):  # noqa: ANN001, ANN202
+        return 0.0
+
+    monkeypatch.setattr(cost_guard, "get_daily_spent", _spent)
+    monkeypatch.setenv(
+        "QUANTMIND_DRYRUN_SNAPSHOT_ROOT", str(tmp_path / "line2_snapshots")
+    )
+    monkeypatch.setenv(
+        "QUANTMIND_DRYRUN_MANIFEST_ROOT", str(tmp_path / "intraday_manifests")
+    )
+    monkeypatch.setenv(
+        "QUANTMIND_DRYRUN_AUDIT_JSONL", str(tmp_path / "audit.jsonl")
+    )
+
+
+# ---------------------------------------------------------------------------
+# (a) render-only — executor + dispatcher NEVER called
+# ---------------------------------------------------------------------------
+
+
+async def test_dry_run_render_only_no_executor_no_dispatcher(tmp_path) -> None:
+    router = _StubRouter(action="买入")
+    ctx = await _make_ctx(
+        frame=_buy_frame(), router=router, tmp_path=tmp_path,
+        held_positions=_held_etf(),
+    )
+    out_path = tmp_path / "artifact.json"
+    outcome = await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=out_path
+    )
+
+    # The DRY_RUN coordinator renders to the sink and touches NOTHING else.
+    assert ctx.executor.calls == 0, "DRY_RUN must never call the SimulationExecutor"
+    assert ctx.dispatcher.calls == 0, "DRY_RUN must never call the Dispatcher"
+    # At least the Line-1 BUY rendered.
+    assert outcome.line1_rendered >= 1
+    assert outcome.ok is True
+
+
+async def test_dry_run_zero_broker_mutation(tmp_path) -> None:
+    """The MockBroker mirror is untouched by render-only routing."""
+    router = _StubRouter(action="买入")
+    ctx = await _make_ctx(
+        frame=_buy_frame(), router=router, tmp_path=tmp_path,
+        held_positions=_held_etf(),
+    )
+    account_before = await ctx.broker.get_account()
+    positions_before = await ctx.broker.get_positions()
+    await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=tmp_path / "a.json"
+    )
+    account_after = await ctx.broker.get_account()
+    positions_after = await ctx.broker.get_positions()
+    assert account_after.available_cash == account_before.available_cash
+    assert account_after.total_assets == account_before.total_assets
+    assert {p.code for p in positions_after} == {p.code for p in positions_before}
+
+
+# ---------------------------------------------------------------------------
+# (b) artifact JSON written with rendered wire texts + flags
+# ---------------------------------------------------------------------------
+
+
+async def test_artifact_written_with_flags_and_wire_texts(tmp_path) -> None:
+    router = _StubRouter(action="买入")
+    ctx = await _make_ctx(
+        frame=_buy_frame(), router=router, tmp_path=tmp_path,
+        held_positions=_held_etf(),
+    )
+    out_path = tmp_path / "20260515_double_line.json"
+    await harness.run_dry_run(ctx, start_date=_trading_start(), out_path=out_path)
+
+    assert out_path.exists()
+    data = json.loads(out_path.read_text("utf-8"))
+    assert data["real_sends"] == 0
+    assert data["real_broker_mutations"] == 0
+    assert data["pass"] is False
+    assert data["owner_reviewed"] is False
+    assert data["noop_executor_calls"] == 0
+    assert data["noop_dispatcher_calls"] == 0
+    # Provenance: the frame's checksum + snapshot id are recorded for replay.
+    prov = data["run_metadata"]["frame_provenance"]
+    assert prov["raw_payload_sha256"] == ctx.frame.raw_payload_sha256
+    assert prov["trade_date"] == "20260514"
+    # The token fingerprint is recorded, NEVER the token.
+    assert data["run_metadata"]["tushare_token_fingerprint"] == "abcd1234"
+    # The actual rendered Feishu wire texts are present for owner review.
+    assert data["rendered_count"] >= 1
+    buy_texts = [s for s in data["rendered_signals"] if s["side"] == "BUY"]
+    assert buy_texts, "the BUY wire text the owner reads must be in the artifact"
+    assert "买入信号" in buy_texts[0]["wire_text"]
+
+
+# ---------------------------------------------------------------------------
+# (c) both lines exercised
+# ---------------------------------------------------------------------------
+
+
+async def test_both_lines_exercised(tmp_path) -> None:
+    router = _StubRouter(action="买入")
+    # The crashing ETF's last bar = prev_bar * 0.96; supply the pre-crash bar as
+    # prev_close so the -4% move reads as oversold (not limit-down) and the SELL
+    # 14-check (limit_up_down_block) passes.
+    crash = _crash()
+    ctx = await _make_ctx(
+        frame=_buy_frame(), router=router, tmp_path=tmp_path,
+        held_positions=_held_etf(),
+        market_meta=_FakeMarketMeta({"510300": crash[-2]}),
+    )
+    await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=tmp_path / "a.json"
+    )
+    # Line-1 ran (its result recorded) AND Line-2 daily ran over the held ETF.
+    assert ctx.line1_results, "Line-1 was not exercised"
+    assert ctx.line2_daily_results, "Line-2 daily was not exercised"
+    # The held crashing ETF produced an adverse-anomaly SELL render.
+    sides = {s.side for s in ctx.collector.signals}
+    assert "BUY" in sides
+    assert "SELL" in sides, "Line-2 daily SELL render expected on the crashing ETF"
+
+
+# ---------------------------------------------------------------------------
+# (d) HOLD / empty-universe path does not crash
+# ---------------------------------------------------------------------------
+
+
+async def test_empty_universe_does_not_crash(tmp_path) -> None:
+    # Empty screen (only an ST name) → Line-1 EMPTY_UNIVERSE, no debate, no BUY.
+    router = _StubRouter(action="买入")
+    ctx = await _make_ctx(frame=_empty_frame(), router=router, tmp_path=tmp_path)
+    out_path = tmp_path / "a.json"
+    outcome = await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=out_path
+    )
+    # 0 BUY rendered is flagged (the owner must investigate), but it MUST NOT
+    # crash and MUST still write the artifact.
+    assert out_path.exists()
+    assert outcome.line1_rendered == 0
+    assert outcome.ok is False  # 0 BUY when a BUY was expected → flagged
+    assert any("0 BUY" in e for e in outcome.errors)
+    assert router.calls == 0  # no debate spun up — no LLM spend on empty screen
+
+
+async def test_hold_recommendation_not_routed(tmp_path) -> None:
+    # fund_manager proposes HOLD → never routes/renders (CLAUDE.md §2.7).
+    router = _StubRouter(action="持有")
+    ctx = await _make_ctx(frame=_buy_frame(), router=router, tmp_path=tmp_path)
+    out_path = tmp_path / "a.json"
+    outcome = await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=out_path
+    )
+    assert out_path.exists()
+    # HOLD is not a routed BUY → 0 line1 rendered (flagged, not crashed).
+    assert outcome.line1_rendered == 0
+    assert ctx.executor.calls == 0 and ctx.dispatcher.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# collector pairing + count helpers (unit)
+# ---------------------------------------------------------------------------
+
+
+def test_collector_pairs_text_with_label() -> None:
+    c = harness.DryRunCollector()
+    c("【QuantMind 买入信号 · 合规】\nQM-20260515-100001-600000-BUY-001")
+    c.label(
+        "QM-20260515-100001-600000-BUY-001", line="line1", side="BUY", code="600000"
+    )
+    sigs = c.signals
+    assert len(sigs) == 1
+    assert sigs[0].line == "line1"
+    assert sigs[0].side == "BUY"
+    assert sigs[0].code == "600000"
+
+
+def test_collector_unlabelled_text_is_captured_not_lost() -> None:
+    c = harness.DryRunCollector()
+    c("some rendered text without a registered id")
+    sigs = c.signals
+    assert len(sigs) == 1
+    assert sigs[0].line == "unknown"  # captured, not silently dropped
+
+
+def test_count_by_tallies() -> None:
+    from scripts.dry_run_artifact import count_by
+
+    assert count_by(["routed", "routed", "rejected"]) == {
+        "routed": 2,
+        "rejected": 1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI argument plumbing (no run)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_out_default_path() -> None:
+    p = harness._resolve_out(None, "20260515")
+    assert p == Path("data/dry_run/20260515_double_line.json")
+
+
+def test_resolve_out_explicit() -> None:
+    p = harness._resolve_out("/tmp/custom.json", "20260515")
+    assert p == Path("/tmp/custom.json")
+
+
+def test_resolve_start_invalid_raises() -> None:
+    with pytest.raises(SystemExit):
+        harness._resolve_start("not-a-date")
+
+
+async def test_build_real_context_wires_redis_router_and_date(monkeypatch) -> None:
+    """Codex U-D3 fixes (offline, fakes — no network/LLM):
+
+    P1 — the live redis is threaded into the Line-1 runner (its debate reserves
+    budget on it) AND the LLM router is ``initialize()``d with it before use.
+    P2 — a weekend ``--start`` rolls FORWARD to the next trading day so the
+    artifact's run_trade_date matches what ``run_simulation`` actually walks.
+    """
+    sentinel_redis = object()
+    init_calls: list[Any] = []
+    frame = _buy_frame()
+
+    class _FakeRouter:
+        def __init__(self, *, config_path: str) -> None:
+            self.config_path = config_path
+
+        async def initialize(self, redis_client: Any = None) -> None:
+            init_calls.append(redis_client)
+
+    async def _fake_frame(*, as_of, signal_id):  # noqa: ANN001, ANN202
+        return frame, frame.trade_date, "fp123456"
+
+    async def _fake_index(*, end):  # noqa: ANN001, ANN202
+        return ()
+
+    async def _fake_data_layer():  # noqa: ANN202
+        return None, None, None
+
+    monkeypatch.setattr(harness, "assemble_real_frame", _fake_frame)
+    monkeypatch.setattr(harness, "pull_index_closes", _fake_index)
+    monkeypatch.setattr(harness, "build_data_layer", _fake_data_layer)
+    monkeypatch.setattr(harness, "build_redis_or_none", lambda: sentinel_redis)
+    monkeypatch.setattr("backend.llm.router.LLMRouter", _FakeRouter)
+
+    weekend = __import__("datetime").date(2026, 5, 16)  # Saturday
+    ctx = await harness.build_real_context(start_date=weekend)
+
+    # P1 — redis threaded into the runner + router initialized with it.
+    assert ctx.redis_client is sentinel_redis
+    assert ctx.line1_runner._redis is sentinel_redis
+    assert init_calls == [sentinel_redis]
+    # P2 — weekend rolled FORWARD to the next trading day (matches run_simulation).
+    expected = harness.next_trading_day(weekend)
+    assert ctx.run_trade_date == expected.strftime("%Y%m%d")
+
+
+# ---------------------------------------------------------------------------
+# REAL-network / REAL-LLM paths — owner's run, default-skip in CI
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="real Tushare + real qwen — owner-driven, not CI")
+async def test_real_build_context_smoke() -> None:  # pragma: no cover
+    import datetime as dt
+
+    ctx = await harness.build_real_context(start_date=dt.date(2026, 5, 25))
+    assert ctx.frame is not None
+    assert ctx.token_fingerprint  # fingerprint, not the token
+
+
+@pytest.mark.skip(reason="real Tushare + real qwen — owner-driven, not CI")
+def test_real_cli_main() -> None:  # pragma: no cover
+    assert harness.main(["--start", "2026-05-25", "--json"]) in (0, 1)
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _trading_start():  # noqa: ANN202
+    """A known trading day for the pinned-clock harness (2026-05-15, Friday)."""
+    import datetime as dt
+
+    return dt.date(2026, 5, 15)
