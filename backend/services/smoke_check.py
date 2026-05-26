@@ -1,9 +1,9 @@
 """J-002 — Cold-start smoke check helpers.
 
-The 18 app.state slots that ``backend.main._init_orchestration_layer``
+The app.state slots that ``backend.main._init_orchestration_layer``
 populates are the post-boot contract: each must be non-None for the
 backend to operate. :data:`ORCHESTRATION_REQUIRED_SLOTS` is the locked
-tuple consumed by:
+tuple (23: 18 I-001 + 4 U-D1 Line-2 + 1 U-D1b Line-1) consumed by:
 
 * ``scripts/smoke_test_cold_start.py`` — the cold-start verification.
 * ``tests/test_phase_i_001_orchestration.py`` — the I-001 must_have list.
@@ -46,17 +46,21 @@ ORCHESTRATION_REQUIRED_SLOTS: tuple[str, ...] = (
     # U-D1 — Line-2 production orchestration (deterministic SELL/ADD lines).
     # The single mutually-exclusive routing edge + the two Line-2 runners must
     # be wired so the BrokerScheduler cron callbacks have something to invoke.
-    # (Line-1 runner is wired in U-D1b alongside its 4-agent debate provider.)
     "instruction_dispatcher",
     "route_coordinator",
     "line2_daily_runner",
     "line2_intraday_runner",
+    # U-D1b — Line-1 production runner (4-agent debate BUY line). Shares the
+    # builder + RouteCoordinator with the Line-2 runners; its 09:35 cron
+    # callback runs the screen → budget → select → debate → assemble → route
+    # chain on the same T-1 EOD frame seam.
+    "line1_runner",
 )
-"""The 22 ``_init_orchestration_layer`` slots that must be non-None
+"""The 23 ``_init_orchestration_layer`` slots that must be non-None
 after lifespan startup (18 I-001 slots + 4 U-D1 Line-2 orchestration
-slots). Order is the documented enumeration order inside
-``backend.main`` so a quick visual scan against the source catches
-drops."""
+slots + 1 U-D1b Line-1 runner slot). Order is the documented enumeration
+order inside ``backend.main`` so a quick visual scan against the source
+catches drops."""
 
 
 LIFESPAN_BASE_SLOTS: tuple[str, ...] = (

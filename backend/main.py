@@ -265,23 +265,27 @@ async def _init_line2_runners(
 ) -> tuple[
     Callable[[datetime], Awaitable[None]],
     Callable[[datetime], Awaitable[None]],
+    Callable[[datetime], Awaitable[None]],
 ]:
-    """U-D1 — construct the Line-2 daily + 30s intraday production runners.
+    """U-D1 / U-D1b — construct the double-line production runners.
 
-    Builds the import-isolated runners + their single mutually-exclusive
-    :class:`RouteCoordinator`, attaches them to ``app.state`` (cold-start smoke
-    slots), and returns the two scheduler cron callbacks. The heavy per-code
+    Builds the import-isolated runners (Line-2 daily + 30s intraday SELL/ADD,
+    U-D1; Line-1 4-agent debate BUY selection, U-D1b) + their single
+    mutually-exclusive :class:`RouteCoordinator`, attaches them to ``app.state``
+    (cold-start smoke slots), and returns the three scheduler cron callbacks
+    (line2_daily, line2_intraday, line1). The heavy per-code/per-lead
     risk/broker context is supplied by the production providers in
-    ``backend.services.line2_context_providers``.
+    ``backend.services.line2_context_providers`` / ``line1_context_provider``.
+    All three runners share one ``builder`` + one ``RouteCoordinator`` so the
+    single construction point + the mode-switch / freeze gates stay identical
+    across both lines.
 
     The callbacks read live state from ``app.state`` lazily at cron-fire time
-    (so the analysis-layer ``watchlist_policy``, wired *after* this function,
-    is present by then) and degrade to a clean skip until the T-1 EOD frame
-    source is wired (real Tushare frame = U-D3) — so simulation_auto boots with
-    the loop structurally complete, not hollow.
-
-    Line-1 (the 4-agent debate provider) is deferred to U-D1b; only the
-    deterministic, zero-LLM Line-2 lines are wired here.
+    (so the analysis-layer ``watchlist_policy`` + the lifespan ``llm_router``,
+    wired before/after this function, are present by then) and degrade to a
+    clean skip until the T-1 EOD frame source is wired (real Tushare frame =
+    U-D3) — so simulation_auto boots with the loop structurally complete, not
+    hollow.
     """
     from backend.broker.models import CircuitBreakerConfig
     from backend.integrations.feishu.renderer import MessageRenderer
@@ -389,6 +393,56 @@ async def _init_line2_runners(
     application.state.line2_daily_runner = daily_runner
     application.state.line2_intraday_runner = intraday_runner
     application.state.intraday_trigger_manifest_store = manifest_store
+
+    # U-D1b — Line-1 full-market BUY-selection runner. Shares the builder +
+    # RouteCoordinator above so the single construction point + mode-switch /
+    # freeze gates are identical across both lines. The screen / budget /
+    # selector configs are the runtime-immutable git-versioned files the
+    # screening + selector modules already validate (load failures fail loud at
+    # boot — they are as essential as risk.yaml).
+    from backend.budget_policy.policy import (
+        BudgetTierPolicy,
+        load_budget_tier_config,
+    )
+    from backend.candidate_selector.selector import (
+        CandidateSelector,
+        load_selector_config,
+    )
+    from backend.orchestration.line1_runner import Line1Runner
+    from backend.screening.screener import Screener
+    from backend.services.line1_context_provider import (
+        Line1ContextProvider,
+        build_line1_run_state,
+    )
+    from backend.services.universe_policy import ExclusionRules, load_policy
+
+    risk_yaml = os.environ.get("QUANTMIND_RISK_CONFIG_PATH", "config/risk.yaml")
+    selector_yaml = os.environ.get(
+        "QUANTMIND_SELECTOR_CONFIG_PATH", "config/candidate_weights/v1.yaml"
+    )
+    policy_path = os.environ.get(
+        "QUANTMIND_UNIVERSE_POLICY_PATH", "config/universe_policy.yaml"
+    )
+    # The screener exclusion is the LAST-line defense (real exclusion is in the
+    # screen per P0-9-amendment); ExclusionRules() defaults == the locked P0-9
+    # values, so a missing policy file degrades to the locked rules rather than
+    # aborting the daily BUY line.
+    try:
+        exclusion_rules = load_policy(policy_path).exclusion_rules
+    except Exception as exc:  # noqa: BLE001 — defaults are the locked values
+        log.warning("line1_exclusion_rules_fallback", error=str(exc))
+        exclusion_rules = ExclusionRules()
+    line1_runner = Line1Runner(
+        screener=Screener(exclusion_rules),
+        budget_policy=BudgetTierPolicy(load_budget_tier_config(risk_yaml)),
+        selector=CandidateSelector(load_selector_config(selector_yaml)),
+        builder=builder,
+        renderer=renderer,
+        coordinator=coordinator,
+        ledger=ledger,
+        redis_client=getattr(application.state, "redis", None),
+    )
+    application.state.line1_runner = line1_runner
 
     def _risk_engine_or_none() -> RiskEngine | None:
         cfg = getattr(application.state, "risk_config", None)
@@ -537,8 +591,55 @@ async def _init_line2_runners(
         )
         await intraday_runner.run(provider=provider, now=now)
 
-    log.info("line2_runners_initialized", route_mode=route_mode.value)
-    return _line2_daily_callback, _line2_intraday_callback
+    async def _line1_daily_callback(now: datetime) -> None:
+        # Line-1 reads the SAME T-1 EOD frame seam as Line-2 daily; skip
+        # cleanly until U-D3 wires the real Tushare frame (fail-open, not
+        # hollow — no frame means no BUY routed, so zero exposure in baseline).
+        frame = getattr(application.state, "line2_daily_frame", None)
+        if frame is None:
+            log.info("line1_daily_skipped_no_frame")
+            return
+        risk_engine = _risk_engine_or_none()
+        risk_config = getattr(application.state, "risk_config", None)
+        policy = getattr(application.state, "watchlist_policy", None)
+        llm_router = getattr(application.state, "llm_router", None)
+        if (
+            risk_engine is None
+            or risk_config is None
+            or policy is None
+            or llm_router is None
+        ):
+            log.info(
+                "line1_daily_skipped_missing_config",
+                has_risk=risk_engine is not None,
+                has_risk_config=risk_config is not None,
+                has_policy=policy is not None,
+                has_llm=llm_router is not None,
+            )
+            return
+        open_tickets = await _open_tickets_or_skip()
+        if open_tickets is None:
+            return
+        run_state = await build_line1_run_state(
+            broker=broker,
+            risk_engine=risk_engine,
+            circuit_breaker=_circuit_breaker(),
+            watchlist_policy=policy,
+            risk_config=risk_config,
+            now=now,
+            open_tickets=open_tickets,
+            # Real today_instruction_count (broker_events) wired in U-D3.
+        )
+        provider = Line1ContextProvider(
+            run_state=run_state,
+            frame=frame,
+            llm_router=llm_router,
+            now=now,
+        )
+        await line1_runner.run(frame=frame, provider=provider, now=now)
+
+    log.info("double_line_runners_initialized", route_mode=route_mode.value)
+    return _line2_daily_callback, _line2_intraday_callback, _line1_daily_callback
 
 
 async def _init_orchestration_layer(application: FastAPI) -> None:
@@ -983,10 +1084,12 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # — the helper below resolves the gate object once.
     from backend.broker.scheduler import BrokerScheduler
 
-    # U-D1 — build the Line-2 production runners + their RouteCoordinator and
-    # get the two cron callbacks before constructing the scheduler. simulation_
-    # executor / ledger_service / market_meta are all live by now.
-    line2_daily_cb, line2_intraday_cb = await _init_line2_runners(
+    # U-D1 / U-D1b — build the double-line production runners + their shared
+    # RouteCoordinator and get the three cron callbacks before constructing the
+    # scheduler. simulation_executor / ledger_service / market_meta are all live
+    # by now (llm_router / risk_config / watchlist_policy are read lazily in the
+    # Line-1 callback at cron-fire time).
+    line2_daily_cb, line2_intraday_cb, line1_cb = await _init_line2_runners(
         application,
         broker=broker,
         audit_store=audit_store,
@@ -1013,6 +1116,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         acceptance_callback=_acceptance_callback,
         line2_daily_runner_callback=line2_daily_cb,
         line2_intraday_runner_callback=line2_intraday_cb,
+        line1_runner_callback=line1_cb,
         # U-A2 / U-D1 — align the scheduler's NAV fallback to the ¥100k
         # 同花顺模拟盘 the broker config loads (recovery still wins when a
         # snapshot exists).

@@ -1,10 +1,11 @@
 """BrokerScheduler — EOD pipeline + intraday MTM + post-close + evolution.
 
 E-005 / P1-2.A / P1-2.B / X-005 owns the dedicated APScheduler that
-drives the broker lifecycle outside of intraday order routing. Five
-cron jobs land at launch; the fifth (``evolution_shadow_run``) is
-gated by the Phase X self-evolution chain (P2-2 §1.5) and runs as a
-no-op when no callback is wired.
+drives the broker lifecycle outside of intraday order routing. Eight
+cron jobs land at launch (the original five + the U-D1 Line-2 daily +
+intraday runners + the U-D1b Line-1 runner); ``evolution_shadow_run``
+is gated by the Phase X self-evolution chain (P2-2 §1.5) and the three
+double-line runners are no-ops until ``main.py`` wires their callbacks.
 
 Cron jobs (Asia/Shanghai):
 
@@ -29,6 +30,11 @@ Cron jobs (Asia/Shanghai):
   intraday trigger tick (U-D1). The job pre-gates on trading hours and the
   runner self-gates (U-C3 invariants 4+5) as the authoritative check; a
   no-op when no callback is wired.
+* ``line1_runner`` — 09:35 mon-fri Line-1 full-market BUY-selection run over
+  the T-1 EOD frame (U-D1b). Same 09:35 slot as ``line2_daily_runner`` so the
+  RiskEngine trading-hours gate passes for every routed BUY (a pre-open 09:00
+  run would reject each BUY as outside trading hours). Holiday-gated; a no-op
+  when no callback is wired.
 * ``evolution_shadow_run`` — 22:00 mon-fri Phase X self-evolution
   shadow validate (P2-2 §1.5 + P1-2.A amendment 2026-05-11). One
   retry on failure; emits ``SHADOW_EVOLUTION_RUN_COMPLETED`` audit
@@ -235,6 +241,14 @@ class BrokerScheduler:
     (U-D1 / U-C3). Trading-hours gating is applied inside the job to keep the
     trigger config plain; the runner re-checks as the authoritative gate."""
 
+    LINE1_DAILY_CRON = "0 35 9 * * mon-fri"
+    """09:35 weekday — Line-1 full-market BUY-selection run over the T-1 EOD
+    frame (U-D1b). Shares the 09:35 slot with ``line2_daily_runner``: it runs
+    just after the 09:30 open (inside trading hours) so the RiskEngine 14-check
+    #7 trading-hours gate passes for every routed BUY — a pre-open 09:00 run
+    would reject each BUY as "outside trading hours". Holiday-gated inside the
+    job."""
+
     EVOLUTION_SHADOW_RUN_CRON = "0 22 * * mon-fri"
     """22:00 mon-fri — Phase X self-evolution shadow validate
     (P1-2.A amendment 2026-05-11 + P2-2 §1.5). One retry on failure;
@@ -265,6 +279,9 @@ class BrokerScheduler:
         line2_intraday_runner_callback: Callable[
             [datetime], Awaitable[None]
         ] | None = None,
+        line1_runner_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
         now_func: Callable[[], datetime] | None = None,
         initial_capital: float = 100_000.0,
     ) -> None:
@@ -289,6 +306,7 @@ class BrokerScheduler:
         self._evolution_shadow_run = evolution_shadow_run_callback
         self._line2_daily = line2_daily_runner_callback
         self._line2_intraday = line2_intraday_runner_callback
+        self._line1 = line1_runner_callback
         self._now = now_func or (lambda: datetime.now(tz=SHANGHAI))
         self._initial_capital = initial_capital
         self._scheduler: AsyncIOScheduler | None = None
@@ -381,6 +399,18 @@ class BrokerScheduler:
             id="line2_intraday_runner",
             replace_existing=True,
         )
+        # U-D1b — Line-1 production runner. Same always-register / no-op-when-
+        # unwired pattern as the Line-2 crons so a deploy without the
+        # orchestration layer still boots cleanly.
+        self._scheduler.add_job(
+            self._line1_daily_job,
+            trigger=CronTrigger.from_crontab(
+                "35 9 * * mon-fri", timezone="Asia/Shanghai"
+            ),
+            id="line1_runner",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
         self._scheduler.start()
         await self._audit.write(
             event_type=AuditEventType.BROKERSCHEDULER_STARTED,
@@ -389,7 +419,7 @@ class BrokerScheduler:
             payload={"jobs": ["eod_pipeline", "intraday_mtm",
                               "mirofish_postclose", "advance_day",
                               "line2_daily_runner", "line2_intraday_runner",
-                              "evolution_shadow_run"]},
+                              "line1_runner", "evolution_shadow_run"]},
             outcome=AuditOutcome.SUCCESS,
         )
         log.info("broker_scheduler_started")
@@ -489,6 +519,28 @@ class BrokerScheduler:
             await self._line2_daily(now)
         except Exception as exc:  # noqa: BLE001 — log + continue
             log.warning("line2_daily_failed", error=str(exc))
+
+    async def _line1_daily_job(self) -> None:
+        """09:35 cron — Line-1 full-market BUY-selection run (U-D1b).
+
+        Holiday-gated (mirrors :meth:`_line2_daily_job`): a weekday exchange
+        holiday skips the run. A ``None`` callback (main.py has not wired the
+        orchestration layer yet) is a clean no-op.
+        """
+        if self._line1 is None:
+            return
+        now = self._now()
+        trade_date = now.astimezone(SHANGHAI).date()
+        if not is_trading_day(trade_date):
+            log.info(
+                "line1_daily_skipped_non_trading_day",
+                date=trade_date.isoformat(),
+            )
+            return
+        try:
+            await self._line1(now)
+        except Exception as exc:  # noqa: BLE001 — log + continue
+            log.warning("line1_daily_failed", error=str(exc))
 
     async def _line2_intraday_job(self) -> None:
         """30s cron — Line-2 deterministic intraday trigger tick (U-D1).

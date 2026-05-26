@@ -834,7 +834,7 @@ async def test_orchestration_layer_attaches_components(
     await _init_orchestration_layer(app)
 
     # Each slot below must be populated; the test fails noisily if any
-    # of the 18 I-001 + 4 U-D1 Line-2 components were dropped.
+    # of the 18 I-001 + 4 U-D1 Line-2 + 1 U-D1b Line-1 components were dropped.
     must_have = [
         "broker_event_store",
         "broker_snapshot_store",
@@ -859,6 +859,8 @@ async def test_orchestration_layer_attaches_components(
         "route_coordinator",
         "line2_daily_runner",
         "line2_intraday_runner",
+        # U-D1b Line-1 runner slot (4-agent debate BUY line).
+        "line1_runner",
     ]
     for name in must_have:
         assert getattr(app.state, name, None) is not None, (
