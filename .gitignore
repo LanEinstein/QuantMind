@@ -33,6 +33,10 @@ data/processed/
 # U-D1 — Line-2 intraday runtime stores (PIT snapshots + trigger manifests).
 data/line2_intraday_snapshots/
 data/intraday_manifests/
+# U-D3/U-D4b — render-only dry-run output (frame store + artifacts); generated
+# runtime state, never committed (committing stale frames would make future
+# dry-runs reuse them instead of fetching fresh — Codex U-D4b P2).
+data/dry_run/
 # Phase X — Qwen3-Embedding-0.6B local checkpoint (~600MB, X-006).
 # Downloaded via `hf download Qwen/Qwen3-Embedding-0.6B --local-dir
 # data/models/Qwen3-Embedding-0.6B` outside of git.

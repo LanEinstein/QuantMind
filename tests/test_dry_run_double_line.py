@@ -21,6 +21,7 @@ so the few paths that would need real network/LLM are ``@pytest.mark.skip``
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from backend.broker.mock_broker import MockBroker
@@ -39,12 +41,15 @@ from backend.broker.models import (
     StopLossConfig,
     UniverseConfig,
 )
+from backend.data.trading_calendar import next_trading_day, prev_trading_day
 from backend.marketdata_snapshot import MarketDataSnapshot
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.engine import RiskEngine
 from backend.services import cost_guard
 from backend.services.universe_policy import ExclusionRules, load_policy
+from backend.utils.trading_hours import SHANGHAI
 from scripts import dry_run_double_line as harness
+from scripts import dry_run_realdata as realdata
 
 _HEADER = "ts_code,name,listed_trading_days,closes,amounts"
 _RISK_YAML = "config/risk.yaml"
@@ -547,6 +552,176 @@ def test_real_cli_main() -> None:  # pragma: no cover
 
 def _trading_start():  # noqa: ANN202
     """A known trading day for the pinned-clock harness (2026-05-15, Friday)."""
-    import datetime as dt
-
     return dt.date(2026, 5, 15)
+
+
+# ---------------------------------------------------------------------------
+# U-D4b regression — dry-run snapshot_at inversion (wall-clock fetch_time)
+#
+# The owner-driven real run (#43) crashed every InstructionPlan with
+# ``data_snapshot.snapshot_at must be strictly before created_at``
+# (instruction.py:230). Root cause: the dry-run REPLAYS a past run day, but
+# the real assembler stamped ``fetch_time_utc = datetime.now(UTC)`` (tonight's
+# wall clock), while ``run_simulation`` drives ``created_at`` from the replayed
+# run-day 09:30 — so snapshot_at (tonight) >= created_at (the past 09:30). The
+# fix anchors the dry-run frame's ``fetch_time_utc`` to the T-1 EOD logical
+# close (``as_of`` 15:00 CST → UTC) via an injected clock, strictly before the
+# replayed created_at. ``frame.fetch_time_utc`` is the SINGLE source both lines
+# read (Line-1 via line1_context_provider DataSnapshot.snapshot_at; Line-2
+# daily via ``Line2DailyProvider(snapshot_at=frame.fetch_time_utc)``), so this
+# one anchor fixes both lines.
+# ---------------------------------------------------------------------------
+
+
+# (ts_code, name, list_date, close, amount_qianyuan) — old, liquid, scorable.
+_REG_SPEC = [
+    ("600000.SH", "浦发银行", "20100101", 10.0, 300_000.0),
+    ("000001.SZ", "平安银行", "20100101", 12.0, 400_000.0),
+]
+
+
+class _FakeTushareClient:
+    """In-memory FrameDataSource with the bits ``assemble_real_frame`` reads.
+
+    Accepts ``token=`` like the real client and exposes ``token_fingerprint``
+    (a fingerprint, NEVER the token); ``daily``/``daily_basic`` return a fixed
+    frame for any trade_date, ``stock_basic`` the roster — no network.
+    """
+
+    def __init__(self, *, token: str | None = None) -> None:  # noqa: ARG002
+        self.token_fingerprint = "feedf00d"
+
+    async def daily(self, trade_date: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "ts_code": [s[0] for s in _REG_SPEC],
+                "trade_date": [trade_date] * len(_REG_SPEC),
+                "close": [s[3] for s in _REG_SPEC],
+                "amount": [s[4] for s in _REG_SPEC],
+            }
+        )
+
+    async def daily_basic(self, trade_date: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "ts_code": [s[0] for s in _REG_SPEC],
+                "trade_date": [trade_date] * len(_REG_SPEC),
+                "close": [s[3] for s in _REG_SPEC],
+                "pe": [15.0] * len(_REG_SPEC),
+            }
+        )
+
+    async def stock_basic(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "ts_code": [s[0] for s in _REG_SPEC],
+                "name": [s[1] for s in _REG_SPEC],
+                "list_date": [s[2] for s in _REG_SPEC],
+            }
+        )
+
+
+def test_t_minus_1_eod_utc_anchors_to_tminus1_close() -> None:
+    """The helper returns the ``as_of`` 15:00 CST close as a tz-aware UTC time."""
+    as_of = prev_trading_day(dt.date(2026, 5, 18))  # T-1 trading day
+    anchored = realdata.t_minus_1_eod_utc(as_of)
+
+    assert anchored.tzinfo is not None, "fetch_time_utc must be tz-aware (UTC)"
+    expected = datetime(
+        as_of.year, as_of.month, as_of.day, 15, 0, tzinfo=SHANGHAI
+    ).astimezone(UTC)
+    assert anchored == expected
+    # A-share close 15:00 CST == 07:00 UTC.
+    assert anchored.hour == 7 and anchored.minute == 0
+
+
+def test_t_minus_1_eod_utc_strictly_before_replayed_created_at() -> None:
+    """The anchor is strictly before the replayed run-day 09:30 created_at.
+
+    This is the exact ``instruction.py:230`` invariant
+    (``snapshot_at < created_at``) that crashed the real run, asserted for the
+    snapshot_at BOTH lines feed into their InstructionPlan/SELL plans.
+    """
+    as_of = prev_trading_day(dt.date(2026, 5, 18))  # T-1
+    run_day = next_trading_day(as_of)  # the replayed run day (T)
+    created_at = datetime(
+        run_day.year, run_day.month, run_day.day, 9, 30, tzinfo=SHANGHAI
+    )
+    snapshot_at = realdata.t_minus_1_eod_utc(as_of)
+
+    # >= would raise the InstructionPlan ValueError; assert strictly-before.
+    assert snapshot_at < created_at
+
+
+async def test_assemble_real_frame_stamps_tminus1_eod_not_wallclock(
+    tmp_path, monkeypatch
+) -> None:
+    """``assemble_real_frame`` stamps the frame at T-1 EOD, not wall clock.
+
+    Exercises the REAL ``Line1FrameAssembler`` + ``SnapshotStore`` end-to-end
+    with only the network client faked, proving the injected clock reaches the
+    derived frame snapshot the harness threads into BOTH lines.
+    """
+    as_of = prev_trading_day(dt.date(2026, 5, 18))  # T-1
+    run_day = next_trading_day(as_of)
+    created_at = datetime(
+        run_day.year, run_day.month, run_day.day, 9, 30, tzinfo=SHANGHAI
+    )
+
+    monkeypatch.setenv("QUANTMIND_DRYRUN_FRAME_ROOT", str(tmp_path / "frames"))
+    monkeypatch.setenv("TUSHARE_TOKEN", "fake-token-not-used")
+    monkeypatch.setattr(
+        "backend.data.tushare_client.TushareClient", _FakeTushareClient
+    )
+
+    frame, frame_td, token_fp = await realdata.assemble_real_frame(
+        as_of=as_of, signal_id="SIG-ud4b"
+    )
+
+    # The derived frame is stamped at the T-1 EOD close, NOT tonight's wall
+    # clock — so snapshot_at < created_at holds (no InstructionPlan crash).
+    assert frame.fetch_time_utc == realdata.t_minus_1_eod_utc(as_of)
+    assert frame.fetch_time_utc < created_at
+    assert frame_td == as_of.strftime("%Y%m%d")
+    assert token_fp == "feedf00d"  # fingerprint surfaced, never the token
+
+
+async def test_assemble_real_frame_uses_fresh_store_when_root_unset(
+    tmp_path, monkeypatch
+) -> None:
+    """With ``QUANTMIND_DRYRUN_FRAME_ROOT`` unset, the dry-run uses a FRESH store.
+
+    Codex U-D4b P1: the persistent ``data/dry_run/frames`` store would REUSE a
+    pre-fix derived frame stamped with wall-clock time verbatim (fetch_time is
+    not a reuse key), so the corrected clock would not take effect. The default
+    must therefore be a fresh ephemeral store, never the persistent path.
+    """
+    monkeypatch.delenv("QUANTMIND_DRYRUN_FRAME_ROOT", raising=False)
+    monkeypatch.setenv("TUSHARE_TOKEN", "fake-token-not-used")
+    monkeypatch.setattr(
+        "backend.data.tushare_client.TushareClient", _FakeTushareClient
+    )
+
+    captured_roots: list[str] = []
+    real_store_cls = realdata.SnapshotStore
+
+    def _spy_store(*, root):  # noqa: ANN001, ANN202
+        captured_roots.append(str(root))
+        return real_store_cls(root=root)
+
+    monkeypatch.setattr(realdata, "SnapshotStore", _spy_store)
+    monkeypatch.setattr(
+        realdata.tempfile, "mkdtemp", lambda **_: str(tmp_path / "fresh")
+    )
+
+    as_of = prev_trading_day(dt.date(2026, 5, 18))
+    frame, _, _ = await realdata.assemble_real_frame(
+        as_of=as_of, signal_id="SIG-ud4b-fresh"
+    )
+
+    # A fresh ephemeral store was used — NOT the persistent default that may
+    # hold pre-fix stale frames.
+    assert captured_roots == [str(tmp_path / "fresh")]
+    assert "data/dry_run/frames" not in captured_roots[0]
+    # And the frame is still anchored at the T-1 EOD close.
+    assert frame.fetch_time_utc == realdata.t_minus_1_eod_utc(as_of)

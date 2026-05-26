@@ -20,17 +20,66 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from backend.marketdata_snapshot import MarketDataSnapshot, SnapshotStore
+from backend.utils.trading_hours import SHANGHAI
 
 log = structlog.get_logger(component="scripts.dry_run_realdata")
 
 CSI300 = "000300.SH"
 INDEX_HISTORY_DAYS = 60
+
+# A-share afternoon session close (Asia/Shanghai). The dry-run anchors the
+# frame's provenance fetch time to this T-1 EOD moment (see t_minus_1_eod_utc).
+_SESSION_CLOSE = dt.time(15, 0)
+
+
+def t_minus_1_eod_utc(as_of: dt.date) -> dt.datetime:
+    """The T-1 EOD logical fetch time — ``as_of`` 15:00 CST close — as UTC.
+
+    WHY (U-D4b): the dry-run REPLAYS a *past* trading day, driving the plan's
+    ``created_at`` from the replayed run-day 09:30 (``simulate_n_trading_days``).
+    The live assembler default stamps ``fetch_time_utc = datetime.now(UTC)``
+    (tonight's wall clock); under replay that makes snapshot_at (tonight) >=
+    created_at (the past 09:30), which trips the InstructionPlan
+    ``snapshot_at must be strictly before created_at`` invariant
+    (``backend/models/instruction.py``) and crashes *every* plan. Anchoring the
+    dry-run frame to the T-1 close (strictly before the replayed 09:30) restores
+    the invariant.
+
+    SAFE for PIT replay (R0 §3 red line A): ``fetch_time_utc`` is pure
+    provenance — it is NOT part of the snapshot checksum (computed over raw
+    bytes only) nor the replay feature digest, so bit-exact ``replay`` is
+    unaffected. Anchoring it merely makes provenance reflect the moment the data
+    actually pertains to. The injection lives ONLY in this dry-run script layer;
+    production ``Line1FrameAssembler`` keeps its wall-clock default.
+    """
+    return dt.datetime.combine(as_of, _SESSION_CLOSE, tzinfo=SHANGHAI).astimezone(
+        dt.UTC
+    )
+
+
+def _frame_store_root() -> str:
+    """Resolve the frame-store root — a FRESH per-run temp dir by default.
+
+    WHY a fresh store (Codex U-D4b P1): the append-only :class:`SnapshotStore`
+    keys reuse on ``(vendor, endpoint, trade_date)`` + identical bytes/parents —
+    ``fetch_time_utc`` is NOT a reuse key. So the persistent default
+    (``data/dry_run/frames``) would return a *pre-fix* derived frame stamped
+    with wall-clock time verbatim, re-triggering the snapshot_at>=created_at
+    crash even with the corrected clock injected. A fresh empty store forces a
+    re-fetch (Tushare is free, no ceiling) + re-stamp at the T-1 EOD anchor, so
+    the fix always takes effect. Set ``QUANTMIND_DRYRUN_FRAME_ROOT`` to pin a
+    persistent store for cross-run reuse — the caller then owns clearing any
+    stale frames left by a pre-fix run.
+    """
+    root = os.environ.get("QUANTMIND_DRYRUN_FRAME_ROOT")
+    return root or tempfile.mkdtemp(prefix="qm-dryrun-frames-")
 
 
 async def assemble_real_frame(
@@ -45,10 +94,16 @@ async def assemble_real_frame(
     from backend.orchestration.line1_frame import Line1FrameAssembler
 
     client = TushareClient(token=os.environ.get("TUSHARE_TOKEN"))
-    store = SnapshotStore(
-        root=os.environ.get("QUANTMIND_DRYRUN_FRAME_ROOT", "data/dry_run/frames")
+    store = SnapshotStore(root=_frame_store_root())
+    # Inject a T-1 EOD clock so the replayed dry-run's snapshot_at stays
+    # strictly before the replayed run-day created_at (U-D4b). ``as_of`` is the
+    # frame's T-1 trade date; ``fetch_time_utc`` is the single source both lines
+    # read (Line-1 context-provider snapshot_at + Line-2 daily
+    # ``Line2DailyProvider(snapshot_at=frame.fetch_time_utc)``), so one anchor
+    # fixes both lines.
+    assembler = Line1FrameAssembler(
+        client=client, store=store, now_utc=lambda: t_minus_1_eod_utc(as_of)
     )
-    assembler = Line1FrameAssembler(client=client, store=store)
     result = await assembler.assemble(as_of_date=as_of, signal_id=signal_id)
     snap = result.frame_snapshot
     return snap, snap.trade_date, client.token_fingerprint
@@ -145,4 +200,5 @@ __all__ = [
     "build_redis_or_none",
     "pull_index_closes",
     "resolve_llm_models",
+    "t_minus_1_eod_utc",
 ]
