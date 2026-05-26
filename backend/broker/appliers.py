@@ -27,6 +27,7 @@ the LLM-safe gating upstream.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -35,6 +36,10 @@ import structlog
 
 from backend.audit.models import AuditActor, AuditEventType, AuditOutcome
 from backend.audit.store import AuditStore
+from backend.broker.applied_report_guard import (
+    AppliedReportGuard,
+    InMemoryAppliedReportGuard,
+)
 from backend.broker.mock_broker import MockBroker
 from backend.broker.persistence.events import BrokerEventType
 from backend.broker.persistence.store import BrokerEventStore
@@ -49,6 +54,45 @@ from backend.models.reconciliation import (
 )
 
 log = structlog.get_logger(component="broker.appliers")
+
+
+def compute_idempotency_key(report: ExecutionReport) -> str:
+    """Deterministic dedupe key derived from a report's semantic content.
+
+    The parser mints a fresh random ``report_id`` per parse, so keying
+    the idempotency guard on ``report_id`` would NOT dedupe a genuine
+    re-submission of the same fill — a frontend double-click or a Feishu
+    redelivery that slipped past the envelope ``event_id`` dedupe each
+    yield a different ``report_id`` and would both apply (Codex U-D4 P1).
+
+    This key hashes the fields that define the *reported outcome* for an
+    instruction — channel- and timestamp-agnostic — so the same reported
+    fill claims the same key no matter how many times or through which
+    channel it arrives. A genuinely different report (a correction with a
+    different price/volume, or the next partial of a split fill with a
+    different ``remain_volume``) hashes differently and is NOT suppressed.
+    """
+
+    def _num(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, int):
+            return str(value)
+        return format(float(value), ".4f")  # type: ignore[arg-type]
+
+    parts = (
+        report.instruction_id,
+        report.kind.value,
+        report.prefix.value,
+        report.stock_code or "",
+        _num(report.filled_volume),
+        _num(report.remain_volume),
+        _num(report.fill_price),
+        _num(report.fee),
+        report.reason or "",
+    )
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    return f"erp-idem-{digest[:32]}"
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +135,20 @@ class ExecutionReportApplier:
        cash flow direction without re-deriving it from the parsed
        Chinese text.
 
-    Idempotency: the applier writes one BrokerEvent per call; replay
-    via the recovery loader will reproduce the same final state.
-    Calling twice for the same report would double-apply the delta —
-    the orchestrator dedupes via ``report.report_id`` upstream
-    (B-003 dedupe layer).
+    Idempotency (U-D4): the applier itself guards against a double-apply
+    of the same ``report_id`` via an injected
+    :class:`~backend.broker.applied_report_guard.AppliedReportGuard`. The
+    upstream Feishu dedupe keys on the Lark envelope ``event_id`` (not the
+    report) and fails open when its store is down; the frontend POST path
+    has no dedupe at all. Without this last-line guard a re-delivered or
+    retried report would double-mutate the broker mirror (double cash
+    deduction / double position delta), which the per-call BrokerEvent
+    trail cannot undo. The guard claims ``report_id`` before mutating and
+    releases the claim if the mutation raises, so a *failed* apply can be
+    retried — at-most-once successful application, not at-most-once
+    attempt. In production the guard is Redis-backed (restart-durable
+    within its TTL); the default is in-process for tests / single-process
+    dev.
     """
 
     def __init__(
@@ -103,10 +156,16 @@ class ExecutionReportApplier:
         broker: MockBroker,
         event_store: BrokerEventStore,
         audit_store: AuditStore,
+        applied_guard: AppliedReportGuard | None = None,
     ) -> None:
         self._broker = broker
         self._events = event_store
         self._audit = audit_store
+        self._applied_guard: AppliedReportGuard = (
+            applied_guard
+            if applied_guard is not None
+            else InMemoryAppliedReportGuard()
+        )
 
     async def apply(
         self,
@@ -121,21 +180,47 @@ class ExecutionReportApplier:
         :meth:`MockBroker.apply_external_fill` (the only legitimate
         external-write entry on the broker); UNFILLED is a no-op apart
         from the audit + event trail.
+
+        Idempotency: claims a deterministic content key
+        (:func:`compute_idempotency_key`) first; a duplicate claim
+        short-circuits to a no-op (``reason="execution_report_duplicate
+        _skipped"``) without touching the broker, BrokerEvent trail, or
+        audit log. The claim is released ONLY on a failure that happens
+        BEFORE the broker mirror is mutated (so a corrected retry can
+        proceed); once the broker has mutated, the claim is permanent and
+        a later event/audit error propagates with the claim held — a
+        retry must never re-apply the delta (Codex U-D4 P1).
         """
-        kind = report.kind
+        idem_key = compute_idempotency_key(report)
+        claimed = await self._applied_guard.claim(idem_key)
+        if not claimed:
+            log.warning(
+                "execution_report_duplicate_skipped",
+                report_id=report.report_id,
+                instruction_id=report.instruction_id,
+                kind=report.kind.value,
+            )
+            return ApplyResult(
+                cash_delta=0.0,
+                positions_delta=(),
+                broker_event_sequence=None,
+                reason="execution_report_duplicate_skipped",
+            )
 
-        if kind is ExecutionReportKind.UNFILLED:
-            return await self._apply_unfilled(report)
-
+        if report.kind is ExecutionReportKind.UNFILLED:
+            return await self._apply_unfilled(report, idem_key=idem_key)
         # FILLED / PARTIAL share the apply path — only the volume +
         # remain_volume differ at this layer.
-        return await self._apply_fill(report, side_is_buy=side_is_buy)
+        return await self._apply_fill(
+            report, side_is_buy=side_is_buy, idem_key=idem_key
+        )
 
     async def _apply_fill(
         self,
         report: ExecutionReport,
         *,
         side_is_buy: bool,
+        idem_key: str,
     ) -> ApplyResult:
         # P0-4 §1.2 guarantees these fields are present for FILLED /
         # PARTIAL — the ExecutionReport model_validator enforces it.
@@ -146,17 +231,26 @@ class ExecutionReportApplier:
 
         fee = float(report.fee) if report.fee is not None else 0.0
 
-        applied = await self._broker.apply_external_fill(
-            order_id_hint=report.instruction_id,
-            code=report.stock_code,
-            volume=int(report.filled_volume),
-            fill_price=float(report.fill_price),
-            fee=fee,
-            side_is_buy=side_is_buy,
-            traded_at=report.parsed_at,
-            report_id=report.report_id,
-            kind=report.kind.value,
-        )
+        try:
+            applied = await self._broker.apply_external_fill(
+                order_id_hint=report.instruction_id,
+                code=report.stock_code,
+                volume=int(report.filled_volume),
+                fill_price=float(report.fill_price),
+                fee=fee,
+                side_is_buy=side_is_buy,
+                traded_at=report.parsed_at,
+                report_id=report.report_id,
+                kind=report.kind.value,
+            )
+        except Exception:
+            # apply_external_fill validates + mutates atomically under its
+            # lock — a raise here means the mirror is UNCHANGED, so release
+            # the claim to let a corrected retry (e.g. after the position
+            # exists) re-attempt. Beyond this point the broker IS mutated
+            # and the claim is permanent.
+            await self._applied_guard.release(idem_key)
+            raise
 
         # Compose the BrokerEvent payload — the recovery loader expects
         # cash_delta + positions_delta keys for EXECUTION_REPORT_APPLIED.
@@ -214,27 +308,36 @@ class ExecutionReportApplier:
             reason="execution_report_applied",
         )
 
-    async def _apply_unfilled(self, report: ExecutionReport) -> ApplyResult:
-        await self._audit.write(
-            event_type=AuditEventType.EXECUTION_REPORT_SUBMITTED,
-            actor=(
-                AuditActor.FEISHU_USER
-                if report.channel.value == "FEISHU"
-                else AuditActor.FRONTEND_USER
-            ),
-            resource_type="instruction_plan",
-            resource_id=report.instruction_id,
-            payload={
-                "report_id": report.report_id,
-                "kind": report.kind.value,
-                "channel": report.channel.value,
-                "reason": report.reason or "",
-            },
-            outcome=AuditOutcome.SUCCESS,
-            correlation_id=report.instruction_id,
-            reason_namespace="execution_report_apply",
-            timestamp=report.parsed_at,
-        )
+    async def _apply_unfilled(
+        self, report: ExecutionReport, *, idem_key: str
+    ) -> ApplyResult:
+        # UNFILLED mutates no broker state — only the audit trail. If the
+        # audit write fails, releasing the claim is safe (nothing to
+        # double-apply) and lets a retry record the report.
+        try:
+            await self._audit.write(
+                event_type=AuditEventType.EXECUTION_REPORT_SUBMITTED,
+                actor=(
+                    AuditActor.FEISHU_USER
+                    if report.channel.value == "FEISHU"
+                    else AuditActor.FRONTEND_USER
+                ),
+                resource_type="instruction_plan",
+                resource_id=report.instruction_id,
+                payload={
+                    "report_id": report.report_id,
+                    "kind": report.kind.value,
+                    "channel": report.channel.value,
+                    "reason": report.reason or "",
+                },
+                outcome=AuditOutcome.SUCCESS,
+                correlation_id=report.instruction_id,
+                reason_namespace="execution_report_apply",
+                timestamp=report.parsed_at,
+            )
+        except Exception:
+            await self._applied_guard.release(idem_key)
+            raise
         return ApplyResult(
             cash_delta=0.0,
             positions_delta=(),

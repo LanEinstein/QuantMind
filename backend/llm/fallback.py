@@ -51,6 +51,42 @@ COST_RATES: dict[str, CostRate] = {
     "kimi": CostRate(input_rmb_per_million=2.1, output_rmb_per_million=8.4),
 }
 
+# Per-MODEL overrides, consulted before the per-provider family table.
+# A premium model that shares a provider family (same base_url + key) but
+# costs more must be priced from its own rate, otherwise the daily ¥20
+# hard cap under-counts spend — the dangerous direction for a budget
+# guard (silent over-spend). The Redis usage key stays keyed by provider
+# family (see :func:`track_usage`) so cost_guard's aggregation is
+# unchanged; only the computed ``cost_rmb`` becomes model-accurate.
+#
+# ``qwen3.7-max`` (fund_manager deep-reasoning model, config/
+# agent_models.yaml + P0-10-amendment-2026-05-25): Alibaba Cloud Model
+# Studio / DashScope ≤32K-input tier = ¥2.5/M input, ¥10/M output
+# (May 2026). One single-round 4-agent debate is a few thousand tokens
+# (far under the 32K tier boundary and the ¥20 daily hard cap); the
+# ~1M-token 90-day free quota only makes actual spend lower than this
+# nominal rate, so pricing at the paid tier stays conservative.
+MODEL_COST_RATES: dict[str, CostRate] = {
+    "qwen3.7-max": CostRate(
+        input_rmb_per_million=2.5, output_rmb_per_million=10.0
+    ),
+}
+
+
+def resolve_cost_rate(provider: str, model: str | None = None) -> CostRate:
+    """Pick the most specific rate: model override → family → zero.
+
+    A per-model rate (``MODEL_COST_RATES``) wins over the per-provider
+    family rate (``COST_RATES``); an unknown provider/model pair returns
+    a zero rate so unpriced calls cost ¥0 rather than crashing.
+    """
+    if model is not None:
+        model_rate = MODEL_COST_RATES.get(model)
+        if model_rate is not None:
+            return model_rate
+    return COST_RATES.get(provider, CostRate(0.0, 0.0))
+
+
 _TTL_DAYS = 90
 
 
@@ -63,11 +99,18 @@ async def track_usage(
     provider: str,
     prompt_tokens: int,
     completion_tokens: int,
+    model: str | None = None,
 ) -> None:
     """Track token usage and cost in Redis.
 
     Key pattern: llm:usage:{date}:{agent_name}:{provider}
     Fields: prompt_tokens, completion_tokens, requests, cost_rmb
+
+    ``model`` selects a per-model rate override when one exists
+    (``MODEL_COST_RATES``) — e.g. the premium ``qwen3.7-max`` shares the
+    ``qwen`` family yet costs more. The Redis key stays keyed by provider
+    family so cost_guard's daily aggregation is unaffected; only the
+    ``cost_rmb`` value becomes model-accurate.
 
     Silently logs and returns on Redis errors (degrade, not crash).
     """
@@ -77,7 +120,7 @@ async def track_usage(
     date_str = _utc_date_str()
     key = f"llm:usage:{date_str}:{agent_name}:{provider}"
 
-    rate = COST_RATES.get(provider, CostRate(0.0, 0.0))
+    rate = resolve_cost_rate(provider, model)
     cost = (
         prompt_tokens * rate.input_rmb_per_million / 1_000_000
         + completion_tokens * rate.output_rmb_per_million / 1_000_000

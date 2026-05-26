@@ -327,6 +327,200 @@ class TestExecutionReportApplier:
 
 
 # ---------------------------------------------------------------------------
+# ExecutionReportApplier — durable report_id idempotency (U-D4)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionReportIdempotency:
+    @pytest.mark.asyncio
+    async def test_duplicate_report_id_does_not_double_mutate(
+        self, env: _Env
+    ) -> None:
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+        first = await applier.apply(_filled_report(), side_is_buy=True)
+        after_first = await env.broker.get_account()
+
+        # Same report_id ("r-1") submitted again — e.g. a Feishu
+        # redelivery that slipped past the event_id dedupe, or a
+        # frontend double-submit.
+        second = await applier.apply(_filled_report(), side_is_buy=True)
+        after_second = await env.broker.get_account()
+
+        assert first.reason == "execution_report_applied"
+        assert second.reason == "execution_report_duplicate_skipped"
+        assert second.cash_delta == 0.0
+        assert second.broker_event_sequence is None
+        # Broker mutated exactly once.
+        assert after_second.available_cash == pytest.approx(
+            after_first.available_cash
+        )
+        positions = await env.broker.get_positions()
+        assert len(positions) == 1
+        assert positions[0].volume == 100
+        # Only one EXECUTION_REPORT_APPLIED event persisted.
+        applied_events = [
+            d
+            for d in env.event_coll.docs
+            if d["event_type"]
+            == BrokerEventType.EXECUTION_REPORT_APPLIED.value
+        ]
+        assert len(applied_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_report_ids_same_content_deduped(
+        self, env: _Env
+    ) -> None:
+        # The real Feishu/frontend path mints a FRESH report_id per parse,
+        # so a double-click / redelivery arrives with a DIFFERENT
+        # report_id but identical content — the content key must still
+        # dedupe it (Codex U-D4 P1).
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+        first = await applier.apply(
+            _filled_report(), side_is_buy=True
+        )
+        # Same content, different random report_id (as the parser produces).
+        dup = _filled_report()
+        dup = dup.model_copy(update={"report_id": "erp-totally-different"})
+        second = await applier.apply(dup, side_is_buy=True)
+
+        assert first.reason == "execution_report_applied"
+        assert second.reason == "execution_report_duplicate_skipped"
+        applied_events = [
+            d
+            for d in env.event_coll.docs
+            if d["event_type"]
+            == BrokerEventType.EXECUTION_REPORT_APPLIED.value
+        ]
+        assert len(applied_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_different_content_not_deduped(self, env: _Env) -> None:
+        # A correction with a different fill price is a genuinely
+        # different reported outcome and must NOT be suppressed.
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+        await applier.apply(_filled_report(fill_price=1800.0), side_is_buy=True)
+        second = await applier.apply(
+            _filled_report(fill_price=1801.0), side_is_buy=True
+        )
+        assert second.reason == "execution_report_applied"
+
+    @pytest.mark.asyncio
+    async def test_post_mutation_failure_keeps_claim(
+        self, env: _Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If the BrokerEvent append fails AFTER the broker has mutated,
+        # the claim must NOT be released — a retry has to be rejected so
+        # the cash/position delta is never applied twice (Codex U-D4 P1).
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+
+        async def _boom(*_a: object, **_k: object) -> None:
+            raise RuntimeError("event store down")
+
+        monkeypatch.setattr(env.event_store, "append", _boom)
+        with pytest.raises(RuntimeError, match="event store down"):
+            await applier.apply(_filled_report(), side_is_buy=True)
+
+        after_fail = await env.broker.get_account()
+        # The broker mutated exactly once despite the post-mutation error.
+        assert after_fail.available_cash == pytest.approx(
+            1_000_000.0 - 180_005.0
+        )
+
+        # Retry the same report — the held claim short-circuits to a
+        # no-op BEFORE _apply_fill, so the (still-broken) append is never
+        # reached and the broker is not double-mutated.
+        retry = await applier.apply(_filled_report(), side_is_buy=True)
+        assert retry.reason == "execution_report_duplicate_skipped"
+        final = await env.broker.get_account()
+        assert final.available_cash == pytest.approx(after_fail.available_cash)
+
+    @pytest.mark.asyncio
+    async def test_release_on_failure_allows_retry(self, env: _Env) -> None:
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+        sell = ExecutionReport(
+            report_id="r-sell-retry",
+            instruction_id="QM-20260515-100000-600519-SELL-001",
+            kind=ExecutionReportKind.FILLED,
+            channel=ExecutionReportChannel.FEISHU,
+            side_zh="卖出",
+            stock_code="600519",
+            filled_volume=100,
+            fill_price=1810.0,
+            fee=5.0,
+            raw_text="FILLED 600519 卖出 100@1810",
+            received_at=dt.datetime(2026, 5, 15, 10, 6, tzinfo=SHANGHAI),
+            parsed_at=dt.datetime(2026, 5, 15, 10, 6, 1, tzinfo=SHANGHAI),
+        )
+        # First attempt fails — no position to sell. The claim must be
+        # released so the same report_id can be retried after the
+        # position exists.
+        with pytest.raises(ValueError, match="SELL"):
+            await applier.apply(sell, side_is_buy=False)
+
+        await applier.apply(_filled_report(), side_is_buy=True)  # buy 100
+
+        retry = await applier.apply(sell, side_is_buy=False)
+        assert retry.reason == "execution_report_applied"
+        positions = await env.broker.get_positions()
+        assert len(positions) == 0 or positions[0].volume == 0
+
+    @pytest.mark.asyncio
+    async def test_unfilled_duplicate_skipped(self, env: _Env) -> None:
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+        first = await applier.apply(_unfilled_report(), side_is_buy=True)
+        second = await applier.apply(_unfilled_report(), side_is_buy=True)
+        assert first.reason == "execution_report_unfilled"
+        assert second.reason == "execution_report_duplicate_skipped"
+        # The duplicate UNFILLED writes no second audit row.
+        submitted = [
+            d
+            for d in env.audit_coll.documents
+            if d["event_type"]
+            == AuditEventType.EXECUTION_REPORT_SUBMITTED.value
+        ]
+        assert len(submitted) == 1
+
+    @pytest.mark.asyncio
+    async def test_shared_guard_dedupes_across_applier_instances(
+        self, env: _Env
+    ) -> None:
+        # Models the production Redis guard surviving a process restart:
+        # a fresh applier instance backed by the same durable store still
+        # recognises an already-applied report_id.
+        from backend.broker.applied_report_guard import (
+            InMemoryAppliedReportGuard,
+        )
+
+        guard = InMemoryAppliedReportGuard()
+        applier1 = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store, applied_guard=guard
+        )
+        await applier1.apply(_filled_report(), side_is_buy=True)
+        before = await env.broker.get_account()
+
+        applier2 = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store, applied_guard=guard
+        )
+        result = await applier2.apply(_filled_report(), side_is_buy=True)
+        after = await env.broker.get_account()
+
+        assert result.reason == "execution_report_duplicate_skipped"
+        assert after.available_cash == pytest.approx(before.available_cash)
+
+
+# ---------------------------------------------------------------------------
 # ReconciliationApplier — RESOLVED paths
 # ---------------------------------------------------------------------------
 

@@ -925,13 +925,28 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
 
     # 4. Appliers — the single legitimate entry points for external
     # writes to the broker mirror (P1-2.A red line).
+    # U-D4: a Redis-backed report_id guard makes the applier idempotent
+    # across uvicorn workers + process restarts (within its TTL) — the
+    # last line of defence against a Feishu redelivery / frontend
+    # double-submit double-mutating the broker. Falls back to in-process
+    # when Redis is unavailable (dev / degraded).
+    from backend.broker.applied_report_guard import (
+        InMemoryAppliedReportGuard,
+        RedisAppliedReportGuard,
+    )
     from backend.broker.appliers import (
         ExecutionReportApplier,
         ReconciliationApplier,
     )
 
+    _applier_redis = getattr(application.state, "redis", None)
+    applied_guard = (
+        RedisAppliedReportGuard(_applier_redis)
+        if _applier_redis is not None
+        else InMemoryAppliedReportGuard()
+    )
     execution_applier = ExecutionReportApplier(
-        broker, event_store, audit_store
+        broker, event_store, audit_store, applied_guard=applied_guard
     )
     # Codex Cycle 1 P2 fix: ReconciliationApplier reads the
     # daily-reconciliation entry by sync ``dict.get`` on the trade_date

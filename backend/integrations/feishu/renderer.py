@@ -144,6 +144,33 @@ class MessageRenderer:
         # update the snapshot test in tests/test_feishu_renderer.py.
         return "\n".join(["【QuantMind 指令】", *self._dispatch_body_lines(plan)])
 
+    # -- Go-live connectivity smoke (U-D4) -----------------------------
+
+    def render_smoke_ping(
+        self,
+        *,
+        sent_at: datetime,
+        pilot: bool = False,
+    ) -> str:
+        """Render a go-live connectivity smoke ping.
+
+        A fixed, injection-safe literal — no user / LLM / market content —
+        so the decision-chat send/receive round-trip can be validated
+        without any prompt-injection surface (CLAUDE.md §2.6, "所有飞书
+        消息必经 renderer.py"). The header makes unmistakable that this is
+        NOT a tradable instruction so the operator never mistakes the
+        smoke for an order.
+        """
+        return "\n".join(
+            [
+                *self._pilot_prefix(pilot),
+                "【QuantMind 连通性自检】",
+                "本条为上线前飞书通道自检,非交易指令,无需执行。",
+                f"发送时间:{_format_local_ts(sent_at)}",
+                "如已收到,请回复『收到 自检』以验证回程链路。",
+            ]
+        )
+
     # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------
 
     def render_buy_signal(

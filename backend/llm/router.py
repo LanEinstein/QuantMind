@@ -483,6 +483,7 @@ class LLMRouter:
                 provider_name,
                 response.usage.prompt_tokens,
                 response.usage.completion_tokens,
+                model=model,
             )
             self._log.info(
                 "llm_call_complete",

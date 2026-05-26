@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from backend.llm.fallback import COST_RATES
+from backend.llm.fallback import resolve_cost_rate
 
 if TYPE_CHECKING:
     import redis.asyncio
@@ -18,10 +18,14 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(component="cost_tracker")
 
-# Per-model pricing in RMB per 1K tokens (more granular than COST_RATES)
+# Per-model pricing in RMB per 1K tokens (more granular than COST_RATES).
+# NOTE: this table is documentation/parity only — the live cost
+# computation flows through :func:`backend.llm.fallback.resolve_cost_rate`
+# (per-million). Keep the two in sync when adding a model.
 MODEL_PRICING: dict[str, dict[str, float]] = {
     "deepseek-v4-pro": {"input": 0.0002, "output": 0.0002},
     "qwen3.6-plus": {"input": 0.001, "output": 0.001},
+    "qwen3.7-max": {"input": 0.0025, "output": 0.010},
     "kimi-k2.6": {"input": 0.0021, "output": 0.0084},
 }
 
@@ -59,14 +63,15 @@ def calculate_cost(
     provider: str,
     prompt_tokens: int,
     completion_tokens: int,
+    model: str | None = None,
 ) -> float:
     """Calculate cost in RMB for a given token count.
 
-    Uses COST_RATES from fallback.py (per million tokens).
+    Uses :func:`backend.llm.fallback.resolve_cost_rate` (per million
+    tokens) — a per-model rate (e.g. ``qwen3.7-max``) wins over the
+    per-provider family rate; an unknown provider/model pair costs ¥0.
     """
-    rate = COST_RATES.get(provider)
-    if rate is None:
-        return 0.0
+    rate = resolve_cost_rate(provider, model)
     cost = (
         prompt_tokens * rate.input_rmb_per_million / 1_000_000
         + completion_tokens * rate.output_rmb_per_million / 1_000_000
