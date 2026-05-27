@@ -38,16 +38,16 @@
 - [x] TDD(3868 passed/cov 90.38%)+ 门禁(ruff+redline 全绿)+ codex(无问题)+ commit 1270e7a + plan.html done
 - ⚠️ U-E2 预研:`StockQuote` 无 best_ask(仅 price/last);adata/akshare spot 无五档盘口 → U-E2 须新增 bid/ask 取数或 degrade
 
-### [~] U-E2 — 缺口4:实时盘口 + 价格笼子限价(确定性派生)进行中
+### [x] U-E2 — 缺口4:实时盘口 + 价格笼子限价(确定性派生)✅ feature fe1744d(cage 核心)+ 11b9d32(集成)
 - [x] 新建纯模块 `backend/risk/price_cage.py` ✅ **feature fe1744d**(codex 5 轮 6 findings 全修 + 末轮 clean,100% cov,44 tests):`cage_ceiling`/`cage_bounded_buy_limit`/`is_within_cage`/`tick_size`;ceiling=max(best_ask*1.02, best_ask+10×tick)(主板/ETF)/×1.02(创业·科创);**tick 感知**(股 0.01/ETF 0.001);**exact cap 做 ≤ 比较**,display ceiling + 最终限价 floor 到 0.01 向下(永不 废单 + pipeline 兼容);缺/坏 best_ask/last/tol → fail-closed(ValueError/False);**Board 按值比较非身份**(跨类/reload 安全)
-- [ ] 数据层加**五档盘口取数**(best_ask=卖一):`StockQuote` 无 best_ask 字段 + adata/akshare spot 无盘口 → 须新增 `get_stock_orderbook`(adata 盘口 primary / akshare `stock_bid_ask_em` fallback),返 frozen 含 last+best_ask+best_bid+ts+source
-- [ ] `Line1ContextProvider` 接 **双源实时**(last 双源 divergence≤0.3%/staleness≤5s,P0-8;best_ask 主源)经 `cage_bounded_buy_limit` 派生 limit_price;volume 经 `max_compliant_buy_volume()` 用 cage 限价**确定性重算**(单一构造点不破)
-- [ ] PIT:实时 spot 存原始字节+checksum+血缘(SnapshotStore)
-- [ ] `RiskEngine` check#02 加**命名 cage 子校验**(传入 frozen quote 对象=best_ask+provenance,无 IO;调 `is_within_cage`;保持 14-check 计数,断言 subreason)
-- [ ] **DEGRADED 非可执行**一等 outcome:无双源新鲜 quote/缺 best_ask/单源/stale → 发结构上不可执行通知(无 instruction_id/无回报模板/header「非交易参考·不可下单」,复用 `render_no_compliant_trade` 形),**绝不**在 last/T-1 收盘价上路由真 BUY
-- [ ] 修 `dry_run_realdata.build_data_layer` 构造 `market_meta`(现 `load_data_sources_config()` 缺 yaml_path → TypeError 被吞 → market_meta 恒 None)
-- [ ] amendments `P0-3`(limit 实时+cage)+`P0-7`(check#02 cage 子校验+cfg 常量 cage_tolerance_pct 入 risk.yaml universe)+`P0-8`(Line-1 接实时主备)
-- [ ] TDD(cage 子校验/缺 best_ask→degrade + PIT replay + 双源 divergence)+ 门禁 + codex + commit + plan.html done
+- [x] 数据层加**五档盘口取数**(best_ask=卖一):新增 `StockOrderbook` frozen(code+last+best_ask+best_bid+source+ts)+ `MarketDataService.get_stock_orderbook`(adata `get_market_five` s1/b1 primary / akshare `stock_bid_ask_em` sell_1/buy_1/最新 fallback;无正卖一/inf→落 fallback)+ `get_stock_realtime_dual`(双 spot 腿)
+- [x] `Line1ContextProvider` 接 **双源实时**(last 双源 divergence≤0.3%/staleness≤5s,P0-8;best_ask 主源)经 `cage_bounded_buy_limit` 派生 limit_price;volume 经 `max_compliant_buy_volume()` 用 cage 限价**确定性重算**(单一构造点不破);build_lead_context 改 async
+- [x] PIT:实时 spot+盘口 canonical-JSON 原始字节+checksum+signal_id 血缘存 `SnapshotStore`(best-effort)
+- [x] `RiskEngine` check#02 加**命名 cage 子校验**(传入 frozen `CageQuote`=best_ask+source,无 IO;调 `is_within_cage`;折叠进 check#02 保 14-check 计数;先于 prev_close 带跑;缺 best_ask/board fail-closed;message 带 `price_cage_violation` 子原因)
+- [x] **DEGRADED 非可执行**一等 outcome:无双源新鲜 quote/缺 best_ask/单源/divergent/stale/NaN backup → `Line1QuoteDegrade` → `Line1Outcome.QUOTE_DEGRADED` + `render_non_actionable_quote`(无 instruction_id/无回报模板/header「非交易参考·不可下单」),跳辩论篮子顺延,**绝不**在 last/T-1 收盘价上路由真 BUY
+- [x] 修 `dry_run_realdata.build_data_layer`(`load_data_sources_config()` 缺 yaml_path → TypeError 被吞 → market_data 恒 None)+ 接 market_data/snapshot_store 进 dry-run/main Line-1 provider
+- [x] amendments `P0-3`(limit 实时+cage)+`P0-7`(check#02 cage 子校验+cage_tolerance_pct 入 risk.yaml universe + Line-2 ADD/staleness 后续记录)+`P0-8`(Line-1 接实时主备+卖一+PIT)
+- [x] TDD(cage 子校验/缺 best_ask→degrade + 5 降级路径 + PIT 持久化 + 双源 divergence/NaN backup/tz fail-closed)+ 门禁 **3947 passed/cov 90.51%(risk 99%)** + ruff + redline 全绿 + codex cycle1 1×P1 修(NaN backup)+ claude /code-review high(codex 撞额度回退)修 inf/列漂移/tz crash + commit 11b9d32 + plan.html done
 
 ### [ ] U-E3 — 缺口5:回报模板 + set-from-report 记账 + schema 版本
 - [ ] BUY 正则 v2「成本价(含费,每股) 股数」;`ExecutionReport` + EXECUTION_REPORT_APPLIED payload 加 `report_schema_version`(v1=fill_price+fee 旧/sim;v2=cost_price_incl_fee 人工 BUY);recovery loader 按版本分支;`compute_idempotency_key` 加 version+cost_price_incl_fee
