@@ -56,6 +56,7 @@ from backend.data.stock_metadata import (
     classify_board,
     get_price_limit_pct,
 )
+from backend.models.execution import REPORT_SCHEMA_V1_OWNER_FEE
 from backend.utils.trading_hours import SHANGHAI, is_trading_hours
 
 log = structlog.get_logger(component="mock_broker")
@@ -609,11 +610,12 @@ class MockBroker(IBroker):
         code: str,
         volume: int,
         fill_price: float,
-        fee: float,
         side_is_buy: bool,
         traded_at: datetime,
         report_id: str,
         kind: str,
+        report_schema_version: int,
+        fee: float | None = None,
     ) -> dict:
         """Apply a user-reported fill to the broker mirror.
 
@@ -622,16 +624,28 @@ class MockBroker(IBroker):
         ``_positions`` / ``_trades`` from outside the broker is a red
         line (P1-2.A §2 redline 1).
 
-        The fee is applied as commission on the synthesized Trade — the
-        exchange-side breakdown (stamp tax / transfer fee) is captured
-        inside ``fee`` because the user's Feishu reply does not always
-        itemise. The applier-side breakdown is therefore "fee" only;
-        the canonical per-board cost model only runs on broker-routed
-        fills.
+        Two cost schemas (P0-4-amendment-2026-05-27 §2.4):
 
-        Returns a dict with the keys
-        ``order_id``, ``trade_id``, ``cash_delta``, ``positions_delta``
-        so the applier can include the deltas in its BrokerEvent payload.
+        * **v1 (legacy)** — the owner reported the ``fee`` itself; it is
+          applied as the whole commission on the synthesized Trade with
+          stamp tax / transfer fee folded in. The position cost basis is
+          the raw fill price. Never produced by the current parser; kept
+          for deterministic replay of any persisted v1 event.
+        * **v2 (current)** — the owner reports「price + volume」only; the
+          system derives commission (万分之1.5 floored at 5 CNY) + stamp
+          tax (SELL only) + Shenzhen 过户费 via
+          :func:`backend.broker.cost_calculator.calculate_cost` with
+          ``apply_slippage_model=False`` (the reported price IS the real
+          fill, slippage already embedded). For a BUY the position cost
+          basis is the **fee-inclusive** per-share cost
+          ``net_amount / volume`` (P0-4-amendment §2.2), so the weighted
+          average reflects the true acquisition cost.
+
+        Returns a dict with the keys ``order_id``, ``trade_id``,
+        ``cash_delta``, ``positions_delta`` plus the derived friction
+        breakdown (``commission`` / ``stamp_tax`` / ``transfer_fee`` /
+        ``net`` / ``gross``) and ``report_schema_version`` so the applier
+        can persist a version-tagged BrokerEvent.
         """
         if volume <= 0:
             raise ValueError(f"apply_external_fill volume {volume} must be > 0")
@@ -639,33 +653,82 @@ class MockBroker(IBroker):
             raise ValueError(
                 f"apply_external_fill fill_price {fill_price} must be > 0"
             )
+        direction = OrderDirection.BUY if side_is_buy else OrderDirection.SELL
+
+        # Derive the full per-fill economics ONCE, before taking the lock.
+        # v1 trusts the owner-reported fee verbatim; v2 delegates every
+        # number (gross / commission / stamp / transfer / net / fill_price)
+        # to the locked cost model so there is a single source of truth —
+        # re-deriving gross/net here from the raw fill_price would diverge
+        # from the fee, which is computed off the settlement-rounded price
+        # (codex/claude review: dual-gross inconsistency on sub-0.01 prices).
+        if report_schema_version == REPORT_SCHEMA_V1_OWNER_FEE:
+            if fee is None:
+                raise ValueError(
+                    "apply_external_fill v1 (owner-fee) requires fee"
+                )
+            trade_price = fill_price
+            gross = round(fill_price * volume, 2)
+            commission = round(fee, 2)
+            stamp_tax = 0.0
+            transfer_fee = 0.0
+            slippage_cost = 0.0
+            if side_is_buy:
+                net = round(gross + commission + transfer_fee, 2)
+                # Legacy: cost basis ignores fee.
+                buy_cost_basis = fill_price
+            else:
+                net = round(gross - commission - stamp_tax - transfer_fee, 2)
+                if net < 0:
+                    raise ValueError(
+                        f"apply_external_fill SELL friction "
+                        f"{commission + stamp_tax + transfer_fee} exceeds "
+                        f"gross {gross}; reject upstream"
+                    )
+                buy_cost_basis = fill_price  # unused on SELL
+        else:
+            if fee is not None:
+                raise ValueError(
+                    "apply_external_fill v2 (system-fee) must not receive "
+                    "an owner fee; the system computes it"
+                )
+            # calculate_cost raises if a SELL's friction exceeds its gross.
+            breakdown = calculate_cost(
+                code=code,
+                board=classify_board(code),
+                order_price=fill_price,
+                volume=volume,
+                direction=direction,
+                config=self._config,
+                apply_slippage_model=False,
+            )
+            trade_price = breakdown.fill_price
+            gross = breakdown.gross_amount
+            commission = breakdown.commission
+            stamp_tax = breakdown.stamp_tax
+            transfer_fee = breakdown.transfer_fee
+            slippage_cost = breakdown.slippage_cost  # 0 — no slippage model
+            net = breakdown.net_amount
+            # Fee-inclusive cost basis on BUY (P0-4-amendment §2.2);
+            # unchanged cost basis on SELL (value below is unused there).
+            buy_cost_basis = net / volume if side_is_buy else trade_price
+
         async with self._lock:
             order_id = f"ext-{uuid.uuid4().hex[:8]}"
             trade_id = uuid.uuid4().hex[:12]
-            amount = round(fill_price * volume, 2)
-            direction = (
-                OrderDirection.BUY if side_is_buy else OrderDirection.SELL
-            )
 
             if side_is_buy:
-                net = round(amount + fee, 2)
                 cash_delta = -net
                 self._cash -= net
-                self._apply_buy(code, fill_price, volume)
+                self._apply_buy(code, buy_cost_basis, volume)
                 positions_delta = [
                     {
                         "code": code,
                         "volume_delta": volume,
-                        "cost_price": fill_price,
+                        "cost_price": buy_cost_basis,
                     }
                 ]
             else:
-                net = round(amount - fee, 2)
-                if net < 0:
-                    raise ValueError(
-                        f"apply_external_fill SELL fee {fee} exceeds gross "
-                        f"{amount}; reject upstream"
-                    )
                 cash_delta = net
                 pos = self._positions.get(code)
                 if pos is None or pos.volume < volume:
@@ -679,7 +742,7 @@ class MockBroker(IBroker):
                     {
                         "code": code,
                         "volume_delta": -volume,
-                        "cost_price": fill_price,
+                        "cost_price": trade_price,
                     }
                 ]
 
@@ -687,14 +750,14 @@ class MockBroker(IBroker):
                 trade_id=trade_id,
                 order_id=order_id,
                 code=code,
-                price=fill_price,
+                price=trade_price,
                 volume=volume,
-                amount=amount,
+                amount=gross,
                 direction=direction,
-                commission=fee,
-                stamp_tax=0.0,
-                slippage_cost=0.0,
-                transfer_fee=0.0,
+                commission=commission,
+                stamp_tax=stamp_tax,
+                slippage_cost=slippage_cost,
+                transfer_fee=transfer_fee,
                 net_amount=net,
                 traded_at=traded_at,
             )
@@ -704,13 +767,13 @@ class MockBroker(IBroker):
             order = _MutableOrder(
                 order_id=order_id,
                 code=code,
-                price=fill_price,
+                price=trade_price,
                 volume=volume,
                 direction=direction,
                 order_type=OrderType.LIMIT,
                 status=OrderStatus.FILLED,
                 filled_volume=volume,
-                avg_fill_price=fill_price,
+                avg_fill_price=trade_price,
                 created_at=traded_at,
                 updated_at=traded_at,
             )
@@ -725,12 +788,20 @@ class MockBroker(IBroker):
                 volume=volume,
                 fill_price=fill_price,
                 cash_delta=cash_delta,
+                report_schema_version=report_schema_version,
+                commission=commission,
             )
             return {
                 "order_id": order_id,
                 "trade_id": trade_id,
                 "cash_delta": cash_delta,
                 "positions_delta": positions_delta,
+                "gross": gross,
+                "commission": commission,
+                "stamp_tax": stamp_tax,
+                "transfer_fee": transfer_fee,
+                "net": net,
+                "report_schema_version": report_schema_version,
             }
 
     async def reset_to_snapshot(

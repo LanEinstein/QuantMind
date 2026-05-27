@@ -695,6 +695,119 @@ class TestRecovery:
         with pytest.raises(RecoveryError, match="SELL fill"):
             await recover_state(es, ss, initial_capital=1_000_000.0)
 
+    @pytest.mark.asyncio
+    async def test_recover_v2_execution_report_uses_fee_inclusive_basis(
+        self,
+    ) -> None:
+        # P0-4-amendment-2026-05-27 §2.4 — a v2 EXECUTION_REPORT_APPLIED
+        # event carries the fee-inclusive per-share cost in positions_delta
+        # so the rebuilt position cost basis matches the live broker.
+        client = _FakeClient()
+        es = BrokerEventStore(client, _FakeCollection())
+        ss = BrokerSnapshotStore(client, _FakeCollection())
+        await es.append(
+            event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
+            occurred_at=_ts(0),
+            order_id="ext-1",
+            trade_id="trd-1",
+            payload={
+                "report_schema_version": 2,
+                "commission": 27.0,
+                "stamp_tax": 0.0,
+                "transfer_fee": 0.0,
+                "net": 180_027.0,
+                "cash_delta": -180_027.0,
+                "positions_delta": [
+                    {
+                        "code": "600519",
+                        "volume_delta": 100,
+                        "cost_price": 1800.27,
+                    }
+                ],
+            },
+        )
+        state = await recover_state(es, ss, initial_capital=1_000_000.0)
+        assert state.cash == pytest.approx(1_000_000.0 - 180_027.0)
+        assert state.positions["600519"].cost_price == pytest.approx(1800.27)
+
+    @pytest.mark.asyncio
+    async def test_recover_v2_event_missing_breakdown_fails_closed(
+        self,
+    ) -> None:
+        client = _FakeClient()
+        es = BrokerEventStore(client, _FakeCollection())
+        ss = BrokerSnapshotStore(client, _FakeCollection())
+        await es.append(
+            event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
+            occurred_at=_ts(0),
+            payload={
+                # v2 row corrupted — missing the derived friction breakdown.
+                "report_schema_version": 2,
+                "cash_delta": -180_027.0,
+                "positions_delta": [],
+            },
+        )
+        from backend.broker.persistence.recovery import RecoveryError
+
+        with pytest.raises(RecoveryError, match="v2 EXECUTION_REPORT"):
+            await recover_state(es, ss, initial_capital=1_000_000.0)
+
+    @pytest.mark.asyncio
+    async def test_recover_v2_buy_missing_cost_price_fails_closed(
+        self,
+    ) -> None:
+        # A v2 BUY leg without cost_price would rebuild the position at
+        # cost_price 0.0 — the guard refuses it (fail-closed) so a silently
+        # wrong fee-inclusive basis never reaches MTM/PnL.
+        client = _FakeClient()
+        es = BrokerEventStore(client, _FakeCollection())
+        ss = BrokerSnapshotStore(client, _FakeCollection())
+        await es.append(
+            event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
+            occurred_at=_ts(0),
+            payload={
+                "report_schema_version": 2,
+                "commission": 27.0,
+                "net": 180_027.0,
+                "cash_delta": -180_027.0,
+                "positions_delta": [
+                    {"code": "600519", "volume_delta": 100},  # no cost_price
+                ],
+            },
+        )
+        from backend.broker.persistence.recovery import RecoveryError
+
+        with pytest.raises(RecoveryError, match="BUY leg missing cost_price"):
+            await recover_state(es, ss, initial_capital=1_000_000.0)
+
+    @pytest.mark.asyncio
+    async def test_recover_legacy_v1_execution_report_without_version(
+        self,
+    ) -> None:
+        # A pre-amendment row has no report_schema_version key → treated
+        # as v1 (legacy), replayed from the stored deltas with the raw
+        # fill price as the cost basis. Back-compat must not break.
+        client = _FakeClient()
+        es = BrokerEventStore(client, _FakeCollection())
+        ss = BrokerSnapshotStore(client, _FakeCollection())
+        await es.append(
+            event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
+            occurred_at=_ts(0),
+            payload={
+                "cash_delta": -180_005.0,
+                "positions_delta": [
+                    {
+                        "code": "600519",
+                        "volume_delta": 100,
+                        "cost_price": 1800.0,
+                    }
+                ],
+            },
+        )
+        state = await recover_state(es, ss, initial_capital=1_000_000.0)
+        assert state.cash == pytest.approx(1_000_000.0 - 180_005.0)
+        assert state.positions["600519"].cost_price == pytest.approx(1800.0)
+
 
 # ---------------------------------------------------------------------------
 # Snapshot version monotonicity (red line 5)

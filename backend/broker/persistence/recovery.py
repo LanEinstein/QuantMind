@@ -38,6 +38,10 @@ from backend.broker.persistence.store import (
     BrokerEventStore,
     BrokerSnapshotStore,
 )
+from backend.models.execution import (
+    REPORT_SCHEMA_V1_OWNER_FEE,
+    REPORT_SCHEMA_V2_SYSTEM_FEE,
+)
 
 log = structlog.get_logger(component="broker.persistence.recovery")
 
@@ -209,16 +213,54 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
 
     if event.event_type is BrokerEventType.EXECUTION_REPORT_APPLIED:
         # Generic delta carrier. payload['positions_delta'] entries
-        # carry the FILL price (cost_price field) — recovery must
-        # compute a weighted average for positive deltas (add-on
+        # carry the per-share cost basis (cost_price field) — recovery
+        # must compute a weighted average for positive deltas (add-on
         # buys) and leave cost basis unchanged for negative deltas
         # (sells / reductions) so the rebuild matches the live
         # broker's _apply_buy averaging. Setting pos.cost_price
         # directly from the fill price would diverge on add-on
         # buys (codex P1).
+        #
+        # P0-4-amendment-2026-05-27 §2.4 — version branch. Replay is
+        # delta-based for both schemas (deterministic; never recompute
+        # the fee from config, which could have changed). The branch is
+        # a fail-closed schema guard:
+        #   * v1 (legacy / absent) — positions_delta cost_price is the
+        #     raw fill price; the owner fee was already folded into the
+        #     stored cash_delta.
+        #   * v2 (current) — the broker derived the fee; positions_delta
+        #     cost_price is the fee-inclusive basis. A v2 row MUST carry
+        #     the friction breakdown it was applied with AND a cost_price
+        #     on every BUY (positive-volume) leg — the very field this
+        #     replay consumes for the weighted average — else the event is
+        #     corrupt and recovery refuses it (fail-closed) rather than
+        #     silently rebuilding a position at cost_price 0.0.
+        report_schema_version = int(
+            payload.get("report_schema_version", REPORT_SCHEMA_V1_OWNER_FEE)
+        )
+        deltas = payload.get("positions_delta", []) or []
+        if report_schema_version == REPORT_SCHEMA_V2_SYSTEM_FEE:
+            if "net" not in payload or "commission" not in payload:
+                raise RecoveryError(
+                    f"replay error: v2 EXECUTION_REPORT_APPLIED event "
+                    f"(sequence {event.sequence}) missing derived friction "
+                    "breakdown; refusing automatic recovery (P0-4-amendment "
+                    "§2.4 fail-closed)"
+                )
+            for delta in deltas:
+                if (
+                    int(delta.get("volume_delta", 0)) > 0
+                    and delta.get("cost_price") is None
+                ):
+                    raise RecoveryError(
+                        f"replay error: v2 EXECUTION_REPORT_APPLIED event "
+                        f"(sequence {event.sequence}) BUY leg missing "
+                        "cost_price; refusing automatic recovery "
+                        "(P0-4-amendment §2.4 fail-closed)"
+                    )
         cash_delta = float(payload.get("cash_delta", 0.0))
         state.cash += cash_delta
-        for delta in payload.get("positions_delta", []) or []:
+        for delta in deltas:
             code = str(delta["code"])
             volume_delta = int(delta.get("volume_delta", 0))
             fill_price = delta.get("cost_price")

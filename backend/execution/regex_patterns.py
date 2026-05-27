@@ -27,10 +27,15 @@ _SIDE = r"(?P<side_zh>买入|卖出)"
 _CODE = r"(?P<stock_code>\d{6})"
 _NONNEG = r"\d+(?:\.\d+)?"
 
+# P0-4-amendment-2026-05-27 §2.1 — FILLED report is now「成交价 + 股数」
+# only (report_schema_version v2). The owner no longer reports 手续费;
+# the system derives the fee-inclusive cost. The old v1 form carried a
+# trailing ``手续费 <num>`` — its absence here means a pasted v1-format
+# report no longer matches and is routed to AMBIGUOUS (fail-closed),
+# never silently applied with a phantom fee.
 _FILLED_BASE = (
     rf"已执行 {_IID} {_SIDE} {_CODE} (?P<volume>\d+)股 "
-    rf"成交价 (?P<fill_price>{_NONNEG}) "
-    rf"手续费 (?P<fee>{_NONNEG})"
+    rf"成交价 (?P<fill_price>{_NONNEG})"
 )
 
 _PARTIAL_BASE = (

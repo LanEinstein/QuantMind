@@ -162,7 +162,12 @@ class BrokerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     initial_capital: float = 1_000_000.0
-    commission_rate: float = 0.0003
+    commission_rate: float = 0.00015
+    """Owner's real broker commission rate — 万分之1.5 (P0-4-amendment-
+    2026-05-27 §2.3): 0.0003 placeholder → 0.00015. Floored at
+    ``min_commission`` (5 CNY) and charged double-sided (BUY + SELL).
+    Runtime-immutable (P1-2.C / P0-7 §2 redline 1): change = git diff +
+    amendment + restart, never hot-reload."""
     stamp_tax_rate: float = 0.001
     slippage_bps: int = 2
     """Fallback scalar used when ``slippage_bps_by_board`` does not

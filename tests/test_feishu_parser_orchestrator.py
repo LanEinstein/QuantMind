@@ -54,7 +54,7 @@ _VALID_CHAT = "oc_" + "f" * 32
 
 GOOD_REPORT_TEXT = (
     "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
-    "1000股 成交价 3.85 手续费 5"
+    "1000股 成交价 3.85"
 )
 
 
@@ -308,7 +308,7 @@ class TestClarification:
         # plan side=BUY but text says SELL — parser will reject after regex match.
         text = (
             "已执行 QM-20260516-103000-510300-BUY-001 卖出 510300 "
-            "1000股 成交价 3.85 手续费 5"
+            "1000股 成交价 3.85"
         )
         plan = _make_plan(side=InstructionSide.BUY)
         audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
@@ -373,7 +373,7 @@ class TestClarification:
         # text claims 2000 shares filled but plan was 1000.
         wrong_volume = (
             "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
-            "2000股 成交价 3.85 手续费 5"
+            "2000股 成交价 3.85"
         )
         orchestrator, applier, feishu, _, _ = _build_orchestrator(
             plans={plan.instruction_id: plan},

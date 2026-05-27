@@ -139,6 +139,7 @@ def calculate_cost(
     volume: int,
     direction: OrderDirection,
     config: BrokerConfig,
+    apply_slippage_model: bool = True,
 ) -> OrderCostBreakdown:
     """Compute per-fill economics for a hypothetical or real fill.
 
@@ -150,6 +151,14 @@ def calculate_cost(
         direction: BUY or SELL.
         config: BrokerConfig — supplies commission / stamp tax /
             slippage / min_commission / transfer_fee toggle.
+        apply_slippage_model: when True (default) the simulation_auto
+            board-tiered slippage model nudges the fill price away from
+            the order price (BUY up / SELL down). When False the
+            ``order_price`` IS the fill price verbatim and ``slippage_cost``
+            is 0 — used for the feishu_interactive path (P0-4-amendment-
+            2026-05-27 §2.2): the owner reports the real broker fill price,
+            which already embeds real market slippage, so layering the
+            simulation slippage model on top would double-count it.
 
     Returns:
         Immutable :class:`OrderCostBreakdown` carrying gross + each
@@ -160,7 +169,10 @@ def calculate_cost(
     if order_price <= 0:
         raise ValueError(f"order_price {order_price} must be positive")
 
-    fill_price = apply_slippage(order_price, direction, board, config)
+    if apply_slippage_model:
+        fill_price = apply_slippage(order_price, direction, board, config)
+    else:
+        fill_price = _round2(order_price)
     gross = _round2(fill_price * volume)
     slippage_cost = _round2(abs(fill_price - order_price) * volume)
 

@@ -35,10 +35,14 @@ const SIDE = '(?<side_zh>买入|卖出)'
 const CODE = '(?<stock_code>\\d{6})'
 const NONNEG = '\\d+(?:\\.\\d+)?'
 
+// P0-4-amendment-2026-05-27 §2.1 — FILLED is now「成交价 + 股数」only
+// (report_schema_version v2). The owner no longer reports 手续费; the
+// backend derives the fee-inclusive cost. The trailing 手续费 group was
+// removed so a pasted v1-format report no longer previews as valid —
+// matching the backend regex exactly (mirror SSoT, vitest-asserted).
 const FILLED_BASE =
   `已执行 ${IID} ${SIDE} ${CODE} (?<volume>\\d+)股 ` +
-  `成交价 (?<fill_price>${NONNEG}) ` +
-  `手续费 (?<fee>${NONNEG})`
+  `成交价 (?<fill_price>${NONNEG})`
 
 const PARTIAL_BASE =
   `部分执行 ${IID} ${SIDE} ${CODE} ` +
@@ -153,8 +157,8 @@ export const TEMPLATES = [
     id: 'FILLED',
     label: '已执行',
     placeholder:
-      '已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4',
-    description: '订单完全成交时使用。',
+      '已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5',
+    description: '订单完全成交时使用。只填成交价(每股)+ 股数,手续费由系统计算。',
   },
   {
     id: 'PARTIAL',
@@ -174,14 +178,14 @@ export const TEMPLATES = [
     id: 'AMEND_FILLED',
     label: '更正',
     placeholder:
-      '更正 已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4',
+      '更正 已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5',
     description: '已提交回报需要修正时,使用对应 "更正 ..." 前缀。',
   },
   {
     id: 'POST_CLOSE_FILLED',
     label: '盘后补录',
     placeholder:
-      '盘后补录 已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5 手续费 5.4',
+      '盘后补录 已执行 QM-20260516-093001-600519-BUY-001 买入 600519 100股 成交价 1800.5',
     description:
       '盘后(16:00 后)补录,bypass valid_until,但仅限当日 16:00 前完成。',
   },

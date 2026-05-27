@@ -24,6 +24,7 @@ from backend.broker.models import BrokerConfig, OrderDirection
 from backend.broker.persistence.events import BrokerEventType
 from backend.broker.persistence.store import BrokerEventStore
 from backend.models.execution import (
+    REPORT_SCHEMA_V1_OWNER_FEE,
     ExecutionReport,
     ExecutionReportChannel,
     ExecutionReportKind,
@@ -146,10 +147,13 @@ def _filled_report(
     instruction_id: str = "QM-20260515-100000-600519-BUY-001",
     fill_price: float = 1800.0,
     filled_volume: int = 100,
-    fee: float = 5.0,
     side_zh: str = "买入",
     channel: ExecutionReportChannel = ExecutionReportChannel.FEISHU,
 ) -> ExecutionReport:
+    # P0-4-amendment-2026-05-27 §2.4 — v2 (current) FILLED: owner reports
+    # 「price + volume」only; the system derives the fee-inclusive cost.
+    # 600519 is SH_MAIN, so 100@1800 → gross 180_000, commission
+    # max(180_000*0.00015, 5) = 27.0, transfer fee 0 → net 180_027.
     return ExecutionReport(
         report_id="r-1",
         instruction_id=instruction_id,
@@ -159,8 +163,32 @@ def _filled_report(
         stock_code="600519",
         filled_volume=filled_volume,
         fill_price=fill_price,
-        fee=fee,
         raw_text="FILLED 600519 买入 100@1800.0",
+        received_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+        parsed_at=dt.datetime(2026, 5, 15, 10, 5, 1, tzinfo=SHANGHAI),
+    )
+
+
+def _filled_report_v1(
+    *,
+    fee: float = 5.0,
+    fill_price: float = 1800.0,
+    filled_volume: int = 100,
+) -> ExecutionReport:
+    """Legacy v1 report (owner-reported fee). Kept for backward-compat
+    coverage — never produced by the current parser."""
+    return ExecutionReport(
+        report_id="r-1-v1",
+        instruction_id="QM-20260515-100000-600519-BUY-001",
+        kind=ExecutionReportKind.FILLED,
+        channel=ExecutionReportChannel.FEISHU,
+        report_schema_version=REPORT_SCHEMA_V1_OWNER_FEE,
+        side_zh="买入",
+        stock_code="600519",
+        filled_volume=filled_volume,
+        fill_price=fill_price,
+        fee=fee,
+        raw_text="FILLED 600519 买入 100@1800.0 手续费 5.0",
         received_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
         parsed_at=dt.datetime(2026, 5, 15, 10, 5, 1, tzinfo=SHANGHAI),
     )
@@ -235,15 +263,18 @@ class TestExecutionReportApplier:
 
         result = await applier.apply(_filled_report(), side_is_buy=True)
 
-        # Cash dropped by 1800*100 + 5 fee = 180_005.
+        # v2: cash dropped by gross 180_000 + system commission 27 (no
+        # transfer fee on SH_MAIN) = 180_027 (P0-4-amendment §2.2).
         assert isinstance(result, ApplyResult)
-        assert result.cash_delta == pytest.approx(-180_005.0)
+        assert result.cash_delta == pytest.approx(-180_027.0)
         account = await env.broker.get_account()
-        assert account.available_cash == pytest.approx(1_000_000.0 - 180_005.0)
+        assert account.available_cash == pytest.approx(1_000_000.0 - 180_027.0)
         positions = await env.broker.get_positions()
         assert len(positions) == 1
         assert positions[0].code == "600519"
         assert positions[0].volume == 100
+        # Fee-inclusive cost basis: 180_027 / 100 = 1800.27.
+        assert positions[0].cost_price == pytest.approx(1800.27)
         # BrokerEvent persisted with the right type + correlation_id.
         assert any(
             doc["event_type"] == BrokerEventType.EXECUTION_REPORT_APPLIED.value
@@ -274,7 +305,6 @@ class TestExecutionReportApplier:
             stock_code="600519",
             filled_volume=100,
             fill_price=1810.0,
-            fee=5.0,
             raw_text="FILLED 600519 卖出 100@1810",
             received_at=dt.datetime(2026, 5, 15, 10, 6, tzinfo=SHANGHAI),
             parsed_at=dt.datetime(2026, 5, 15, 10, 6, 1, tzinfo=SHANGHAI),
@@ -320,8 +350,10 @@ class TestExecutionReportApplier:
             parsed_at=dt.datetime(2026, 5, 15, 10, 5, 1, tzinfo=SHANGHAI),
         )
         result = await applier.apply(partial, side_is_buy=True)
-        # PARTIAL has no fee field — applier applies just the gross.
-        assert result.cash_delta == pytest.approx(-180_000.0)
+        # PARTIAL is always v2 — the system now computes the fee on the
+        # filled leg (previously applied fee=0). 100@1800 SH_MAIN →
+        # gross 180_000 + commission 27 = 180_027 (P0-4-amendment §2.2).
+        assert result.cash_delta == pytest.approx(-180_027.0)
         positions = await env.broker.get_positions()
         assert positions[0].volume == 100
 
@@ -431,7 +463,7 @@ class TestExecutionReportIdempotency:
         after_fail = await env.broker.get_account()
         # The broker mutated exactly once despite the post-mutation error.
         assert after_fail.available_cash == pytest.approx(
-            1_000_000.0 - 180_005.0
+            1_000_000.0 - 180_027.0
         )
 
         # Retry the same report — the held claim short-circuits to a
@@ -456,7 +488,6 @@ class TestExecutionReportIdempotency:
             stock_code="600519",
             filled_volume=100,
             fill_price=1810.0,
-            fee=5.0,
             raw_text="FILLED 600519 卖出 100@1810",
             received_at=dt.datetime(2026, 5, 15, 10, 6, tzinfo=SHANGHAI),
             parsed_at=dt.datetime(2026, 5, 15, 10, 6, 1, tzinfo=SHANGHAI),
@@ -645,17 +676,20 @@ class TestMockBrokerExternalWrites:
             code="600519",
             volume=100,
             fill_price=1800.0,
-            fee=5.0,
             side_is_buy=True,
             traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
             report_id="r-1",
             kind="FILLED",
+            report_schema_version=2,
         )
         trades = await broker.get_trades()
         assert len(trades) == 1
         assert trades[0].code == "600519"
         assert trades[0].direction == OrderDirection.BUY
-        assert out["cash_delta"] == pytest.approx(-180_005.0)
+        # v2: gross 180_000 + system commission 27 = 180_027.
+        assert out["cash_delta"] == pytest.approx(-180_027.0)
+        assert out["commission"] == pytest.approx(27.0)
+        assert out["report_schema_version"] == 2
 
     @pytest.mark.asyncio
     async def test_reset_to_snapshot_clears_and_rewrites(self) -> None:
@@ -668,11 +702,11 @@ class TestMockBrokerExternalWrites:
             code="600519",
             volume=100,
             fill_price=1800.0,
-            fee=5.0,
             side_is_buy=True,
             traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
             report_id="r-pre",
             kind="FILLED",
+            report_schema_version=2,
         )
 
         await broker.reset_to_snapshot(
@@ -697,14 +731,168 @@ class TestMockBrokerExternalWrites:
         with pytest.raises(ValueError, match="volume"):
             await broker.apply_external_fill(
                 order_id_hint="x", code="600519", volume=0,
-                fill_price=1800.0, fee=5.0, side_is_buy=True,
+                fill_price=1800.0, side_is_buy=True,
                 traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
-                report_id="r", kind="FILLED",
+                report_id="r", kind="FILLED", report_schema_version=2,
             )
         with pytest.raises(ValueError, match="fill_price"):
             await broker.apply_external_fill(
                 order_id_hint="x", code="600519", volume=100,
-                fill_price=0.0, fee=5.0, side_is_buy=True,
+                fill_price=0.0, side_is_buy=True,
                 traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
-                report_id="r", kind="FILLED",
+                report_id="r", kind="FILLED", report_schema_version=2,
             )
+
+
+# ---------------------------------------------------------------------------
+# P0-4-amendment-2026-05-27 — v1 (owner fee) vs v2 (system-computed fee)
+# ---------------------------------------------------------------------------
+
+
+def _fresh_broker() -> MockBroker:
+    return MockBroker(
+        config=BrokerConfig(initial_capital=1_000_000.0),
+        now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+    )
+
+
+_TRADED_AT = dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI)
+
+
+class TestExternalFillCostSchemas:
+    @pytest.mark.asyncio
+    async def test_v2_buy_sh_main_commission_only(self) -> None:
+        broker = _fresh_broker()
+        out = await broker.apply_external_fill(
+            order_id_hint="x", code="600519", volume=100, fill_price=1800.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r",
+            kind="FILLED", report_schema_version=2,
+        )
+        # gross 180_000, commission max(180_000*0.00015, 5) = 27.0,
+        # SH_MAIN transfer fee 0 → net 180_027.
+        assert out["commission"] == pytest.approx(27.0)
+        assert out["transfer_fee"] == 0.0
+        assert out["stamp_tax"] == 0.0
+        assert out["net"] == pytest.approx(180_027.0)
+        assert out["cash_delta"] == pytest.approx(-180_027.0)
+        positions = await broker.get_positions()
+        # Fee-inclusive cost basis 180_027 / 100 = 1800.27.
+        assert positions[0].cost_price == pytest.approx(1800.27)
+        trades = await broker.get_trades()
+        assert trades[0].commission == pytest.approx(27.0)
+        assert trades[0].slippage_cost == 0.0  # no simulation slippage
+
+    @pytest.mark.asyncio
+    async def test_v2_buy_sz_main_includes_transfer_fee(self) -> None:
+        broker = _fresh_broker()
+        out = await broker.apply_external_fill(
+            order_id_hint="x", code="000001", volume=1_000, fill_price=10.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r",
+            kind="FILLED", report_schema_version=2,
+        )
+        # gross 10_000, commission max(10_000*0.00015, 5) = 5.0 (floor),
+        # SZ transfer fee 10_000*0.0000341 = 0.34, net 10_005.34.
+        assert out["commission"] == pytest.approx(5.0)
+        assert out["transfer_fee"] == pytest.approx(0.34)
+        assert out["net"] == pytest.approx(10_005.34)
+        assert out["cash_delta"] == pytest.approx(-10_005.34)
+
+    @pytest.mark.asyncio
+    async def test_v2_sell_subtracts_commission_stamp_transfer(self) -> None:
+        broker = _fresh_broker()
+        await broker.apply_external_fill(
+            order_id_hint="x", code="000001", volume=1_000, fill_price=10.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r-buy",
+            kind="FILLED", report_schema_version=2,
+        )
+        out = await broker.apply_external_fill(
+            order_id_hint="x", code="000001", volume=1_000, fill_price=11.0,
+            side_is_buy=False, traded_at=_TRADED_AT, report_id="r-sell",
+            kind="FILLED", report_schema_version=2,
+        )
+        # gross 11_000; commission max(11_000*0.00015,5)=5.0; stamp
+        # 11_000*0.001=11.0; transfer 11_000*0.0000341=0.38;
+        # net = 11_000 - 5 - 11 - 0.38 = 10_983.62.
+        assert out["commission"] == pytest.approx(5.0)
+        assert out["stamp_tax"] == pytest.approx(11.0)
+        assert out["transfer_fee"] == pytest.approx(0.38)
+        assert out["net"] == pytest.approx(10_983.62)
+        assert out["cash_delta"] == pytest.approx(10_983.62)
+
+    @pytest.mark.asyncio
+    async def test_v2_weighted_average_blend_is_fee_inclusive(self) -> None:
+        broker = _fresh_broker()
+        await broker.apply_external_fill(
+            order_id_hint="x", code="600519", volume=100, fill_price=1800.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r1",
+            kind="FILLED", report_schema_version=2,
+        )
+        await broker.apply_external_fill(
+            order_id_hint="x", code="600519", volume=100, fill_price=1820.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r2",
+            kind="FILLED", report_schema_version=2,
+        )
+        positions = await broker.get_positions()
+        # basis1 = 1800.27 (net 180_027/100); basis2 = 1820.273
+        # (net 182_027.3/100). Weighted avg over 200 shares = 1810.27.
+        assert positions[0].volume == 200
+        assert positions[0].cost_price == pytest.approx(1810.27)
+
+    @pytest.mark.asyncio
+    async def test_v2_min_commission_floor(self) -> None:
+        broker = _fresh_broker()
+        out = await broker.apply_external_fill(
+            order_id_hint="x", code="600519", volume=100, fill_price=1.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r",
+            kind="FILLED", report_schema_version=2,
+        )
+        # gross 100, 100*0.00015 = 0.015 << 5 → commission floored at 5.0.
+        assert out["commission"] == pytest.approx(5.0)
+
+    @pytest.mark.asyncio
+    async def test_v2_rejects_owner_fee(self) -> None:
+        broker = _fresh_broker()
+        with pytest.raises(ValueError, match="must not receive"):
+            await broker.apply_external_fill(
+                order_id_hint="x", code="600519", volume=100,
+                fill_price=1800.0, side_is_buy=True, traded_at=_TRADED_AT,
+                report_id="r", kind="FILLED", report_schema_version=2, fee=5.0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_v1_legacy_owner_fee_path(self) -> None:
+        broker = _fresh_broker()
+        out = await broker.apply_external_fill(
+            order_id_hint="x", code="600519", volume=100, fill_price=1800.0,
+            side_is_buy=True, traded_at=_TRADED_AT, report_id="r",
+            kind="FILLED", report_schema_version=REPORT_SCHEMA_V1_OWNER_FEE,
+            fee=5.0,
+        )
+        # v1: owner fee applied verbatim as commission; cost basis = raw
+        # fill price (no fee folded in) — the legacy behaviour.
+        assert out["commission"] == pytest.approx(5.0)
+        assert out["net"] == pytest.approx(180_005.0)
+        assert out["cash_delta"] == pytest.approx(-180_005.0)
+        positions = await broker.get_positions()
+        assert positions[0].cost_price == pytest.approx(1800.0)
+
+    @pytest.mark.asyncio
+    async def test_v1_requires_fee(self) -> None:
+        broker = _fresh_broker()
+        with pytest.raises(ValueError, match="requires fee"):
+            await broker.apply_external_fill(
+                order_id_hint="x", code="600519", volume=100,
+                fill_price=1800.0, side_is_buy=True, traded_at=_TRADED_AT,
+                report_id="r", kind="FILLED",
+                report_schema_version=REPORT_SCHEMA_V1_OWNER_FEE,
+            )
+
+    @pytest.mark.asyncio
+    async def test_v1_vs_v2_idempotency_keys_differ(self) -> None:
+        # Same fill reported under v1 vs v2 must NOT collide in the
+        # idempotency guard (version is part of the key).
+        from backend.broker.appliers import compute_idempotency_key
+
+        v1 = _filled_report_v1()
+        v2 = _filled_report()
+        assert compute_idempotency_key(v1) != compute_idempotency_key(v2)

@@ -9,7 +9,11 @@ mock:
   # restart), NOT a bare edit — recovery.py uses snapshot.initial_capital
   # when a snapshot exists. ¥100k = Normal budget tier (P0-7 trio applies).
   initial_capital: 100000
-  commission_rate: 0.0003          # 0.03%
+  # P0-4-amendment-2026-05-27 §2.3: owner's real broker commission is
+  # 万分之1.5 (0.00015), floored at min_commission (5 CNY), double-sided.
+  # 0.0003 placeholder → 0.00015. Runtime-immutable (P1-2.C / P0-7 §2
+  # redline 1): change = git diff + amendment + restart, NO hot-reload.
+  commission_rate: 0.00015         # 0.015% (万分之1.5)
   stamp_tax_rate: 0.001            # 0.1% (sell only)
   slippage_bps: 2                  # Legacy fallback when board lookup misses
   min_commission: 5.0              # Min 5 CNY per trade

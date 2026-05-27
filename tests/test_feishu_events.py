@@ -38,7 +38,7 @@ def _build_event(
     sender_open_id: str = "ou_sender_1",
     text: str = (
         "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
-        "1000股 成交价 3.85 手续费 5"
+        "1000股 成交价 3.85"
     ),
     create_time: str = "1747380000000",
     message_type: str = "text",

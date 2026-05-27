@@ -784,14 +784,17 @@ _EVOLUTION_ARTIFACT_TYPES: frozenset[str] = frozenset(
 
 
 _REPORT_TEMPLATE_BLOCK: tuple[str, ...] = (
-    "1. 已执行 <编号> <买入|卖出> <代码> <股数>股 成交价 <价> 手续费 <费>",
+    "1. 已执行 <编号> <买入|卖出> <代码> <股数>股 成交价 <价>",
     "2. 部分执行 <编号> <买入|卖出> <代码> <成交>股 成交价 <价> 剩余 <未成交>股",
     "3. 未执行 <编号> 原因: <原因>",
     "4. 更正/盘后补录: 在 1/2/3 前加 `更正 ` 或 `盘后补录 `",
+    "(只填成交价(每股)+ 股数;手续费/过户费/印花税由系统按真实费率计算)",
 )
 """Locked template block reused by InstructionPlan + Clarification
 prompts so the operator sees the same wire shape regardless of message
-kind. Mirrors :mod:`backend.execution.regex_patterns`."""
+kind. Mirrors :mod:`backend.execution.regex_patterns`. P0-4-amendment-
+2026-05-27 §2.1: the FILLED form is「成交价 + 股数」only — the owner no
+longer reports 手续费; the system derives the fee-inclusive cost."""
 
 
 _CLARIFICATION_BODIES: Mapping[ClarificationTemplate, str] = {

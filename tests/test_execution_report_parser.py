@@ -21,6 +21,7 @@ from backend.execution.regex_patterns import (
     R_UNFILLED,
 )
 from backend.models.execution import (
+    REPORT_SCHEMA_V1_OWNER_FEE,
     ExecutionReport,
     ExecutionReportChannel,
     ExecutionReportKind,
@@ -50,15 +51,17 @@ NOW = datetime(2026, 5, 12, 10, 0, 0, tzinfo=SH)
 
 class TestRegexAcceptance:
     def test_filled(self) -> None:
+        # P0-4-amendment-2026-05-27 §2.1 — FILLED v2 is「成交价 + 股数」only.
         text = (
             "已执行 QM-20260512-093001-600519-BUY-001 买入 600519 100股 "
-            "成交价 1678.50 手续费 5.00"
+            "成交价 1678.50"
         )
         m = R_FILLED.fullmatch(text)
         assert m is not None
         assert m["instruction_id"] == "QM-20260512-093001-600519-BUY-001"
         assert m["volume"] == "100"
         assert m["fill_price"] == "1678.50"
+        assert "fee" not in m.groupdict()
 
     def test_partial(self) -> None:
         text = (
@@ -88,7 +91,7 @@ class TestRegexAcceptance:
     def test_prefixed_filled(self, pattern, prefix: str) -> None:
         text = (
             f"{prefix} 已执行 QM-20260512-093001-600519-BUY-001 买入 600519 "
-            f"100股 成交价 1678.50 手续费 5.00"
+            f"100股 成交价 1678.50"
         )
         assert pattern.fullmatch(text) is not None
 
@@ -168,7 +171,7 @@ class TestParser:
     def test_filled(self) -> None:
         report = parse_execution_report(
             "已执行 QM-20260512-093001-600519-BUY-001 买入 600519 100股 "
-            "成交价 1678.50 手续费 5.00",
+            "成交价 1678.50",
             channel=ExecutionReportChannel.FEISHU,
             received_at=NOW,
         )
@@ -176,7 +179,10 @@ class TestParser:
         assert report.prefix is ExecutionReportPrefix.NONE
         assert report.filled_volume == 100
         assert report.fill_price == 1678.5
-        assert report.fee == 5.0
+        # P0-4-amendment-2026-05-27 §2.4 — owner no longer reports fee;
+        # every parsed report is v2 with fee absent (system computes it).
+        assert report.fee is None
+        assert report.report_schema_version == 2
 
     def test_partial(self) -> None:
         report = parse_execution_report(
@@ -201,7 +207,7 @@ class TestParser:
     def test_amend_filled(self) -> None:
         report = parse_execution_report(
             "更正 已执行 QM-20260512-093001-600519-BUY-001 买入 600519 100股 "
-            "成交价 1677.80 手续费 5.00",
+            "成交价 1677.80",
             channel=ExecutionReportChannel.FEISHU,
             received_at=NOW,
         )
@@ -224,7 +230,7 @@ class TestParser:
     def test_whitespace_collapsed(self) -> None:
         report = parse_execution_report(
             "  已执行   QM-20260512-093001-600519-BUY-001 买入 600519 100股 "
-            "成交价 1678.50 手续费 5.00  ",
+            "成交价 1678.50  ",
             channel=ExecutionReportChannel.FEISHU,
             received_at=NOW,
         )
@@ -252,7 +258,7 @@ class TestParser:
         # 更正 应优先匹配 amend 形式而非裸已执行
         report = parse_execution_report(
             "更正 已执行 QM-20260512-093001-600519-BUY-001 买入 600519 100股 "
-            "成交价 1.00 手续费 0.00",
+            "成交价 1.00",
             channel=ExecutionReportChannel.FEISHU,
             received_at=NOW,
         )
@@ -265,7 +271,9 @@ class TestParser:
 
 
 class TestExecutionReportInvariants:
-    def test_filled_requires_fee(self) -> None:
+    def test_filled_v2_forbids_fee(self) -> None:
+        # P0-4-amendment-2026-05-27 §2.4 — a v2 (default) FILLED report
+        # must NOT carry a fee; the system derives it.
         with pytest.raises(ValidationError):
             ExecutionReport(
                 report_id="r1",
@@ -276,7 +284,81 @@ class TestExecutionReportInvariants:
                 stock_code="600519",
                 filled_volume=100,
                 fill_price=1.0,
-                # fee missing
+                fee=5.0,  # forbidden on v2
+                raw_text="x",
+                received_at=NOW,
+                parsed_at=NOW,
+            )
+
+    def test_filled_v2_without_fee_is_valid(self) -> None:
+        report = ExecutionReport(
+            report_id="r1",
+            instruction_id="QM-20260512-093001-600519-BUY-001",
+            kind=ExecutionReportKind.FILLED,
+            channel=ExecutionReportChannel.FEISHU,
+            side_zh="买入",
+            stock_code="600519",
+            filled_volume=100,
+            fill_price=1.0,
+            raw_text="x",
+            received_at=NOW,
+            parsed_at=NOW,
+        )
+        assert report.report_schema_version == 2
+        assert report.fee is None
+
+    def test_filled_v1_requires_fee(self) -> None:
+        # Legacy v1 keeps the original invariant — fee must be present.
+        with pytest.raises(ValidationError):
+            ExecutionReport(
+                report_id="r1",
+                instruction_id="QM-20260512-093001-600519-BUY-001",
+                kind=ExecutionReportKind.FILLED,
+                channel=ExecutionReportChannel.FEISHU,
+                report_schema_version=REPORT_SCHEMA_V1_OWNER_FEE,
+                side_zh="买入",
+                stock_code="600519",
+                filled_volume=100,
+                fill_price=1.0,
+                # fee missing — invalid for v1
+                raw_text="x",
+                received_at=NOW,
+                parsed_at=NOW,
+            )
+
+    def test_filled_v1_with_fee_is_valid(self) -> None:
+        report = ExecutionReport(
+            report_id="r1",
+            instruction_id="QM-20260512-093001-600519-BUY-001",
+            kind=ExecutionReportKind.FILLED,
+            channel=ExecutionReportChannel.FEISHU,
+            report_schema_version=REPORT_SCHEMA_V1_OWNER_FEE,
+            side_zh="买入",
+            stock_code="600519",
+            filled_volume=100,
+            fill_price=1.0,
+            fee=5.0,
+            raw_text="x",
+            received_at=NOW,
+            parsed_at=NOW,
+        )
+        assert report.fee == 5.0
+
+    def test_v1_only_valid_for_filled(self) -> None:
+        # v1 is the legacy owner-fee FILLED schema only — a v1 PARTIAL is
+        # rejected at the model boundary (would crash in the broker).
+        with pytest.raises(ValidationError, match="v1 is only valid"):
+            ExecutionReport(
+                report_id="r1",
+                instruction_id="QM-20260512-093001-600519-BUY-001",
+                kind=ExecutionReportKind.PARTIAL,
+                channel=ExecutionReportChannel.FEISHU,
+                report_schema_version=REPORT_SCHEMA_V1_OWNER_FEE,
+                side_zh="买入",
+                stock_code="600519",
+                filled_volume=60,
+                remain_volume=40,
+                fill_price=1.0,
                 raw_text="x",
                 received_at=NOW,
                 parsed_at=NOW,
@@ -416,7 +498,7 @@ class TestParserCrossCheck:
         # requires this to surface as AMBIGUOUS, not a silent acceptance.
         text = (
             "已执行 QM-20260512-093001-600519-BUY-001 卖出 600519 100股 "
-            "成交价 1678.50 手续费 5.00"
+            "成交价 1678.50"
         )
         with pytest.raises(ExecutionReportParseError) as ei:
             parse_execution_report(
@@ -429,7 +511,7 @@ class TestParserCrossCheck:
     def test_stock_code_mismatch_yields_parse_error(self) -> None:
         text = (
             "已执行 QM-20260512-093001-600519-BUY-001 买入 000001 100股 "
-            "成交价 1678.50 手续费 5.00"
+            "成交价 1678.50"
         )
         with pytest.raises(ExecutionReportParseError) as ei:
             parse_execution_report(
@@ -444,7 +526,7 @@ class TestParserCrossCheck:
         # surface as parse_error, not raw ValidationError.
         text = (
             "已执行 QM-20260512-093001-600519-BUY-001 买入 600519 0股 "
-            "成交价 1.00 手续费 0.00"
+            "成交价 1.00"
         )
         with pytest.raises(ExecutionReportParseError):
             parse_execution_report(
@@ -459,7 +541,7 @@ class TestParserPlanLink:
         plan = _make_plan()
         text = (
             f"已执行 {plan.instruction_id} 买入 {plan.stock_code} 100股 "
-            f"成交价 1678.50 手续费 5.00"
+            f"成交价 1678.50"
         )
         # ``received_at`` is set after `plan.created_at` to imitate a
         # human Feishu reply; the parser does not check timing, but the

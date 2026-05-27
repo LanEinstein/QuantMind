@@ -44,6 +44,7 @@ from backend.broker.mock_broker import MockBroker
 from backend.broker.persistence.events import BrokerEventType
 from backend.broker.persistence.store import BrokerEventStore
 from backend.models.execution import (
+    REPORT_SCHEMA_V1_OWNER_FEE,
     ExecutionReport,
     ExecutionReportKind,
 )
@@ -80,10 +81,17 @@ def compute_idempotency_key(report: ExecutionReport) -> str:
             return str(value)
         return format(float(value), ".4f")  # type: ignore[arg-type]
 
+    # P0-4-amendment-2026-05-27 §2.4 — the key carries the schema version
+    # + fill price + volumes, NOT a system-derived fee. ``report.fee`` is
+    # None on v2 reports (so ``_num`` yields ""), which keeps the key
+    # independent of the computed fee; v1 (legacy owner-fee) reports still
+    # contribute their reported fee so a fee-only correction is not
+    # silently deduped away.
     parts = (
         report.instruction_id,
         report.kind.value,
         report.prefix.value,
+        str(report.report_schema_version),
         report.stock_code or "",
         _num(report.filled_volume),
         _num(report.remain_volume),
@@ -227,9 +235,15 @@ class ExecutionReportApplier:
         assert report.stock_code is not None
         assert report.filled_volume is not None
         assert report.fill_price is not None
-        assert report.fee is not None or report.kind is ExecutionReportKind.PARTIAL
-
-        fee = float(report.fee) if report.fee is not None else 0.0
+        # P0-4-amendment-2026-05-27 §2.4 — v1 carries an owner fee; v2
+        # (the current schema) omits it and the broker derives the
+        # fee-inclusive cost. The model validator already enforces this
+        # invariant per kind+version; assert it here as a last-line guard.
+        if report.report_schema_version == REPORT_SCHEMA_V1_OWNER_FEE:
+            assert report.fee is not None
+        else:
+            assert report.fee is None
+        owner_fee = float(report.fee) if report.fee is not None else None
 
         try:
             applied = await self._broker.apply_external_fill(
@@ -237,11 +251,12 @@ class ExecutionReportApplier:
                 code=report.stock_code,
                 volume=int(report.filled_volume),
                 fill_price=float(report.fill_price),
-                fee=fee,
                 side_is_buy=side_is_buy,
                 traded_at=report.parsed_at,
                 report_id=report.report_id,
                 kind=report.kind.value,
+                report_schema_version=report.report_schema_version,
+                fee=owner_fee,
             )
         except Exception:
             # apply_external_fill validates + mutates atomically under its
@@ -254,6 +269,10 @@ class ExecutionReportApplier:
 
         # Compose the BrokerEvent payload — the recovery loader expects
         # cash_delta + positions_delta keys for EXECUTION_REPORT_APPLIED.
+        # ``report_schema_version`` is persisted so recovery can branch
+        # (P0-4-amendment-2026-05-27 §2.4); the derived friction
+        # breakdown is recorded for audit provenance (recovery itself
+        # replays from the deltas, not by recomputing the fee).
         payload: dict[str, Any] = {
             "report_id": report.report_id,
             "instruction_id": report.instruction_id,
@@ -263,7 +282,11 @@ class ExecutionReportApplier:
             "stock_code": report.stock_code,
             "volume": int(report.filled_volume),
             "fill_price": float(report.fill_price),
-            "fee": fee,
+            "report_schema_version": applied["report_schema_version"],
+            "commission": applied["commission"],
+            "stamp_tax": applied["stamp_tax"],
+            "transfer_fee": applied["transfer_fee"],
+            "net": applied["net"],
             "side_is_buy": side_is_buy,
             "cash_delta": applied["cash_delta"],
             "positions_delta": applied["positions_delta"],
@@ -292,7 +315,10 @@ class ExecutionReportApplier:
                 "stock_code": report.stock_code,
                 "filled_volume": int(report.filled_volume),
                 "fill_price": float(report.fill_price),
-                "fee": fee,
+                "report_schema_version": applied["report_schema_version"],
+                "commission": applied["commission"],
+                "stamp_tax": applied["stamp_tax"],
+                "transfer_fee": applied["transfer_fee"],
                 "broker_event_sequence": event.sequence,
             },
             outcome=AuditOutcome.SUCCESS,

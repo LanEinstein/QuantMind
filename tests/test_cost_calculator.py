@@ -178,11 +178,67 @@ class TestNetAmountSemantics:
             code="600519",
             board=Board.SH_MAIN,
             order_price=1.0,
-            volume=100,  # gross 100 CNY * 0.0003 = 0.03 CNY << min 5
+            volume=100,  # gross 100 CNY * 0.00015 = 0.015 CNY << min 5
             direction=OrderDirection.BUY,
             config=config,
         )
         assert out.commission == 5.0
+
+
+class TestInteractiveNoSlippage:
+    """P0-4-amendment-2026-05-27 §2.2 — the feishu_interactive path passes
+    ``apply_slippage_model=False`` because the owner's reported fill price
+    IS the real fill (slippage already embedded). simulation_auto keeps the
+    default (board-tiered slippage model). The two cost calibers therefore
+    differ by construction even on identical inputs."""
+
+    def test_no_slippage_keeps_order_price_as_fill_price(
+        self, config: BrokerConfig
+    ) -> None:
+        out = calculate_cost(
+            code="300750",
+            board=Board.CHUANGYE,  # 3.5bp slippage when modelled
+            order_price=100.0,
+            volume=100,
+            direction=OrderDirection.BUY,
+            config=config,
+            apply_slippage_model=False,
+        )
+        assert out.fill_price == 100.0
+        assert out.slippage_cost == 0.0
+
+    def test_slippage_model_default_moves_fill_price(
+        self, config: BrokerConfig
+    ) -> None:
+        out = calculate_cost(
+            code="300750",
+            board=Board.CHUANGYE,
+            order_price=100.0,
+            volume=100,
+            direction=OrderDirection.BUY,
+            config=config,
+        )
+        # Default (simulation_auto) applies 3.5bp board slippage on BUY.
+        assert out.fill_price > 100.0
+        assert out.slippage_cost > 0.0
+
+    def test_two_calibers_differ_on_identical_inputs(
+        self, config: BrokerConfig
+    ) -> None:
+        kwargs = dict(
+            code="300750",
+            board=Board.CHUANGYE,
+            order_price=100.0,
+            volume=100,
+            direction=OrderDirection.BUY,
+            config=config,
+        )
+        sim = calculate_cost(**kwargs)
+        interactive = calculate_cost(**kwargs, apply_slippage_model=False)
+        assert interactive.net_amount < sim.net_amount
+        assert interactive.commission == pytest.approx(
+            max(100.0 * 100 * config.commission_rate, config.min_commission)
+        )
 
 
 class TestStrictModel:

@@ -32,6 +32,7 @@ from backend.execution.regex_patterns import (
     R_UNFILLED,
 )
 from backend.models.execution import (
+    REPORT_SCHEMA_V2_SYSTEM_FEE,
     ExecutionReport,
     ExecutionReportChannel,
     ExecutionReportKind,
@@ -169,17 +170,20 @@ def _build_report(
     instruction_id = groups["instruction_id"]
 
     if target.kind is ExecutionReportKind.FILLED:
+        # P0-4-amendment-2026-05-27 §2.1/§2.4 — the FILLED regex no longer
+        # captures a 手续费 group; the owner reports「价 + 量」and the
+        # system derives the fee. Every parsed report is therefore v2.
         return ExecutionReport(
             report_id=report_id,
             instruction_id=instruction_id,
             kind=target.kind,
             prefix=target.prefix,
             channel=channel,
+            report_schema_version=REPORT_SCHEMA_V2_SYSTEM_FEE,
             side_zh=groups["side_zh"],
             stock_code=groups["stock_code"],
             filled_volume=int(groups["volume"]),
             fill_price=float(groups["fill_price"]),
-            fee=float(groups["fee"]),
             raw_text=raw_text,
             received_at=received_at,
             parsed_at=parsed_at,
@@ -191,6 +195,7 @@ def _build_report(
             kind=target.kind,
             prefix=target.prefix,
             channel=channel,
+            report_schema_version=REPORT_SCHEMA_V2_SYSTEM_FEE,
             side_zh=groups["side_zh"],
             stock_code=groups["stock_code"],
             filled_volume=int(groups["filled_volume"]),
@@ -207,6 +212,7 @@ def _build_report(
         kind=target.kind,
         prefix=target.prefix,
         channel=channel,
+        report_schema_version=REPORT_SCHEMA_V2_SYSTEM_FEE,
         reason=groups["reason"].strip(),
         raw_text=raw_text,
         received_at=received_at,

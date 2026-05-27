@@ -38,6 +38,20 @@ class ExecutionReportChannel(StrEnum):
     FRONTEND = "FRONTEND"
 
 
+# P0-4-amendment-2026-05-27 §2.4 — report schema versioning. The owner's
+# FILLED report shape changed from「价 + 量 + 费」to「价 + 量」: the owner
+# no longer reports the fee; the system computes the fee-inclusive cost.
+#   * v1 (legacy) — carried an owner-reported ``fee`` (the pre-amendment
+#     FILLED regex with 手续费). Kept for deterministic replay of any
+#     persisted v1 event; never produced by the current parser.
+#   * v2 (current) — owner reports fill_price + volume only; the system
+#     derives commission / stamp tax / transfer fee via
+#     :func:`backend.broker.cost_calculator.calculate_cost`
+#     (``apply_slippage_model=False``).
+REPORT_SCHEMA_V1_OWNER_FEE = 1
+REPORT_SCHEMA_V2_SYSTEM_FEE = 2
+
+
 class ExecutionReport(BaseModel):
     """A successfully parsed user execution report.
 
@@ -55,6 +69,15 @@ class ExecutionReport(BaseModel):
     kind: ExecutionReportKind
     prefix: ExecutionReportPrefix = ExecutionReportPrefix.NONE
     channel: ExecutionReportChannel
+    report_schema_version: int = Field(
+        default=REPORT_SCHEMA_V2_SYSTEM_FEE,
+        ge=REPORT_SCHEMA_V1_OWNER_FEE,
+        le=REPORT_SCHEMA_V2_SYSTEM_FEE,
+    )
+    """P0-4-amendment-2026-05-27 §2.4. v1 = owner-reported fee (legacy),
+    v2 = system-computed fee (current). Drives whether ``fee`` must be
+    present (v1) or absent (v2) on a FILLED report, and which cost path
+    the applier takes."""
 
     side_zh: str | None = Field(default=None, pattern=r"^(买入|卖出)$")
     stock_code: str | None = Field(default=None, pattern=r"^\d{6}$")
@@ -71,10 +94,31 @@ class ExecutionReport(BaseModel):
     @model_validator(mode="after")
     def _check_kind_field_consistency(self) -> ExecutionReport:
         k = self.kind
+        # P0-4-amendment-2026-05-27 §2.4 — v1 is the *legacy owner-fee
+        # FILLED* schema only. PARTIAL / UNFILLED never carried a fee, so
+        # they are always v2; allowing a v1 PARTIAL would pass this model
+        # yet crash deep in apply_external_fill ("v1 requires fee"). Reject
+        # the inconsistent combination at the boundary instead.
+        if (
+            self.report_schema_version == REPORT_SCHEMA_V1_OWNER_FEE
+            and k is not ExecutionReportKind.FILLED
+        ):
+            raise ValueError(
+                f"report_schema_version v1 is only valid for FILLED, "
+                f"got kind={k.value}"
+            )
         if k is ExecutionReportKind.FILLED:
             self._require_present(
-                "side_zh", "stock_code", "filled_volume", "fill_price", "fee"
+                "side_zh", "stock_code", "filled_volume", "fill_price"
             )
+            # P0-4-amendment-2026-05-27 §2.4 — fee presence is version-
+            # gated: v1 (legacy) carries the owner-reported fee, v2 omits
+            # it (the system derives the fee-inclusive cost). Pretending
+            # v2 has fee=0 is explicitly forbidden — the version decides.
+            if self.report_schema_version == REPORT_SCHEMA_V1_OWNER_FEE:
+                self._require_present("fee")
+            else:
+                self._require_absent("fee")
             self._require_absent("remain_volume", "reason")
             if self.filled_volume is not None and self.filled_volume <= 0:
                 raise ValueError("FILLED report requires filled_volume > 0")
@@ -87,7 +131,10 @@ class ExecutionReport(BaseModel):
                 "remain_volume",
                 "fill_price",
             )
-            self._require_absent("reason")
+            # PARTIAL never carried a fee (the regex never captured one);
+            # the system always computes it. Forbid it explicitly so a
+            # mis-built report fails fast rather than silently dropping it.
+            self._require_absent("reason", "fee")
             if self.filled_volume is not None and self.filled_volume <= 0:
                 raise ValueError("PARTIAL report requires filled_volume > 0")
             if self.remain_volume is not None and self.remain_volume <= 0:
@@ -147,6 +194,8 @@ class ExecutionReport(BaseModel):
 
 
 __all__ = [
+    "REPORT_SCHEMA_V1_OWNER_FEE",
+    "REPORT_SCHEMA_V2_SYSTEM_FEE",
     "ExecutionReport",
     "ExecutionReportChannel",
     "ExecutionReportKind",
