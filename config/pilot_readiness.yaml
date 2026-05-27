@@ -19,9 +19,9 @@
 #
 # Each entry: <bool>  # cond N — <what proves it> (produced by <task>)
 
-dry_run_double_line_pass: false        # cond 3  — 1 real-trading-day render-only dry-run PASS, owner-reviewed (U-D3)
-feishu_send_recv_smoke_pass: false     # cond 4  — 1 real Feishu send + 1 report parsed by strict regex (U-D4)
-outbox_restart_idempotent: false       # cond 5  — same instruction_id not re-sent across restart (U-D4)
-no_double_execution_invariant: false   # cond 6  — every VALIDATED id mutually-exclusive single-route (U-D4)
-all_report_templates_parse_apply: false  # cond 7  — all report templates parse/apply, AMBIGUOUS never mutates (U-D4)
-rollback_simulation_only_ready: false  # cond 11 — one-click rollback to simulation-only drilled (account lifecycle reset)
+dry_run_double_line_pass: false        # cond 3  — 1 real-trading-day render-only dry-run PASS, owner-reviewed (U-E5: needs market-hours rerun + owner review)
+feishu_send_recv_smoke_pass: false     # cond 4  — 1 real Feishu send + 1 report parsed by strict regex (U-E5: owner-gated real send)
+outbox_restart_idempotent: true        # cond 5  — same instruction_id not re-sent across restart (U-E5 test sign-off: tests/orchestration/test_instruction_dispatcher.py + tests/test_pilot_cond_evidence.py)
+no_double_execution_invariant: true    # cond 6  — every VALIDATED id mutually-exclusive single-route (U-E5 test sign-off: tests/orchestration/test_route_coordinator.py + test_no_stray_route_callers.py)
+all_report_templates_parse_apply: true   # cond 7  — all report templates parse/apply, AMBIGUOUS never mutates (U-E5 test sign-off: tests/test_execution_report_parser.py + tests/test_feishu_parser_orchestrator.py)
+rollback_simulation_only_ready: true   # cond 11 — one-click rollback to simulation-only drilled (U-E5 test sign-off: tests/test_pilot_cond_evidence.py::test_cond11_rollback_to_simulation_only_resets_account)

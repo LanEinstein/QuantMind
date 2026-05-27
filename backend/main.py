@@ -1769,14 +1769,25 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         # ``application.state.feishu_event_receiver = None`` so the
         # process appeared to enable the overlay while no consumer
         # existed for execution reports / reconciliation replies.
+        from backend.audit.models import (
+            AuditActor,
+            AuditEventType,
+            AuditOutcome,
+        )
         from backend.integrations.feishu.dedupe import RedisEventDedupe
         from backend.integrations.feishu.events import (
             FeishuEventReceiver,
             ReceivedMessage,
         )
+        from backend.integrations.feishu.inbound_gate import (
+            InboundGate,
+            InboundVerdict,
+        )
+        from backend.services.secrets_validator import compute_fingerprint
 
         execution_orch = application.state.execution_report_orchestrator
         reconciliation_orch = application.state.reconciliation_orchestrator
+        audit_store_ref = application.state.audit_store
 
         # Codex Cycle 8 P1 fix — chat-id gate (CLAUDE.md §2.6 + P0-2
         # amendment-2026-05-16 §4 红线 7 require alert and decision
@@ -1812,8 +1823,31 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 "reconciliation/execution reply and mutate the broker."
             )
 
+        # P0-2-amendment-2026-05-27 — owner open_id allowlist. The
+        # chat-id gate above only proves the message is on the decision
+        # group; without a sender allowlist ANY decision-group member's
+        # text that matches a report/reconciliation regex would mutate
+        # the broker. ``from_env`` is fail-closed: an unset/empty
+        # FEISHU_OWNER_OPEN_ID aborts startup here (same severity as the
+        # decision-chat / alert!=decision gates) rather than shipping a
+        # path that authorizes nobody silently.
+        try:
+            inbound_gate = InboundGate.from_env(os.environ)
+        except ValueError as exc:
+            raise SystemExit(
+                "Refusing to start: FEISHU_INTERACTIVE_ENABLED=true but the "
+                "inbound owner allowlist is unusable "
+                f"({exc}). Set FEISHU_OWNER_OPEN_ID to the owner's open_id(s) "
+                "(ou_..., comma-separated) per P0-2-amendment-2026-05-27 so a "
+                "non-owner reply in the decision chat can never mutate the "
+                "broker mirror."
+            ) from exc
+
         async def _feishu_dispatch(message: ReceivedMessage) -> None:
-            if message.chat_id != decision_chat_env:
+            verdict = inbound_gate.classify(
+                chat_id=message.chat_id, sender_id=message.sender_id
+            )
+            if verdict is InboundVerdict.DROP_WRONG_CHAT:
                 log.warning(
                     "feishu_message_dropped_wrong_chat",
                     expected_decision_chat_fp=(
@@ -1826,6 +1860,32 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                         if message.chat_id
                         else ""
                     ),
+                )
+                return
+            if verdict is InboundVerdict.DROP_NOT_OWNER:
+                # Decision chat, but a non-allowlisted sender — fail-closed:
+                # never reaches the parser/applier/broker mirror. Audit with
+                # a sender FINGERPRINT only (never the raw open_id / message
+                # text — sender ids are user-controlled and would leak into
+                # every audit row).
+                log.warning(
+                    "feishu_message_dropped_not_owner",
+                    sender_fingerprint=compute_fingerprint(message.sender_id),
+                )
+                await audit_store_ref.write(
+                    event_type=AuditEventType.FEISHU_MESSAGE_RECEIVED,
+                    actor=AuditActor.FEISHU_USER,
+                    resource_type="feishu_inbound_message",
+                    resource_id=message.message_id,
+                    payload={
+                        "sender_fingerprint": compute_fingerprint(
+                            message.sender_id
+                        ),
+                        "reason": "sender_not_in_owner_allowlist",
+                    },
+                    outcome=AuditOutcome.BLOCKED,
+                    reason_namespace="inbound_sender_not_allowlisted",
+                    timestamp=datetime.now(tz=SHANGHAI_TZ),
                 )
                 return
             if reconciliation_orch is not None:

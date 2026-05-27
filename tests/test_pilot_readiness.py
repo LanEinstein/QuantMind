@@ -207,9 +207,16 @@ def test_non_mapping_manifest_is_empty(tmp_path: Path) -> None:
     assert read_manifest_flags(path) == {}
 
 
-def test_committed_manifest_is_all_false_fail_closed() -> None:
-    # The repo's checked-in manifest must ship fail-closed (no premature
-    # sign-off) — every condition false until its evidence lands.
+def test_committed_manifest_owner_conds_not_prematurely_signed() -> None:
+    # Probe-layer fail-closed guard: the committed manifest parses to the
+    # exact locked schema (no drift / extra key), and the two OWNER/market-
+    # gated conds (cond3 dry-run review, cond4 real Feishu send) are never
+    # signed off by a test — they require an owner action that cannot be
+    # asserted in CI. The full 4-true/2-false ledger-state lock + the
+    # cond→evidence map live in tests/test_pilot_cond_evidence.py (single
+    # source of truth for the per-flag state); this test deliberately does
+    # NOT duplicate that, only the fail-closed schema + owner-gate guard.
     flags = read_manifest_flags(Path("config/pilot_readiness.yaml"))
     assert set(flags) == set(_MANIFEST_KEYS)
-    assert all(v is False for v in flags.values())
+    assert flags["dry_run_double_line_pass"] is False     # cond3 owner-gated
+    assert flags["feishu_send_recv_smoke_pass"] is False  # cond4 owner-gated
