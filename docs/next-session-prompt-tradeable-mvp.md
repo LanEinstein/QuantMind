@@ -73,13 +73,14 @@
 - [x] 抽 `text_safety.py`(`single_line`/`truncate` byte-identical)+ feishu 包隔离测试泛化扫全模块
 - [x] TDD(判据渲染快照 + 防注入嵌入换行/控制符 + 截断 + display-only:AST 不可达 parser/幂等 + 不入 plan/risk_summary + volume 不变)+ 门禁 **3989 passed/cov 90.63%** + ruff + redline 全绿 + **claude /code-review high**(codex 撞额度回退)7 角度修 5 finding(docs/reviews/U-E4-codex-review-summary.md)+ commit 5ca6ba8 + plan.html done。**无前端改动**(判据出站,前端镜像入站正则未动)
 
-### [ ] U-E5 — 缺口2:端到端双线测(出站真发 + 入站真回填)【owner-gated】
-- [ ] owner 前置:建决策群 + 设 `FEISHU_DECISION_CHAT_ID`/`FEISHU_INTERACTIVE_ENABLED=true`
-- [ ] 真发 1 条 BUY 到决策群(缺口2/3/4 落地后)
-- [ ] owner 按 v2 模板回填 → lark-oapi WS 接收(verify/encrypt token 鉴权)+ **owner open_id allowlist** → parser → ExecutionReportApplier(durable 幂等)→ MockBroker 镜像 → 对账(现金1元/量0%/成本0.01元)
-- [ ] 给 owner 证据:镜像前后持仓 + 成本价 + 对账结果
-- [ ] 翻 PILOT cond5(outbox 重启幂等)/cond6(无双重执行)/cond7(全回报模板 parse-apply)/cond11 证据
-- [ ] TDD(e2e replay/idempotency)+ 门禁 + codex + commit + plan.html
+### [ ] U-E5 — 缺口2:端到端双线测(出站真发 + 入站真回填)【owner-gated】 — (A) 无发送前置 done `0c2a8b6`,(B) 真发待 owner
+- [x] **(A) 入站 owner open_id allowlist**(feature `0c2a8b6`):新纯模块 `backend/integrations/feishu/inbound_gate.py`(`InboundGate` 三态 + `from_env` fail-closed)+ `main.py::_feishu_dispatch` 经 gate(DROP_NOT_OWNER 写 audit + return,不触 parser/applier)+ 启动期 fail-fast;amendment `P0-2-amendment-2026-05-27-owner-open-id-allowlist`。新 env = `FEISHU_OWNER_OPEN_ID`(owner open_id,逗号分隔多个)
+- [x] **(A) 只读 `scripts/list_feishu_chats.py`** 实跑核对 OK:机器人在 2 群,`FEISHU_DECISION_CHAT_ID`→『QuantMind决策执行群』present、与告警群不同(`decision_is_alert=false`);零发送
+- [x] **(A) 翻 PILOT cond5(outbox 重启幂等)/cond6(单路由无双执行)/cond7(全回报模板 parse-apply+AMBIGUOUS 不改镜像)/cond11(模拟态回滚演练)→ true**(test 签收;cond3/cond4 仍 false → PILOT gate 仍被拒)。新测试 inbound_gate(12)+list_feishu_chats(6)+pilot_cond_evidence(cond11 演练+ledger 锁)
+- [x] **(A) 门禁 + 审查**:4009 passed/cov 90.58% + ruff + redline ALL PASS;claude /code-review high(codex 撞额度至 ~5-31)2 correctness 角度 clean;docs/reviews/U-E5-codex-review-summary.md
+- ⚠️ **cond3 待开盘**:22:05 已收盘做不了;开盘(09:35 后)重跑 `scripts/dry_run_double_line.py` 渲真 BUY+判据 → owner 审翻 cond3。先确认 eastmoney 入 `no_proxy`(现复测代理可达但瞬时态)
+- [ ] **(B) owner 前置**:设 `FEISHU_INTERACTIVE_ENABLED=true` + `FEISHU_OWNER_OPEN_ID`(新增)+ go-live gate 全过(注:设 INTERACTIVE 后 main.py 在 gate 未过时 SystemExit)
+- [ ] **(B) 真发 1 条 BUY 到决策群**(发前必向 owner 明示内容+目标群拿确认)→ owner v2 模板回填 → WS(鉴权+allowlist)→ parser → ExecutionReportApplier(durable 幂等)→ MockBroker 镜像 → 对账(现金1元/量0%/成本0.01元)→ 给 owner 证据镜像前后+成本价+对账 → 翻 cond4
 
 ### [ ] U-D5 — 双线生产 e2e + redline 编排隔离 + SSoT 收官(回收)
 - [ ] `test_mvp_e2e` 双线生产 e2e(0 真实网络 + 注入 fake)
