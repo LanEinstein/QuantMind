@@ -14,6 +14,7 @@ from backend.models.market import (
     CapitalFlowData,
     IndexQuote,
     SectorQuote,
+    StockOrderbook,
     StockQuote,
     WatchlistMarketSnapshot,
 )
@@ -387,6 +388,238 @@ class TestGetSectorOverview:
         assert len(result) == 1
         assert isinstance(result[0], SectorQuote)
         assert result[0].name == "白酒"
+
+
+def _adata_five_df() -> pd.DataFrame:
+    """adata get_market_five shape: s1..s5 (ask), b1..b5 (bid); no last."""
+    return pd.DataFrame(
+        [
+            {
+                "stock_code": "600519",
+                "short_name": "贵州茅台",
+                "s5": 1805.0, "sv5": 100, "s4": 1804.0, "sv4": 200,
+                "s3": 1803.0, "sv3": 300, "s2": 1802.0, "sv2": 400,
+                "s1": 1801.0, "sv1": 500,
+                "b1": 1800.0, "bv1": 600, "b2": 1799.0, "bv2": 700,
+                "b3": 1798.0, "bv3": 800, "b4": 1797.0, "bv4": 900,
+                "b5": 1796.0, "bv5": 1000,
+            }
+        ]
+    )
+
+
+def _akshare_bidask_df() -> pd.DataFrame:
+    """akshare stock_bid_ask_em long [item, value] shape."""
+    return pd.DataFrame(
+        [
+            {"item": "sell_5", "value": 1805.0},
+            {"item": "sell_1", "value": 1801.0},
+            {"item": "buy_1", "value": 1800.0},
+            {"item": "最新", "value": 1800.5},
+        ]
+    )
+
+
+class TestGetStockOrderbook:
+    """U-E2 (a): five-level orderbook fetch for the price-cage best_ask."""
+
+    @pytest.mark.asyncio
+    async def test_adata_primary_success(
+        self, service: MarketDataService
+    ) -> None:
+        with patch(
+            "backend.data.market_data._fetch_orderbook_adata",
+            return_value=_adata_five_df(),
+        ):
+            ob = await service.get_stock_orderbook("600519")
+        assert isinstance(ob, StockOrderbook)
+        assert ob.code == "600519"
+        assert ob.best_ask == 1801.0  # s1
+        assert ob.best_bid == 1800.0  # b1
+        assert ob.last is None  # adata five has no last print
+        assert ob.source == "adata"
+
+    @pytest.mark.asyncio
+    async def test_akshare_fallback_on_primary_failure(
+        self, service: MarketDataService
+    ) -> None:
+        with (
+            patch(
+                "backend.data.market_data._fetch_orderbook_adata",
+                side_effect=Exception("adata down"),
+            ),
+            patch(
+                "backend.data.market_data._fetch_orderbook_akshare",
+                return_value=_akshare_bidask_df(),
+            ),
+        ):
+            ob = await service.get_stock_orderbook("600519")
+        assert ob.best_ask == 1801.0  # sell_1
+        assert ob.best_bid == 1800.0  # buy_1
+        assert ob.last == 1800.5  # 最新
+        assert ob.source == "akshare"
+
+    @pytest.mark.asyncio
+    async def test_empty_adata_falls_through_to_akshare(
+        self, service: MarketDataService
+    ) -> None:
+        with (
+            patch(
+                "backend.data.market_data._fetch_orderbook_adata",
+                return_value=pd.DataFrame(),
+            ),
+            patch(
+                "backend.data.market_data._fetch_orderbook_akshare",
+                return_value=_akshare_bidask_df(),
+            ),
+        ):
+            ob = await service.get_stock_orderbook("600519")
+        assert ob.source == "akshare"
+        assert ob.best_ask == 1801.0
+
+    @pytest.mark.asyncio
+    async def test_both_fail_raises(self, service: MarketDataService) -> None:
+        with (
+            patch(
+                "backend.data.market_data._fetch_orderbook_adata",
+                side_effect=Exception("adata down"),
+            ),
+            patch(
+                "backend.data.market_data._fetch_orderbook_akshare",
+                side_effect=Exception("akshare down"),
+            ),
+        ):
+            with pytest.raises(DataFetchError):
+                await service.get_stock_orderbook("600519")
+
+    @pytest.mark.asyncio
+    async def test_inf_ask_falls_through_to_fallback(
+        self, service: MarketDataService
+    ) -> None:
+        # A pandas inf cell for 卖一 must be treated as missing (→ fallback),
+        # never surfaced as a price (it would suppress the fallback then crash
+        # the cage). _positive_or_none maps inf → None → primary failure.
+        inf_ask = _adata_five_df()
+        inf_ask.iloc[0, inf_ask.columns.get_loc("s1")] = float("inf")
+        with (
+            patch(
+                "backend.data.market_data._fetch_orderbook_adata",
+                return_value=inf_ask,
+            ),
+            patch(
+                "backend.data.market_data._fetch_orderbook_akshare",
+                return_value=_akshare_bidask_df(),
+            ),
+        ):
+            ob = await service.get_stock_orderbook("600519")
+        assert ob.source == "akshare"
+        assert ob.best_ask == 1801.0
+
+    @pytest.mark.asyncio
+    async def test_akshare_column_drift_raises_datafetch(
+        self, service: MarketDataService
+    ) -> None:
+        # A non-empty akshare frame without item/value (vendor schema drift)
+        # raises the documented DataFetchError, not a raw KeyError.
+        drifted = pd.DataFrame([{"col_a": 1, "col_b": 2}])
+        with (
+            patch(
+                "backend.data.market_data._fetch_orderbook_adata",
+                side_effect=Exception("adata down"),
+            ),
+            patch(
+                "backend.data.market_data._fetch_orderbook_akshare",
+                return_value=drifted,
+            ),
+        ):
+            with pytest.raises(DataFetchError):
+                await service.get_stock_orderbook("600519")
+
+    @pytest.mark.asyncio
+    async def test_missing_ask_falls_through_to_fallback(
+        self, service: MarketDataService
+    ) -> None:
+        # An adata book with a zero/blank 卖一 is a primary failure → akshare.
+        no_ask = _adata_five_df()
+        no_ask.iloc[0, no_ask.columns.get_loc("s1")] = 0.0
+        with (
+            patch(
+                "backend.data.market_data._fetch_orderbook_adata",
+                return_value=no_ask,
+            ),
+            patch(
+                "backend.data.market_data._fetch_orderbook_akshare",
+                return_value=_akshare_bidask_df(),
+            ),
+        ):
+            ob = await service.get_stock_orderbook("600519")
+        assert ob.source == "akshare"
+        assert ob.best_ask == 1801.0
+
+
+class TestGetStockRealtimeDual:
+    """U-E2 (b): dual-source last (adata + akshare) for divergence/staleness.
+
+    Returns a positional ``(primary, fallback)`` tuple — primary is always the
+    adata leg, fallback always the akshare leg — each ``None`` if that leg
+    failed. The provider runs ``evaluate_divergence`` + staleness over the pair.
+    """
+
+    @pytest.mark.asyncio
+    async def test_both_legs_returned(
+        self, service: MarketDataService
+    ) -> None:
+        with (
+            patch(
+                "backend.data.market_data._fetch_stock_adata",
+                return_value=_adata_stock_df(),
+            ),
+            patch(
+                "backend.data.market_data._fetch_stock_akshare",
+                return_value=_akshare_spot_df(),
+            ),
+        ):
+            primary, fallback = await service.get_stock_realtime_dual("600519")
+        assert primary is not None and isinstance(primary, StockQuote)
+        assert fallback is not None and isinstance(fallback, StockQuote)
+        assert primary.price == 1800.0
+        assert fallback.price == 1800.0
+
+    @pytest.mark.asyncio
+    async def test_fallback_leg_none_on_failure(
+        self, service: MarketDataService
+    ) -> None:
+        with (
+            patch(
+                "backend.data.market_data._fetch_stock_adata",
+                return_value=_adata_stock_df(),
+            ),
+            patch(
+                "backend.data.market_data._fetch_stock_akshare",
+                side_effect=Exception("akshare down"),
+            ),
+        ):
+            primary, fallback = await service.get_stock_realtime_dual("600519")
+        assert primary is not None
+        assert fallback is None  # single-source view degraded upstream
+
+    @pytest.mark.asyncio
+    async def test_primary_leg_none_on_failure(
+        self, service: MarketDataService
+    ) -> None:
+        with (
+            patch(
+                "backend.data.market_data._fetch_stock_adata",
+                side_effect=Exception("adata down"),
+            ),
+            patch(
+                "backend.data.market_data._fetch_stock_akshare",
+                return_value=_akshare_spot_df(),
+            ),
+        ):
+            primary, fallback = await service.get_stock_realtime_dual("600519")
+        assert primary is None
+        assert fallback is not None
 
 
 class TestGetCapitalFlow:

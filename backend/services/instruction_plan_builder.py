@@ -86,6 +86,7 @@ from backend.models.reconciliation import (
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.daily_state import DailyTradingState
 from backend.risk.engine import RiskEngine
+from backend.risk.price_cage import CageQuote
 from backend.risk.stock_meta import StockMetadata as RiskStockMetadata
 from backend.services.fund_manager_output import FundManagerOutput
 from backend.services.instruction_plan import make_instruction_id
@@ -851,6 +852,7 @@ class InstructionPlanBuilder:
             daily_state=context.daily_state,
             stock_meta=context.stock_meta,
             concentration_exception=context.concentration_exception,
+            live_quote=context.live_quote,
         )
 
         risk_summary = _build_risk_summary(engine_result)
@@ -1287,6 +1289,13 @@ class AssemblyContext:
     # never a single-point bypass). Defaults False so the strict P0-7 15% rule
     # holds for every Normal-tier / individual-stock candidate.
     concentration_exception: bool = False
+
+    # Live 卖一 quote for the RiskEngine check #02 cage subcheck (U-E2 / 缺口4).
+    # Set by the Line-1 provider AFTER it dual-source-validates the spot + reads
+    # the orderbook; forwarded into validate_order so check #02 independently
+    # rejects a BUY limit above the legal 卖一 cage (a 废单). ``None`` for SELL /
+    # monitoring / legacy callers — the cage subcheck is then skipped.
+    live_quote: CageQuote | None = None
 
 
 @dataclass(frozen=True)

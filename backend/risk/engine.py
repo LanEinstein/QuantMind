@@ -45,7 +45,8 @@ from backend.broker.models import (
     ValidationResult,
 )
 from backend.risk.daily_state import DailyTradingState
-from backend.risk.stock_meta import StockMetadata
+from backend.risk.price_cage import CageQuote, is_within_cage
+from backend.risk.stock_meta import Board, StockMetadata
 from backend.utils.trading_hours import is_trading_hours
 
 log = structlog.get_logger(component="risk.engine")
@@ -100,6 +101,7 @@ class RiskEngine:
         daily_state: DailyTradingState | None = None,
         stock_meta: StockMetadata | None = None,
         concentration_exception: bool = False,
+        live_quote: CageQuote | None = None,
     ) -> ValidationResult:
         """Run the 14-check validation chain. First failure short-circuits.
 
@@ -123,6 +125,13 @@ class RiskEngine:
                 ETF + whitelist + ≤1-lot from its own config + stock_meta,
                 so the flag alone never bypasses the limit. Defaults False
                 (every existing caller keeps the strict P0-7 15% rule).
+            live_quote: Optional live :class:`CageQuote` (卖一 + provenance)
+                for the check #02 continuous-auction price-cage subcheck
+                (U-E2 / 缺口4). When supplied AND the order is a BUY limit,
+                check #02 additionally rejects a limit above the legal cage
+                ceiling (a 废单) — folded INTO check #02 so the chain stays at
+                14 checks. ``None`` (legacy / SELL / monitoring callers) skips
+                the cage subcheck. A missing ``best_ask`` / board fails closed.
 
         Returns:
             ValidationResult — ``passed=True`` if all (applicable) checks
@@ -191,6 +200,15 @@ class RiskEngine:
                 # an empty message and is not carried.
                 if result.passed and result.message:
                     granted_exception = result
+            elif check.__name__ == "_check_price_reasonability":
+                # Check 2 also carries the U-E2 cage subcheck, which needs the
+                # live 卖一 quote. Special-cased here (like check 5) so the other
+                # 12 checks keep the uniform 7-arg signature and the cage stays
+                # FOLDED INTO check 2 (no 15th check).
+                result = self._check_price_reasonability(
+                    order, account, positions, prev_close, now,
+                    daily_state, stock_meta, live_quote=live_quote,
+                )
             else:
                 result = check(
                     order, account, positions, prev_close, now,
@@ -233,6 +251,46 @@ class RiskEngine:
             )
         return ValidationResult(passed=True)
 
+    def _cage_subcheck(
+        self,
+        order: Order,
+        stock_meta: StockMetadata | None,
+        live_quote: CageQuote | None,
+    ) -> ValidationResult | None:
+        """Check #02 cage subcheck — reject a BUY limit above the legal 卖一 cage.
+
+        Returns ``None`` when the cage does not apply (no live quote / not a BUY)
+        or the limit is within the cage; a failed :class:`ValidationResult`
+        (reusing check #02's ``price_reasonability`` rule_name, so no 15th check)
+        when the limit is a 废单. Fails closed — a missing board or a non-positive
+        ``best_ask`` makes the cage unprovable, so the order is rejected rather
+        than slipped through (:func:`is_within_cage` returns ``False``). The
+        ``price_cage_violation`` token + the provenance ``source`` are surfaced
+        in the message so audit can distinguish a cage reject from a band reject.
+        """
+        if order.direction is not OrderDirection.BUY or live_quote is None:
+            return None
+        board: Board | None = stock_meta.board if stock_meta is not None else None
+        if board is None:
+            return ValidationResult(
+                passed=False,
+                rule_name="price_reasonability",
+                message="price_cage_violation: missing board, cannot verify 卖一 cage",
+            )
+        if is_within_cage(
+            limit_price=order.price, best_ask=live_quote.best_ask, board=board
+        ):
+            return None
+        return ValidationResult(
+            passed=False,
+            rule_name="price_reasonability",
+            message=(
+                f"price_cage_violation: limit {order.price} exceeds 卖一 cage "
+                f"(best_ask={live_quote.best_ask}, source={live_quote.source}, "
+                f"board={board})"
+            ),
+        )
+
     def _check_price_reasonability(
         self,
         order: Order,
@@ -242,16 +300,28 @@ class RiskEngine:
         now: dt.datetime | None,
         daily_state: DailyTradingState | None,
         stock_meta: StockMetadata | None,
+        *,
+        live_quote: CageQuote | None = None,
     ) -> ValidationResult:
-        """Check 2: limit-order price within board-specific limit.
+        """Check 2: limit-order price within board-specific limit + price cage.
 
-        Per P0-7 §1.4.2 the limit is board-keyed (``sh_main`` / ``sz_main``
+        Per P0-7 §1.4.2 the band limit is board-keyed (``sh_main`` / ``sz_main``
         / ``etf`` 10%, ``chuangye`` 20%). Without ``stock_meta`` we fall
         back to ``PositionLimitsConfig.price_deviation_limit`` (kept for
         the legacy 7-check path; builder always supplies stock_meta).
+
+        U-E2 / 缺口4: when ``live_quote`` is supplied AND the order is a BUY
+        limit, an ADDITIONAL continuous-auction price-cage subcheck rejects a
+        limit above ``max(best_ask×1.02, best_ask+10×tick)`` (a 废单 the exchange
+        bounces). It runs FIRST — before the prev_close band early-returns — so
+        a missing prev_close can never bypass it; it stays folded into check 2
+        so the chain is still 14 checks.
         """
         if order.order_type == OrderType.MARKET:
             return ValidationResult(passed=True)
+        cage_fail = self._cage_subcheck(order, stock_meta, live_quote)
+        if cage_fail is not None:
+            return cage_fail
         # NaN / +-Inf prev_close would let the later
         # ``deviation > limit`` comparison silently return False and pass
         # an unbounded price through. Treat malformed values like None.

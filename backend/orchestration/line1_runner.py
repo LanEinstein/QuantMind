@@ -86,6 +86,12 @@ class Line1Outcome(StrEnum):
     only routes BUY (SELL is Line-2's deterministic monitoring job)."""
     DEGRADED = "degraded"
     """4-agent gate degraded (a mandatory agent was silent) — fail-closed HOLD."""
+    QUOTE_DEGRADED = "quote_degraded"
+    """The lead's live quote was unusable (no dual-source-fresh last, divergent /
+    stale spot, or missing 卖一) so the price-cage BUY 限价上限 is unprovable
+    (U-E2 / 缺口4). A structurally non-actionable notice is rendered (no order,
+    no instruction_id); the system NEVER prices a real BUY on the last / T-1
+    close. Per-candidate — the basket falls through to the next name."""
     EARLY_RETURN = "early_return"
     """A Builder five-early-return freeze blocked routing (data quality, etc.)."""
     BUDGET_EXHAUSTED = "budget_exhausted"
@@ -131,6 +137,23 @@ class RoutedBuy:
 
     plan: InstructionPlan
     route_outcome: RouteOutcome
+
+
+@dataclass(frozen=True)
+class Line1QuoteDegrade:
+    """The provider could not price a lead — degrade to a non-actionable notice.
+
+    Returned by ``Line1ContextProvider.build_lead_context`` (instead of a
+    ``Line1LeadContext``) when the lead's live quote is unusable: no
+    dual-source-fresh last, a divergent / stale spot, or a missing 卖一 (U-E2 /
+    缺口4). Flow-level only (the runner stays import-clean): the runner renders a
+    structurally non-actionable notice + classifies ``QUOTE_DEGRADED`` and never
+    prices a BUY on the last / T-1 close. ``reason`` is a deterministic
+    provider string (never LLM)."""
+
+    code: str
+    name: str
+    reason: str
 
 
 @runtime_checkable
@@ -184,14 +207,22 @@ class Line1ContextProvider(Protocol):
         """One A-share lot cost in ¥ (``last_price × lot_size``)."""
         ...
 
-    def build_lead_context(
+    async def build_lead_context(
         self,
         lead: CandidateRow,
         *,
         concentration_exception: bool = False,
         committed: tuple[CommittedBuy, ...] = (),
-    ) -> Line1LeadContext:
+        signal_id: str = "",
+        seq: int = 0,
+    ) -> Line1LeadContext | Line1QuoteDegrade:
         """Build the TeamContext + AssemblyContext factory for the lead.
+
+        Async because the provider fetches the lead's live quote (dual-source
+        last + 卖一 orderbook) here to derive the price-cage BUY 限价上限 (U-E2 /
+        缺口4). When the quote is unusable it returns a :class:`Line1QuoteDegrade`
+        instead of a context, so the runner degrades to a non-actionable notice
+        rather than pricing a BUY on the stale last / T-1 close.
 
         ``concentration_exception`` is the lead's budget-tier flag (over-15%
         whitelisted ETF in Micro/Small). The provider threads it into BOTH the
@@ -207,6 +238,9 @@ class Line1ContextProvider(Protocol):
         candidate is sized + 14-check-validated against the post-commitment
         state — keeping the basket collectively ≤ cash and ≤ the 70% cap. Empty
         for SINGLE mode and the first BASKET candidate (identical to U-D1b).
+
+        ``signal_id`` / ``seq`` thread the run correlation in so the provider can
+        tag the PIT spot snapshot's lineage (U-E2 §2.0 replayability).
         """
         ...
 
@@ -416,11 +450,32 @@ class Line1Runner:
         basket enter at the single point (``build_lead_context``) so the debate,
         the sizing and the authoritative 14-check all see the same state.
         """
-        lead_ctx = provider.build_lead_context(
+        lead_ctx = await provider.build_lead_context(
             candidate,
             concentration_exception=concentration_exception,
             committed=committed,
+            signal_id=signal_id,
+            seq=seq,
         )
+        if isinstance(lead_ctx, Line1QuoteDegrade):
+            # The lead's live quote was unusable (no dual-source-fresh last,
+            # divergent / stale spot, or missing 卖一). Render a structurally
+            # non-actionable notice + classify QUOTE_DEGRADED, skipping the
+            # debate (no LLM burned) — the basket falls through to the next
+            # name. We NEVER price a BUY on the last / T-1 close (U-E2 §2.0).
+            notice = self._renderer.render_non_actionable_quote(
+                stock_code=lead_ctx.code,
+                stock_name=lead_ctx.name,
+                reason=lead_ctx.reason,
+            )
+            log.info(
+                "line1_quote_degraded",
+                signal_id=signal_id,
+                code=lead_ctx.code,
+                reason=lead_ctx.reason,
+                notice_chars=len(notice),
+            )
+            return _CandidateResult(outcome=Line1Outcome.QUOTE_DEGRADED)
         debate = await run_shortlist(
             lead_ctx.team_context, [lead_ctx.brief], redis_client=self._redis
         )
@@ -623,6 +678,7 @@ __all__ = [
     "Line1ContextProvider",
     "Line1LeadContext",
     "Line1Outcome",
+    "Line1QuoteDegrade",
     "Line1RunResult",
     "Line1Runner",
     "Line1SelectionMode",

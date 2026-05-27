@@ -340,6 +340,35 @@ class MessageRenderer:
             ]
         )
 
+    def render_non_actionable_quote(
+        self,
+        *,
+        stock_code: str,
+        stock_name: str,
+        reason: str,
+    ) -> str:
+        """Render the U-E2 DEGRADED-quote first-class notice (no order).
+
+        Sent when the Line-1 lead cannot be priced safely — no dual-source-fresh
+        last, a divergent / stale spot, or a missing 卖一 — so the price cage's
+        BUY 限价上限 is unprovable. Deliberately mirrors
+        :meth:`render_no_compliant_trade` (NO order fields, NO instruction_id,
+        NO report template) and carries a 「非交易参考 · 不可下单」 header so the
+        operator can never mistake it for a dispatchable instruction. The system
+        NEVER falls back to the last print / T-1 close to route a real BUY
+        (U-E2 §2.0 — that would ship a 废单-risk price).
+        """
+        if not _STOCK_CODE_RE.fullmatch(stock_code):
+            raise ValueError(f"stock_code {stock_code!r} must be 6 digits")
+        return "\n".join(
+            [
+                "【QuantMind 非交易参考 · 不可下单】",
+                f"标的: {stock_code} {_single_line(stock_name)}",
+                "结论: 实时盘口不可用/不可信,无法核定价格笼子上限,本次不产生指令。",
+                f"原因: {_single_line(reason)}",
+            ]
+        )
+
     @staticmethod
     def _pilot_prefix(pilot: bool) -> list[str]:
         """Single-source PILOT banner prefix (P0-6-amendment-2026-05-25 §2.3).

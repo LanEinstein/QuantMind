@@ -152,6 +152,60 @@ class _FakeMarketMeta:
         return self._prev.get(code.split(".")[0].strip())
 
 
+class _FakeLiveData:
+    """Offline stand-in for the U-E2 live quote layer (dual-source + 卖一).
+
+    Returns last == best_ask ≈ each lead's T-1 last close so the cage limit
+    stays within the prev_close band, with the spot timestamp at the real wall
+    clock — strictly AFTER the replayed run ``now`` (a past trade date) so the
+    provider's staleness window passes (age is negative). The real owner-driven
+    run gets these from adata/akshare during market hours.
+    """
+
+    _PRICES: dict[str, float] = {
+        "600000": 12.9, "600004": 11.9, "600006": 10.9, "510300": 9.6,
+    }
+
+    def _q(self, code: str, price: float):  # noqa: ANN202
+        from backend.models.market import StockQuote
+
+        return StockQuote(
+            code=code, name=code, price=price, open=price, high=price,
+            low=price, prev_close=price, change_pct=0.0, volume=1.0,
+            amount=1.0, turnover_rate=0.0, timestamp=dt.datetime.now(dt.UTC),
+        )
+
+    async def get_stock_realtime_dual(self, code: str):  # noqa: ANN201
+        bare = code.split(".")[0].strip()
+        price = self._PRICES.get(bare)
+        if price is None:
+            return None, None
+        return self._q(bare, price), self._q(bare, price)
+
+    async def get_stock_orderbook(self, code: str):  # noqa: ANN201
+        from backend.models.market import StockOrderbook
+
+        bare = code.split(".")[0].strip()
+        price = self._PRICES.get(bare)
+        if price is None:
+            raise harness_data_fetch_error(bare)
+        return StockOrderbook(
+            code=bare, last=price, best_ask=price, best_bid=price * 0.999,
+            source="adata", ts=dt.datetime.now(dt.UTC),
+        )
+
+    async def get_watchlist_snapshot(self, codes, snapshot_at):  # noqa: ANN001, ANN201
+        # Line-2 intraday triggers stay off offline (empty spots) — only the
+        # Line-1 cage path needs this fake (matches the prior market_data=None).
+        return []
+
+
+def harness_data_fetch_error(code: str) -> Exception:
+    from backend.data.market_data import DataFetchError
+
+    return DataFetchError(f"no orderbook for {code}")
+
+
 class _FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, float] = {}
@@ -197,6 +251,7 @@ async def _make_ctx(
     tmp_path: Path,
     held_positions: tuple[Any, ...] = (),
     market_meta: Any = None,
+    market_data: Any | None = None,
 ) -> harness.DryRunContext:
     """Assemble a DryRunContext with fakes (the offline analogue of
     :func:`harness.build_real_context`)."""
@@ -237,7 +292,10 @@ async def _make_ctx(
         frame=frame,
         index_closes=(),  # NEUTRAL — no bear-regime ADD ban (prereq 4 fallback)
         market_meta=market_meta,
-        market_data=None,  # offline → empty spots (no intraday triggers)
+        # U-E2: a fake live quote layer so Line-1 can price a cage-bounded BUY
+        # offline. ``None`` keeps the legacy empty-spot path (Line-2 intraday
+        # triggers off; every Line-1 lead degrades to a non-actionable notice).
+        market_data=market_data if market_data is not None else _FakeLiveData(),
         data_quality_provider=None,  # clean fallback (prereq 1)
         snapshot_store=snapshot_store,
         run_trade_date="20260515",

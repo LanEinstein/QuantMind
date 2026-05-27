@@ -729,6 +729,11 @@ async def _init_line2_runners(
             frame=frame,
             llm_router=llm_router,
             now=now,
+            # U-E2 / 缺口4: the live dual-source spot + 卖一 orderbook layer the
+            # cage limit is derived from. ``None`` (no live layer) degrades every
+            # lead to a non-actionable notice — never a BUY on the T-1 close.
+            market_data=getattr(application.state, "market_data", None),
+            snapshot_store=snapshot_store,  # PIT sink for the live cage inputs
         )
         await line1_runner.run(frame=frame, provider=provider, now=now)
 

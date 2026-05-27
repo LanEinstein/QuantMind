@@ -35,12 +35,15 @@ from backend.broker.models import (
 )
 from backend.budget_policy.policy import BudgetTierConfig, BudgetTierPolicy
 from backend.candidate_selector.selector import CandidateSelector, SelectorConfig
+from backend.data.market_data import DataFetchError
 from backend.data.stock_metadata import Board
 from backend.integrations.feishu.renderer import MessageRenderer
 from backend.marketdata_snapshot import MarketDataSnapshot
+from backend.models.market import StockOrderbook, StockQuote
 from backend.orchestration.line1_runner import (
     CommittedBuy,
     Line1Outcome,
+    Line1QuoteDegrade,
     Line1Runner,
 )
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteMode
@@ -180,6 +183,85 @@ class _FakeBroker:
         return list(self._positions)
 
 
+# Live last==best_ask per code (≈ each lead's T-1 last close from the uptrend
+# fixtures) so the U-E2 cage limit (≈ last×1.02) stays within both the cage and
+# the prev_close band. The fake returns these as the dual-source spot + 卖一.
+_LIVE_PRICES: dict[str, float] = {
+    "600000": 12.9,   # _uptrend(10.0)[-1]
+    "600004": 11.9,   # _uptrend(9.0)[-1]
+    "600006": 10.9,   # _uptrend(8.0)[-1]
+    "510300": 12.0,   # _uptrend(9.1)[-1]
+    "600999": 20.0,   # absent-from-frame lead in the fallback test
+}
+
+
+class _FakeMarketData:
+    """Stub live quote layer for the U-E2 cage path (0 real network).
+
+    ``get_stock_realtime_dual`` returns BOTH spot legs (adata + akshare) and
+    ``get_stock_orderbook`` returns a 卖一 = best_ask, all priced from
+    ``_LIVE_PRICES``. The opt-in sets drive the degrade branches:
+    ``single_source`` (no akshare leg), ``divergent`` (legs disagree >0.3%),
+    ``missing_ask`` (no 卖一), ``unknown`` (no quote at all → DataFetchError),
+    ``nan_backup`` (akshare leg returns a real quote with a NaN price).
+    """
+
+    def __init__(
+        self,
+        *,
+        prices: dict[str, float] | None = None,
+        single_source: frozenset[str] = frozenset(),
+        divergent: frozenset[str] = frozenset(),
+        missing_ask: frozenset[str] = frozenset(),
+        unknown: frozenset[str] = frozenset(),
+        nan_backup: frozenset[str] = frozenset(),
+        now: datetime = _NOW,
+    ) -> None:
+        self._prices = dict(prices or _LIVE_PRICES)
+        self._single_source = single_source
+        self._divergent = divergent
+        self._missing_ask = missing_ask
+        self._unknown = unknown
+        self._nan_backup = nan_backup
+        self._now = now
+
+    def _q(self, code: str, price: float) -> StockQuote:
+        return StockQuote(
+            code=code, name=code, price=price, open=price, high=price,
+            low=price, prev_close=price, change_pct=0.0, volume=1.0,
+            amount=1.0, turnover_rate=0.0, timestamp=self._now,
+        )
+
+    async def get_stock_realtime_dual(
+        self, code: str
+    ) -> tuple[StockQuote | None, StockQuote | None]:
+        if code in self._unknown or code not in self._prices:
+            return None, None
+        price = self._prices[code]
+        primary = self._q(code, price)
+        if code in self._single_source:
+            return primary, None
+        if code in self._nan_backup:
+            # A pandas NaN cell from a vendor brown-out: a real StockQuote whose
+            # price is non-finite (must NOT pass as dual-source confirmation).
+            return primary, self._q(code, float("nan"))
+        fallback_price = price * 1.01 if code in self._divergent else price
+        return primary, self._q(code, fallback_price)
+
+    async def get_stock_orderbook(self, code: str) -> StockOrderbook:
+        if code in self._unknown or code not in self._prices:
+            raise DataFetchError(f"no orderbook for {code}")
+        price = self._prices[code]
+        return StockOrderbook(
+            code=code,
+            last=price,
+            best_ask=None if code in self._missing_ask else price,
+            best_bid=price * 0.999,
+            source="adata",
+            ts=self._now,
+        )
+
+
 def _risk_config() -> RiskConfig:
     return RiskConfig(
         position_limits=PositionLimitsConfig(),
@@ -234,6 +316,7 @@ async def _make_provider(
     cash: float,
     router: _StubRouter,
     positions: tuple[Position, ...] = (),
+    market_data: Any | None = None,
 ) -> Line1ContextProvider:
     run_state = await build_line1_run_state(
         broker=_FakeBroker(cash=cash, positions=positions),
@@ -244,7 +327,13 @@ async def _make_provider(
         now=_NOW,
     )
     return Line1ContextProvider(
-        run_state=run_state, frame=frame, llm_router=router, now=_NOW
+        run_state=run_state,
+        frame=frame,
+        llm_router=router,
+        now=_NOW,
+        # U-E2: inject the stub live-quote layer so the cage path engages; tests
+        # that exercise degrade branches pass a configured _FakeMarketData.
+        market_data=market_data if market_data is not None else _FakeMarketData(),
     )
 
 
@@ -520,7 +609,7 @@ async def test_build_lead_context_derives_prev_close_and_volume() -> None:
             avg_amount_20d=3e8,
         ),
     )
-    lead_ctx = provider.build_lead_context(lead)
+    lead_ctx = await provider.build_lead_context(lead)
     # prev_close = the prior bar from the frame, not a synthetic guess.
     assert lead_ctx.team_context.prev_close == pytest.approx(closes[-2])
     # Deterministic compliant volume: whole lots within the 15% cap.
@@ -570,7 +659,7 @@ async def test_build_lead_context_committed_threads_cash_and_positions() -> None
         frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
     )
     committed = (CommittedBuy(code="600004", volume=2_000, limit_price=10.0),)  # ¥20k
-    ctx = provider.build_lead_context(_lead_600000(), committed=committed)
+    ctx = await provider.build_lead_context(_lead_600000(), committed=committed)
     acct = ctx.team_context.account
     # Cash is debited by the check-4 cost (notional × 1.001 fee buffer) so a
     # later candidate is not handed overstated cash (codex P2).
@@ -585,7 +674,7 @@ async def test_build_lead_context_committed_threads_cash_and_positions() -> None
     # The committed BUY is counted toward the ≤5-orders/day cap (codex P1).
     assert ctx.team_context.daily_state.today_new_instruction_count == 1
     # Empty committed = the U-D1b path (unchanged account / positions / count).
-    base = provider.build_lead_context(_lead_600000())
+    base = await provider.build_lead_context(_lead_600000())
     assert base.team_context.account.available_cash == pytest.approx(98_000.0)
     assert base.team_context.positions == ()
     assert base.team_context.daily_state.today_new_instruction_count == 0
@@ -600,10 +689,12 @@ async def test_build_lead_context_committed_shrinks_volume_toward_total_cap() ->
     provider = await _make_provider(
         frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
     )
-    baseline = provider.build_lead_context(_lead_600000()).brief.proposed_volume
+    baseline = (
+        await provider.build_lead_context(_lead_600000())
+    ).brief.proposed_volume
     committed = (CommittedBuy(code="600004", volume=6_000, limit_price=10.0),)  # ¥60k
-    shrunk = provider.build_lead_context(
-        _lead_600000(), committed=committed
+    shrunk = (
+        await provider.build_lead_context(_lead_600000(), committed=committed)
     ).brief.proposed_volume
     assert shrunk < baseline
     assert shrunk % 100 == 0 and shrunk >= 100  # still a whole lot ≥ 1 lot
@@ -635,7 +726,7 @@ async def test_build_lead_context_prev_close_falls_back_when_absent() -> None:
             avg_amount_20d=3e8,
         ),
     )
-    lead_ctx = provider.build_lead_context(lead)
+    lead_ctx = await provider.build_lead_context(lead)
     assert lead_ctx.team_context.prev_close == 20.0
 
 
@@ -663,7 +754,7 @@ async def test_build_lead_context_non_positive_prev_close_falls_back() -> None:
             avg_amount_20d=3e8,
         ),
     )
-    lead_ctx = provider.build_lead_context(lead)
+    lead_ctx = await provider.build_lead_context(lead)
     assert lead_ctx.team_context.prev_close == 12.9
     # The factory must build a valid DataSnapshot (no ValidationError raised).
     ctx = lead_ctx.make_assembly_context(
@@ -749,3 +840,140 @@ async def test_provider_runner_hold_not_routed(builder, tmp_path) -> None:
     result = await runner.run(frame=_stock_frame(), provider=provider, now=_NOW)
     assert result.outcome is Line1Outcome.HOLD
     assert sender.calls == []  # HOLD never routes (CLAUDE.md §2.7)
+
+
+# ---------------------------------------------------------------------------
+# U-E2 / 缺口4 — live cage quote derivation + degrade paths + PIT
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cage_limit_threaded_into_assembly_and_brief() -> None:
+    # The live cage limit (≈ best_ask×1.02, floored) drives BOTH the brief
+    # proposed_limit_price AND the AssemblyContext.live_quote (best_ask the
+    # 14-check re-verifies). last == best_ask == 12.9 → cage ceiling
+    # max(13.158, 13.0)=13.158 → floor 13.15.
+    provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
+    )
+    lead_ctx = await provider.build_lead_context(_lead_600000(), signal_id="SIG-x")
+    assert lead_ctx.brief.proposed_limit_price == 13.15
+    ctx = lead_ctx.make_assembly_context(
+        signal_id="SIG-x", seq=1, debate_round_count=1,
+        analysis_record_id="ar", risk_validation_id="rv",
+    )
+    assert ctx.proposed_limit_price == 13.15
+    assert ctx.live_quote is not None
+    assert ctx.live_quote.best_ask == 12.9
+    assert ctx.live_quote.source == "adata"
+
+
+@pytest.mark.asyncio
+async def test_degrade_when_no_market_data_layer() -> None:
+    # No live layer → the provider NEVER prices a BUY on the T-1 close.
+    run_state = await build_line1_run_state(
+        broker=_FakeBroker(cash=98_000.0),
+        risk_engine=RiskEngine(_risk_config()),
+        circuit_breaker=CircuitBreaker(CircuitBreakerConfig()),
+        watchlist_policy=load_policy(Path("config/universe_policy.yaml")),
+        risk_config=_risk_config(),
+        now=_NOW,
+    )
+    provider = Line1ContextProvider(
+        run_state=run_state, frame=_stock_frame(), llm_router=_StubRouter(),
+        now=_NOW, market_data=None,
+    )
+    out = await provider.build_lead_context(_lead_600000())
+    assert isinstance(out, Line1QuoteDegrade)
+    assert "no live market-data" in out.reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "needle"),
+    [
+        ({"single_source": frozenset({"600000"})}, "single-source"),
+        ({"divergent": frozenset({"600000"})}, "divergence"),
+        ({"missing_ask": frozenset({"600000"})}, "卖一"),
+        ({"unknown": frozenset({"600000"})}, "primary spot leg"),
+        # codex U-E2 P1: a NaN backup price must NOT pass as dual-source — a
+        # malformed leg makes divergence unprovable, so degrade single-source.
+        ({"nan_backup": frozenset({"600000"})}, "untrusted spot"),
+    ],
+)
+async def test_degrade_paths(kwargs: dict, needle: str) -> None:
+    provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter(),
+        market_data=_FakeMarketData(**kwargs),
+    )
+    out = await provider.build_lead_context(_lead_600000())
+    assert isinstance(out, Line1QuoteDegrade)
+    assert needle in out.reason
+    assert out.code == "600000"
+
+
+@pytest.mark.asyncio
+async def test_stale_spot_degrades() -> None:
+    # A spot fetch older than 5s vs the run ``now`` degrades (no T-1 fallback).
+    stale = _FakeMarketData(
+        now=_NOW.replace(minute=_NOW.minute - 1)  # 60s before the run now
+    )
+    provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter(),
+        market_data=stale,
+    )
+    out = await provider.build_lead_context(_lead_600000())
+    assert isinstance(out, Line1QuoteDegrade)
+    assert "stale" in out.reason
+
+
+@pytest.mark.asyncio
+async def test_tz_naive_now_degrades_not_crashes() -> None:
+    # A tz-naive run ``now`` vs the tz-aware spot timestamp would crash the
+    # subtraction; the provider fails closed for the lead instead of taking
+    # down the whole basket walk.
+    naive_now = datetime(2026, 5, 15, 10, 30, 0)  # no tzinfo
+    run_state = await build_line1_run_state(
+        broker=_FakeBroker(cash=98_000.0),
+        risk_engine=RiskEngine(_risk_config()),
+        circuit_breaker=CircuitBreaker(CircuitBreakerConfig()),
+        watchlist_policy=load_policy(Path("config/universe_policy.yaml")),
+        risk_config=_risk_config(),
+        now=naive_now,
+    )
+    aware = datetime(2026, 5, 15, 10, 30, tzinfo=UTC)
+    provider = Line1ContextProvider(
+        run_state=run_state, frame=_stock_frame(), llm_router=_StubRouter(),
+        now=naive_now, market_data=_FakeMarketData(now=aware),
+    )
+    out = await provider.build_lead_context(_lead_600000())
+    assert isinstance(out, Line1QuoteDegrade)
+    assert "tz mismatch" in out.reason
+
+
+@pytest.mark.asyncio
+async def test_pit_persists_live_cage_inputs(tmp_path: Path) -> None:
+    from backend.marketdata_snapshot import SnapshotStore
+
+    store = SnapshotStore(root=tmp_path / "pit")
+    run_state = await build_line1_run_state(
+        broker=_FakeBroker(cash=98_000.0),
+        risk_engine=RiskEngine(_risk_config()),
+        circuit_breaker=CircuitBreaker(CircuitBreakerConfig()),
+        watchlist_policy=load_policy(Path("config/universe_policy.yaml")),
+        risk_config=_risk_config(),
+        now=_NOW,
+    )
+    provider = Line1ContextProvider(
+        run_state=run_state, frame=_stock_frame(), llm_router=_StubRouter(),
+        now=_NOW, market_data=_FakeMarketData(), snapshot_store=store,
+    )
+    out = await provider.build_lead_context(_lead_600000(), signal_id="SIG-pit")
+    assert not isinstance(out, Line1QuoteDegrade)
+    snap = store.latest(
+        vendor="line1_live_cage", endpoint="spot_orderbook:600000",
+        trade_date=_NOW.astimezone(UTC).strftime("%Y%m%d"),
+    )
+    assert snap is not None
+    assert snap.metadata["signal_id"] == "SIG-pit"
+    assert b"600000" in snap.raw_payload  # raw bytes stored, not hash-only

@@ -75,3 +75,8 @@ universe:
     sz_main: 0.10
     chuangye: 0.20
     etf: 0.10
+  # U-E2 / 缺口4: continuous-auction price-cage tolerance. The BUY 限价上限 the
+  # operator sees = floor( min(last×(1+cage_tolerance_pct), 卖一 cage ceiling) ).
+  # 0.02 matches the ±2% cage band so a wide/stale ask cannot inflate the limit
+  # above ~2% over the last trade. Runtime-immutable (P0-7 §2 redline 1).
+  cage_tolerance_pct: 0.02

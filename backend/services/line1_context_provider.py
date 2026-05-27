@@ -14,21 +14,23 @@ Mirror of ``backend.services.line2_context_providers`` (U-D1) for Line-1:
 
 * ``build_line1_run_state`` (async) pulls the live account / positions / halt
   state off the broker once per daily run;
-* :class:`Line1ContextProvider` (sync ``build_lead_context``) is a pure
-  assembler — it derives the lead's PIT prev_close from the T-1 EOD frame,
-  sizes a deterministic BUY volume, and hands the runner a TeamContext (debate)
-  + an AssemblyContext factory (the 14-check single construction point).
+* :class:`Line1ContextProvider.build_lead_context` (async, U-E2) fetches the
+  lead's live quote (dual-source spot last + 卖一 orderbook), derives the
+  price-cage-bounded BUY limit + a deterministic volume off it, derives the
+  lead's PIT prev_close from the T-1 EOD frame, and hands the runner a
+  TeamContext (debate) + an AssemblyContext factory (the 14-check single
+  construction point). When the live quote is unusable it returns a
+  :class:`Line1QuoteDegrade` instead — the runner never prices on the T-1 close.
 
 LLM red line: the provider only *passes through* the injected LLM router into
 the debate's :class:`TeamContext`. It derives no decision field from an LLM —
 ``side`` is the fund_manager's downstream proposal; ``volume`` / ``limit_price``
 are deterministic (R0 §4 InstructionPlan single construction point).
 
-Real-data seams validated in U-D3 (1 real trading day) / U-D4 (real smoke),
-recorded so they are not silently shipped half-wired:
+Real-data seams (U-E2 wires the live cage quote; the rest as recorded):
 
-* ``prev_close`` is parsed from the same T-1 EOD frame (PIT, replay-stable). The
-  intraday-spot limit-up recheck against a *live* quote is a U-D3 item.
+* ``prev_close`` is parsed from the same T-1 EOD frame (PIT, replay-stable); the
+  ``limit_price`` / ``current_price`` are now driven by the live spot (U-E2).
 * ``today_instruction_count`` defaults to ``0`` here (the daily-new-instruction
   cap input); the real broker_events-derived count is wired in U-D3.
 * ``data_quality`` falls back to a clean state — the per-code DataQualityProvider
@@ -41,9 +43,10 @@ recorded so they are not silently shipped half-wired:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from math import floor, isfinite
 from typing import Any
 
@@ -52,19 +55,28 @@ import structlog
 from backend.agents_team.state import CandidateBrief, TeamContext
 from backend.broker.models import AccountInfo, Position, RiskConfig
 from backend.data.data_quality import DataQualityState
+from backend.data.divergence import evaluate_divergence
+from backend.data.market_data import MarketDataService
 from backend.data.stock_metadata import (
     ForbiddenCodeError,
     UnknownCodeError,
     classify_board,
     get_lot_size,
 )
-from backend.marketdata_snapshot import MarketDataSnapshot
+from backend.marketdata_snapshot import MarketDataSnapshot, SnapshotStore
 from backend.models.instruction import DataSnapshot
+from backend.models.market import StockQuote
 from backend.monitoring.add_position import parse_held_series
-from backend.orchestration.line1_runner import CommittedBuy, Line1LeadContext
+from backend.orchestration.line1_runner import (
+    CommittedBuy,
+    Line1LeadContext,
+    Line1QuoteDegrade,
+)
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.daily_state import DailyTradingState
 from backend.risk.engine import RiskEngine
+from backend.risk.price_cage import CageQuote, cage_bounded_buy_limit
+from backend.risk.stock_meta import Board
 from backend.screening.screener import CandidateRow
 from backend.services.instruction_plan_builder import (
     AssemblyContext,
@@ -94,6 +106,27 @@ _UNAFFORDABLE_LOT_COST = float("inf")
 # overshoots — a cash-bound order's true cost would exceed available_cash and be
 # REJECTED (codex U-D1b finding 1).
 _FUND_SUFFICIENCY_BUFFER = 1.001
+
+# P0-8 §1.1 dual-source spot thresholds for the U-E2 live cage-quote gate.
+# divergence: |adata - akshare| / adata > 0.3% → untrusted; staleness: the spot
+# fetch must be ≤5s old. A breach (or a single-source / missing 卖一) degrades
+# the lead to a non-actionable notice — never priced on the last / T-1 close.
+_DIVERGENCE_THRESHOLD_PCT = 0.003
+_STALENESS_THRESHOLD_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class _CageDerivation:
+    """Successful live-quote derivation for a lead (U-E2 / 缺口4).
+
+    Either ``build_lead_context`` gets one of these (and prices the BUY off
+    ``limit_price`` with ``cage_quote`` threaded into the 14-check) or it gets a
+    :class:`Line1QuoteDegrade` reason string — never a guessed price.
+    """
+
+    last_price: float
+    limit_price: float
+    cage_quote: CageQuote
 
 
 def _bare_code(code: str) -> str:
@@ -252,6 +285,8 @@ class Line1ContextProvider:
         llm_router: Any,
         now: datetime,
         data_quality: DataQualityState | None = None,
+        market_data: MarketDataService | None = None,
+        snapshot_store: SnapshotStore | None = None,
     ) -> None:
         self._run = run_state
         self._frame = frame
@@ -260,6 +295,15 @@ class Line1ContextProvider:
         # No per-code DataQualityProvider in the U-D1b baseline (the lead is
         # unknown until the screen runs); clean fallback, real probe = U-D3.
         self._data_quality = data_quality or clean_data_quality()
+        # U-E2 / 缺口4: the live quote layer (dual-source spot + 卖一 orderbook).
+        # When ``None`` the provider cannot price a BUY safely → every lead
+        # degrades to a non-actionable notice (never the last / T-1 close).
+        self._market_data = market_data
+        # Optional PIT sink for the live spot bytes (R0 §3 redline A). When
+        # present the raw dual-source quote + orderbook is content-addressed +
+        # checksummed so ``replay <signal_id>`` can reconstruct the cage inputs.
+        self._snapshot_store = snapshot_store
+        self._cage_tolerance_pct = run_state.risk_config.universe.cage_tolerance_pct
 
     @property
     def available_cash(self) -> float:
@@ -280,14 +324,24 @@ class Line1ContextProvider:
             return _UNAFFORDABLE_LOT_COST
         return last_price * get_lot_size(board)
 
-    def build_lead_context(
+    async def build_lead_context(
         self,
         lead: CandidateRow,
         *,
         concentration_exception: bool = False,
         committed: tuple[CommittedBuy, ...] = (),
-    ) -> Line1LeadContext:
+        signal_id: str = "",
+        seq: int = 0,
+    ) -> Line1LeadContext | Line1QuoteDegrade:
         """Build the TeamContext + AssemblyContext factory for the lead.
+
+        U-E2 / 缺口4: fetches the lead's live quote (dual-source spot last + 卖一
+        orderbook) FIRST and derives the price-cage BUY 限价上限. When the quote
+        is unusable (no live layer, single-source / divergent / stale spot, or a
+        missing 卖一) it returns a :class:`Line1QuoteDegrade` — the runner then
+        emits a non-actionable notice and NEVER prices a BUY on the last / T-1
+        close. ``volume`` is re-sized off the cage limit so the single
+        construction point still owns the number.
 
         ``concentration_exception`` (the lead's budget-tier over-15% ETF flag)
         threads into BOTH the debate ``TeamContext`` (so the debate's risk-gate
@@ -303,10 +357,30 @@ class Line1ContextProvider:
         (P1-7-amendment-2026-05-26 §2.3).
         """
         rs = self._run
-        account, positions = _apply_committed(rs.account, rs.positions, committed)
         bare = _bare_code(lead.code)
-        limit_price = round(lead.last_price, 2)
-        prev_close = self._prev_close_from_frame(bare, fallback=limit_price)
+        # The board drives the cage tick + the 14-check universe rule. A
+        # forbidden / unknown board (the screener should have excluded it) yields
+        # None → degrade rather than guess (fail-closed).
+        stock_meta = risk_meta_for(bare, lead.name)
+        if stock_meta is None:
+            return Line1QuoteDegrade(
+                code=lead.code, name=lead.name,
+                reason="unclassifiable board (forbidden / unknown code)",
+            )
+        # Derive the cage-bounded limit off a dual-source-validated live quote.
+        cage = await self._derive_cage_quote(
+            bare=bare, board=stock_meta.board, signal_id=signal_id, seq=seq
+        )
+        if isinstance(cage, str):
+            return Line1QuoteDegrade(code=lead.code, name=lead.name, reason=cage)
+        limit_price = cage.limit_price
+        live_last = cage.last_price
+
+        account, positions = _apply_committed(rs.account, rs.positions, committed)
+        # Fall back to the live last (not the inflated cage ceiling) when the
+        # frame lacks a prior bar — a conservative ~0% move that never trips the
+        # band, and a better prev_close proxy than the limit (U-E2).
+        prev_close = self._prev_close_from_frame(bare, fallback=live_last)
         # Match the RiskEngine's own exact-code comparison (checks 5 + 8 net
         # the held same-code position by ``p.code == order.code`` and value the
         # OTHER positions at their snapshot market_value) so the sizing math
@@ -319,6 +393,9 @@ class Line1ContextProvider:
         )
         limits = rs.risk_config.position_limits
         exception = rs.risk_config.concentration_exception
+        # Size off the CAGE limit (the price the order will carry) so the
+        # cash / 15% / 70% / ¥50k caps bind against the actual notional — the
+        # single construction point still owns ``volume`` deterministically.
         volume = max_compliant_buy_volume(
             last_price=limit_price,
             total_assets=account.total_assets,
@@ -332,7 +409,6 @@ class Line1ContextProvider:
             concentration_exception=concentration_exception,
             exception_max_lots=exception.max_lots,
         )
-        stock_meta = risk_meta_for(bare, lead.name)
         daily_state = DailyTradingState(
             # Count the BUYs already routed earlier in this BASKET run so the
             # ≤5-orders/day cap (check 10) binds ACROSS the basket, not just the
@@ -344,14 +420,16 @@ class Line1ContextProvider:
             # ledger PnLs wired in U-D3 for the breaker to bind a BUY).
             today_portfolio_pnl_pct=0.0,
             last_3_trade_pnls=(),
-            current_price=limit_price,
+            # Live last drives check #12 (limit-up block) so the BUY is gated
+            # against the real intraday price, not the T-1 close.
+            current_price=live_last,
             is_in_halt_cooldown=rs.halted,
             halt_until=rs.halt_until,
         )
         watchlist_signal = WatchlistMarketSignal(
             listed_at_trading_days=_LISTED_PERMISSIVE_DAYS,
             avg_amount_20d_yuan=lead.factors.avg_amount_20d,
-            last_price_yuan=limit_price,
+            last_price_yuan=live_last,
         )
         brief = CandidateBrief(
             code=lead.code,
@@ -397,6 +475,10 @@ class Line1ContextProvider:
                 proposed_volume=volume,
                 proposed_limit_price=limit_price,
                 concentration_exception=concentration_exception,
+                # The dual-source-validated 卖一 the cage limit was derived from
+                # → RiskEngine check #02 independently re-verifies the limit is
+                # within the legal cage (a 废单 guard, U-E2 / 缺口4).
+                live_quote=cage.cage_quote,
                 seq=seq,
                 signal_id=signal_id,
                 analysis_record_id=analysis_record_id,
@@ -421,6 +503,144 @@ class Line1ContextProvider:
             team_context=team_context,
             make_assembly_context=make_assembly_context,
         )
+
+    async def _derive_cage_quote(
+        self, *, bare: str, board: Board, signal_id: str, seq: int
+    ) -> _CageDerivation | str:
+        """Fetch + validate the live quote and derive the cage limit, or degrade.
+
+        Returns a :class:`_CageDerivation` (last + cage limit + 卖一 CageQuote) on
+        success, or a degrade-reason ``str`` for the runner's non-actionable
+        notice. Gates, in order (P0-8 dual-source + U-E2): a live layer must
+        exist; BOTH spot legs must return; their last prints must agree within
+        0.3%; the spot must be ≤5s old; the 卖一 orderbook must carry a positive
+        best_ask. Only then is the cage limit deterministic. ``board`` is the
+        lead's :class:`RiskStockMetadata` ``.board`` (passed in to avoid a second
+        classification).
+        """
+        if self._market_data is None:
+            return "no live market-data layer (offline run cannot price a BUY)"
+        try:
+            primary, fallback = await self._market_data.get_stock_realtime_dual(bare)
+        except Exception as exc:  # noqa: BLE001 — any vendor fault → degrade
+            log.warning("line1_dual_spot_failed", code=bare, error=str(exc))
+            return f"dual-source spot fetch failed: {exc}"
+        if primary is None:
+            return "primary spot leg (adata) unavailable"
+        if fallback is None:
+            return (
+                "single-source spot — backup leg (akshare) unavailable "
+                "(P0-8 dual-source required)"
+            )
+        div = evaluate_divergence(
+            code=bare,
+            primary_price=primary.price,
+            fallback_price=fallback.price,
+            threshold_pct=_DIVERGENCE_THRESHOLD_PCT,
+        )
+        if div.relative_diff is None:
+            # evaluate_divergence folds a non-finite (NaN/inf) backup price or a
+            # non-positive primary into ``relative_diff=None, is_divergent=False``
+            # — so a malformed akshare cell would otherwise pass as
+            # "dual-source-confirmed" and route a BUY priced off adata ALONE.
+            # That is effectively single-source → fail closed (codex U-E2 P1).
+            return (
+                "untrusted spot — non-finite/non-positive price, cannot confirm "
+                f"dual-source (adata {primary.price} vs akshare {fallback.price})"
+            )
+        if div.is_divergent:
+            return (
+                f"spot divergence {div.relative_diff:.4f} > "
+                f"{_DIVERGENCE_THRESHOLD_PCT} "
+                f"(adata {primary.price} vs akshare {fallback.price})"
+            )
+        try:
+            age = (self._now - primary.timestamp).total_seconds()
+        except TypeError:
+            # A tz-naive vs tz-aware mix (a misconfigured ``now``) would crash
+            # the whole basket walk mid-run — fail closed for THIS lead instead
+            # (degrade, never price on an uncomputable freshness; review U-E2).
+            return "spot staleness uncomputable (tz mismatch) — fail closed"
+        if age > _STALENESS_THRESHOLD_SECONDS:
+            return f"spot stale: age {age:.1f}s > {_STALENESS_THRESHOLD_SECONDS}s"
+        try:
+            ob = await self._market_data.get_stock_orderbook(bare)
+        except Exception as exc:  # noqa: BLE001 — any vendor fault → degrade
+            log.warning("line1_orderbook_failed", code=bare, error=str(exc))
+            return f"orderbook fetch failed: {exc}"
+        if ob.best_ask is None:
+            return "no 卖一 (best_ask) in orderbook"
+        try:
+            limit_price = cage_bounded_buy_limit(
+                last_price=primary.price,
+                best_ask=ob.best_ask,
+                board=board,
+                tolerance_pct=self._cage_tolerance_pct,
+            )
+        except ValueError as exc:
+            return f"cage limit derivation failed: {exc}"
+        self._persist_pit(
+            bare=bare, signal_id=signal_id, seq=seq,
+            primary=primary, fallback=fallback, ob=ob,
+        )
+        return _CageDerivation(
+            last_price=primary.price,
+            limit_price=limit_price,
+            cage_quote=CageQuote(best_ask=ob.best_ask, source=ob.source),
+        )
+
+    def _persist_pit(
+        self,
+        *,
+        bare: str,
+        signal_id: str,
+        seq: int,
+        primary: StockQuote,
+        fallback: StockQuote,
+        ob: Any,
+    ) -> None:
+        """Persist the raw live cage inputs to the SnapshotStore (R0 §3 redline A).
+
+        The PIT payload is the canonical-JSON serialisation of the dual-source
+        spot + the 卖一 orderbook (the vendor responses are in-process DataFrames
+        with no stable wire bytes, so the parsed-quote canonical JSON IS the
+        replay-stable record). Content-addressed + checksummed by the store;
+        ``params`` / ``metadata`` carry the signal_id lineage so
+        ``replay <signal_id>`` can reconstruct the cage inputs. Best-effort: a
+        store fault is logged, never fatal (PIT is an audit/replay concern, not a
+        tradeability gate — the order already priced off the same in-memory
+        quote). No store injected → skipped.
+        """
+        if self._snapshot_store is None:
+            return
+        payload = {
+            "code": bare,
+            "primary": primary.model_dump(mode="json"),
+            "fallback": fallback.model_dump(mode="json"),
+            "orderbook": ob.model_dump(mode="json"),
+        }
+        raw = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        try:
+            snap = MarketDataSnapshot.create(
+                vendor="line1_live_cage",
+                endpoint=f"spot_orderbook:{bare}",
+                params={"code": bare, "signal_id": signal_id, "seq": str(seq)},
+                trade_date=self._now.astimezone(UTC).strftime("%Y%m%d"),
+                raw_payload=raw,
+                encoding="utf-8",
+                compression="none",
+                fetch_time_utc=self._now.astimezone(UTC),
+                metadata={
+                    "signal_id": signal_id,
+                    "seq": seq,
+                    "orderbook_source": ob.source,
+                },
+            )
+            self._snapshot_store.put(snap)
+        except Exception as exc:  # noqa: BLE001 — PIT is best-effort, never fatal
+            log.warning("line1_pit_persist_failed", code=bare, error=str(exc))
 
     def _prev_close_from_frame(self, bare: str, *, fallback: float) -> float:
         """Derive the lead's prev_close (prior bar) from the T-1 EOD frame.

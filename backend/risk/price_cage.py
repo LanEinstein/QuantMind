@@ -27,9 +27,27 @@ never propose a limit the operator's real broker would bounce.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from backend.risk.stock_meta import Board
+
+
+@dataclass(frozen=True)
+class CageQuote:
+    """The minimal live-quote object the RiskEngine check #02 cage subcheck reads.
+
+    Carries only the 卖一 (``best_ask``) the cage is computed against plus a
+    ``source`` provenance label for the reject message. Kept in ``backend/risk/``
+    (not ``backend.data``/``backend.models``) so the engine stays import-isolated
+    and pure (P0-7 §2 redline 9): the data layer fetches the orderbook and the
+    Line-1 provider hands the engine this frozen, IO-free view. A ``None``
+    ``best_ask`` makes the cage unprovable → the subcheck fails closed (the
+    provider should already have degraded the lead before reaching here).
+    """
+
+    best_ask: float | None
+    source: str
 
 # Continuous-auction cage band: 2% of the reference (best-ask) price, with a
 # board-tick-scaled 10-tick alternative floor for low-priced names (孰高值).
@@ -197,6 +215,7 @@ def _require_positive_price(value: object, name: str) -> Decimal:
 __all__ = [
     "CAGE_PCT",
     "CAGE_TICK_MULTIPLE",
+    "CageQuote",
     "cage_bounded_buy_limit",
     "cage_ceiling",
     "is_within_cage",

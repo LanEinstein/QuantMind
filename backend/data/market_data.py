@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -14,6 +15,7 @@ from backend.models.market import (
     IndexQuote,
     QuoteSource,
     SectorQuote,
+    StockOrderbook,
     StockQuote,
     WatchlistMarketSnapshot,
 )
@@ -114,6 +116,31 @@ def _fetch_stock_list_adata(codes: list[str]) -> pd.DataFrame:
     return m.list_market_current(code_list=codes)
 
 
+def _fetch_orderbook_adata(code: str) -> pd.DataFrame:
+    """Fetch the five-level orderbook (五档) from adata (primary).
+
+    ``get_market_five`` returns a single-row frame with ``s1``..``s5`` (ask
+    prices, ``s1`` = 卖一 = best_ask), ``b1``..``b5`` (bid prices, ``b1`` =
+    买一 = best_bid) and matching ``sv*`` / ``bv*`` volumes. It carries NO
+    last print, so the orderbook's ``last`` is left ``None`` on this leg
+    (the dual-source last comes from the spot quote, not the book).
+    """
+    import adata.stock.market as m
+
+    return m.get_market_five(stock_code=code)
+
+
+def _fetch_orderbook_akshare(code: str) -> pd.DataFrame:
+    """Fallback: fetch the five-level orderbook from akshare.
+
+    ``stock_bid_ask_em`` returns a long ``[item, value]`` frame whose rows
+    include ``sell_1`` (best_ask), ``buy_1`` (best_bid) and ``最新`` (last).
+    """
+    import akshare
+
+    return akshare.stock_bid_ask_em(symbol=code)
+
+
 def _fetch_sectors_akshare() -> pd.DataFrame:
     """Fetch sector overview from akshare (primary source for sectors)."""
     import akshare
@@ -192,6 +219,58 @@ def _akshare_stock_row_to_quote(row: pd.Series) -> StockQuote:
         amount=float(row.get("成交额", 0)),
         turnover_rate=float(row.get("换手率", 0)),
         timestamp=now,
+    )
+
+
+def _positive_or_none(value: object) -> float | None:
+    """Coerce a vendor price cell to a positive FINITE float, else ``None``.
+
+    A blank / zero / NaN / ``inf`` / non-numeric 卖一 (thin or halted book, or a
+    pandas missing-cell representation) becomes ``None`` so the orderbook never
+    advertises a non-finite or non-positive best_ask — the cage base must be a
+    real price (U-E2 fail-closed). ``inf`` must map to ``None`` (not pass
+    through): otherwise it would suppress the akshare fallback AND later blow up
+    ``cage_bounded_buy_limit`` with a ValueError (codex/review U-E2).
+    """
+    try:
+        price = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(price) or price <= 0:  # NaN / ±inf / non-positive
+        return None
+    return price
+
+
+def _adata_five_to_orderbook(row: pd.Series) -> StockOrderbook:
+    """Convert an adata ``get_market_five`` row to StockOrderbook.
+
+    ``s1`` = 卖一 (best_ask), ``b1`` = 买一 (best_bid). adata's five-level
+    frame carries no last print, so ``last`` is ``None`` on this leg.
+    """
+    return StockOrderbook(
+        code=str(row.get("stock_code", "")),
+        last=None,
+        best_ask=_positive_or_none(row.get("s1")),
+        best_bid=_positive_or_none(row.get("b1")),
+        source="adata",
+        ts=datetime.now(tz=UTC),
+    )
+
+
+def _akshare_bidask_to_orderbook(code: str, df: pd.DataFrame) -> StockOrderbook:
+    """Convert an akshare ``stock_bid_ask_em`` long frame to StockOrderbook.
+
+    The frame is ``[item, value]`` rows; ``sell_1`` = best_ask, ``buy_1`` =
+    best_bid, ``最新`` = last. Missing rows degrade to ``None`` per field.
+    """
+    by_item = dict(zip(df["item"], df["value"], strict=False))
+    return StockOrderbook(
+        code=code,
+        last=_positive_or_none(by_item.get("最新")),
+        best_ask=_positive_or_none(by_item.get("sell_1")),
+        best_bid=_positive_or_none(by_item.get("buy_1")),
+        source="akshare",
+        ts=datetime.now(tz=UTC),
     )
 
 
@@ -322,6 +401,80 @@ class MarketDataService:
         if "stock_code" in df.columns:
             return [_adata_stock_row_to_quote(row) for _, row in df.iterrows()]
         return [_akshare_stock_row_to_quote(row) for _, row in df.iterrows()]
+
+    async def get_stock_orderbook(self, code: str) -> StockOrderbook:
+        """Fetch the five-level orderbook (best_ask/best_bid) for one stock.
+
+        adata ``get_market_five`` primary, akshare ``stock_bid_ask_em``
+        fallback (U-E2 / 缺口4). The primary leg is treated as failed — and
+        the fallback fires — when it raises, returns an empty frame, OR yields
+        no positive 卖一 (a thin / halted book): the price cage needs a real
+        best_ask, so a book without one is no better than an outage. Raises
+        :class:`DataFetchError` when neither leg yields a usable book; the
+        Line-1 provider then degrades the lead to a non-actionable notice
+        rather than pricing a BUY without a 卖一 reference.
+        """
+        primary_exc: Exception | None = None
+        try:
+            df = await asyncio.to_thread(_fetch_orderbook_adata, code)
+            if df is not None and not df.empty:
+                ob = _adata_five_to_orderbook(df.iloc[0])
+                if ob.best_ask is not None:
+                    return ob
+                self._log.warning("orderbook_adata_no_ask", code=code)
+        except Exception as exc:
+            self._log.warning("orderbook_adata_failed", code=code, error=str(exc))
+            primary_exc = exc
+
+        try:
+            df = await asyncio.to_thread(_fetch_orderbook_akshare, code)
+        except Exception as exc:
+            self._log.error(
+                "orderbook_both_failed",
+                code=code,
+                primary_error=str(primary_exc) if primary_exc else "no_ask_or_empty",
+                fallback_error=str(exc),
+            )
+            raise DataFetchError(
+                f"Both adata and akshare failed for orderbook {code}"
+            ) from exc
+        if df is None or df.empty:
+            raise DataFetchError(f"No orderbook data for {code}")
+        # Honour the documented contract: a column-drifted akshare frame (no
+        # ``item``/``value``) is an unusable book → DataFetchError, not a raw
+        # KeyError leaking out of the converter (review U-E2).
+        if "item" not in df.columns or "value" not in df.columns:
+            raise DataFetchError(
+                f"akshare orderbook for {code} missing item/value columns"
+            )
+        return _akshare_bidask_to_orderbook(code, df)
+
+    async def get_stock_realtime_dual(
+        self, code: str
+    ) -> tuple[StockQuote | None, StockQuote | None]:
+        """Fetch BOTH spot legs for the P0-8 divergence / staleness check.
+
+        Returns a positional ``(primary, fallback)`` tuple — primary is the
+        adata leg, fallback the akshare leg — each ``None`` if that source
+        failed or returned nothing. Unlike :meth:`get_stock_realtime` (which
+        collapses to a single quote), the Line-1 provider needs BOTH legs to
+        run ``evaluate_divergence`` (≤0.3%) and degrade single-source.
+        """
+        primary: StockQuote | None = None
+        fallback: StockQuote | None = None
+        try:
+            df = await asyncio.to_thread(_fetch_stock_adata, code)
+            if df is not None and not df.empty:
+                primary = _adata_stock_row_to_quote(df.iloc[0])
+        except Exception as exc:
+            self._log.warning("dual_adata_failed", code=code, error=str(exc))
+        try:
+            df = await asyncio.to_thread(_fetch_stock_akshare, code)
+            if df is not None and not df.empty:
+                fallback = _akshare_stock_row_to_quote(df.iloc[0])
+        except Exception as exc:
+            self._log.warning("dual_akshare_failed", code=code, error=str(exc))
+        return primary, fallback
 
     async def get_watchlist_snapshot(
         self, codes: list[str], snapshot_at: datetime

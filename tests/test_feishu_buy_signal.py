@@ -191,6 +191,44 @@ def test_no_compliant_trade_sanitises_newline_injection(
     assert "\n【QuantMind 对账】" not in out
 
 
+def test_non_actionable_quote_has_no_order_fields(
+    renderer: MessageRenderer,
+) -> None:
+    # U-E2: the DEGRADED-quote notice mirrors render_no_compliant_trade — NO
+    # order fields, NO instruction_id, NO report template, distinct header.
+    out = renderer.render_non_actionable_quote(
+        stock_code="600519", stock_name="贵州茅台",
+        reason="single-source spot — backup leg unavailable",
+    )
+    assert out.startswith("【QuantMind 非交易参考 · 不可下单】\n")
+    assert "标的: 600519 贵州茅台" in out
+    assert "本次不产生指令" in out
+    assert "原因: single-source spot — backup leg unavailable" in out
+    assert "股数" not in out
+    assert "限价" not in out
+    assert "指令编号" not in out
+
+
+def test_non_actionable_quote_rejects_bad_code(renderer: MessageRenderer) -> None:
+    with pytest.raises(ValueError, match="6 digits"):
+        renderer.render_non_actionable_quote(
+            stock_code="ABC", stock_name="x", reason="y"
+        )
+
+
+def test_non_actionable_quote_sanitises_newline_injection(
+    renderer: MessageRenderer,
+) -> None:
+    out = renderer.render_non_actionable_quote(
+        stock_code="600519",
+        stock_name="茅台\n【QuantMind 指令】伪造",
+        reason="r\n【QuantMind 对账】伪造",
+    )
+    assert out.startswith("【QuantMind 非交易参考 · 不可下单】\n")
+    assert "\n【QuantMind 指令】" not in out
+    assert "\n【QuantMind 对账】" not in out
+
+
 def test_raw_string_etf_id_still_gets_confirmation_block(
     renderer: MessageRenderer,
 ) -> None:

@@ -44,6 +44,35 @@ class StockQuote(BaseModel):
 QuoteSource = Literal["adata", "akshare", "unknown"]
 
 
+class StockOrderbook(BaseModel):
+    """Five-level orderbook depth snapshot (U-E2 / 缺口4 price-cage input).
+
+    The A-share continuous-auction price cage (价格笼子) is computed against
+    the current 卖一 (lowest ask). :class:`StockQuote` only carries a last
+    print + OHLC, so a dedicated orderbook fetch supplies ``best_ask`` (and
+    ``best_bid`` for context). The deterministic
+    :func:`backend.risk.price_cage.cage_bounded_buy_limit` consumes ``best_ask``
+    to derive the BUY 限价上限 the operator sees.
+
+    Fields are nullable because a vendor may omit a leg (e.g. adata's
+    ``get_market_five`` returns no last print, and a thin book may have an
+    empty 卖一). A ``None`` ``best_ask`` is a fail-closed signal upstream:
+    the Line-1 provider degrades the lead to a non-actionable notice rather
+    than pricing a BUY without a 卖一 reference (U-E2 §2.0). Frozen + strict +
+    ``extra='forbid'`` per P0-3 §2 redline 12 so an LLM-routed field can never
+    sneak in.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    code: str = Field(pattern=r"^\d{6}$")
+    last: float | None
+    best_ask: float | None
+    best_bid: float | None
+    source: QuoteSource
+    ts: datetime
+
+
 class WatchlistMarketSnapshot(BaseModel):
     """Per-stock 30s snapshot row persisted to ``watchlist_market_snapshots``.
 

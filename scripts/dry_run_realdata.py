@@ -166,7 +166,13 @@ async def build_data_layer() -> tuple[Any, Any, Any]:
         from backend.data.config import load_data_sources_config
         from backend.data.market_data import MarketDataService
 
-        market_data = MarketDataService(load_data_sources_config())
+        # ``load_data_sources_config`` REQUIRES the yaml path — calling it bare
+        # raised a TypeError that the broad ``except`` swallowed, so market_data
+        # was ALWAYS None and the live cage / quote path never engaged (U-E2 f).
+        config_path = os.environ.get(
+            "QUANTMIND_DATA_SOURCES_YAML", "config/data_sources.yaml"
+        )
+        market_data = MarketDataService(load_data_sources_config(config_path))
     except Exception as exc:  # noqa: BLE001 — documented offline fallback
         log.info("dry_run_market_data_unavailable", error=str(exc))
     return market_data, market_meta, dq_provider

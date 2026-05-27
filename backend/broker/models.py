@@ -319,6 +319,19 @@ class UniverseConfig(BaseModel):
             "etf": 0.10,
         },
     )
+    cage_tolerance_pct: float = Field(
+        default=0.02,
+        ge=0.0,
+        description=(
+            "U-E2 / 缺口4 continuous-auction cage: max fraction above the live "
+            "last print the BUY 限价上限 may sit, before the 卖一 cage ceiling "
+            "binds. ``cage_bounded_buy_limit`` = floor( min(last×(1+this), "
+            "卖一 cage ceiling) ). Default 0.02 matches the ±2% cage band so a "
+            "wide/stale ask cannot drag the limit far above the last trade. "
+            "Runtime-immutable (P0-7 §2 redline 1) — change = git diff + "
+            "amendment + restart."
+        ),
+    )
 
     @model_validator(mode="after")
     def _seal_price_limit_map(self) -> UniverseConfig:

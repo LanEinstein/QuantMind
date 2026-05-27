@@ -358,7 +358,13 @@ async def _run_line1(ctx: DryRunContext, now: dt.datetime) -> None:
         today_instruction_count=ctx.today_instruction_count,  # prereq 2
     )
     provider = Line1ContextProvider(
-        run_state=run_state, frame=ctx.frame, llm_router=ctx.llm_router, now=now
+        run_state=run_state, frame=ctx.frame, llm_router=ctx.llm_router, now=now,
+        # U-E2 / 缺口4: live dual-source spot + 卖一 orderbook → cage limit. When
+        # the live layer is unreachable (pure offline replay) market_data is
+        # None and every lead degrades to a non-actionable notice (never the
+        # T-1 close). PIT sink records the live cage inputs for replay.
+        market_data=ctx.market_data,
+        snapshot_store=ctx.snapshot_store,
     )
     # Stage the BUY metadata so the sink can attach the rendered text. The
     # runner records the lead AFTER the debate; we cannot know it pre-call, so
