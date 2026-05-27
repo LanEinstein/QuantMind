@@ -558,6 +558,44 @@ async def test_feishu_mode_routes_validated_buy_basket(builder, tmp_path) -> Non
     assert len(ids) == 3  # distinct ids (code segment differs per candidate)
 
 
+async def test_buy_signal_carries_display_only_rationale(builder, tmp_path) -> None:
+    # U-E4 缺口3: the routed BUY wire carries a 判据 block — 量化 (score +
+    # factors) + 推理 (fund_manager + analysts) — assembled by the runner from
+    # the screener CandidateRow + debate state and passed as a render param.
+    # It is display-only: NEVER on the routed InstructionPlan, and the
+    # deterministic volume is untouched (single construction point M-004).
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        selection_mode=Line1SelectionMode.SINGLE,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    wire = sender.calls[0]["content"]
+    # 量化 + 推理 判据 on the wire (display-only).
+    assert "—— 量化判据 ——" in wire
+    assert "综合评分:" in wire
+    assert "动量(20日):" in wire
+    assert "—— 推理判据 ——" in wire
+    assert "基金经理: stub thesis" in wire
+    assert "基本面: fundamental_analyst stub analysis report" in wire
+    # Prominent 交易要点 block at the top of the signal.
+    assert "交易要点" in wire
+    # …but the rationale text is NOT on the routed plan, and the deterministic
+    # provider volume (200) is unchanged by the LLM reasoning text.
+    plan = result.routed_buys[0].plan
+    assert "stub thesis" not in plan.model_dump_json()
+    assert plan.volume == 200
+
+
 async def test_small_tier_etf_routes_concentration_exception_template(
     builder, tmp_path
 ) -> None:

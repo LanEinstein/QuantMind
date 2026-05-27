@@ -466,27 +466,36 @@ class TestRedLines:
         assert len(list(ClarificationTemplate)) == 5
 
     def test_module_isolation(self) -> None:
-        """LLM red line — renderer never imports llm/agents/mirofish."""
+        """LLM red line — NO feishu module imports llm/agents/mirofish.
+
+        Scans the WHOLE ``backend/integrations/feishu`` package (not just
+        renderer.py) so the helper modules the renderer now depends on
+        (``text_safety``, ``signal_rationale`` — U-E4) are covered: a future
+        edit pulling an LLM/agents import into any of them would break the
+        P0-2 §1.2 / CLAUDE.md §2.6 "LLM never composes Feishu wire text" line.
+        """
         import ast
         import pathlib
 
-        path = pathlib.Path("backend/integrations/feishu/renderer.py")
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        pkg = pathlib.Path("backend/integrations/feishu")
         forbidden = {"llm", "agents", "mirofish"}
         violations: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                mod = node.module or ""
-                parts = mod.split(".")
-                if parts[:1] == ["backend"] and len(parts) >= 2:
-                    if parts[1] in forbidden:
-                        violations.append(f"from {mod} import ...")
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    parts = alias.name.split(".")
-                    if parts[:1] == ["backend"] and len(parts) >= 2:
-                        if parts[1] in forbidden:
-                            violations.append(f"import {alias.name}")
+        for path in sorted(pkg.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    parts = (node.module or "").split(".")
+                    if parts[:1] == ["backend"] and len(parts) >= 2 and (
+                        parts[1] in forbidden
+                    ):
+                        violations.append(f"{path.name}: from {node.module} import ...")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        parts = alias.name.split(".")
+                        if parts[:1] == ["backend"] and len(parts) >= 2 and (
+                            parts[1] in forbidden
+                        ):
+                            violations.append(f"{path.name}: import {alias.name}")
         assert violations == []
 
     def test_instruction_id_regex_mirrors_b001(self) -> None:

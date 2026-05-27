@@ -37,6 +37,12 @@ from decimal import Decimal
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
+from backend.integrations.feishu.signal_rationale import (
+    BuySignalRationale,
+    rationale_lines,
+)
+from backend.integrations.feishu.text_safety import single_line as _single_line
+from backend.integrations.feishu.text_safety import truncate as _truncate
 from backend.models.instruction import (
     InstructionPlan,
     InstructionSide,
@@ -178,6 +184,7 @@ class MessageRenderer:
         plan: InstructionPlan,
         *,
         template: BuySignalTemplate,
+        rationale: BuySignalRationale | None = None,
         pilot: bool = False,
     ) -> str:
         """Render a BUY signal in one of the three order-bearing templates.
@@ -194,6 +201,17 @@ class MessageRenderer:
         instruction_id in a reply instruction; it is re-validated against the
         canonical regex here (defence-in-depth — an instruction_id is the
         classic injection / leakage point, P0-2 §2.6 / CLAUDE.md §2.6).
+
+        Every BUY signal carries a prominent 交易要点 block (side / 股数 / 限价)
+        after the banner so the operator can scan the order at a glance.
+
+        ``rationale`` (U-E4 缺口3) is an optional **display-only** justification
+        block — 量化 (composite score + factors) + 推理 (fund_manager + the 3
+        analyst conclusions). When ``None`` (the default) the 判据 block is
+        simply omitted. The rationale is a render parameter ONLY: it is NEVER on
+        the ``InstructionPlan`` / ``RiskCheckSummary`` / idempotency key /
+        parser, and every LLM free-text field is single-lined + truncated
+        before it reaches the wire (P0-3-amendment-2026-05-27).
         """
         # Coerce a raw-string template id (e.g. from JSON/config) to the enum
         # FIRST. BuySignalTemplate is a StrEnum, so a raw string would pass the
@@ -217,8 +235,15 @@ class MessageRenderer:
             )
 
         header, banner = _BUY_SIGNAL_HEADERS[template]
-        body = self._dispatch_body_lines(plan)
-        lines = [*self._pilot_prefix(pilot), header, banner, *body]
+        lines = [
+            *self._pilot_prefix(pilot),
+            header,
+            banner,
+            *_prominent_order_lines(plan),
+        ]
+        if rationale is not None:
+            lines.extend(rationale_lines(rationale))
+        lines.extend(self._dispatch_body_lines(plan))
         if template is BuySignalTemplate.ETF_CONCENTRATION_EXCEPTION:
             # Confirmation block — the operator must explicitly confirm the
             # ETF concentration exception before it executes.
@@ -571,11 +596,10 @@ class MessageRenderer:
         """
         if not message:
             raise ValueError("alert message must not be empty")
-        # P2-1: alerts must NEVER contain literal newlines — every
-        # newline would risk spoofing a 【QuantMind ...】 header. Even
-        # though _strip_controls preserved newlines, _single_line
-        # actively collapses them so an alerter caller cannot inject
-        # a fake reconciliation / instruction line.
+        # P2-1: alerts must NEVER contain literal newlines — every newline
+        # would risk spoofing a 【QuantMind ...】 header. _single_line actively
+        # collapses them so an alerter caller cannot inject a fake
+        # reconciliation / instruction line.
         sanitized = _single_line(message)
         return "\n".join(
             [
@@ -679,53 +703,22 @@ def _format_position_summary(plan: InstructionPlan) -> str:
     )
 
 
-def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)] + "…"
+def _prominent_order_lines(plan: InstructionPlan) -> list[str]:
+    """A visually-prominent 交易要点 block (U-E4 缺口3 §2.3).
 
-
-def _single_line(text: str) -> str:
-    """Collapse every newline / control character to a single space.
-
-    Used before interpolating operator-controlled free text into the
-    template body. Without this normalisation a malicious user could
-    embed a literal ``\\n【QuantMind 指令】xxx`` inside their raw text
-    and have it render as if a new top-level message header started
-    mid-body (codex review session #14 P2-1).
+    Restates side / code / 股数 / 限价 at the top of every BUY signal in
+    plain text the operator can scan at a glance (terminal + Feishu plain
+    text). The ``━`` rules are code constants (never interpolated) and carry
+    no ``【`` so they can never be mistaken for a 【QuantMind …】 header. The
+    interpolated values are all deterministic, already-validated plan fields.
     """
-    import unicodedata as _u
-
-    out: list[str] = []
-    for ch in text:
-        if ch in {"\n", "\r", "\t", "\v", "\f"}:
-            out.append(" ")
-        elif _u.category(ch).startswith("C"):
-            # Drop other C-category control codepoints entirely.
-            continue
-        else:
-            out.append(ch)
-    # Collapse runs of whitespace to a single space — keeps the body
-    # visually clean and prevents wide spacing tricks.
-    return " ".join("".join(out).split())
-
-
-def _strip_controls(text: str) -> str:
-    """Strip C0/C1 control characters that could spoof a renderer header.
-
-    Keeps newlines + every printable codepoint (Unicode general category
-    not starting with ``C``). The renderer body labels are prefixed
-    with ``【QuantMind ...】`` markers; an attacker embedding raw control
-    bytes to forge those markers is the threat — printable text
-    (including Chinese punctuation) flows through unmodified.
-    """
-    import unicodedata as _u
-
-    return "".join(
-        ch
-        for ch in text
-        if ch == "\n" or not _u.category(ch).startswith("C")
-    )
+    side_zh = "买入" if plan.side is InstructionSide.BUY else "卖出"
+    return [
+        _PROMINENT_RULE_TOP,
+        f"▶ {side_zh} {plan.stock_code} {plan.stock_name}",
+        f"▶ {plan.volume} 股 @ 限价 {_format_money(plan.limit_price)} CNY",
+        _PROMINENT_RULE_BOTTOM,
+    ]
 
 
 # --- regex / constant tables -----------------------------------------
@@ -747,6 +740,11 @@ _STOCK_CODE_RE = re.compile(r"^\d{6}$")
 # order-bearing Feishu message while the active go-live tier is PILOT, so the
 # operator can never mistake a試点 signal for a real / fully-graduated one.
 _PILOT_BANNER = "「模拟盘 · 人工执行 · 试点」"
+
+# Prominent 交易要点 rules (U-E4 缺口3 §2.3). Code constants — never
+# interpolated, never carry 【 — so they cannot be mistaken for a header.
+_PROMINENT_RULE_TOP = "━━━━━━━━ 交易要点 ━━━━━━━━"
+_PROMINENT_RULE_BOTTOM = "━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # (header, banner) per order-bearing BUY template (M-006). Snapshot-locked in
 # tests/test_feishu_buy_signal.py — the headers are the at-a-glance visual

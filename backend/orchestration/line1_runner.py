@@ -27,7 +27,7 @@ subpackage), so the single debate edge stays direct.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -44,6 +44,7 @@ from backend.budget_policy.policy import (
 )
 from backend.candidate_selector.selector import CandidateSelector, QuantCandidate
 from backend.integrations.feishu.renderer import BuySignalTemplate, MessageRenderer
+from backend.integrations.feishu.signal_rationale import BuySignalRationale
 from backend.marketdata_snapshot import MarketDataSnapshot
 from backend.models.instruction import (
     InstructionPlan,
@@ -493,8 +494,17 @@ class Line1Runner:
         built = await self._builder.assemble_plan(
             fund_manager_output=fmo, mandatory_records=records, context=context
         )
+        # Display-only BUY 判据 (U-E4 缺口3): the deterministic screener factors
+        # + the debate's free text, assembled into a render parameter. It is
+        # NEVER written onto the InstructionPlan (single construction point
+        # M-004) nor consumed by the parser / idempotency key.
+        rationale = _build_buy_rationale(candidate, debate.state)
         return await self._route_candidate(
-            built, signal_id=signal_id, code=candidate.code, now=now
+            built,
+            signal_id=signal_id,
+            code=candidate.code,
+            now=now,
+            rationale=rationale,
         )
 
     async def _route_candidate(
@@ -504,8 +514,14 @@ class Line1Runner:
         signal_id: str,
         code: str,
         now: datetime,
+        rationale: BuySignalRationale | None = None,
     ) -> _CandidateResult:
-        """Render + route a VALIDATED BUY; classify every other terminal."""
+        """Render + route a VALIDATED BUY; classify every other terminal.
+
+        ``rationale`` (U-E4) is threaded to :meth:`render_buy_signal` for the
+        VALIDATED-BUY path as a display-only justification — it never touches
+        the plan or any execution-bearing structure.
+        """
         if isinstance(built, BuilderDegrade):
             log.info(
                 "line1_degraded",
@@ -563,7 +579,7 @@ class Line1Runner:
             else BuySignalTemplate.NORMAL_COMPLIANT
         )
         wire = self._renderer.render_buy_signal(
-            plan, template=template, pilot=self._pilot
+            plan, template=template, rationale=rationale, pilot=self._pilot
         )
         outcome = await self._coordinator.route(
             OutboundSignal(plan=plan, wire_text=wire), now=now
@@ -646,6 +662,34 @@ def _concentration_exception_granted(plan: InstructionPlan) -> bool:
         row.passed is True
         and _CONCENTRATION_EXCEPTION_GRANTED in (row.message or "")
         for row in plan.risk_summary
+    )
+
+
+def _build_buy_rationale(
+    candidate: CandidateRow, state: TeamState
+) -> BuySignalRationale:
+    """Assemble the display-only BUY 判据 (U-E4 缺口3).
+
+    ① 量化 — the deterministic screener composite score + each Alpha158 factor
+    (``candidate.factors``); ② 推理 — the fund_manager reasoning + the three
+    mandatory-analyst reports from the debate ``state``. Returned as a render
+    parameter for :meth:`render_buy_signal`; it is NEVER written onto the
+    InstructionPlan (single construction point M-004) nor consumed by the
+    parser / idempotency key (P0-3-amendment-2026-05-27). The renderer
+    single-lines + truncates every free-text field before it reaches the wire.
+    """
+    # Derive the (name, value) pairs from the FactorVector fields themselves —
+    # the single source of the screener's factor set — so a future Alpha158
+    # factor surfaces on the wire automatically (the renderer's presentation
+    # table has an unknown-name fallback) instead of being silently dropped.
+    fv = candidate.factors
+    return BuySignalRationale(
+        composite_score=candidate.score,
+        factors=tuple((f.name, getattr(fv, f.name)) for f in fields(fv)),
+        fund_manager_reasoning=str(state.get("fund_manager_reasoning") or ""),
+        fundamental_conclusion=str(state.get("fundamental_report") or ""),
+        technical_conclusion=str(state.get("technical_report") or ""),
+        risk_officer_conclusion=str(state.get("risk_officer_report") or ""),
     )
 
 
