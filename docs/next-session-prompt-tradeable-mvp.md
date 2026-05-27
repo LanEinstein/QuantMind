@@ -51,19 +51,19 @@
 - [x] amendments `P0-3`(limit 实时+cage)+`P0-7`(check#02 cage 子校验+cage_tolerance_pct 入 risk.yaml universe + Line-2 ADD/staleness 后续记录)+`P0-8`(Line-1 接实时主备+卖一+PIT)
 - [x] TDD(cage 子校验/缺 best_ask→degrade + 5 降级路径 + PIT 持久化 + 双源 divergence/NaN backup/tz fail-closed)+ 门禁 **3947 passed/cov 90.51%(risk 99%)** + ruff + redline 全绿 + codex cycle1 1×P1 修(NaN backup)+ claude /code-review high(codex 撞额度回退)修 inf/列漂移/tz crash + commit 11b9d32 + plan.html done
 
-### [ ] U-E3 — 缺口5(**反转,2026-05-27 owner**):owner 报「成交价 + 股数」,**系统算含费成本价**
+### [x] U-E3 — 缺口5(**反转,2026-05-27 owner**):owner 报「成交价 + 股数」,**系统算含费成本价** ✅ feature 5feb27c
 > **决策反转**:owner 只汇报**成交价(每股,不含费)+ 股数**;**系统替 owner 计算含费成本价**。
 > owner 佣金 **万分之1.5(0.00015)、不足 5 元按 5 元、双向**;过户费/印花税为交易所标准(系统已建模)。
 > amendment 已写:`docs/decisions/P0-4-amendment-2026-05-27-owner-reports-fillprice-system-computes-cost.md`。
-- [ ] FILLED 正则 **v2「成交价 + 股数」**(owner **不再填手续费**);`report_schema_version`(v1=sim 撮合自带 fill_price+fee;v2=人工 interactive 价+量,系统算费);recovery loader 按版本分支;`compute_idempotency_key` 含 version+成交价+股数(**不含 fee**,fee 已是系统派生)
-- [ ] **系统算费**(复用 `backend/broker/cost_calculator.py`,但**人工成交不套系统滑点** —— owner 上报价即真实 fill,加 `apply_slippage=False` 入口或新函数):`gross=价×量`;佣金=`max(gross×0.00015,5.0)`;过户费=`gross×0.0000341`(SZ_MAIN/CHUANGYE/159 ETF;沪市 0);印花税仅 SELL;BUY 现金=-(gross+佣金+过户费),成本价=该值/量;SELL 现金=+(gross−佣金−印花−过户费)
-- [ ] applier feishu_interactive:BUY 持仓成本=加权平均 blend(复用 `_apply_buy`);SELL 已实现盈亏对加权均;两路径系统算费
-- [ ] **config**:`BrokerConfig.commission_rate` 0.0003→**0.00015** + `config/broker.yaml` 同步(`min_commission=5.0` 不变);runtime 不可改(P1-2.C/P0-7 §2 红线 1,amendment+重启)
-- [ ] 成本口径隔离:interactive(系统算费,owner 真实费率)vs simulation_auto 经账户生命周期隔离(模式切换 archive+reset,P0-1)→ 测试断言
-- [ ] 对账仍权威:系统算费与 owner 券商有差(优惠/返佣)→ 16:00 ticket fail-closed 三选一(P0-5)
-- [ ] 前端 `executionRegex.ts` 镜像同步(FILLED 价+量;vitest 一致)
-- [ ] amendments `P0-4`(已写,反转决策)+ 落地时按需 `P0-5/P1-2.C`(commission_rate + 无滑点人工成本)
-- [ ] TDD(系统算费 BUY 买佣+过户 / SELL 卖佣+印花+过户 / 分板过户费 / min ¥5 floor + 加权均 blend + v1/v2 replay + 幂等 + 口径隔离 + 前端镜像)+ 门禁(含前端 type-check+vitest)+ codex(撞额度回退 claude /code-review high)+ commit + plan.html
+- [x] FILLED 正则 **v2「成交价 + 股数」**(owner **不再填手续费**);`report_schema_version`(v1=legacy owner-fee FILLED;v2=人工 interactive 价+量,系统算费;v1 仅 FILLED 合法边界守门);recovery loader 按版本分支 + fail-closed 守门;`compute_idempotency_key` 含 version+成交价+股数(v2 fee=None 自然排除)
+- [x] **系统算费**(复用 `cost_calculator.calculate_cost`,加 `apply_slippage_model=False` —— owner 上报价即真实 fill):`gross=价×量`;佣金=`max(gross×0.00015,5.0)`;过户费=`gross×0.0000341`(SZ_MAIN/CHUANGYE/159 ETF;沪市 0);印花税仅 SELL;BUY 现金=-(gross+佣金+过户费),成本价=该值/量;SELL 现金=+(gross−佣金−印花−过户费)。**v2 全经济量委托 `OrderCostBreakdown` 单一真相源**(codex/claude review 修 dual-gross 子分钱不一致)
+- [x] applier feishu_interactive:BUY 持仓成本=加权平均 blend(复用 `_apply_buy`);SELL 已实现盈亏对加权均;两路径系统算费
+- [x] **config**:`BrokerConfig.commission_rate` 0.0003→**0.00015** + `config/broker.yaml` 同步(`min_commission=5.0` 不变);runtime 不可改(P1-2.C/P0-7 §2 红线 1,amendment+重启)
+- [x] 成本口径隔离:interactive(系统算费,无滑点)vs simulation_auto(滑点模型)by-construction 不同 + 账户生命周期隔离(模式切换 archive+reset,P0-1)→ 测试断言
+- [x] 对账仍权威:系统算费与 owner 券商有差(优惠/返佣)→ 16:00 ticket fail-closed 三选一(P0-5)
+- [x] 前端 `executionRegex.ts` 镜像同步(FILLED 价+量;vitest 一致)+ renderer 回报模板同步
+- [x] amendments `P0-4`(已写,反转决策);commission_rate + 无滑点人工成本由 P0-4-amendment §2.2/§2.3 覆盖(未另起 P0-5/P1-2.C)
+- [x] TDD(系统算费 BUY 买佣+过户 / SELL 卖佣+印花+过户 / 分板过户费 / min ¥5 floor + 加权均 blend + v1/v2 replay + 幂等含 version + 口径隔离 + 前端镜像 + v1-only-FILLED + recovery v2 守门)+ 门禁 3967 passed/cov 90.59%(risk 98.81%)+ ruff + redline + 前端 type-check/vitest(139)/build 全绿 + **claude /code-review high(codex 撞额度回退)**修 dual-gross+2 LOW → commit 5feb27c + plan.html done
 
 ### [ ] U-E4 — 缺口3:飞书消息含判据(显眼 + 可量化 + 推理)
 - [ ] `render_buy_signal` 加判据段:① 量化(score+各因子+为何入选 shortlist)② 推理(fund_manager reasoning + 3 分析师结论),逐条 `_single_line()`+**长度截断**,纯文本无 markdown,**display-only**(永不进 parser/idempotency/risk)
