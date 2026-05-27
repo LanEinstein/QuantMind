@@ -65,12 +65,13 @@
 - [x] amendments `P0-4`(已写,反转决策);commission_rate + 无滑点人工成本由 P0-4-amendment §2.2/§2.3 覆盖(未另起 P0-5/P1-2.C)
 - [x] TDD(系统算费 BUY 买佣+过户 / SELL 卖佣+印花+过户 / 分板过户费 / min ¥5 floor + 加权均 blend + v1/v2 replay + 幂等含 version + 口径隔离 + 前端镜像 + v1-only-FILLED + recovery v2 守门)+ 门禁 3967 passed/cov 90.59%(risk 98.81%)+ ruff + redline + 前端 type-check/vitest(139)/build 全绿 + **claude /code-review high(codex 撞额度回退)**修 dual-gross+2 LOW → commit 5feb27c + plan.html done
 
-### [ ] U-E4 — 缺口3:飞书消息含判据(显眼 + 可量化 + 推理)
-- [ ] `render_buy_signal` 加判据段:① 量化(score+各因子+为何入选 shortlist)② 推理(fund_manager reasoning + 3 分析师结论),逐条 `_single_line()`+**长度截断**,纯文本无 markdown,**display-only**(永不进 parser/idempotency/risk)
-- [ ] 经 `line1_runner._route_candidate` 把 `CandidateRow.factors` + 辩论 state 文本传进 `render_buy_signal` 参数(不进 InstructionPlan 字段)
-- [ ] 买卖信号最显眼:header/股数/限价 顶部加粗式纯文本排版
-- [ ] amendment `P0-3`(模板扩展;防注入 + plain-text 不变量保留)
-- [ ] TDD(判据渲染快照 + 防注入 + 不入数值字段)+ 门禁 + codex + commit + plan.html
+### [x] U-E4 — 缺口3:飞书消息含判据(显眼 + 可量化 + 推理)✅ feature 5ca6ba8
+- [x] `render_buy_signal` 加判据段:① 量化(score+各因子+为何入选 shortlist)② 推理(fund_manager reasoning + 3 分析师结论),逐条 `single_line()`+**长度截断**(≤160/≤120),纯文本无 markdown,**display-only**(永不进 parser/idempotency/risk);因子/评分 None 或非有限→`—(数据不足)` fail-closed
+- [x] 经 `line1_runner._process_candidate→_build_buy_rationale→_route_candidate` 把 `CandidateRow.factors`(用 `dataclasses.fields` 派生)+ 辩论 `TeamState` 文本传进 `render_buy_signal` 参数(不进 InstructionPlan 字段)
+- [x] 买卖信号最显眼:header/股数/限价 顶部 `▶` + `━` 分隔纯文本显眼块(`【` 不被误认头)
+- [x] amendment `P0-3-amendment-2026-05-27-buy-signal-rationale-display-only.md`(模板扩展;防注入 + plain-text + display-only 不变量保留)
+- [x] 抽 `text_safety.py`(`single_line`/`truncate` byte-identical)+ feishu 包隔离测试泛化扫全模块
+- [x] TDD(判据渲染快照 + 防注入嵌入换行/控制符 + 截断 + display-only:AST 不可达 parser/幂等 + 不入 plan/risk_summary + volume 不变)+ 门禁 **3989 passed/cov 90.63%** + ruff + redline 全绿 + **claude /code-review high**(codex 撞额度回退)7 角度修 5 finding(docs/reviews/U-E4-codex-review-summary.md)+ commit 5ca6ba8 + plan.html done。**无前端改动**(判据出站,前端镜像入站正则未动)
 
 ### [ ] U-E5 — 缺口2:端到端双线测(出站真发 + 入站真回填)【owner-gated】
 - [ ] owner 前置:建决策群 + 设 `FEISHU_DECISION_CHAT_ID`/`FEISHU_INTERACTIVE_ENABLED=true`
