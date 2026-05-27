@@ -15,17 +15,54 @@ over weekend, then holiday closes, else weekday rule).
 from __future__ import annotations
 
 import datetime as dt
+from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from backend.utils.holiday_loader import get_holiday_table
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
-# Trading sessions (Beijing time)
+# Continuous-auction sessions (Beijing time). End times are exclusive.
 MORNING_OPEN = dt.time(9, 30)
 MORNING_CLOSE = dt.time(11, 30)
 AFTERNOON_OPEN = dt.time(13, 0)
 AFTERNOON_CLOSE = dt.time(15, 0)
+
+# Call-auction windows (Beijing time), additive in U-E1 — see the P0-7
+# amendment 2026-05-27 (call-auction-predicates-and-matching-boundary).
+# Order-accepting windows; the single match fires at the window end (09:25 →
+# open price; 15:00 → close price). End times are exclusive (the match instant
+# itself is no longer an order window).
+OPENING_AUCTION_OPEN = dt.time(9, 15)
+OPENING_AUCTION_CLOSE = dt.time(9, 25)
+CLOSING_AUCTION_OPEN = dt.time(14, 57)
+CLOSING_AUCTION_CLOSE = dt.time(15, 0)
+
+
+class MarketPhase(StrEnum):
+    """Fine-grained A-share session phase (U-E1, additive).
+
+    Distinct from :func:`is_trading_hours`, which stays coarse (it treats the
+    whole 09:30-11:30 / 13:00-15:00 continuous span as "trading" and is the
+    ONLY predicate RiskEngine check #07 consults). ``market_phase`` is a finer
+    audit/diagnostic view that also names the call-auction + lunch phases.
+    """
+
+    CLOSED = "closed"
+    """Non-trading day, or a trading day before 09:15."""
+    PRE_OPEN_AUCTION = "pre_open_auction"
+    """09:15-09:30 — opening call-auction order window (match at 09:25) plus
+    the 09:25-09:30 quiet gap before continuous trading opens."""
+    CONTINUOUS_AM = "continuous_am"
+    """09:30-11:30 — morning continuous auction."""
+    LUNCH_BREAK = "lunch_break"
+    """11:30-13:00 — midday recess."""
+    CONTINUOUS_PM = "continuous_pm"
+    """13:00-14:57 — afternoon continuous auction."""
+    CLOSING_AUCTION = "closing_auction"
+    """14:57-15:00 — closing call auction (match at 15:00)."""
+    POST_CLOSE = "post_close"
+    """A trading day at/after 15:00."""
 
 
 def is_trading_hours(now: dt.datetime | None = None) -> bool:
@@ -79,3 +116,74 @@ def is_trading_day(date: dt.date | None = None) -> bool:
     if date in table.holidays:
         return False
     return date.weekday() < 5  # Mon=0 .. Fri=4
+
+
+def _to_shanghai(now: dt.datetime | None) -> dt.datetime:
+    """Normalise ``now`` to an Asia/Shanghai-aware datetime.
+
+    Mirrors the inline normalisation :func:`is_trading_hours` has always done
+    (None → now; naive → assume Shanghai; aware → convert), so the call-auction
+    predicates accept the same input shapes.
+    """
+    if now is None:
+        return dt.datetime.now(tz=SHANGHAI)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=SHANGHAI)
+    return now.astimezone(SHANGHAI)
+
+
+def is_opening_call_auction(now: dt.datetime | None = None) -> bool:
+    """True iff ``now`` is in the opening call-auction order window.
+
+    09:15-09:25 (Beijing) on a trading day; end exclusive (09:25 is the match
+    instant, not an order window). Additive in U-E1 — does NOT affect
+    :func:`is_trading_hours` / RiskEngine check #07.
+    """
+    now = _to_shanghai(now)
+    if not is_trading_day(now.date()):
+        return False
+    return OPENING_AUCTION_OPEN <= now.time() < OPENING_AUCTION_CLOSE
+
+
+def is_closing_call_auction(now: dt.datetime | None = None) -> bool:
+    """True iff ``now`` is in the closing call-auction window.
+
+    14:57-15:00 (Beijing) on a trading day; end exclusive (15:00 is the close
+    match instant). Additive in U-E1.
+    """
+    now = _to_shanghai(now)
+    if not is_trading_day(now.date()):
+        return False
+    return CLOSING_AUCTION_OPEN <= now.time() < CLOSING_AUCTION_CLOSE
+
+
+def is_call_auction(now: dt.datetime | None = None) -> bool:
+    """True iff ``now`` is in either the opening or closing call auction."""
+    return is_opening_call_auction(now) or is_closing_call_auction(now)
+
+
+def market_phase(now: dt.datetime | None = None) -> MarketPhase:
+    """Classify ``now`` into a fine-grained :class:`MarketPhase` (U-E1).
+
+    A diagnostic/audit view; RiskEngine check #07 still uses only
+    :func:`is_trading_hours`. Boundaries match the session constants (open
+    inclusive, close exclusive). The 09:25-09:30 quiet gap is folded into
+    ``PRE_OPEN_AUCTION`` (the pre-open period as a whole).
+    """
+    now = _to_shanghai(now)
+    if not is_trading_day(now.date()):
+        return MarketPhase.CLOSED
+    t = now.time()
+    if t < OPENING_AUCTION_OPEN:
+        return MarketPhase.CLOSED
+    if t < MORNING_OPEN:  # 09:15-09:30 (auction window + quiet gap)
+        return MarketPhase.PRE_OPEN_AUCTION
+    if t < MORNING_CLOSE:  # 09:30-11:30
+        return MarketPhase.CONTINUOUS_AM
+    if t < AFTERNOON_OPEN:  # 11:30-13:00
+        return MarketPhase.LUNCH_BREAK
+    if t < CLOSING_AUCTION_OPEN:  # 13:00-14:57
+        return MarketPhase.CONTINUOUS_PM
+    if t < CLOSING_AUCTION_CLOSE:  # 14:57-15:00
+        return MarketPhase.CLOSING_AUCTION
+    return MarketPhase.POST_CLOSE  # >= 15:00
