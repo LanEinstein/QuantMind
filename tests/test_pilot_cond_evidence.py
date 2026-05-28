@@ -1,12 +1,15 @@
-"""PILOT manifest sign-off evidence (U-E5 — cond5/6/7/11).
+"""PILOT manifest sign-off evidence (U-E5 — cond3/5/6/7/11; only cond4 left).
 
 ``config/pilot_readiness.yaml`` is an auditable ledger: a flag flips to
 ``true`` ONLY after its named task lands AND the evidence is signed off
 (``backend/services/pilot_readiness.py`` header). This module is the
-single place that ties the four **test sign-offs** flipped in U-E5 to the
-tests that prove them, so the manifest state is reviewable end-to-end.
+single place that ties the **five signed conds** to the evidence that
+proves them, so the manifest state is reviewable end-to-end. cond3 was
+flipped on 2026-05-28 after an open-market dry-run rendered 3 real BUYs
+with full rationale (owner-reviewed); only cond4 (real Feishu send
+round-trip) remains owner/market-gated.
 
-Evidence map (cond3/cond4 stay False — owner/market-gated, not test):
+Evidence map (cond4 stays False — owner-gated real send, not test):
 
 * **cond5  outbox_restart_idempotent** — the durable outbox is the
   at-most-once gate; a second dispatch after a "restart" (same repo) is
@@ -207,17 +210,20 @@ async def test_cond11_rollback_to_simulation_only_resets_account(
 
 
 def test_committed_manifest_signs_off_only_test_conds() -> None:
-    """The checked-in manifest signs off the 4 test conds, not the owner ones.
+    """The checked-in manifest signs off the 5 test/owner-reviewed conds, not cond4.
 
-    U-E5 lands cond5/6/7 (existing dispatcher/route/parser tests) + cond11
-    (the drill above). cond3 (dry-run owner review) + cond4 (real Feishu
-    send round-trip) stay False — they are owner/market-gated, not provable
-    by a test. This locks the ledger so a premature cond3/cond4 sign-off (or
-    a regression flipping a test cond back) is caught.
+    U-E5 (A) landed cond5/6/7 (existing dispatcher/route/parser tests) +
+    cond11 (the drill above). U-E5 (B) prerequisite landed cond3 on
+    2026-05-28: open-market dry-run rendered 3 real BUYs (605111/600909/
+    000725) with full quant + analyst-reasoning rationale + cage-derived
+    limits, owner-reviewed. Only cond4 (real Feishu send round-trip) stays
+    False — it requires a real send the owner has not yet authorized. This
+    locks the ledger so a premature cond4 sign-off (or a regression
+    flipping any signed cond back) is caught.
     """
     flags = read_manifest_flags(Path("config/pilot_readiness.yaml"))
     assert flags == {
-        "dry_run_double_line_pass": False,  # cond3 — owner review
+        "dry_run_double_line_pass": True,  # cond3 — owner-reviewed 2026-05-28
         "feishu_send_recv_smoke_pass": False,  # cond4 — owner real send
         "outbox_restart_idempotent": True,  # cond5 — test sign-off
         "no_double_execution_invariant": True,  # cond6 — test sign-off

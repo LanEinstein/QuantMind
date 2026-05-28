@@ -18,8 +18,20 @@
 #     (45-trading-day rolling window) — PILOT ≠ FULL (amendment §2.4 / §4 #2).
 #
 # Each entry: <bool>  # cond N — <what proves it> (produced by <task>)
-
-dry_run_double_line_pass: false        # cond 3  — 1 real-trading-day render-only dry-run PASS, owner-reviewed (U-E5: needs market-hours rerun + owner review)
+#
+# cond 3 evidence (signed 2026-05-28, U-E5 (B) prerequisite):
+#   Open-market dry-run on trade_date 20260528 (frame T-1 20260527):
+#     verdict PASS, line1_rendered=3, real_sends=0, cost_guard ¥0.1934.
+#   Three real BUYs rendered with full quant + analyst reasoning + cage:
+#     QM-20260528-093000-605111-BUY-001 (新洁能, 200 @ 69.71, score 0.8567)
+#     QM-20260528-093000-600909-BUY-003 (华安证券, 1900 @ 7.65, score 0.8511)
+#     QM-20260528-093000-000725-BUY-004 (京东方A, 2600 @ 5.71, score 0.8492)
+#   RiskEngine 14-check passed on all three; one candidate (002185) was
+#   correctly REJECTED for #02 price_reasonability — fail-closed working.
+#   Owner-reviewed the rendered wire texts and approved cond3 sign-off.
+#   Unblocked by P0-8-amendment-2026-05-28 (Tushare sina realtime backup
+#   leg replaces the eastmoney-throttled akshare batch path).
+dry_run_double_line_pass: true         # cond 3  — owner-reviewed 2026-05-28 (see evidence block above)
 feishu_send_recv_smoke_pass: false     # cond 4  — 1 real Feishu send + 1 report parsed by strict regex (U-E5: owner-gated real send)
 outbox_restart_idempotent: true        # cond 5  — same instruction_id not re-sent across restart (U-E5 test sign-off: tests/orchestration/test_instruction_dispatcher.py + tests/test_pilot_cond_evidence.py)
 no_double_execution_invariant: true    # cond 6  — every VALIDATED id mutually-exclusive single-route (U-E5 test sign-off: tests/orchestration/test_route_coordinator.py + test_no_stray_route_callers.py)

@@ -209,14 +209,15 @@ def test_non_mapping_manifest_is_empty(tmp_path: Path) -> None:
 
 def test_committed_manifest_owner_conds_not_prematurely_signed() -> None:
     # Probe-layer fail-closed guard: the committed manifest parses to the
-    # exact locked schema (no drift / extra key), and the two OWNER/market-
-    # gated conds (cond3 dry-run review, cond4 real Feishu send) are never
-    # signed off by a test — they require an owner action that cannot be
-    # asserted in CI. The full 4-true/2-false ledger-state lock + the
-    # cond→evidence map live in tests/test_pilot_cond_evidence.py (single
-    # source of truth for the per-flag state); this test deliberately does
-    # NOT duplicate that, only the fail-closed schema + owner-gate guard.
+    # exact locked schema (no drift / extra key), and the remaining
+    # OWNER-gated cond (cond4 real Feishu send) is never signed off by a
+    # test — it requires an owner action that cannot be asserted in CI.
+    # cond3 (dry-run owner review) flipped on 2026-05-28 after the owner
+    # reviewed the rendered BUY wires; the full 5-true/1-false ledger-state
+    # lock + the cond→evidence map live in tests/test_pilot_cond_evidence.py
+    # (single source of truth for the per-flag state); this test
+    # deliberately does NOT duplicate that, only the fail-closed schema +
+    # remaining-owner-gate guard.
     flags = read_manifest_flags(Path("config/pilot_readiness.yaml"))
     assert set(flags) == set(_MANIFEST_KEYS)
-    assert flags["dry_run_double_line_pass"] is False     # cond3 owner-gated
     assert flags["feishu_send_recv_smoke_pass"] is False  # cond4 owner-gated
