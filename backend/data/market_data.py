@@ -1,4 +1,12 @@
-"""Real-time market data service with adata primary / akshare fallback."""
+"""Real-time market data service with adata primary / tushare-sina fallback.
+
+P0-8-amendment-2026-05-28: the dual-source ``last`` fallback leg switched
+from akshare ``stock_zh_a_spot_em()`` (full-market batch, ~5500 rows / 58
+pages — eastmoney throttles it with ``RemoteDisconnected``) to Tushare
+``ts.realtime_quote(src='sina')`` (single-symbol, sina-sourced, off the
+``pro_api`` credit interface). akshare paths in the non-dual code remain
+in place; only ``get_stock_realtime_dual`` switched legs.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +18,7 @@ import pandas as pd
 import structlog
 
 from backend.data.config import DataSourcesConfig
+from backend.data.stock_metadata import Board, classify_board
 from backend.models.market import (
     CapitalFlowData,
     IndexQuote,
@@ -73,8 +82,10 @@ def _fetch_index_history_akshare(
     import akshare
 
     return akshare.index_zh_a_hist(
-        symbol=code, period="daily",
-        start_date=start_date, end_date=end_date,
+        symbol=code,
+        period="daily",
+        start_date=start_date,
+        end_date=end_date,
     )
 
 
@@ -86,11 +97,84 @@ def _fetch_stock_adata(code: str) -> pd.DataFrame:
 
 
 def _fetch_stock_akshare(code: str) -> pd.DataFrame:
-    """Fallback: fetch stock quote from akshare."""
+    """Fallback: fetch stock quote from akshare.
+
+    NOTE (P0-8-amendment-2026-05-28): this helper is **no longer** the
+    dual-source fallback leg — eastmoney throttles ``stock_zh_a_spot_em()``
+    (full-market batch, ~58 pages) with ``RemoteDisconnected``. It is
+    retained for the non-dual ``get_stock_realtime`` single-source path and
+    for legacy callers (test fixtures, single-source utilities). The
+    dual-source path uses :func:`_fetch_stock_tushare_sina` instead.
+    """
     import akshare
 
     df = akshare.stock_zh_a_spot_em()
     return df[df["代码"] == code]
+
+
+def _to_tushare_ts_code(code: str) -> str:
+    """Map a bare 6-digit A-share code to a Tushare ``ts_code``.
+
+    Defers to :func:`backend.data.stock_metadata.classify_board` for
+    fail-closed enforcement of the project's universe rules
+    (P0-9 §1.2: STAR / 北交 / 可转债 / B-share are forbidden), then maps
+    the resulting :class:`Board` to the exchange suffix:
+
+    * :attr:`Board.SH_MAIN` → ``.SH``
+    * :attr:`Board.SZ_MAIN` / :attr:`Board.CHUANGYE` → ``.SZ``
+    * :attr:`Board.ETF` → ``.SH`` for SH-listed ETFs (``51x`` / ``588``),
+      ``.SZ`` for SZ-listed ETFs (``159``)
+
+    Raises :class:`ForbiddenCodeError` (universe-blocked) or
+    :class:`UnknownCodeError` (malformed / unknown prefix); both subclass
+    :class:`ValueError` so callers can catch either as input error.
+    Sharing ``classify_board`` keeps the prefix table — and the audit
+    namespace (``star_forbidden`` / ``bj_forbidden`` / ``cb_forbidden`` /
+    ``b_share_forbidden``) — single-source with the rest of the data layer.
+    """
+    board = classify_board(code)  # raises Forbidden/UnknownCodeError
+    if board is Board.SH_MAIN:
+        return f"{code}.SH"
+    if board in (Board.SZ_MAIN, Board.CHUANGYE):
+        return f"{code}.SZ"
+    # ETF: 51x/588 = SH; 159 = SZ. The classify_board allowlist is the
+    # single source of truth — we only need to disambiguate which exchange
+    # an allowed ETF prefix lives on.
+    if code.startswith("159"):
+        return f"{code}.SZ"
+    return f"{code}.SH"
+
+
+def _fetch_stock_tushare_sina(code: str) -> pd.DataFrame:
+    """Dual-source ``fallback`` leg: Tushare ``realtime_quote(src='sina')``.
+
+    Returns the raw Tushare DataFrame (single row, 33 columns including
+    ``TS_CODE`` / ``PRICE`` / ``PRE_CLOSE`` / ``OPEN`` / ``HIGH`` / ``LOW`` /
+    ``VOLUME`` / ``AMOUNT`` / ``BID`` / ``ASK`` / ``A1_P``..``A5_P`` /
+    ``B1_P``..``B5_P`` / ``DATE`` / ``TIME``). The conversion to
+    :class:`StockQuote` lives in :func:`_tushare_sina_row_to_quote`.
+
+    Lazy-imports ``tushare`` to mirror the file's lazy-import discipline
+    (akshare / adata also lazy) and to spare every module-load site —
+    pytest collection, uvicorn startup, scripts/ — the full Tushare
+    transitive stack when the sina path is never taken.
+
+    Raises:
+        ForbiddenCodeError / UnknownCodeError: when ``code`` is universe-
+            blocked or malformed (propagated from :func:`_to_tushare_ts_code`
+            so the caller never silently routes to a guessed exchange).
+        Exception: surfaces any SDK / network error so the dual-source
+            handler can log ``dual_tushare_sina_failed`` and set the
+            fallback leg to ``None`` — silently swallowing would let a
+            single-source view masquerade as dual. Note: Tushare's SDK
+            wraps ``realtime_quote`` with ``@require_permission`` which
+            performs an HTTPS verify-token round-trip to api.tushare.pro
+            on every call (known overhead; amendment §1 footnote).
+    """
+    import tushare as ts  # lazy: see docstring
+
+    ts_code = _to_tushare_ts_code(code)
+    return ts.realtime_quote(ts_code=ts_code, src="sina")
 
 
 def _fetch_stock_list_akshare(codes: list[str]) -> pd.DataFrame:
@@ -219,6 +303,59 @@ def _akshare_stock_row_to_quote(row: pd.Series) -> StockQuote:
         amount=float(row.get("成交额", 0)),
         turnover_rate=float(row.get("换手率", 0)),
         timestamp=now,
+    )
+
+
+def _tushare_sina_row_to_quote(row: pd.Series) -> StockQuote:
+    """Convert a Tushare ``realtime_quote(src='sina')`` row to :class:`StockQuote`.
+
+    Sina returns a single row with English uppercase columns (see
+    :func:`_fetch_stock_tushare_sina`). Mapping (amendment §2.1):
+
+    * ``code`` ← last 6 digits of ``TS_CODE`` (``000021.SZ`` → ``000021``);
+      a bare 6-digit ``TS_CODE`` passes through unchanged.
+    * ``price`` ← ``PRICE`` coerced via :func:`_positive_or_none`; NaN / inf /
+      non-positive (halted / pre-open) → :class:`ValueError`. The dual-source
+      handler then logs ``dual_tushare_sina_failed`` and sets fallback=None,
+      yielding the fail-closed missing-data degrade that P0-8 expects for a
+      halted symbol (NOT a sham ``price=NaN`` divergence reading).
+    * ``change_pct`` ← derived ``(PRICE - PRE_CLOSE) / PRE_CLOSE * 100``
+      when ``PRE_CLOSE`` is a positive finite float; else ``0.0`` (informational
+      field, not part of divergence).
+    * ``turnover_rate`` ← ``0.0`` (sina row carries no turnover; field is
+      informational on the dual-source view).
+    * ``timestamp`` ← :func:`datetime.now` UTC at fetch time — mirrors the
+      adata primary leg's fetch-time semantic so per-leg staleness comparisons
+      see a consistent epoch. (Sina also carries an exchange-clock DATE+TIME
+      header; capturing it would need a new field on :class:`StockQuote` and
+      a P0-8 amendment — out of scope for this swap.)
+    """
+    ts_code = str(row.get("TS_CODE", "") or "")
+    code = ts_code.rsplit(".", 1)[0] if "." in ts_code else ts_code
+
+    price = _positive_or_none(row.get("PRICE"))
+    if price is None:
+        raise ValueError(
+            f"sina row for {code!r} has no finite positive PRICE "
+            f"(halted / pre-open / parse failure); fallback leg fail-closed"
+        )
+
+    prev_close = _positive_or_none(row.get("PRE_CLOSE")) or 0.0
+    change_pct = (price - prev_close) / prev_close * 100.0 if prev_close else 0.0
+
+    return StockQuote(
+        code=code,
+        name=str(row.get("NAME") or ""),
+        price=price,
+        open=_positive_or_none(row.get("OPEN")) or 0.0,
+        high=_positive_or_none(row.get("HIGH")) or 0.0,
+        low=_positive_or_none(row.get("LOW")) or 0.0,
+        prev_close=prev_close,
+        change_pct=change_pct,
+        volume=float(row.get("VOLUME") or 0),
+        amount=float(row.get("AMOUNT") or 0),
+        turnover_rate=0.0,
+        timestamp=datetime.now(tz=UTC),
     )
 
 
@@ -351,14 +488,16 @@ class MarketDataService:
         if df is None or df.empty:
             return pd.DataFrame()
 
-        result = pd.DataFrame({
-            "date": df["日期"].astype(str),
-            "open": pd.to_numeric(df.get("开盘", 0), errors="coerce").fillna(0),
-            "high": pd.to_numeric(df.get("最高", 0), errors="coerce").fillna(0),
-            "low": pd.to_numeric(df.get("最低", 0), errors="coerce").fillna(0),
-            "close": pd.to_numeric(df.get("收盘", 0), errors="coerce").fillna(0),
-            "volume": pd.to_numeric(df.get("成交量", 0), errors="coerce").fillna(0),
-        })
+        result = pd.DataFrame(
+            {
+                "date": df["日期"].astype(str),
+                "open": pd.to_numeric(df.get("开盘", 0), errors="coerce").fillna(0),
+                "high": pd.to_numeric(df.get("最高", 0), errors="coerce").fillna(0),
+                "low": pd.to_numeric(df.get("最低", 0), errors="coerce").fillna(0),
+                "close": pd.to_numeric(df.get("收盘", 0), errors="coerce").fillna(0),
+                "volume": pd.to_numeric(df.get("成交量", 0), errors="coerce").fillna(0),
+            }
+        )
         return result
 
     async def get_stock_realtime(self, code: str) -> StockQuote:
@@ -377,13 +516,9 @@ class MarketDataService:
                 return _akshare_stock_row_to_quote(df.iloc[0])
             except Exception:
                 self._log.error("stock_both_failed", code=code)
-                raise DataFetchError(
-                    f"Both adata and akshare failed for stock {code}"
-                )
+                raise DataFetchError(f"Both adata and akshare failed for stock {code}")
 
-    async def get_stock_list_realtime(
-        self, codes: list[str]
-    ) -> list[StockQuote]:
+    async def get_stock_list_realtime(self, codes: list[str]) -> list[StockQuote]:
         """Get real-time quotes for multiple stocks."""
         try:
             df = await asyncio.to_thread(_fetch_stock_list_adata, codes)
@@ -455,25 +590,53 @@ class MarketDataService:
         """Fetch BOTH spot legs for the P0-8 divergence / staleness check.
 
         Returns a positional ``(primary, fallback)`` tuple — primary is the
-        adata leg, fallback the akshare leg — each ``None`` if that source
-        failed or returned nothing. Unlike :meth:`get_stock_realtime` (which
-        collapses to a single quote), the Line-1 provider needs BOTH legs to
-        run ``evaluate_divergence`` (≤0.3%) and degrade single-source.
+        adata leg, fallback the **Tushare sina** leg (P0-8-amendment-2026-05-28;
+        replaced the akshare ``stock_zh_a_spot_em()`` batch leg that eastmoney
+        throttled with ``RemoteDisconnected``). Each leg is ``None`` if that
+        source failed or returned nothing. Unlike :meth:`get_stock_realtime`
+        (which collapses to a single quote), the Line-1 provider needs BOTH
+        legs to run ``evaluate_divergence`` (≤0.3%) and degrade single-source.
+
+        The two legs are now independent (different vendors, sina single-symbol
+        instead of the old eastmoney 58-page batch) and run concurrently via
+        :func:`asyncio.gather` — halves the per-symbol wall-clock and keeps
+        more of the 5s staleness budget for actual divergence work.
+
+        Program-side ``ValueError`` from the fallback leg (malformed code or
+        forbidden universe prefix raised by :func:`classify_board`) is logged
+        under a separate ``dual_fallback_input_error`` key so ops can tell a
+        plumbing bug from a vendor outage — ``dual_tushare_sina_failed`` is
+        reserved for sina/SDK/network failures.
         """
+        primary_df, fallback_df = await asyncio.gather(
+            asyncio.to_thread(_fetch_stock_adata, code),
+            asyncio.to_thread(_fetch_stock_tushare_sina, code),
+            return_exceptions=True,
+        )
+
         primary: StockQuote | None = None
+        if isinstance(primary_df, BaseException):
+            self._log.warning("dual_adata_failed", code=code, error=str(primary_df))
+        elif primary_df is not None and not primary_df.empty:
+            primary = _adata_stock_row_to_quote(primary_df.iloc[0])
+
         fallback: StockQuote | None = None
-        try:
-            df = await asyncio.to_thread(_fetch_stock_adata, code)
-            if df is not None and not df.empty:
-                primary = _adata_stock_row_to_quote(df.iloc[0])
-        except Exception as exc:
-            self._log.warning("dual_adata_failed", code=code, error=str(exc))
-        try:
-            df = await asyncio.to_thread(_fetch_stock_akshare, code)
-            if df is not None and not df.empty:
-                fallback = _akshare_stock_row_to_quote(df.iloc[0])
-        except Exception as exc:
-            self._log.warning("dual_akshare_failed", code=code, error=str(exc))
+        if isinstance(fallback_df, ValueError):
+            # Program / plumbing bug — never silently look like a vendor outage.
+            self._log.warning(
+                "dual_fallback_input_error", code=code, error=str(fallback_df)
+            )
+        elif isinstance(fallback_df, BaseException):
+            self._log.warning(
+                "dual_tushare_sina_failed", code=code, error=str(fallback_df)
+            )
+        elif fallback_df is not None and not fallback_df.empty:
+            try:
+                fallback = _tushare_sina_row_to_quote(fallback_df.iloc[0])
+            except ValueError as exc:
+                # halted / pre-open sina row (no positive PRICE) → fail-closed
+                self._log.warning("dual_tushare_sina_failed", code=code, error=str(exc))
+
         return primary, fallback
 
     async def get_watchlist_snapshot(
@@ -503,9 +666,7 @@ class MarketDataService:
         try:
             df = await asyncio.to_thread(_fetch_stock_list_adata, codes)
         except Exception as exc:
-            self._log.warning(
-                "watchlist_snapshot_adata_failed", error=str(exc)
-            )
+            self._log.warning("watchlist_snapshot_adata_failed", error=str(exc))
             df = None
             primary_exc = exc
 
@@ -597,9 +758,7 @@ class MarketDataService:
             )
 
         latest = df.iloc[-1]
-        north = float(
-            latest.get("north_money", latest.get("当日资金流入", 0))
-        )
+        north = float(latest.get("north_money", latest.get("当日资金流入", 0)))
         return CapitalFlowData(
             north_net_inflow=north,
             main_net_inflow=0.0,

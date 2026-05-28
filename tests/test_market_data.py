@@ -49,6 +49,7 @@ def service(config: DataSourcesConfig) -> MarketDataService:
 
 # -- Helpers: sample DataFrames matching adata output --
 
+
 def _adata_index_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -100,6 +101,35 @@ def _akshare_spot_df() -> pd.DataFrame:
                 "成交量": 5_000_000,
                 "成交额": 9_000_000_000,
                 "换手率": 0.63,
+            }
+        ]
+    )
+
+
+def _tushare_sina_df() -> pd.DataFrame:
+    """Tushare ``ts.realtime_quote(src='sina')`` row shape (P0-8-amendment-
+    2026-05-28). Used by :class:`TestGetStockRealtimeDual` — the fallback
+    leg is now Tushare sina, not the eastmoney-throttled akshare batch.
+    The price matches ``_adata_stock_df`` so the divergence check stays
+    happy across both legs in the dual-source test."""
+    return pd.DataFrame(
+        [
+            {
+                "NAME": "贵州茅台",
+                "TS_CODE": "600519.SH",
+                "DATE": "20260528",
+                "TIME": "10:13:57",
+                "OPEN": 1790.0,
+                "PRE_CLOSE": 1795.0,
+                "PRICE": 1800.0,
+                "HIGH": 1810.0,
+                "LOW": 1785.0,
+                "BID": 1799.99,
+                "ASK": 1800.0,
+                "VOLUME": 5_000_000,
+                "AMOUNT": 9_000_000_000.0,
+                "A1_P": 1800.0,
+                "B1_P": 1799.99,
             }
         ]
     )
@@ -237,9 +267,7 @@ class TestGetWatchlistSnapshot:
     async def test_empty_codes_short_circuits(
         self, service: MarketDataService, snap_at: datetime
     ) -> None:
-        with patch(
-            "backend.data.market_data._fetch_stock_list_adata"
-        ) as adata_mock:
+        with patch("backend.data.market_data._fetch_stock_list_adata") as adata_mock:
             result = await service.get_watchlist_snapshot([], snap_at)
         assert result == []
         adata_mock.assert_not_called()
@@ -296,6 +324,7 @@ class TestGetWatchlistSnapshot:
                 },
             ]
         )
+
         # Filter the noisy frame the way the real akshare helper does so
         # the test asserts the multi-code isin() filter at the helper
         # level (proves callers don't have to pre-filter).
@@ -312,9 +341,7 @@ class TestGetWatchlistSnapshot:
                 side_effect=_fake_list_akshare,
             ),
         ):
-            result = await service.get_watchlist_snapshot(
-                ["600519", "000001"], snap_at
-            )
+            result = await service.get_watchlist_snapshot(["600519", "000001"], snap_at)
 
         assert len(result) == 2
         codes = {r.code for r in result}
@@ -397,12 +424,26 @@ def _adata_five_df() -> pd.DataFrame:
             {
                 "stock_code": "600519",
                 "short_name": "贵州茅台",
-                "s5": 1805.0, "sv5": 100, "s4": 1804.0, "sv4": 200,
-                "s3": 1803.0, "sv3": 300, "s2": 1802.0, "sv2": 400,
-                "s1": 1801.0, "sv1": 500,
-                "b1": 1800.0, "bv1": 600, "b2": 1799.0, "bv2": 700,
-                "b3": 1798.0, "bv3": 800, "b4": 1797.0, "bv4": 900,
-                "b5": 1796.0, "bv5": 1000,
+                "s5": 1805.0,
+                "sv5": 100,
+                "s4": 1804.0,
+                "sv4": 200,
+                "s3": 1803.0,
+                "sv3": 300,
+                "s2": 1802.0,
+                "sv2": 400,
+                "s1": 1801.0,
+                "sv1": 500,
+                "b1": 1800.0,
+                "bv1": 600,
+                "b2": 1799.0,
+                "bv2": 700,
+                "b3": 1798.0,
+                "bv3": 800,
+                "b4": 1797.0,
+                "bv4": 900,
+                "b5": 1796.0,
+                "bv5": 1000,
             }
         ]
     )
@@ -424,9 +465,7 @@ class TestGetStockOrderbook:
     """U-E2 (a): five-level orderbook fetch for the price-cage best_ask."""
 
     @pytest.mark.asyncio
-    async def test_adata_primary_success(
-        self, service: MarketDataService
-    ) -> None:
+    async def test_adata_primary_success(self, service: MarketDataService) -> None:
         with patch(
             "backend.data.market_data._fetch_orderbook_adata",
             return_value=_adata_five_df(),
@@ -558,25 +597,26 @@ class TestGetStockOrderbook:
 
 
 class TestGetStockRealtimeDual:
-    """U-E2 (b): dual-source last (adata + akshare) for divergence/staleness.
+    """U-E2 (b) + P0-8-amendment-2026-05-28: dual-source last
+    (adata primary + Tushare sina fallback) for divergence/staleness.
 
-    Returns a positional ``(primary, fallback)`` tuple — primary is always the
-    adata leg, fallback always the akshare leg — each ``None`` if that leg
-    failed. The provider runs ``evaluate_divergence`` + staleness over the pair.
+    Returns a positional ``(primary, fallback)`` tuple — primary is always
+    the adata leg, fallback is now the **Tushare sina** leg (replaced the
+    eastmoney-throttled akshare batch leg in 5-28 amendment). Each leg is
+    ``None`` if it failed. The provider runs ``evaluate_divergence`` +
+    staleness over the pair.
     """
 
     @pytest.mark.asyncio
-    async def test_both_legs_returned(
-        self, service: MarketDataService
-    ) -> None:
+    async def test_both_legs_returned(self, service: MarketDataService) -> None:
         with (
             patch(
                 "backend.data.market_data._fetch_stock_adata",
                 return_value=_adata_stock_df(),
             ),
             patch(
-                "backend.data.market_data._fetch_stock_akshare",
-                return_value=_akshare_spot_df(),
+                "backend.data.market_data._fetch_stock_tushare_sina",
+                return_value=_tushare_sina_df(),
             ),
         ):
             primary, fallback = await service.get_stock_realtime_dual("600519")
@@ -595,8 +635,8 @@ class TestGetStockRealtimeDual:
                 return_value=_adata_stock_df(),
             ),
             patch(
-                "backend.data.market_data._fetch_stock_akshare",
-                side_effect=Exception("akshare down"),
+                "backend.data.market_data._fetch_stock_tushare_sina",
+                side_effect=Exception("sina down"),
             ),
         ):
             primary, fallback = await service.get_stock_realtime_dual("600519")
@@ -613,8 +653,8 @@ class TestGetStockRealtimeDual:
                 side_effect=Exception("adata down"),
             ),
             patch(
-                "backend.data.market_data._fetch_stock_akshare",
-                return_value=_akshare_spot_df(),
+                "backend.data.market_data._fetch_stock_tushare_sina",
+                return_value=_tushare_sina_df(),
             ),
         ):
             primary, fallback = await service.get_stock_realtime_dual("600519")

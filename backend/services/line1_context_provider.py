@@ -108,9 +108,12 @@ _UNAFFORDABLE_LOT_COST = float("inf")
 _FUND_SUFFICIENCY_BUFFER = 1.001
 
 # P0-8 §1.1 dual-source spot thresholds for the U-E2 live cage-quote gate.
-# divergence: |adata - akshare| / adata > 0.3% → untrusted; staleness: the spot
+# divergence: |adata - fallback| / adata > 0.3% → untrusted; staleness: the spot
 # fetch must be ≤5s old. A breach (or a single-source / missing 卖一) degrades
 # the lead to a non-actionable notice — never priced on the last / T-1 close.
+# (P0-8-amendment-2026-05-28: the fallback leg switched from akshare to
+# Tushare ``realtime_quote(src='sina')``; threshold and degrade semantics
+# unchanged.)
 _DIVERGENCE_THRESHOLD_PCT = 0.003
 _STALENESS_THRESHOLD_SECONDS = 5.0
 
@@ -364,7 +367,8 @@ class Line1ContextProvider:
         stock_meta = risk_meta_for(bare, lead.name)
         if stock_meta is None:
             return Line1QuoteDegrade(
-                code=lead.code, name=lead.name,
+                code=lead.code,
+                name=lead.name,
                 reason="unclassifiable board (forbidden / unknown code)",
             )
         # Derive the cage-bounded limit off a dual-source-validated live quote.
@@ -385,9 +389,7 @@ class Line1ContextProvider:
         # the held same-code position by ``p.code == order.code`` and value the
         # OTHER positions at their snapshot market_value) so the sizing math
         # mirrors the gate it must pass.
-        existing_shares = sum(
-            p.volume for p in positions if p.code == lead.code
-        )
+        existing_shares = sum(p.volume for p in positions if p.code == lead.code)
         other_positions_value = sum(
             p.market_value for p in positions if p.code != lead.code
         )
@@ -529,7 +531,7 @@ class Line1ContextProvider:
             return "primary spot leg (adata) unavailable"
         if fallback is None:
             return (
-                "single-source spot — backup leg (akshare) unavailable "
+                "single-source spot — backup leg (tushare-sina) unavailable "
                 "(P0-8 dual-source required)"
             )
         div = evaluate_divergence(
@@ -541,18 +543,18 @@ class Line1ContextProvider:
         if div.relative_diff is None:
             # evaluate_divergence folds a non-finite (NaN/inf) backup price or a
             # non-positive primary into ``relative_diff=None, is_divergent=False``
-            # — so a malformed akshare cell would otherwise pass as
+            # — so a malformed fallback cell would otherwise pass as
             # "dual-source-confirmed" and route a BUY priced off adata ALONE.
             # That is effectively single-source → fail closed (codex U-E2 P1).
             return (
                 "untrusted spot — non-finite/non-positive price, cannot confirm "
-                f"dual-source (adata {primary.price} vs akshare {fallback.price})"
+                f"dual-source (adata {primary.price} vs tushare-sina {fallback.price})"
             )
         if div.is_divergent:
             return (
                 f"spot divergence {div.relative_diff:.4f} > "
                 f"{_DIVERGENCE_THRESHOLD_PCT} "
-                f"(adata {primary.price} vs akshare {fallback.price})"
+                f"(adata {primary.price} vs tushare-sina {fallback.price})"
             )
         try:
             age = (self._now - primary.timestamp).total_seconds()
@@ -580,8 +582,12 @@ class Line1ContextProvider:
         except ValueError as exc:
             return f"cage limit derivation failed: {exc}"
         self._persist_pit(
-            bare=bare, signal_id=signal_id, seq=seq,
-            primary=primary, fallback=fallback, ob=ob,
+            bare=bare,
+            signal_id=signal_id,
+            seq=seq,
+            primary=primary,
+            fallback=fallback,
+            ob=ob,
         )
         return _CageDerivation(
             last_price=primary.price,
