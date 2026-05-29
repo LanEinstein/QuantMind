@@ -207,17 +207,20 @@ def test_non_mapping_manifest_is_empty(tmp_path: Path) -> None:
     assert read_manifest_flags(path) == {}
 
 
-def test_committed_manifest_owner_conds_not_prematurely_signed() -> None:
+def test_committed_manifest_schema_locked_and_all_signed() -> None:
     # Probe-layer fail-closed guard: the committed manifest parses to the
-    # exact locked schema (no drift / extra key), and the remaining
-    # OWNER-gated cond (cond4 real Feishu send) is never signed off by a
-    # test — it requires an owner action that cannot be asserted in CI.
-    # cond3 (dry-run owner review) flipped on 2026-05-28 after the owner
-    # reviewed the rendered BUY wires; the full 5-true/1-false ledger-state
-    # lock + the cond→evidence map live in tests/test_pilot_cond_evidence.py
-    # (single source of truth for the per-flag state); this test
-    # deliberately does NOT duplicate that, only the fail-closed schema +
-    # remaining-owner-gate guard.
+    # exact locked schema (no drift / extra key) and all 6 conds are signed.
+    # cond3 flipped 2026-05-28 (owner reviewed rendered BUY wires); cond4
+    # flipped 2026-05-29 (owner acknowledged real Feishu smoke round-trip).
+    # The PILOT acceptance gate now depends solely on the 5 live-probe
+    # conditions (cond1/2/8/9/10) — there is no remaining ledger gate.
+    # The full per-flag-state ledger lock + cond→evidence map live in
+    # tests/test_pilot_cond_evidence.py (single source of truth); this
+    # test deliberately does NOT duplicate that, only the schema-drift
+    # and unsigned-cond guards.
     flags = read_manifest_flags(Path("config/pilot_readiness.yaml"))
     assert set(flags) == set(_MANIFEST_KEYS)
-    assert flags["feishu_send_recv_smoke_pass"] is False  # cond4 owner-gated
+    assert all(flags.values()), (
+        f"every manifest cond must be signed off; unsigned: "
+        f"{[k for k, v in flags.items() if not v]}"
+    )

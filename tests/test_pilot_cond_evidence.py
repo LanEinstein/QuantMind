@@ -1,15 +1,18 @@
-"""PILOT manifest sign-off evidence (U-E5 — cond3/5/6/7/11; only cond4 left).
+"""PILOT manifest sign-off evidence (U-E5 — all 6 ledger conds signed).
 
 ``config/pilot_readiness.yaml`` is an auditable ledger: a flag flips to
 ``true`` ONLY after its named task lands AND the evidence is signed off
 (``backend/services/pilot_readiness.py`` header). This module is the
-single place that ties the **five signed conds** to the evidence that
+single place that ties the **six signed conds** to the evidence that
 proves them, so the manifest state is reviewable end-to-end. cond3 was
-flipped on 2026-05-28 after an open-market dry-run rendered 3 real BUYs
-with full rationale (owner-reviewed); only cond4 (real Feishu send
-round-trip) remains owner/market-gated.
+flipped 2026-05-28 (open-market dry-run owner-reviewed); cond4 was
+flipped 2026-05-29 (real Feishu smoke ping sent to decision chat,
+owner acknowledged the round-trip). PILOT gate now depends solely on
+the 5 live-probe conditions (cond1 active broker / cond2 owner auth /
+cond8 reconciliation clear / cond9 data-quality / cond10 LLM-timeout +
+cost-guard).
 
-Evidence map (cond4 stays False — owner-gated real send, not test):
+Evidence map (all 6 manifest conds signed; live-probe conds are separate):
 
 * **cond5  outbox_restart_idempotent** — the durable outbox is the
   at-most-once gate; a second dispatch after a "restart" (same repo) is
@@ -209,22 +212,24 @@ async def test_cond11_rollback_to_simulation_only_resets_account(
 # -- manifest ledger state (the four test sign-offs flipped in U-E5) -------
 
 
-def test_committed_manifest_signs_off_only_test_conds() -> None:
-    """The checked-in manifest signs off the 5 test/owner-reviewed conds, not cond4.
+def test_committed_manifest_signs_off_all_six_conds() -> None:
+    """All 6 manifest conds are signed off; PILOT gate depends only on live-probe.
 
     U-E5 (A) landed cond5/6/7 (existing dispatcher/route/parser tests) +
     cond11 (the drill above). U-E5 (B) prerequisite landed cond3 on
-    2026-05-28: open-market dry-run rendered 3 real BUYs (605111/600909/
-    000725) with full quant + analyst-reasoning rationale + cage-derived
-    limits, owner-reviewed. Only cond4 (real Feishu send round-trip) stays
-    False — it requires a real send the owner has not yet authorized. This
-    locks the ledger so a premature cond4 sign-off (or a regression
-    flipping any signed cond back) is caught.
+    2026-05-28 (open-market dry-run rendered 3 real BUYs with full
+    quant + analyst-reasoning rationale + cage-derived limits, owner-
+    reviewed) and cond4 on 2026-05-29 (real Feishu smoke ping sent to the
+    decision chat oc_77e23..., owner-acknowledged the round-trip;
+    message_id=om_x100b6e49fbd98c98c327a5e3b29f142, cost ¥0.20). This
+    locks the ledger so a regression flipping any signed cond back is
+    caught; the PILOT acceptance gate now depends solely on the 5
+    live-probe conditions (cond1/2/8/9/10).
     """
     flags = read_manifest_flags(Path("config/pilot_readiness.yaml"))
     assert flags == {
         "dry_run_double_line_pass": True,  # cond3 — owner-reviewed 2026-05-28
-        "feishu_send_recv_smoke_pass": False,  # cond4 — owner real send
+        "feishu_send_recv_smoke_pass": True,  # cond4 — owner-acknowledged 2026-05-29
         "outbox_restart_idempotent": True,  # cond5 — test sign-off
         "no_double_execution_invariant": True,  # cond6 — test sign-off
         "all_report_templates_parse_apply": True,  # cond7 — test sign-off

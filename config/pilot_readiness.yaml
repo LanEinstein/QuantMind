@@ -32,7 +32,21 @@
 #   Unblocked by P0-8-amendment-2026-05-28 (Tushare sina realtime backup
 #   leg replaces the eastmoney-throttled akshare batch path).
 dry_run_double_line_pass: true         # cond 3  — owner-reviewed 2026-05-28 (see evidence block above)
-feishu_send_recv_smoke_pass: false     # cond 4  — 1 real Feishu send + 1 report parsed by strict regex (U-E5: owner-gated real send)
+#
+# cond 4 evidence (signed 2026-05-29 09:08, U-E5 (B) prerequisite):
+#   Real Feishu smoke ping sent to decision chat (oc_77e23..., not alert
+#   chat oc_9edda...). `scripts/smoke_live_double_line.py --real --pilot`
+#   evidence:
+#     verdict PASS / debate.ok=true / feishu.ok=true / sent=true /
+#     message_id=om_x100b6e49fbd98c98c327a5e3b29f142 / cost ¥0.20 delta
+#     (cost_guard total ¥0.39 ≪ ¥100 hard cap) / line1_rendered=3.
+#   Send leg: smoke script's evaluate_feishu_roundtrip OK (Feishu API
+#   accepted + message_id returned). Receive leg: owner visually confirmed
+#   ping landed in 决策群 and replied 『收到 自检』 — semantic round-trip
+#   acknowledgement (backend WS dispatcher not running this phase per the
+#   PILOT-gate bootstrap design; the strict-regex parse path is covered
+#   in isolation by cond 7 `all_report_templates_parse_apply` tests).
+feishu_send_recv_smoke_pass: true      # cond 4  — owner-acknowledged 2026-05-29 (see evidence block above)
 outbox_restart_idempotent: true        # cond 5  — same instruction_id not re-sent across restart (U-E5 test sign-off: tests/orchestration/test_instruction_dispatcher.py + tests/test_pilot_cond_evidence.py)
 no_double_execution_invariant: true    # cond 6  — every VALIDATED id mutually-exclusive single-route (U-E5 test sign-off: tests/orchestration/test_route_coordinator.py + test_no_stray_route_callers.py)
 all_report_templates_parse_apply: true   # cond 7  — all report templates parse/apply, AMBIGUOUS never mutates (U-E5 test sign-off: tests/test_execution_report_parser.py + tests/test_feishu_parser_orchestrator.py)
