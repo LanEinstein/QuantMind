@@ -534,12 +534,12 @@ async def _init_line2_runners(
     from backend.marketdata_snapshot import SnapshotStore
     from backend.monitoring.anomaly import AnomalyDetector
     from backend.orchestration.instruction_dispatcher import (
-        InMemoryOutboxRepository,
         InstructionDispatcher,
     )
     from backend.orchestration.intraday_manifest import IntradayTriggerManifestStore
     from backend.orchestration.line2_daily_runner import Line2DailyRunner
     from backend.orchestration.line2_intraday_runner import Line2IntradayRunner
+    from backend.orchestration.mongo_outbox import MongoOutboxRepository
     from backend.orchestration.route_coordinator import RouteCoordinator
     from backend.risk.circuit_breaker import CircuitBreaker
     from backend.risk.engine import RiskEngine
@@ -588,13 +588,37 @@ async def _init_line2_runners(
     # only) and NEVER calls the dispatcher, so a placeholder decision chat keeps
     # it constructible without any risk of a real send (the guard above proves
     # decision_chat is non-empty whenever the mode actually uses the dispatcher).
-    # NOTE (U-D2/U-D4 follow-on): the outbox is in-memory here — a durable Mongo
-    # outbox is required before feishu go-live so the at-most-once claim survives
-    # a restart.
+    #
+    # Durable Mongo outbox (U-B2-amendment-2026-05-29): the at-most-once claim
+    # MUST survive a process restart. InMemoryOutboxRepository is replaced by
+    # MongoOutboxRepository so a restart >1h after a BUY dispatch does not
+    # re-send to the owner past Feishu's uuid dedup window.
+    # Obtain the Mongo db handle via app.state.mongodb._db (same pattern as
+    # _init_orchestration_layer at line 949; mongodb is already on state by the
+    # time _init_line2_runners is called from _init_orchestration_layer).
+    _outbox_mongodb = getattr(application.state, "mongodb", None)
+    _outbox_db = getattr(_outbox_mongodb, "_db", None)
+    if _outbox_db is not None:
+        outbox = MongoOutboxRepository(
+            _outbox_db[MongoOutboxRepository.COLLECTION_NAME]
+        )
+    else:
+        # Degrade gracefully in dev loops without a Mongo replica set.
+        # The dispatcher is structurally present; feishu_interactive mode
+        # is blocked by the lifespan Feishu gate before any real send fires.
+        from backend.orchestration.instruction_dispatcher import (
+            InMemoryOutboxRepository,
+        )
+
+        outbox = InMemoryOutboxRepository()
+        log.warning(
+            "outbox_fallback_in_memory",
+            reason="mongodb._db unavailable; durable outbox disabled",
+        )
     dispatcher = InstructionDispatcher(
         feishu_client=getattr(application.state, "feishu_client", None),
         decision_chat_id=decision_chat or "SIMULATION_AUTO_NO_DECISION_CHAT",
-        outbox=InMemoryOutboxRepository(),
+        outbox=outbox,
         ledger=ledger,
         audit_store=audit_store,
     )
