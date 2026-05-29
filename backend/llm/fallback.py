@@ -227,3 +227,92 @@ async def track_escalation(
             reason=reason,
             error=str(exc),
         )
+
+
+# -- Live daily LLM timeout-rate telemetry (P0-6-amendment-2026-05-29 cond10a) --
+#
+# The PILOT readiness gate's cond10a reads the *current* daily timeout rate, NOT
+# the 45-day acceptance report (which is INSUFFICIENT_DATA before the window
+# completes and would wrongly block PILOT — Codex U-D2 P2). These two integer
+# counters are incremented from the router on every provider call attempt and on
+# every ``openai.APITimeoutError``; the gate computes ``timeouts / max(calls, 1)``
+# and a cold-start day (0 calls) reads 0.0 == healthy. Counting is best-effort
+# observability — a Redis write failure must never break the LLM request path
+# (fail-open infra glitch), and the gate's own ``_safe_await`` fails closed when
+# the read is unavailable, so the conservative direction is preserved either way.
+
+_LLM_CALLS_KEY_PREFIX = "llm:calls"
+_LLM_TIMEOUTS_KEY_PREFIX = "llm:timeouts"
+
+
+async def _incr_daily_counter(
+    redis_client: redis.asyncio.Redis | None, key: str, log_event: str
+) -> None:
+    """incr ``key`` and (re)set its TTL in one pipeline; best-effort.
+
+    Mirrors the pipelined incr+expire idiom used by :func:`track_usage` /
+    :func:`track_escalation` (single round-trip, TTL set atomically with the
+    increment). Redis failures degrade to a warning and never propagate into
+    the LLM request path (fail-open infra glitch).
+    """
+    if redis_client is None:
+        return
+    try:
+        pipe = redis_client.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, _TTL_DAYS * 86400)
+        await pipe.execute()
+    except Exception as exc:  # noqa: BLE001 — counting is observability only
+        log.warning(log_event, error=str(exc))
+
+
+async def track_llm_call(redis_client: redis.asyncio.Redis | None) -> None:
+    """Increment the per-UTC-day total LLM provider-call-attempt counter.
+
+    Key: ``llm:calls:{utc_date}``. Called once per provider ATTEMPT, so primary
+    + fallback + escalation each count — cond10a is therefore an attempt-level
+    timeout rate (``timeouts / attempts``), consistent with its numerator
+    :func:`track_llm_timeout` which is also per-attempt.
+    """
+    await _incr_daily_counter(
+        redis_client,
+        f"{_LLM_CALLS_KEY_PREFIX}:{_utc_date_str()}",
+        "redis_llm_call_tracking_failed",
+    )
+
+
+async def track_llm_timeout(redis_client: redis.asyncio.Redis | None) -> None:
+    """Increment the per-UTC-day LLM timeout counter.
+
+    Key: ``llm:timeouts:{utc_date}``. Called on each ``openai.APITimeoutError``
+    before the exception is re-raised. cond10a is timeout-specific by design
+    (mirrors the acceptance ``llm_timeout_rate``); other retryable failures
+    (rate-limit / connection) are out of its scope.
+    """
+    await _incr_daily_counter(
+        redis_client,
+        f"{_LLM_TIMEOUTS_KEY_PREFIX}:{_utc_date_str()}",
+        "redis_llm_timeout_tracking_failed",
+    )
+
+
+async def read_llm_timeout_rate(
+    redis_client: redis.asyncio.Redis | None,
+) -> tuple[int, int]:
+    """Return ``(timeouts, calls)`` for the current UTC day.
+
+    Missing keys read as ``0``. The caller (PILOT cond10a) computes
+    ``timeouts / max(calls, 1)`` so a zero-call cold start is healthy (0.0).
+    Raises on Redis error so the gate's ``_safe_await`` can fail closed — an
+    unreadable counter must not silently pass the gate.
+    """
+    if redis_client is None:
+        raise RuntimeError("redis client unavailable for llm timeout-rate read")
+    date_str = _utc_date_str()
+    raw_timeouts, raw_calls = await redis_client.mget(
+        f"{_LLM_TIMEOUTS_KEY_PREFIX}:{date_str}",
+        f"{_LLM_CALLS_KEY_PREFIX}:{date_str}",
+    )
+    timeouts = int(raw_timeouts) if raw_timeouts is not None else 0
+    calls = int(raw_calls) if raw_calls is not None else 0
+    return timeouts, calls

@@ -77,6 +77,12 @@ def _resolve_feishu_tier() -> GoLiveTier:
         ) from None
 
 
+# cond10a — PILOT timeout ceiling (P0-6 §2 stability gate, mirrors the
+# acceptance llm_timeout_rate ≤ 0.05 threshold but on the live daily counter
+# rather than the 45-day report; P0-6-amendment-2026-05-29 §2).
+_PILOT_LLM_TIMEOUT_CEILING = 0.05
+
+
 def _build_pilot_probe(
     application: FastAPI, broker: object
 ) -> PilotReadinessProbe:
@@ -91,7 +97,12 @@ def _build_pilot_probe(
     it does.
     """
     from backend.broker.mock_broker import MockBroker
+    from backend.llm.fallback import read_llm_timeout_rate
     from backend.services.cost_guard import get_daily_budget_state
+    from backend.services.pilot_data_probe import (
+        MANDATORY_ETF_CANARIES,
+        canary_quotes_reachable,
+    )
     from backend.services.pilot_readiness import PilotReadinessProbe
 
     def _is_sim_broker() -> bool:
@@ -106,25 +117,32 @@ def _build_pilot_probe(
         return not await repo.list_all_open()
 
     async def _data_quality_clear() -> bool:
-        # TODO(U-D3): aggregate per-code DataQualityState against the real
-        # Tushare frame. Fail-closed until then.
-        return False
+        # cond9 — infra reachability of the three mandatory ETF canaries
+        # (P0-6-amendment-2026-05-29 §1). Fail-closed when market_data is
+        # unwired or any canary's both quote legs are down.
+        market_data = getattr(application.state, "market_data", None)
+        return await canary_quotes_reachable(
+            market_data, MANDATORY_ETF_CANARIES
+        )
 
     async def _llm_timeout_ok() -> bool:
-        # TODO(U-D4): read a CURRENT/daily LLM-timeout counter. This must NOT
-        # be derived from the FULL 45-day acceptance report (Codex U-D2 P2):
-        # before the window completes those reports are INSUFFICIENT_DATA with
-        # no metrics (would wrongly block PILOT), and a zero-denominator report
-        # could pass on FULL telemetry rather than current health. Fail-closed
-        # until a live timeout counter is wired (the U-D1b carry-forward).
-        return False
+        # cond10a — live daily timeout rate ≤ ceiling
+        # (P0-6-amendment-2026-05-29 §2). Cold-start (0 calls) reads 0.0 ==
+        # healthy. Fail-closed when Redis is unwired (same convention as the
+        # cost_guard probe below); read_llm_timeout_rate still raises defensively
+        # so the gate's _safe_await stays a backstop.
+        redis = getattr(application.state, "redis", None)
+        if redis is None:
+            return False
+        timeouts, calls = await read_llm_timeout_rate(redis)
+        return (timeouts / max(calls, 1)) <= _PILOT_LLM_TIMEOUT_CEILING
 
     async def _cost_guard_hard_reserve_active() -> bool:
         redis = getattr(application.state, "redis", None)
         if redis is None:
             return False
         state = await get_daily_budget_state(redis)
-        return state.daily.status != "hard_breach"
+        return state.status != "hard_breach"
 
     return PilotReadinessProbe(
         is_sim_broker=_is_sim_broker,

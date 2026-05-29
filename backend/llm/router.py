@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from openai import AsyncOpenAI
+from openai import APITimeoutError, AsyncOpenAI
 
 from backend.llm.fallback import (
     RETRYABLE_EXCEPTIONS,
     track_escalation,
     track_fallback,
+    track_llm_call,
+    track_llm_timeout,
     track_usage,
 )
 from backend.llm.providers import (
@@ -470,11 +472,19 @@ class LLMRouter:
             thinking=thinking,
         )
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,  # type: ignore[arg-type]
-            **call_kwargs,
-        )
+        # cond10a live timeout-rate telemetry (P0-6-amendment-2026-05-29):
+        # count every provider call attempt; count + re-raise on timeout.
+        # Best-effort — counting never alters the 30s / 0-retry contract.
+        await track_llm_call(self._redis)
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                **call_kwargs,
+            )
+        except APITimeoutError:
+            await track_llm_timeout(self._redis)
+            raise
 
         if response.usage:
             await track_usage(
