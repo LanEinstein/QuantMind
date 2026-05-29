@@ -444,6 +444,49 @@ class TestBrokerEventStore:
         collected = [ev.sequence async for ev in store.stream_since(2)]
         assert collected == [3]
 
+    @pytest.mark.asyncio
+    async def test_stream_since_rehydrates_strenum_event_type(self) -> None:
+        # Real Mongo/BSON has no enum type: a StrEnum round-trips as a plain
+        # str, which strict-mode BrokerEvent validation rejects. The in-memory
+        # fake normally preserves the enum object (hiding the bug), so this test
+        # deliberately downgrades event_type to a str to mimic real Mongo.
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+
+        event = BrokerEvent(
+            sequence=1,
+            occurred_at=_ts(1),
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+        )
+        doc = event.model_dump(mode="python")
+        doc["event_id"] = str(event.event_id)
+        doc["event_type"] = "mode_switch_reset"  # Mongo str downgrade
+        coll.docs.append(doc)
+
+        out = [ev async for ev in store.stream_since(0)]
+        assert len(out) == 1
+        assert out[0].event_type is BrokerEventType.MODE_SWITCH_RESET
+
+    @pytest.mark.asyncio
+    async def test_stream_since_corrupt_event_type_raises(self) -> None:
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+
+        event = BrokerEvent(
+            sequence=1,
+            occurred_at=_ts(1),
+            event_type=BrokerEventType.DAY_ADVANCED,
+        )
+        doc = event.model_dump(mode="python")
+        doc["event_id"] = str(event.event_id)
+        doc["event_type"] = "not_a_real_event_type"
+        coll.docs.append(doc)
+
+        with pytest.raises(BrokerPersistenceError, match="corrupt event_type"):
+            [ev async for ev in store.stream_since(0)]
+
 
 class TestBrokerSnapshotStore:
     @pytest.mark.asyncio

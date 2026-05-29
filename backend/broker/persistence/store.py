@@ -72,6 +72,29 @@ def _clean_mongo_doc(doc: dict[str, Any], uuid_field: str) -> dict[str, Any]:
     return out
 
 
+def _rehydrate_event_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """Clean a broker_event doc for strict-mode :class:`BrokerEvent` validation.
+
+    Rehydrates ``event_id`` (UUID) and ``event_type`` (enum). BSON has no enum
+    type, so a ``StrEnum`` round-trips through real Mongo as a plain ``str``,
+    which strict-mode validation rejects (it wants a ``BrokerEventType``
+    instance). The in-memory ``FakeCollection`` used by the unit suite preserves
+    the enum object, so this downgrade is invisible to tests and only bites on a
+    real Mongo recovery replay — restore the enum here so recovery stays strict
+    without falling over on a validly-written event.
+    """
+    out = _clean_mongo_doc(doc, "event_id")
+    raw_type = out.get("event_type")
+    if raw_type is not None and not isinstance(raw_type, BrokerEventType):
+        try:
+            out["event_type"] = BrokerEventType(raw_type)
+        except ValueError as exc:
+            raise BrokerPersistenceError(
+                f"corrupt event_type {raw_type!r} in stored broker_event: {exc}"
+            ) from exc
+    return out
+
+
 class BrokerPersistenceError(RuntimeError):
     """Raised when the broker_events / broker_snapshots invariants fail.
 
@@ -267,7 +290,7 @@ class BrokerEventStore:
             "sequence", 1
         )
         async for doc in cursor:
-            yield BrokerEvent.model_validate(_clean_mongo_doc(doc, "event_id"))
+            yield BrokerEvent.model_validate(_rehydrate_event_doc(doc))
 
 
 # ---------------------------------------------------------------------------
