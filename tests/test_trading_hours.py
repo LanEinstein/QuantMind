@@ -13,9 +13,33 @@ from backend.utils.trading_hours import (
     is_trading_day,
     is_trading_hours,
     market_phase,
+    t_minus_1_eod_utc,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+class TestTMinus1EodUtc:
+    """t_minus_1_eod_utc anchors a frame's fetch_time to the as_of 15:00 close."""
+
+    def test_anchors_to_1500_cst_as_utc(self) -> None:
+        import datetime as dt
+
+        got = t_minus_1_eod_utc(dt.date(2026, 5, 29))
+        # 2026-05-29 15:00 Asia/Shanghai (UTC+8) == 07:00 UTC same day.
+        assert got == dt.datetime(2026, 5, 29, 7, 0, tzinfo=dt.UTC)
+        assert got.tzinfo is dt.UTC
+
+    def test_strictly_before_next_session_open(self) -> None:
+        import datetime as dt
+
+        # The anchor (Fri 15:00) must be strictly before the next run-day
+        # ~09:35 created_at — the invariant the production frame relies on.
+        anchor = t_minus_1_eod_utc(dt.date(2026, 5, 29))
+        monday_0935 = dt.datetime(
+            2026, 6, 1, 9, 35, tzinfo=SHANGHAI
+        ).astimezone(dt.UTC)
+        assert anchor < monday_0935
 
 
 class TestIsTradingHours:

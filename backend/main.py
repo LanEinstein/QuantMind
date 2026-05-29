@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -362,6 +363,100 @@ async def _seed_watchlist_from_policy(
         )
 
 
+async def _ensure_daily_frame(
+    application: FastAPI, frame_lock: asyncio.Lock, now: datetime
+) -> None:
+    """Lazily assemble the production T-1 EOD frame and cache it on app.state.
+
+    U-D6c — both lines read the SAME ``app.state.line2_daily_frame`` (a
+    :class:`MarketDataSnapshot`). Before this, that attribute was never
+    assigned in production, so the 09:35 line1 + line2 crons were silent
+    no-ops (zero BUY). This assembles the real Tushare T-1 EOD frame on the
+    first daily/intraday cron fire of the day and caches it for the rest of
+    the day.
+
+    Contracts:
+
+    * **Idempotent per trade date** — re-entry with a cached frame whose
+      ``trade_date`` matches the expected T-1 date returns immediately.
+    * **Race-free** — ``frame_lock`` serialises the 09:35 line1 + line2 crons
+      so only one assembles; the other awaits then hits the cache.
+    * **T-1 EOD anchor** — ``fetch_time_utc`` is anchored to the T-1 15:00
+      close (``t_minus_1_eod_utc``), hours before the run-day ~09:35
+      ``created_at``, so the InstructionPlan ``snapshot_at < created_at``
+      invariant holds deterministically (no wall-clock race) and a same-day
+      re-assembly reusing the append-only store keeps the identical anchor.
+    * **Fail-open** — any assembly error logs and leaves the frame unset, so
+      callers skip cleanly (no crash, no trade routed) exactly as the
+      pre-U-D6c seam did. Data corruption is never silently traded on.
+    """
+    from backend.data.trading_calendar import prev_trading_day
+    from backend.marketdata_snapshot import SnapshotStore
+    from backend.utils.trading_hours import t_minus_1_eod_utc
+
+    as_of = prev_trading_day(now.astimezone(SHANGHAI_TZ).date())
+    as_of_compact = as_of.strftime("%Y%m%d")
+    cached = getattr(application.state, "line2_daily_frame", None)
+    if cached is not None and cached.trade_date == as_of_compact:
+        return
+    async with frame_lock:
+        cached = getattr(application.state, "line2_daily_frame", None)
+        if cached is not None and cached.trade_date == as_of_compact:
+            return
+        try:
+            from backend.data.tushare_client import TushareClient
+            from backend.orchestration.line1_frame import Line1FrameAssembler
+
+            frame_root = os.environ.get(
+                "QUANTMIND_LINE1_FRAME_ROOT", "data/line1_frames"
+            )
+            assembler = Line1FrameAssembler(
+                client=TushareClient(),
+                store=SnapshotStore(root=frame_root),
+                now_utc=lambda: t_minus_1_eod_utc(as_of),
+            )
+            result = await assembler.assemble(
+                as_of_date=as_of,
+                signal_id=f"LINE1-FRAME-{as_of_compact}",
+            )
+            application.state.line2_daily_frame = result.frame_snapshot
+            log.info(
+                "daily_frame_assembled",
+                trade_date=as_of_compact,
+                snapshot_id=str(result.frame_snapshot.snapshot_id),
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-open per the seam
+            # Fail-open keeps the day available (no crash, no trade routed),
+            # but a persistent failure — including the assembler's fail-closed
+            # Line1FrameError on a corrupt/partial pull — would otherwise be a
+            # SILENT multi-day zero-trade condition. Surface it to the owner via
+            # the wired Feishu alerter (ALERT chat, dedup-15min so it never
+            # storms) so a quiet pipeline is never mistaken for a quiet market.
+            log.warning(
+                "daily_frame_assembly_failed",
+                as_of=as_of_compact,
+                error=str(exc),
+            )
+            alerter = getattr(application.state, "feishu_alerter", None)
+            if alerter is not None:
+                try:
+                    await alerter.fire(
+                        alert_type="health_critical",
+                        severity="critical",
+                        message=(
+                            f"T-1 EOD frame assembly failed for {as_of_compact}"
+                            f": {exc}. Line-1/Line-2 will route NO signals until"
+                            " resolved."
+                        ),
+                        dedup_key=f"frame_assembly_failed:{as_of_compact}",
+                    )
+                except Exception as alert_exc:  # noqa: BLE001 — alert best-effort
+                    log.warning(
+                        "daily_frame_assembly_alert_failed",
+                        error=str(alert_exc),
+                    )
+
+
 async def _init_line2_runners(
     application: FastAPI,
     *,
@@ -599,11 +694,17 @@ async def _init_line2_runners(
             log.warning("line2_skipped_ticket_lookup_failed", error=str(exc))
             return None
 
+    # U-D6c — production T-1 EOD frame source (see module-level
+    # _ensure_daily_frame). The lock is per-construction so the 09:35 line1 +
+    # line2 daily crons serialise on the first-of-day assembly.
+    _frame_lock = asyncio.Lock()
+
     async def _line2_daily_callback(now: datetime) -> None:
+        await _ensure_daily_frame(application, _frame_lock, now)
         frame = getattr(application.state, "line2_daily_frame", None)
         if frame is None:
-            # T-1 EOD screener frame source (Line1FrameAssembler / Tushare) is
-            # wired in U-D3 — skip cleanly until then (fail-open, not hollow).
+            # Frame assembly failed (logged in _ensure_daily_frame) — skip
+            # cleanly (fail-open, not hollow): no frame means no trade routed.
             log.info("line2_daily_skipped_no_frame")
             return
         risk_engine = _risk_engine_or_none()
@@ -648,9 +749,10 @@ async def _init_line2_runners(
         await daily_runner.run(frame=frame, provider=provider, now=now)
 
     async def _line2_intraday_callback(now: datetime) -> None:
+        await _ensure_daily_frame(application, _frame_lock, now)
         frame = getattr(application.state, "line2_daily_frame", None)
         if frame is None:
-            return  # ATR / recent-high frame source = U-D3
+            return  # frame assembly failed (logged); skip cleanly
         risk_engine = _risk_engine_or_none()
         policy = getattr(application.state, "watchlist_policy", None)
         if risk_engine is None or policy is None:
@@ -704,9 +806,10 @@ async def _init_line2_runners(
         await intraday_runner.run(provider=provider, now=now)
 
     async def _line1_daily_callback(now: datetime) -> None:
-        # Line-1 reads the SAME T-1 EOD frame seam as Line-2 daily; skip
-        # cleanly until U-D3 wires the real Tushare frame (fail-open, not
-        # hollow — no frame means no BUY routed, so zero exposure in baseline).
+        # Line-1 reads the SAME T-1 EOD frame as Line-2 daily, assembled
+        # lazily + cached by _ensure_daily_frame (U-D6c). Fail-open: a frame
+        # assembly failure leaves it unset and Line-1 skips (no BUY routed).
+        await _ensure_daily_frame(application, _frame_lock, now)
         frame = getattr(application.state, "line2_daily_frame", None)
         if frame is None:
             log.info("line1_daily_skipped_no_frame")

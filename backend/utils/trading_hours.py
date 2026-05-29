@@ -39,6 +39,35 @@ CLOSING_AUCTION_OPEN = dt.time(14, 57)
 CLOSING_AUCTION_CLOSE = dt.time(15, 0)
 
 
+def t_minus_1_eod_utc(as_of: dt.date) -> dt.datetime:
+    """The T-1 EOD logical fetch time — ``as_of`` 15:00 CST close — as UTC.
+
+    Single source for anchoring a Line-1/Line-2 frame's provenance
+    ``fetch_time_utc`` to the moment the T-1 EOD data actually pertains to
+    (the ``as_of`` afternoon close), rather than the wall clock of whenever
+    the frame happens to be assembled.
+
+    WHY both the dry-run and the production 09:35 path need this (U-D4b +
+    U-D6c): the frame is T-1 EOD data but the ``InstructionPlan.created_at``
+    is the run-day ~09:35. The :class:`Line1FrameAssembler` default stamps
+    ``fetch_time_utc = datetime.now(UTC)``; if that is the run-day morning it
+    is only minutes before ``created_at`` (a fragile race against the
+    ``snapshot_at must be strictly before created_at`` invariant in
+    ``backend/models/instruction.py``), and for a same-day re-assembly stamped
+    after ``created_at`` it violates it outright and crashes every plan.
+    Anchoring to the T-1 15:00 close puts ``snapshot_at`` hours before any
+    run-day ``created_at`` — deterministic, race-free, and honest provenance.
+
+    SAFE for PIT replay (R0 §3 red line A): ``fetch_time_utc`` is pure
+    provenance — NOT part of the snapshot checksum (computed over raw bytes
+    only) nor the replay feature digest — so bit-exact ``replay`` is
+    unaffected.
+    """
+    return dt.datetime.combine(
+        as_of, AFTERNOON_CLOSE, tzinfo=SHANGHAI
+    ).astimezone(dt.UTC)
+
+
 class MarketPhase(StrEnum):
     """Fine-grained A-share session phase (U-E1, additive).
 

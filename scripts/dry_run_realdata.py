@@ -27,41 +27,16 @@ from typing import Any
 import structlog
 
 from backend.marketdata_snapshot import MarketDataSnapshot, SnapshotStore
-from backend.utils.trading_hours import SHANGHAI
+from backend.utils.trading_hours import t_minus_1_eod_utc
 
 log = structlog.get_logger(component="scripts.dry_run_realdata")
 
 CSI300 = "000300.SH"
 INDEX_HISTORY_DAYS = 60
 
-# A-share afternoon session close (Asia/Shanghai). The dry-run anchors the
-# frame's provenance fetch time to this T-1 EOD moment (see t_minus_1_eod_utc).
-_SESSION_CLOSE = dt.time(15, 0)
-
-
-def t_minus_1_eod_utc(as_of: dt.date) -> dt.datetime:
-    """The T-1 EOD logical fetch time — ``as_of`` 15:00 CST close — as UTC.
-
-    WHY (U-D4b): the dry-run REPLAYS a *past* trading day, driving the plan's
-    ``created_at`` from the replayed run-day 09:30 (``simulate_n_trading_days``).
-    The live assembler default stamps ``fetch_time_utc = datetime.now(UTC)``
-    (tonight's wall clock); under replay that makes snapshot_at (tonight) >=
-    created_at (the past 09:30), which trips the InstructionPlan
-    ``snapshot_at must be strictly before created_at`` invariant
-    (``backend/models/instruction.py``) and crashes *every* plan. Anchoring the
-    dry-run frame to the T-1 close (strictly before the replayed 09:30) restores
-    the invariant.
-
-    SAFE for PIT replay (R0 §3 red line A): ``fetch_time_utc`` is pure
-    provenance — it is NOT part of the snapshot checksum (computed over raw
-    bytes only) nor the replay feature digest, so bit-exact ``replay`` is
-    unaffected. Anchoring it merely makes provenance reflect the moment the data
-    actually pertains to. The injection lives ONLY in this dry-run script layer;
-    production ``Line1FrameAssembler`` keeps its wall-clock default.
-    """
-    return dt.datetime.combine(as_of, _SESSION_CLOSE, tzinfo=SHANGHAI).astimezone(
-        dt.UTC
-    )
+# ``t_minus_1_eod_utc`` was promoted to backend.utils.trading_hours (U-D6c) so
+# the production frame cron shares the exact T-1 EOD anchor; re-exported here
+# (see __all__) for the dry-run callers that still import it from this module.
 
 
 def _frame_store_root() -> str:
