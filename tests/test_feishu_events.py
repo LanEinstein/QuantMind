@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -215,14 +216,23 @@ class TestReceiverConstruction:
 
 
 class _StubWSClient:
-    """Stand-in for lark.ws.Client that yields control until cancelled."""
+    """Stand-in for lark.ws.Client.
+
+    Mirrors the real SDK contract: ``start()`` is a *synchronous,
+    blocking* call (run by the receiver on a daemon thread) that returns
+    only when ``request_stop()`` is invoked from another thread.
+    """
 
     def __init__(self) -> None:
         self.started = False
+        self._stop = threading.Event()
 
-    async def start(self) -> None:
+    def start(self) -> None:
         self.started = True
-        await asyncio.Event().wait()  # block until cancelled
+        self._stop.wait()  # block until request_stop() unblocks us
+
+    def request_stop(self) -> None:
+        self._stop.set()
 
 
 class _RecordingHandler:
@@ -416,9 +426,9 @@ class TestLifecycle:
         handler = _RecordingHandler()
         receiver = _make_receiver(handler)
         await receiver.start()
-        first_task = receiver._task  # noqa: SLF001
+        first_thread = receiver._thread  # noqa: SLF001
         await receiver.start()
-        assert receiver._task is first_task  # noqa: SLF001
+        assert receiver._thread is first_thread  # noqa: SLF001
         await receiver.stop()
 
     @pytest.mark.asyncio
@@ -462,6 +472,60 @@ class TestLifecycle:
             receiver.stop(handler_grace_seconds=0.1),
             timeout=2.0,
         )
+
+
+# -----------------------------------------------------------------------------
+# SDK event bridge — _on_sdk_event (the production cross-thread path)
+# -----------------------------------------------------------------------------
+
+
+class TestSdkEventBridge:
+    """The SDK calls our handler synchronously on the WS thread; the
+    bridge must marshal work onto the captured main loop. These tests
+    exercise that path directly (unit dispatch tests call
+    ``_handle_event`` straight on the test loop and skip the bridge)."""
+
+    @pytest.mark.asyncio
+    async def test_on_sdk_event_marshals_to_main_loop(self) -> None:
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        receiver._main_loop = asyncio.get_running_loop()  # noqa: SLF001
+        # Invoke the *synchronous* SDK callback from a worker thread,
+        # exactly as lark does from the WS thread.
+        await asyncio.to_thread(
+            receiver._on_sdk_event,  # noqa: SLF001
+            _build_event(event_id="ev_bridge"),
+        )
+        # _handle_event was scheduled on the main loop; let it run + drain.
+        for _ in range(50):
+            if receiver._tasks or handler.calls:  # noqa: SLF001
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        assert handler.calls[0].event_id == "ev_bridge"
+
+    @pytest.mark.asyncio
+    async def test_on_sdk_event_dropped_when_no_main_loop(self) -> None:
+        """No main loop captured (never started) → drop, never raise."""
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        receiver._main_loop = None  # noqa: SLF001
+        receiver._on_sdk_event(_build_event(event_id="ev_noloop"))  # noqa: SLF001
+        await asyncio.sleep(0.02)
+        assert handler.calls == []
+
+    @pytest.mark.asyncio
+    async def test_on_sdk_event_dropped_when_loop_closed(self) -> None:
+        """A closed main loop → drop, never raise."""
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        dead = asyncio.new_event_loop()
+        dead.close()
+        receiver._main_loop = dead  # noqa: SLF001
+        receiver._on_sdk_event(_build_event(event_id="ev_dead"))  # noqa: SLF001
+        await asyncio.sleep(0.02)
+        assert handler.calls == []
 
 
 # -----------------------------------------------------------------------------

@@ -17,13 +17,31 @@ Red lines (P0-2 / CLAUDE.md §2.6):
 * No ``backend.llm`` / ``backend.agents`` / ``backend.mirofish`` imports
   — LLMs never compose response text.
 
-Connection lifecycle:
+Connection lifecycle (the tricky part — see the 2026-05-29 fix):
 
-* :meth:`FeishuEventReceiver.start` schedules ``client.start()`` on
-  the running event loop. The SDK auto-reconnects on transient
+``lark_oapi.ws.Client.start()`` is a *blocking, synchronous* call. It
+drives a module-global event loop captured at import time and ends in
+``loop.run_until_complete(_select())`` which never returns. Worse, when
+``lark_oapi.ws.client`` is first imported inside a running event loop,
+that module-global loop *is* the uvicorn loop — so ``start()`` calls
+``run_until_complete`` on an already-running loop and dies with
+``RuntimeError: this event loop is already running``.
+
+The fix runs ``client.start()`` on a **dedicated daemon thread** that
+owns its **own** event loop (and we rebind the SDK's module-global
+``loop`` to that thread's loop, since every SDK coroutine references it
+by name). The SDK invokes our event handler *synchronously* on that
+thread, so the handler is a thin bridge that marshals the real work
+back onto the main uvicorn loop via :func:`asyncio.run_coroutine_threadsafe`
+— this keeps motor / redis clients on the loop they were created on and
+returns immediately so the SDK's 3-second ack budget is honoured.
+
+* :meth:`FeishuEventReceiver.start` captures the main loop, spawns the
+  daemon thread, and returns. The SDK auto-reconnects on transient
   failures (``auto_reconnect=True`` upstream default).
-* :meth:`stop` cancels the background task; ``start()`` is idempotent
-  so re-calling after a stop reconnects.
+* :meth:`stop` signals the thread to exit (stops its loop), joins it,
+  then drains in-flight handler tasks on the main loop. ``start()`` is
+  idempotent and re-callable after a stop.
 """
 
 from __future__ import annotations
@@ -31,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -70,9 +89,14 @@ MessageHandler = Callable[[ReceivedMessage], Awaitable[None]]
 
 
 class _WSClient(Protocol):
-    """Subset of ``lark_oapi.ws.Client`` that the receiver needs."""
+    """Subset of ``lark_oapi.ws.Client`` that the receiver needs.
 
-    async def start(self) -> None: ...
+    ``start`` is a *blocking, synchronous* call (it runs the SDK's WS
+    loop until cancelled) — the receiver always invokes it on a
+    dedicated daemon thread, never on the main event loop.
+    """
+
+    def start(self) -> None: ...
 
 
 # Factory signature: builds a configured WS client given an event
@@ -127,40 +151,79 @@ class FeishuEventReceiver:
         self._encrypt_key = encrypt_key
         self._dedupe = dedupe
         self._handler = handler
+        # ``_uses_real_sdk`` gates the lark-specific loop bootstrap: only
+        # the production (default) factory builds the real ``ws.Client``
+        # whose blocking ``start()`` drives the SDK's module-global loop.
+        # Injected test factories supply a self-contained blocking stub.
+        self._uses_real_sdk = client_factory is None
         self._client_factory = client_factory or self._default_client_factory
         self._on_handler_error = on_handler_error or self._default_error_logger
         self._client: _WSClient | None = None
-        self._task: asyncio.Task[None] | None = None
+        # Main uvicorn loop, captured in start(); handler work is
+        # marshalled back onto it from the WS thread.
+        self._main_loop: asyncio.AbstractEventLoop | None = None
+        # The WS thread + the loop it owns (real SDK path only).
+        self._thread: threading.Thread | None = None
+        self._thread_loop: asyncio.AbstractEventLoop | None = None
+        # Set when stop() is requested so the thread's natural teardown
+        # exception is not mis-logged as a crash.
+        self._stopping = threading.Event()
         self._tasks: set[asyncio.Task[None]] = set()
         self._app_id_fingerprint = compute_fingerprint(app_id)
 
     # -- Lifecycle ----------------------------------------------------
 
     async def start(self) -> None:
-        """Begin the long-connection loop.
+        """Begin the long-connection loop on a dedicated daemon thread.
 
         Idempotent: re-calling after :meth:`stop` reconnects; calling
-        while already running is a no-op.
+        while already running is a no-op. The blocking SDK ``start()``
+        runs off the main event loop so it can never collide with the
+        running uvicorn loop.
         """
-        if self._task is not None and not self._task.done():
+        if self._thread is not None and self._thread.is_alive():
             log.info(
                 "feishu_event_receiver_already_running app_id_fingerprint=%s",
                 self._app_id_fingerprint,
             )
             return
+        self._main_loop = asyncio.get_running_loop()
         dispatcher = self._build_dispatcher()
         self._client = self._client_factory(dispatcher)
-        loop = asyncio.get_running_loop()
-        self._task = loop.create_task(
-            self._run_loop(), name="feishu_event_receiver"
+        self._stopping.clear()
+        # Create the WS loop here (main thread) — NOT inside _serve — so
+        # _thread_loop is set before the thread starts. Otherwise a stop()
+        # racing an unstarted thread would find _thread_loop is None, skip
+        # the stop signal, time out the join, null _thread, and let the
+        # next start() open a second (duplicate) WS connection.
+        if self._uses_real_sdk:
+            loop = asyncio.new_event_loop()
+            self._thread_loop = loop
+            # Rebind the SDK's module-global loop (see module docstring).
+            # The loop is not yet running, so a stop signal queued before
+            # the thread starts is simply processed once it does.
+            from lark_oapi.ws import client as _lark_ws_client
+
+            _lark_ws_client.loop = loop
+        else:
+            self._thread_loop = None
+        self._thread = threading.Thread(
+            target=self._serve,
+            name="feishu_event_receiver",
+            daemon=True,
         )
+        self._thread.start()
         log.info(
             "feishu_event_receiver_started app_id_fingerprint=%s",
             self._app_id_fingerprint,
         )
 
     async def stop(self, *, handler_grace_seconds: float = 5.0) -> None:
-        """Cancel the WS task + drain in-flight handlers.
+        """Stop the WS thread + drain in-flight handlers.
+
+        Signals the daemon thread to exit (stopping its loop for the
+        real SDK, or calling the stub's ``stop`` in tests), joins it off
+        the event loop, then drains in-flight handler tasks.
 
         Cycle 2 P2 fix: handlers may block on broker / repo / network
         work; without a timeout an unresponsive handler hangs shutdown
@@ -169,14 +232,27 @@ class FeishuEventReceiver:
         ``return_exceptions=True`` so a single bad handler does not
         block process exit.
         """
-        if self._task is None:
+        if self._thread is None:
             return
-        self._task.cancel()
-        try:
-            await self._task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-        self._task = None
+        self._stopping.set()
+        if self._thread.is_alive():
+            self._signal_thread_stop()
+            # Join off the event loop so shutdown of the running loop is
+            # never blocked by the thread's teardown.
+            await asyncio.to_thread(self._thread.join, handler_grace_seconds)
+            if self._thread.is_alive():
+                # Thread wedged past the grace window (e.g. SDK blocked in
+                # a synchronous reconnect HTTP call). It is a daemon thread
+                # so it dies with the process; surface it rather than leak
+                # it silently.
+                log.warning(
+                    "feishu_event_receiver_thread_join_timeout "
+                    "app_id_fingerprint=%s grace_seconds=%s",
+                    self._app_id_fingerprint,
+                    handler_grace_seconds,
+                )
+        self._thread = None
+        self._thread_loop = None
 
         if not self._tasks:
             log.info(
@@ -212,48 +288,117 @@ class FeishuEventReceiver:
 
     @property
     def running(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._thread is not None and self._thread.is_alive()
 
     # -- Internals ----------------------------------------------------
 
-    async def _run_loop(self) -> None:
+    def _serve(self) -> None:
+        """Daemon-thread entrypoint: run the blocking SDK ``start()``.
+
+        The WS loop was created and bound to the SDK's module-global in
+        :meth:`start` (so a racing stop can never lose the loop handle);
+        here we only adopt it as this thread's current loop, because
+        ``ws.Client`` drives it via ``run_until_complete`` and its
+        coroutines resolve the running loop. With our own loop the SDK can
+        never collide with the main uvicorn loop.
+        """
         assert self._client is not None
+        loop = self._thread_loop  # set in start() for the real SDK path
+        if loop is not None:
+            asyncio.set_event_loop(loop)
         try:
-            await self._client.start()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — log and propagate
+            self._client.start()
+        except Exception as exc:  # noqa: BLE001 — log unless we asked to stop
+            if not self._stopping.is_set():
+                log.warning(
+                    "feishu_event_receiver_crashed app_id_fingerprint=%s "
+                    "error_class=%s",
+                    self._app_id_fingerprint,
+                    exc.__class__.__name__,
+                )
+        finally:
+            # Use the local handle (not self._thread_loop, which stop()
+            # may have already cleared) so teardown is race-free.
+            if loop is not None:
+                try:
+                    loop.close()
+                except Exception:  # noqa: BLE001 — best-effort teardown
+                    pass
+
+    def _signal_thread_stop(self) -> None:
+        """Ask the WS thread to exit, from the main event loop thread.
+
+        Real SDK: stop its loop (``run_until_complete(_select())`` then
+        raises and unwinds). Stub clients: call their ``stop``/
+        ``request_stop`` hook if present.
+        """
+        if self._uses_real_sdk:
+            loop = self._thread_loop
+            if loop is not None:
+                loop.call_soon_threadsafe(loop.stop)
+            return
+        stop_fn = getattr(self._client, "request_stop", None) or getattr(
+            self._client, "stop", None
+        )
+        if callable(stop_fn):
+            stop_fn()
+
+    def _on_sdk_event(self, event: Any) -> None:
+        """Synchronous SDK callback — marshals work onto the main loop.
+
+        lark-oapi invokes the registered handler *synchronously* on the
+        WS thread and discards its return value, so an ``async`` handler
+        would never be awaited. We instead schedule :meth:`_handle_event`
+        on the main uvicorn loop (where motor / redis clients live) and
+        return immediately, honouring the SDK's 3-second ack budget.
+        """
+        loop = self._main_loop
+        if loop is None or loop.is_closed():
             log.warning(
-                "feishu_event_receiver_crashed app_id_fingerprint=%s "
-                "error_class=%s",
+                "feishu_event_dropped_no_main_loop app_id_fingerprint=%s",
                 self._app_id_fingerprint,
-                exc.__class__.__name__,
             )
-            raise
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._handle_event(event), loop)
+        except RuntimeError:
+            # The loop closed/stopped between the guard above and here
+            # (shutdown race). Log a secret-free drop rather than letting
+            # the error escape into the SDK's message loop, where it would
+            # be mis-attributed as a generic SDK failure.
+            log.warning(
+                "feishu_event_dropped_loop_unavailable app_id_fingerprint=%s",
+                self._app_id_fingerprint,
+            )
 
     def _build_dispatcher(self) -> Any:
         """Construct the lark-oapi event dispatcher.
 
         Imports are deferred so unit tests that supply a stub
         ``client_factory`` never trigger the SDK's pkg_resources
-        warning on collection.
+        warning on collection. The handler is a *synchronous* bridge
+        (see :meth:`_on_sdk_event`) because the SDK calls it inline.
         """
         from lark_oapi import EventDispatcherHandler  # local import
-        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
-
-        async def _handle(event: P2ImMessageReceiveV1) -> None:
-            await self._handle_event(event)
 
         return (
             EventDispatcherHandler.builder(
                 self._encrypt_key, self._verify_token
             )
-            .register_p2_im_message_receive_v1(_handle)
+            .register_p2_im_message_receive_v1(self._on_sdk_event)
             .build()
         )
 
     def _default_client_factory(self, dispatcher: Any) -> _WSClient:
-        """Build the real ``lark_oapi.ws.Client``."""
+        """Build the real ``lark_oapi.ws.Client``.
+
+        ``log_level=WARNING`` deliberately: the SDK's INFO ``connected to
+        {url}`` line embeds the per-connection ``ticket`` / ``access_key``
+        session credentials in plaintext, which CLAUDE.md §2.9 forbids in
+        logs. Failures (``connect failed``, ``receive message loop exit``)
+        still surface at WARNING/ERROR, so a dying connection stays
+        observable without leaking the credential-bearing success URL.
+        """
         import lark_oapi as lark  # local import — see _build_dispatcher
 
         return lark.ws.Client(
