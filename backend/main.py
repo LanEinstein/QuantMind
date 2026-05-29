@@ -262,6 +262,44 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     application.state.watchlist = watchlist_service
     application.state.mirofish_writer = mirofish_writer
 
+    # C3: wire DataQualityProvider so the per-code DQ gate in
+    # InstructionPlanBuilder is no longer a clean-default no-op
+    # (P0-6-amendment-2026-05-29 §4 follow-up).
+    # The quote probe is the full real blocking gate; the three
+    # non-blocking markers (snapshot-age / news / mirofish) use
+    # honest cheap implementations with deferred full health tracking —
+    # they are informational only per P0-8 §2 redline 11.
+    from backend.data.data_quality import DataQualityProvider
+    from backend.data.data_quality_probes import (
+        MarketDataQuoteProbe,
+        MiroFishHealthProbe,
+        NewsAvailabilityProbe,
+        WatchlistSnapshotAgeProbe,
+    )
+
+    def _active_watchlist_codes() -> list[str]:
+        """Return [] so WatchlistSnapshotAgeProbe returns 0.0 (no fetch).
+
+        Watchlist-snapshot staleness tracking (reading per-code cron-stored
+        ages from MongoDB) is a deferred follow-up.  Returning [] means the
+        probe produces 0.0 → watchlist_snapshot_outage=False (non-blocking
+        P0-8 §2 redline 11) — gate-safe in MVP.  Wiring real codes here
+        would trigger a full-watchlist get_watchlist_snapshot fetch on every
+        per-code evaluate() call, which is wasteful for a non-blocking signal.
+        """
+        return []
+
+    application.state.data_quality_provider = DataQualityProvider(
+        quote_probe=MarketDataQuoteProbe(market_data),
+        snapshot_probe=WatchlistSnapshotAgeProbe(
+            market_data=market_data,
+            watchlist_codes=_active_watchlist_codes,
+        ),
+        news_probe=NewsAvailabilityProbe(),
+        mirofish_probe=MiroFishHealthProbe(),
+    )
+    log.info("data_quality_provider_initialized")
+
     log.info("data_layer_initialized")
 
 
@@ -855,6 +893,12 @@ async def _init_line2_runners(
             # lead to a non-actionable notice — never a BUY on the T-1 close.
             market_data=getattr(application.state, "market_data", None),
             snapshot_store=snapshot_store,  # PIT sink for the live cage inputs
+            # C3 fix A: per-lead DQ gate — real probe so the builder's
+            # check_data_quality early-return fires on a blocking state.
+            # Fail-closed to blocking_data_quality() on any probe exception.
+            data_quality_provider=getattr(
+                application.state, "data_quality_provider", None
+            ),
         )
         await line1_runner.run(frame=frame, provider=provider, now=now)
 

@@ -83,6 +83,7 @@ from backend.services.instruction_plan_builder import (
     WatchlistMarketSignal,
 )
 from backend.services.line2_context_providers import (
+    blocking_data_quality,
     clean_data_quality,
     derive_halt_until,
     risk_meta_for,
@@ -288,6 +289,7 @@ class Line1ContextProvider:
         llm_router: Any,
         now: datetime,
         data_quality: DataQualityState | None = None,
+        data_quality_provider: Any | None = None,
         market_data: MarketDataService | None = None,
         snapshot_store: SnapshotStore | None = None,
     ) -> None:
@@ -295,8 +297,12 @@ class Line1ContextProvider:
         self._frame = frame
         self._llm_router = llm_router
         self._now = now
-        # No per-code DataQualityProvider in the U-D1b baseline (the lead is
-        # unknown until the screen runs); clean fallback, real probe = U-D3.
+        # Per-code DataQualityProvider (C3 fix A): when injected, evaluate()
+        # is called with the lead's bare code inside build_lead_context so the
+        # DQ gate is real (not a permanent clean-state no-op).  Falls back to
+        # ``data_quality`` (which defaults to clean_data_quality() for
+        # back-compat / offline tests) when no provider is supplied.
+        self._data_quality_provider = data_quality_provider
         self._data_quality = data_quality or clean_data_quality()
         # U-E2 / 缺口4: the live quote layer (dual-source spot + 卖一 orderbook).
         # When ``None`` the provider cannot price a BUY safely → every lead
@@ -411,6 +417,23 @@ class Line1ContextProvider:
             concentration_exception=concentration_exception,
             exception_max_lots=exception.max_lots,
         )
+        # Per-code DQ gate (C3 fix A): evaluate the real DataQualityProvider for
+        # this lead's bare code.  Fail-closed: any probe exception → blocking
+        # DataQualityState so the builder's check_data_quality early-return fires
+        # (a probe outage must NOT let a BUY through).  Back-compat baseline: when
+        # no provider is injected fall through to the existing self._data_quality
+        # (defaults to clean_data_quality() for offline / test callers).
+        if self._data_quality_provider is not None:
+            try:
+                dq = await self._data_quality_provider.evaluate(bare, self._now)
+            except Exception as exc:  # noqa: BLE001 — any probe fault → fail-closed
+                log.warning(
+                    "line1_data_quality_failed", code=bare, error=str(exc)
+                )
+                dq = blocking_data_quality()
+        else:
+            dq = self._data_quality
+
         daily_state = DailyTradingState(
             # Count the BUYs already routed earlier in this BASKET run so the
             # ≤5-orders/day cap (check 10) binds ACROSS the basket, not just the
@@ -465,7 +488,7 @@ class Line1ContextProvider:
                 now=self._now,
                 open_tickets=rs.open_tickets,
                 circuit_breaker=rs.circuit_breaker,
-                data_quality=self._data_quality,
+                data_quality=dq,
                 watchlist_policy=rs.watchlist_policy,
                 watchlist_signal=watchlist_signal,
                 risk_engine=rs.risk_engine,
