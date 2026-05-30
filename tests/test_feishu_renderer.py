@@ -19,6 +19,12 @@ from backend.integrations.feishu.renderer import (
     FeishuMessageKind,
     MessageRenderer,
 )
+from backend.models.execution import (
+    ExecutionReport,
+    ExecutionReportChannel,
+    ExecutionReportKind,
+    ExecutionReportPrefix,
+)
 from backend.models.instruction import (
     DataSnapshot,
     InstructionPlan,
@@ -307,6 +313,121 @@ class TestClarification:
         body = excerpt_line.removeprefix("原始文本节选: ")
         assert len(body) == 80
         assert body.endswith("…")
+
+
+# -----------------------------------------------------------------------------
+# Execution ack (P0-4-amendment-2026-05-30b) — success confirmation
+# -----------------------------------------------------------------------------
+
+
+def _exec_report(
+    *,
+    kind: ExecutionReportKind = ExecutionReportKind.FILLED,
+    prefix: ExecutionReportPrefix = ExecutionReportPrefix.POST_CLOSE,
+    side_zh: str | None = "买入",
+    stock_code: str | None = "510300",
+    filled_volume: int | None = 100,
+    remain_volume: int | None = None,
+    fill_price: float | None = 4.0,
+    fee: float | None = None,
+    reason: str | None = None,
+) -> ExecutionReport:
+    return ExecutionReport(
+        report_id="erp-test-1",
+        instruction_id="QM-20260529-093500-510300-BUY-001",
+        kind=kind,
+        prefix=prefix,
+        channel=ExecutionReportChannel.FEISHU,
+        side_zh=side_zh,
+        stock_code=stock_code,
+        filled_volume=filled_volume,
+        remain_volume=remain_volume,
+        fill_price=fill_price,
+        fee=fee,
+        reason=reason,
+        raw_text=(
+            "盘后补录 已执行 QM-20260529-093500-510300-BUY-001 "
+            "买入 510300 100股 成交价 4.00"
+        ),
+        received_at=datetime(2026, 5, 29, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        parsed_at=datetime(2026, 5, 29, 2, 0, 1, tzinfo=ZoneInfo("UTC")),
+    )
+
+
+class TestExecutionAck:
+    def test_filled_ack_echoes_applied_fields(self) -> None:
+        body = MessageRenderer().render_execution_ack(
+            report=_exec_report(),
+            cash_delta=-405.0,
+            broker_event_sequence=11,
+        )
+        assert body.startswith("【QuantMind 已记录】")
+        assert "QM-20260529-093500-510300-BUY-001" in body
+        assert "已执行(盘后补录)" in body
+        assert "买入 510300 100股 @ 4.0" in body
+        assert "-405" in body  # cash outflow
+        assert "510300 +100 股" in body  # position delta
+        assert "账本序号: 11" in body
+
+    def test_unfilled_ack_single_lines_reason(self) -> None:
+        body = MessageRenderer().render_execution_ack(
+            report=_exec_report(
+                kind=ExecutionReportKind.UNFILLED,
+                prefix=ExecutionReportPrefix.NONE,
+                side_zh=None,
+                stock_code=None,
+                filled_volume=None,
+                fill_price=None,
+                reason="客户\n临时\r取消",
+            ),
+            cash_delta=0.0,
+            broker_event_sequence=None,
+        )
+        assert "记录为未成交" in body
+        # newlines collapsed so no fake 【...】 header can be smuggled in
+        assert "客户 临时 取消" in body
+        # a None broker sequence is omitted, not rendered as 'None'
+        assert "账本序号" not in body
+
+    def test_duplicate_ack_does_not_fabricate_recorded(self) -> None:
+        # A deduped re-delivery must NOT render a confident "已记录 + cash +0.00".
+        body = MessageRenderer().render_execution_ack(
+            report=_exec_report(),
+            cash_delta=0.0,
+            broker_event_sequence=None,
+            is_duplicate=True,
+        )
+        assert "【QuantMind 已收到】" in body
+        assert "未重复入账" in body
+        assert "【QuantMind 已记录】" not in body  # not the fresh-record header
+        assert "账本现金变动" not in body  # no fabricated zero-cash movement
+
+    def test_negative_zero_cash_delta_no_double_sign(self) -> None:
+        body = MessageRenderer().render_execution_ack(
+            report=_exec_report(
+                kind=ExecutionReportKind.UNFILLED,
+                prefix=ExecutionReportPrefix.NONE,
+                side_zh=None,
+                stock_code=None,
+                filled_volume=None,
+                fill_price=None,
+                reason="无成交",
+            ),
+            cash_delta=-0.0,
+            broker_event_sequence=None,
+        )
+        assert "+-" not in body
+        assert "账本现金变动: 0.00 CNY" in body
+
+    def test_bad_instruction_id_rejected(self) -> None:
+        with pytest.raises(ValueError, match="canonical pattern"):
+            MessageRenderer().render_execution_ack(
+                report=_exec_report().model_copy(
+                    update={"instruction_id": "QM-bad"}
+                ),
+                cash_delta=-405.0,
+                broker_event_sequence=1,
+            )
 
 
 # -----------------------------------------------------------------------------

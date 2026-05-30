@@ -43,12 +43,28 @@ from backend.integrations.feishu.signal_rationale import (
 )
 from backend.integrations.feishu.text_safety import single_line as _single_line
 from backend.integrations.feishu.text_safety import truncate as _truncate
+from backend.models.execution import (
+    ExecutionReport,
+    ExecutionReportKind,
+    ExecutionReportPrefix,
+)
 from backend.models.instruction import (
     InstructionPlan,
     InstructionSide,
     InstructionStatus,
     RiskCheckSummary,
 )
+
+_REPORT_KIND_LABEL: dict[ExecutionReportKind, str] = {
+    ExecutionReportKind.FILLED: "已执行",
+    ExecutionReportKind.PARTIAL: "部分执行",
+    ExecutionReportKind.UNFILLED: "未执行",
+}
+_REPORT_PREFIX_LABEL: dict[ExecutionReportPrefix, str] = {
+    ExecutionReportPrefix.NONE: "",
+    ExecutionReportPrefix.AMEND: "(更正)",
+    ExecutionReportPrefix.POST_CLOSE: "(盘后补录)",
+}
 
 _SH = ZoneInfo("Asia/Shanghai")
 """All visible timestamps render in Asia/Shanghai (the operator's local
@@ -492,6 +508,84 @@ class MessageRenderer:
             "—— 请按以下格式回复 ——\n"
             + "\n".join(_REPORT_TEMPLATE_BLOCK)
         )
+
+    def render_execution_ack(
+        self,
+        *,
+        report: ExecutionReport,
+        cash_delta: float,
+        broker_event_sequence: int | None,
+        is_duplicate: bool = False,
+    ) -> str:
+        """Render the success confirmation sent back after a report applies.
+
+        P0-4-amendment-2026-05-30b — closes the human-execution loop so the
+        operator always gets exactly one reply: this ack on success, or a
+        clarification template on failure. Without it the owner cannot
+        distinguish "applied" from "message lost".
+
+        ``is_duplicate=True`` (the applier's idempotency guard suppressed a
+        re-delivered/double-sent report) renders a distinct "received but not
+        re-applied" ack — NOT a fabricated "recorded, cash +0.00" message that
+        would read as a fresh application.
+
+        Only deterministic, already-validated fields are interpolated
+        (``instruction_id`` matches the canonical regex; ``stock_code`` /
+        ``filled_volume`` / ``fill_price`` are model-validated numerics;
+        ``cash_delta`` / ``broker_event_sequence`` come from the applier).
+        The free-text ``reason`` (UNFILLED only) is single-lined + truncated
+        so it cannot smuggle a fake 【...】 header (P0-2 §2.6).
+        """
+        if not _INSTRUCTION_ID_RE.fullmatch(report.instruction_id):
+            raise ValueError(
+                f"instruction_id {report.instruction_id!r} fails canonical pattern"
+            )
+        if is_duplicate:
+            return "\n".join(
+                [
+                    "【QuantMind 已收到】",
+                    f"指令编号: {report.instruction_id}",
+                    "该回报此前已记录,本次未重复入账(幂等保护)。",
+                ]
+            )
+        kind_label = _REPORT_KIND_LABEL[report.kind]
+        prefix_label = _REPORT_PREFIX_LABEL[report.prefix]
+        lines = [
+            "【QuantMind 已记录】",
+            f"指令编号: {report.instruction_id}",
+            f"回报类型: {kind_label}{prefix_label}",
+        ]
+        if report.kind is ExecutionReportKind.FILLED:
+            lines.append(
+                f"成交: {report.side_zh} {report.stock_code} "
+                f"{report.filled_volume}股 @ {report.fill_price}"
+            )
+        elif report.kind is ExecutionReportKind.PARTIAL:
+            lines.append(
+                f"成交: {report.side_zh} {report.stock_code} "
+                f"{report.filled_volume}股 @ {report.fill_price}"
+                f"(剩余 {report.remain_volume}股)"
+            )
+        else:  # UNFILLED
+            lines.append("记录为未成交")
+            if report.reason:
+                lines.append(f"原因: {_truncate(_single_line(report.reason), 80)}")
+        # _format_money already emits the leading '-' for negatives; only add
+        # an explicit '+' for a strictly positive delta. `+ 0.0` normalises a
+        # possible -0.0 so we never render the malformed '+-0.00'.
+        cash_delta = cash_delta + 0.0
+        sign = "+" if cash_delta > 0 else ""
+        lines.append(f"账本现金变动: {sign}{_format_money(cash_delta)} CNY")
+        if report.stock_code and report.filled_volume:
+            pos_sign = "+" if report.side_zh == "买入" else "-"
+            lines.append(
+                f"账本持仓变动: {report.stock_code} "
+                f"{pos_sign}{report.filled_volume} 股"
+            )
+        if broker_event_sequence is not None:
+            lines.append(f"账本序号: {broker_event_sequence}")
+        lines.append("(以系统模拟账本为准;如有出入请等 16:00 对账)")
+        return "\n".join(lines)
 
     # -- Reconciliation request (F-005 surface) ------------------------
 

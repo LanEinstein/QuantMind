@@ -227,7 +227,7 @@ def _received_message(
 
 class TestHappyPath:
     @pytest.mark.asyncio
-    async def test_feishu_path_applies_and_no_clarification(
+    async def test_feishu_path_applies_and_sends_one_ack(
         self, tmp_path
     ) -> None:
         plan = _make_plan()
@@ -242,7 +242,35 @@ class TestHappyPath:
         assert outcome.ambiguous is False
         assert outcome.instruction_id == plan.instruction_id
         assert applier.calls and applier.calls[0][1] is True  # side_is_buy
-        assert feishu.calls == []
+        # P0-4-amendment-2026-05-30b — success now sends exactly one
+        # confirmation ack back to the decision chat (not a clarification).
+        assert len(feishu.calls) == 1
+        ack_chat_id, ack_body = feishu.calls[0]
+        assert ack_chat_id == _received_message().chat_id
+        assert "【QuantMind 已记录】" in ack_body
+        assert plan.instruction_id in ack_body
+        assert outcome.send_result is not None
+
+    @pytest.mark.asyncio
+    async def test_ack_send_failure_is_fail_open(self, tmp_path) -> None:
+        # The broker mirror is authoritative (P0-5): a failed ack send must
+        # NOT undo the applied report. Outcome stays success; send_result None.
+        class _RaisingFeishu:
+            async def send_message(self, *a: object, **k: object) -> object:
+                raise RuntimeError("feishu down")
+
+        plan = _make_plan()
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        orchestrator, applier, _, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            feishu=_RaisingFeishu(),  # type: ignore[arg-type]
+            audit=audit,
+            now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
+        )
+        outcome = await orchestrator.handle_feishu(_received_message())
+        assert outcome.success is True
+        assert applier.calls  # the report WAS applied
+        assert outcome.send_result is None  # ack send swallowed, not raised
 
     @pytest.mark.asyncio
     async def test_frontend_path_applies(self, tmp_path) -> None:

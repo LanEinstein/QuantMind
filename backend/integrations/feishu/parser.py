@@ -303,13 +303,22 @@ class ExecutionReportOrchestrator:
             report.instruction_id,
             report.kind.value,
         )
+        # P0-4-amendment-2026-05-30b — confirm back to the operator so every
+        # report gets exactly one reply (ack on success / clarification on
+        # failure). Fail-open: the broker mirror is already the source of
+        # truth, so a failed ack send must never undo the applied report.
+        send_result = await self._send_ack(
+            report=report,
+            apply_result=apply_result,
+            target_chat_id=target_chat_id,
+        )
         return ParseOutcome(
             success=True,
             ambiguous=False,
             instruction_id=report.instruction_id,
             template_id=None,
             apply_result=apply_result,
-            send_result=None,
+            send_result=send_result,
         )
 
     # -- Failure / clarification paths -------------------------------
@@ -453,6 +462,47 @@ class ExecutionReportOrchestrator:
             raw_text_excerpt=raw_text,
         )
         return await self._feishu.send_message(target_chat_id, body)
+
+    async def _send_ack(
+        self,
+        *,
+        report: ExecutionReport,
+        apply_result: ApplyResult,
+        target_chat_id: str | None,
+    ) -> SendMessageResult | None:
+        """Send the post-apply confirmation back to the decision chat.
+
+        Frontend channel (``target_chat_id is None``) shows the applied
+        result inline, so nothing is sent. Fail-open: a send/render error is
+        logged but never propagates — the report is already applied and the
+        broker mirror is authoritative (P0-5). Returning ``None`` keeps the
+        ParseOutcome honest about the (failed/absent) send.
+        """
+        if self._feishu is None or target_chat_id is None:
+            return None
+        # The applier's idempotency guard suppresses a re-delivered / double-
+        # sent report as a no-op (cash_delta=0, broker_event_sequence=None).
+        # Flag it so the ack says "received but not re-applied" rather than a
+        # fabricated "recorded, cash +0.00" that reads as a fresh application.
+        is_duplicate = (
+            apply_result.reason == "execution_report_duplicate_skipped"
+        )
+        try:
+            body = self._renderer.render_execution_ack(
+                report=report,
+                cash_delta=apply_result.cash_delta,
+                broker_event_sequence=apply_result.broker_event_sequence,
+                is_duplicate=is_duplicate,
+            )
+            return await self._feishu.send_message(target_chat_id, body)
+        except Exception as exc:  # noqa: BLE001 — ack is best-effort
+            log.warning(
+                "execution_report_ack_send_failed instruction_id=%s "
+                "error_class=%s",
+                report.instruction_id,
+                exc.__class__.__name__,
+            )
+            return None
 
     async def _audit_parse_failure(
         self,
