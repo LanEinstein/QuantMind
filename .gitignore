@@ -77,3 +77,9 @@ backups/
 # Codex local scratch/cache
 .codex
 .codex/
+
+# Session-local handoff prompts & interactive live-test harness (not version-tracked)
+docs/next-session-prompt-feishu-ack-livetest.md
+docs/next-session-prompt-feishu-inbound-websockets-fix.md
+docs/next-session-prompt-feishu-receiver-fix.md
+scripts/e2e_interactive_test.py
