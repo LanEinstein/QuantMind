@@ -665,7 +665,12 @@ class TestNonBlockingMarkers:
 
     @pytest.mark.asyncio
     async def test_news_outage_alone_does_not_block(self) -> None:
-        md = _make_market_data(100.0, 100.0, primary_ts=NOW, fallback_ts=NOW)
+        # Stamp the quote at wall-clock now (not import-time NOW): the probe
+        # measures fetch-to-eval latency with datetime.now(UTC), so a stale
+        # import-time timestamp trips the 5s staleness gate once the full suite
+        # takes >5s to reach this test and flips is_acceptable to False.
+        fresh = datetime.now(UTC)
+        md = _make_market_data(100.0, 100.0, primary_ts=fresh, fallback_ts=fresh)
         provider = DataQualityProvider(
             quote_probe=MarketDataQuoteProbe(md),
             snapshot_probe=WatchlistSnapshotAgeProbe(
@@ -674,7 +679,7 @@ class TestNonBlockingMarkers:
             news_probe=NewsAvailabilityProbe(alive_count_source=lambda _: 0),
             mirofish_probe=MiroFishHealthProbe(),
         )
-        state = await provider.evaluate("000001", NOW)
+        state = await provider.evaluate("000001", fresh)
         # news_outage is set but the 4 blocking gates depend on quote freshness.
         # We assert that news_outage is True (wired correctly) and that
         # it shows in degradation_reason without being in is_acceptable.
@@ -686,7 +691,10 @@ class TestNonBlockingMarkers:
 
     @pytest.mark.asyncio
     async def test_mirofish_outage_alone_does_not_block(self) -> None:
-        md = _make_market_data(100.0, 100.0, primary_ts=NOW, fallback_ts=NOW)
+        # See test_news_outage_alone_does_not_block: stamp at wall-clock now so
+        # the wall-clock staleness gate stays clean regardless of suite duration.
+        fresh = datetime.now(UTC)
+        md = _make_market_data(100.0, 100.0, primary_ts=fresh, fallback_ts=fresh)
         provider = DataQualityProvider(
             quote_probe=MarketDataQuoteProbe(md),
             snapshot_probe=WatchlistSnapshotAgeProbe(
@@ -695,7 +703,7 @@ class TestNonBlockingMarkers:
             news_probe=NewsAvailabilityProbe(),
             mirofish_probe=MiroFishHealthProbe(is_alive_source=lambda: False),
         )
-        state = await provider.evaluate("000001", NOW)
+        state = await provider.evaluate("000001", fresh)
         assert state.mirofish_unavailable is True
         assert "mirofish" in (state.degradation_reason or "")
         assert state.is_acceptable_for_buy_sell is True  # P0-8 §2 redline 11
