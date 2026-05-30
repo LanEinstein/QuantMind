@@ -39,6 +39,13 @@ dependencies = [
     "apscheduler>=3.10,<4",
     # Feishu / Lark integration (P0-2 / F-001)
     "lark-oapi>=1.5,<2",
+    # lark-oapi 1.5.3's ws/client.py uses the legacy websockets client API
+    # (websockets.connect / WebSocketClientProtocol / InvalidStatusCode). websockets
+    # 14.0 made `connect` the new asyncio implementation; under 15.0.1 the inbound
+    # WS receive loop silently dies with `'NoneType' object has no attribute 'send'`
+    # (can send via HTTP API, cannot receive events). Pin to the last legacy line so
+    # lark's long-connection event receiver works (U-D10 / P0-2).
+    "websockets>=11,<14",
     # Configuration & validation
     "pydantic-settings>=2.7,<3",
     "pyyaml>=6,<7",
