@@ -23,6 +23,7 @@ from backend.integrations.feishu.events import (
     FeishuEventReceiver,
     ReceivedMessage,
     _extract_text_content,
+    _strip_mention_placeholders,
 )
 
 VALID_APP_ID = "cli_" + "a" * 16
@@ -43,6 +44,7 @@ def _build_event(
     ),
     create_time: str = "1747380000000",
     message_type: str = "text",
+    mentions: list[dict] | None = None,
 ) -> SimpleNamespace:
     """Construct a fake Lark P2 envelope shape (dict-style)."""
     return SimpleNamespace(
@@ -54,6 +56,7 @@ def _build_event(
                 "message_type": message_type,
                 "content": json.dumps({"text": text}, ensure_ascii=False),
                 "create_time": create_time,
+                "mentions": mentions,
             },
             "sender": {"sender_id": {"open_id": sender_open_id}},
         },
@@ -531,6 +534,155 @@ class TestSdkEventBridge:
 # -----------------------------------------------------------------------------
 # _extract_text_content
 # -----------------------------------------------------------------------------
+
+
+_REPORT_TEXT = (
+    "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 1000股 成交价 3.85"
+)
+
+
+class TestMentionPlaceholderStripping:
+    """P0-4-amendment-2026-05-30 — strip Lark @_user_N placeholders pre-parse.
+
+    A group message only reaches the bot when it @mentions the bot, and Lark
+    prepends an "@_user_N " placeholder to the body. The strict regex would
+    never match it, so it is stripped (only the exact keys in `mentions`) before
+    parsing — without relaxing the regex or inferring any field.
+    """
+
+    @pytest.mark.asyncio
+    async def test_leading_mention_stripped_to_clean_report(self) -> None:
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(
+                event_id="ev_mention",
+                text=f"@_user_1 {_REPORT_TEXT}",
+                mentions=[{"key": "@_user_1", "name": "QuantMind"}],
+            )
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        # The @mention placeholder is gone; the canonical report text remains
+        # byte-identical so the downstream strict regex matches.
+        assert handler.calls[0].text == _REPORT_TEXT
+
+    @pytest.mark.asyncio
+    async def test_multiple_mentions_all_stripped(self) -> None:
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(
+                event_id="ev_multi",
+                text=f"@_user_1 @_user_2 {_REPORT_TEXT}",
+                mentions=[{"key": "@_user_1"}, {"key": "@_user_2"}],
+            )
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        assert handler.calls[0].text == _REPORT_TEXT
+
+    @pytest.mark.asyncio
+    async def test_prefix_collision_stripped_longest_first(self) -> None:
+        # '@_user_1' is a prefix of '@_user_10'; longest-first stripping must
+        # remove the actual leading token cleanly (no stray '0 ' fragment).
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(
+                event_id="ev_prefix",
+                text=f"@_user_10 {_REPORT_TEXT}",
+                mentions=[{"key": "@_user_1"}, {"key": "@_user_10"}],
+            )
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        assert handler.calls[0].text == _REPORT_TEXT
+
+    @pytest.mark.asyncio
+    async def test_mention_inside_reason_not_corrupted(self) -> None:
+        # Leading-only: a placeholder key that also appears INSIDE the free-text
+        # reason of an UNFILLED report must be preserved verbatim — never
+        # silently deleted (fail-closed / audit integrity).
+        reason_body = (
+            "未执行 QM-20260516-103000-510300-BUY-001 原因: 客户@_user_1要求暂缓"
+        )
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(
+                event_id="ev_reason",
+                text=f"@_user_1 {reason_body}",
+                mentions=[{"key": "@_user_1"}],
+            )
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        # Only the LEADING mention is removed; the mid-reason '@_user_1' stays.
+        assert handler.calls[0].text == reason_body
+
+    @pytest.mark.asyncio
+    async def test_double_space_in_reason_preserved(self) -> None:
+        # Owner-typed double-space inside the reason must NOT be collapsed.
+        reason_body = (
+            "未执行 QM-20260516-103000-510300-BUY-001 原因: 等待  复核确认"
+        )
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(
+                event_id="ev_dblspace",
+                text=f"@_user_1 {reason_body}",
+                mentions=[{"key": "@_user_1"}],
+            )
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        assert handler.calls[0].text == reason_body
+
+    @pytest.mark.asyncio
+    async def test_no_mentions_text_unchanged(self) -> None:
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(event_id="ev_plain", text=_REPORT_TEXT, mentions=None)
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert len(handler.calls) == 1
+        assert handler.calls[0].text == _REPORT_TEXT
+
+    @pytest.mark.asyncio
+    async def test_mention_only_text_skipped(self) -> None:
+        # Stripping the sole placeholder leaves an empty body → skipped, never
+        # forwarded (no spurious AMBIGUOUS on a bare @mention with no report).
+        handler = _RecordingHandler()
+        receiver = _make_receiver(handler)
+        await receiver._handle_event(  # noqa: SLF001
+            _build_event(
+                event_id="ev_only",
+                text="@_user_1",
+                mentions=[{"key": "@_user_1"}],
+            )
+        )
+        await asyncio.gather(*receiver._tasks, return_exceptions=True)  # noqa: SLF001
+        assert handler.calls == []
+
+    def test_strip_helper_fail_closed_keeps_non_matching_body(self) -> None:
+        # Normalisation never *creates* a match: a non-report body stays
+        # non-matching after stripping (the strict regex still routes it to
+        # AMBIGUOUS downstream — verified here at the helper boundary).
+        out = _strip_mention_placeholders(
+            "@_user_1 随便聊两句",
+            [{"key": "@_user_1"}],
+            FeishuEventReceiver._safe_get,  # noqa: SLF001
+        )
+        assert out == "随便聊两句"
+
+    def test_strip_helper_non_iterable_mentions_safe(self) -> None:
+        out = _strip_mention_placeholders(
+            _REPORT_TEXT, object(), FeishuEventReceiver._safe_get  # noqa: SLF001
+        )
+        assert out == _REPORT_TEXT
 
 
 class TestExtractTextContent:

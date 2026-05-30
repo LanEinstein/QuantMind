@@ -533,6 +533,15 @@ class FeishuEventReceiver:
             raise _SkipEventError("sender open_id / user_id missing")
 
         text = _extract_text_content(raw_content)
+        # P0-4-amendment-2026-05-30: a group message only reaches the bot when
+        # it @mentions the bot (the app lacks im:message.group_msg scope), and
+        # Lark renders that mention in the text body as an "@_user_N"
+        # placeholder carried in `mentions`. Strip those placeholders BEFORE the
+        # strict execution-report regex — otherwise every owner reply is
+        # AMBIGUOUS. Normalisation only; the regex is never relaxed (a body that
+        # still does not match → AMBIGUOUS, fail-closed).
+        mentions = self._safe_get(message, "mentions")
+        text = _strip_mention_placeholders(text, mentions, self._safe_get)
         if not text:
             raise _SkipEventError("text content empty")
 
@@ -595,6 +604,72 @@ def _extract_text_content(raw: str) -> str:
     if not isinstance(text, str):
         return ""
     return text.strip()
+
+
+def _strip_mention_placeholders(
+    text: str,
+    mentions: Any,
+    getter: Callable[[Any, str], Any],
+) -> str:
+    """Strip **leading** Lark ``@_user_N`` @mention placeholder tokens.
+
+    P0-4-amendment-2026-05-30. A group message only reaches the bot when it
+    @mentions the bot (the app lacks the ``im:message.group_msg`` scope), and
+    Lark renders that mention inside the text body as a placeholder key like
+    ``@_user_1`` (followed by a space) whose exact string is carried in the
+    event's ``mentions`` array. The strict execution-report regex
+    (``re.fullmatch``) would never match a mention-prefixed body, so a leading
+    run of these placeholders is removed here BEFORE parsing.
+
+    Fail-closed by construction:
+
+    * **Leading-only.** Only placeholders at the start of the body are removed
+      (the realistic shape: owner @mentions the bot, then types the report).
+      A placeholder appearing *inside* the free-text ``原因`` reason — or any
+      mid-body position — is left untouched, so this can never silently delete
+      content from an otherwise-valid report. A mid-body mention simply leaves
+      the body non-matching → AMBIGUOUS downstream.
+    * **Exact keys only**, taken from ``mentions`` (no fuzzy ``@xxx`` guessing),
+      matched only when followed by whitespace or end-of-string so a token that
+      merely shares a prefix is never eaten. Keys are tried longest-first so a
+      shorter key (``@_user_1``) cannot partially strip a longer one
+      (``@_user_10``).
+    * **No other rewriting**: internal spacing of the report (including any
+      double-spaces the owner typed inside a reason) is preserved; the regex is
+      never relaxed; no ``instruction_id`` or numeric field is inferred.
+
+    Returns the input unchanged when there are no mentions.
+    """
+    if not text or not mentions:
+        return text
+    keys: list[str] = []
+    try:
+        for mention in mentions:
+            key = getter(mention, "key")
+            if isinstance(key, str) and key:
+                keys.append(key)
+    except TypeError:
+        # mentions was not iterable (malformed envelope) — leave text as-is.
+        return text
+    if not keys:
+        return text
+    keys.sort(key=len, reverse=True)  # longest-first: avoid prefix collisions
+    remaining = text.lstrip()
+    changed = True
+    while changed:
+        changed = False
+        for key in keys:
+            if not remaining.startswith(key):
+                continue
+            rest = remaining[len(key):]
+            # Only a token boundary (whitespace or end) counts as a mention —
+            # never swallow a longer token that merely starts with the key.
+            if rest and not rest[0].isspace():
+                continue
+            remaining = rest.lstrip()
+            changed = True
+            break
+    return remaining
 
 
 __all__ = [
