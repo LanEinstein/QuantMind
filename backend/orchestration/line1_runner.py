@@ -27,6 +27,7 @@ subpackage), so the single debate edge stays direct.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime
 from enum import StrEnum
@@ -93,6 +94,11 @@ class Line1Outcome(StrEnum):
     (U-E2 / 缺口4). A structurally non-actionable notice is rendered (no order,
     no instruction_id); the system NEVER prices a real BUY on the last / T-1
     close. Per-candidate — the basket falls through to the next name."""
+    ALLOCATION_SKIPPED = "allocation_skipped"
+    """Portfolio allocation's inverse-volatility target floored to 0 lots for
+    this name (conservative under-deployment, P0-7-amendment-2026-05-30) — the
+    quote was fine, the name is simply not funded today. Per-candidate; the
+    basket falls through. No order, no notice (distinct from QUOTE_DEGRADED)."""
     EARLY_RETURN = "early_return"
     """A Builder five-early-return freeze blocked routing (data quality, etc.)."""
     BUDGET_EXHAUSTED = "budget_exhausted"
@@ -157,6 +163,22 @@ class Line1QuoteDegrade:
     reason: str
 
 
+@dataclass(frozen=True)
+class Line1AllocationSkip:
+    """Portfolio allocation chose not to buy this name today (P-003).
+
+    Distinct from :class:`Line1QuoteDegrade`: the lead's quote was perfectly
+    usable, but its inverse-volatility cash target floored to 0 lots
+    (conservative under-deployment, P0-7-amendment-2026-05-30) — so the order is
+    skipped, NOT coerced to 1 lot. The runner classifies ``ALLOCATION_SKIPPED``
+    (never the misleading ``QUOTE_DEGRADED``) and emits no non-actionable-quote
+    notice. ``reason`` is a deterministic provider string (never LLM)."""
+
+    code: str
+    name: str
+    reason: str
+
+
 @runtime_checkable
 class AssemblyContextFactory(Protocol):
     """Finishes the AssemblyContext after the debate (LLM-derived fields).
@@ -208,6 +230,18 @@ class Line1ContextProvider(Protocol):
         """One A-share lot cost in ¥ (``last_price × lot_size``)."""
         ...
 
+    def prime_allocation(self, shortlist_rows: Sequence[CandidateRow]) -> None:
+        """Compute the shortlist's portfolio-allocation cash targets (P-003).
+
+        Optional: the runner invokes this once (``hasattr``-guarded) after
+        selection + before the walk so the provider can pre-size each name to
+        its inverse-volatility target (P0-7-amendment-2026-05-30). A provider
+        without it (or with no allocation policy) is a no-op — sizing stays at
+        the existing max_compliant. Implementations must not construct an
+        ``InstructionPlan`` here (single construction point).
+        """
+        ...
+
     async def build_lead_context(
         self,
         lead: CandidateRow,
@@ -216,7 +250,7 @@ class Line1ContextProvider(Protocol):
         committed: tuple[CommittedBuy, ...] = (),
         signal_id: str = "",
         seq: int = 0,
-    ) -> Line1LeadContext | Line1QuoteDegrade:
+    ) -> Line1LeadContext | Line1QuoteDegrade | Line1AllocationSkip:
         """Build the TeamContext + AssemblyContext factory for the lead.
 
         Async because the provider fetches the lead's live quote (dual-source
@@ -360,6 +394,15 @@ class Line1Runner:
         if not selection.shortlist:
             return self._short(sid, Line1Outcome.EMPTY_SHORTLIST, tier=assessment.tier)
 
+        # 3b. Prime the portfolio-allocation cash targets over the shortlist
+        # (P-003, P0-7-amendment-2026-05-30): the provider computes each name's
+        # inverse-volatility incremental target ONCE here so the per-candidate
+        # sizing in build_lead_context clamps to it. ``hasattr``-guarded so a
+        # provider without allocation (tests / offline) is unaffected. Targets
+        # are walk-start deterministic (no mid-walk reallocation, redline 6).
+        if hasattr(provider, "prime_allocation"):
+            provider.prime_allocation([by_code[c] for c in selection.shortlist])
+
         # 4-6. Walk the shortlist: debate → assemble (single construction
         # point) → route each candidate; REJECT/HOLD/DEGRADE/non-BUY falls
         # through to the next. Collect the VALIDATED BUY basket (cash threaded
@@ -458,6 +501,17 @@ class Line1Runner:
             signal_id=signal_id,
             seq=seq,
         )
+        if isinstance(lead_ctx, Line1AllocationSkip):
+            # P-003: the quote was fine but allocation's inverse-vol target
+            # floored to 0 lots — skip this name (no order, no debate, no
+            # misleading non-actionable-quote notice). The basket falls through.
+            log.info(
+                "line1_allocation_skipped",
+                signal_id=signal_id,
+                code=lead_ctx.code,
+                reason=lead_ctx.reason,
+            )
+            return _CandidateResult(outcome=Line1Outcome.ALLOCATION_SKIPPED)
         if isinstance(lead_ctx, Line1QuoteDegrade):
             # The lead's live quote was unusable (no dual-source-fresh last,
             # divergent / stale spot, or missing 卖一). Render a structurally
@@ -719,6 +773,7 @@ def _mandatory_records_from_state(
 __all__ = [
     "AssemblyContextFactory",
     "CommittedBuy",
+    "Line1AllocationSkip",
     "Line1ContextProvider",
     "Line1LeadContext",
     "Line1Outcome",

@@ -45,6 +45,7 @@ from backend.orchestration.instruction_dispatcher import (
     InstructionDispatcher,
 )
 from backend.orchestration.line1_runner import (
+    Line1AllocationSkip,
     Line1LeadContext,
     Line1Outcome,
     Line1QuoteDegrade,
@@ -262,6 +263,7 @@ class FakeProvider:
     today_instruction_count: int = 0
     blocking_data_quality: bool = False
     degrade_codes: frozenset[str] = frozenset()
+    alloc_skip_codes: frozenset[str] = frozenset()
 
     @property
     def available_cash(self) -> float:
@@ -269,6 +271,12 @@ class FakeProvider:
 
     def per_lot_cost(self, code: str, last_price: float) -> float:
         return last_price * self.lot_size
+
+    def prime_allocation(self, shortlist_rows) -> None:
+        # No-op: this fake sizes via the fixed ``proposed_volume`` (200), so the
+        # runner's hasattr-guarded prime call must not change behaviour here
+        # (P-003 — allocation clamp is unit-tested in test_line1_context_provider).
+        return None
 
     async def build_lead_context(
         self,
@@ -284,6 +292,12 @@ class FakeProvider:
             # non-actionable notice — the runner skips the debate + falls through.
             return Line1QuoteDegrade(
                 code=lead.code, name=lead.name, reason="stub: no 卖一"
+            )
+        if lead.code in self.alloc_skip_codes:
+            # P-003: allocation funded 0 lots for this name — a distinct skip
+            # (not a quote degrade); the runner falls through to the next name.
+            return Line1AllocationSkip(
+                code=lead.code, name=lead.name, reason="stub: 0-lot allocation"
             )
         risk_engine = _risk_engine()
         limit_price = round(lead.last_price, 2)
@@ -743,6 +757,59 @@ async def test_all_quote_degraded_zero_buy(builder, tmp_path) -> None:
     assert result.routed_buys == ()
     assert sender.calls == []  # no order ever sent on a degraded quote
     assert router.calls == 0  # no debate burned on any degraded lead
+
+
+async def test_basket_falls_through_allocation_skipped_lead_to_next(
+    builder, tmp_path
+) -> None:
+    # P-003: a lead whose allocation target floored to 0 lots is SKIPPED (no
+    # debate burned, no quote notice) → the basket falls through to the next.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0, router=router, alloc_skip_codes=frozenset({"600006"})
+        ),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    routed_codes = {rb.plan.stock_code for rb in result.routed_buys}
+    assert "600006" not in routed_codes  # 0-lot allocation → skipped
+    assert routed_codes == {"600000", "600004"}
+    # The skipped lead burned NO debate (skipped before run_shortlist): 2 × 4.
+    assert router.calls == 8
+
+
+async def test_all_allocation_skipped_zero_buy(builder, tmp_path) -> None:
+    # Whole shortlist allocation-skipped → 0 BUY, classified ALLOCATION_SKIPPED
+    # (NOT QUOTE_DEGRADED), no order send, no debate.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0, router=router,
+            alloc_skip_codes=frozenset({"600000", "600004", "600006"}),
+        ),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ALLOCATION_SKIPPED
+    assert result.routed_buys == ()
+    assert sender.calls == []  # no order ever sent
+    assert router.calls == 0  # no debate burned
 
 
 async def test_basket_all_rejected_zero_buy_graceful(builder, tmp_path) -> None:

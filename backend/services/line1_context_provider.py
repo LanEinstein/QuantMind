@@ -69,9 +69,11 @@ from backend.models.market import StockQuote
 from backend.monitoring.add_position import parse_held_series
 from backend.orchestration.line1_runner import (
     CommittedBuy,
+    Line1AllocationSkip,
     Line1LeadContext,
     Line1QuoteDegrade,
 )
+from backend.portfolio_allocation import AllocationPolicy, cash_to_lots
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.daily_state import DailyTradingState
 from backend.risk.engine import RiskEngine
@@ -292,11 +294,21 @@ class Line1ContextProvider:
         data_quality_provider: Any | None = None,
         market_data: MarketDataService | None = None,
         snapshot_store: SnapshotStore | None = None,
+        allocation_policy: AllocationPolicy | None = None,
     ) -> None:
         self._run = run_state
         self._frame = frame
         self._llm_router = llm_router
         self._now = now
+        # P-003 portfolio allocation (P0-7-amendment-2026-05-30). When a policy
+        # is injected, ``prime_allocation`` (called once by the runner before the
+        # shortlist walk) fills ``_target_cash_by_code`` with each name's
+        # inverse-volatility incremental cash target; ``build_lead_context`` then
+        # clamps ``volume = min(max_compliant, cash_to_lots(target, limit))`` —
+        # allocation only tightens, never relaxes the 14-check caps. ``None`` (the
+        # offline / test default) leaves sizing at the existing max_compliant.
+        self._allocation_policy = allocation_policy
+        self._target_cash_by_code: dict[str, float] | None = None
         # Per-code DataQualityProvider (C3 fix A): when injected, evaluate()
         # is called with the lead's bare code inside build_lead_context so the
         # DQ gate is real (not a permanent clean-state no-op).  Falls back to
@@ -333,6 +345,47 @@ class Line1ContextProvider:
             return _UNAFFORDABLE_LOT_COST
         return last_price * get_lot_size(board)
 
+    def prime_allocation(self, shortlist_rows: Sequence[CandidateRow]) -> None:
+        """Compute each shortlist name's inverse-volatility cash target (P-003).
+
+        Called once by the runner AFTER selection and BEFORE the shortlist walk
+        (P0-7-amendment-2026-05-30 §2.3): σ is read off each row's PIT factor
+        (``volatility_20d``), the conservative deploy envelope off the run-state
+        account, and existing holdings off the run-state positions — all at
+        walk-start, so the targets are deterministic and do NOT re-allocate
+        mid-walk (redline 6). No-op when no policy was injected. ``build_lead_context``
+        then clamps each order to its target.
+        """
+        if self._allocation_policy is None:
+            return
+        policy = self._allocation_policy
+        account = self._run.account
+        # σ is the screener's PIT volatility_20d (float | None). A None (history
+        # too short) is intended to fall back to equal weight for that name
+        # inside inverse_vol_weights (amendment §2.1) — never fabricated.
+        sigma_by_code = {
+            row.code: row.factors.volatility_20d for row in shortlist_rows
+        }
+        weights = policy.inverse_vol_weights(sigma_by_code)
+        deployable = policy.deployable_cash(
+            account.available_cash, account.total_assets
+        )
+        existing_value_by_code: dict[str, float] = {}
+        for pos in self._run.positions:
+            existing_value_by_code[pos.code] = (
+                existing_value_by_code.get(pos.code, 0.0) + pos.market_value
+            )
+        targets = policy.target_cash(
+            weights, deployable, account.total_assets, existing_value_by_code
+        )
+        self._target_cash_by_code = targets
+        log.info(
+            "line1_allocation_primed",
+            shortlist_size=len(sigma_by_code),
+            deployable=deployable,
+            targets={c: round(v, 2) for c, v in targets.items()},
+        )
+
     async def build_lead_context(
         self,
         lead: CandidateRow,
@@ -341,7 +394,7 @@ class Line1ContextProvider:
         committed: tuple[CommittedBuy, ...] = (),
         signal_id: str = "",
         seq: int = 0,
-    ) -> Line1LeadContext | Line1QuoteDegrade:
+    ) -> Line1LeadContext | Line1QuoteDegrade | Line1AllocationSkip:
         """Build the TeamContext + AssemblyContext factory for the lead.
 
         U-E2 / 缺口4: fetches the lead's live quote (dual-source spot last + 卖一
@@ -417,6 +470,31 @@ class Line1ContextProvider:
             concentration_exception=concentration_exception,
             exception_max_lots=exception.max_lots,
         )
+        # P-003 portfolio-allocation clamp (P0-7-amendment-2026-05-30 §2.2):
+        # tighten the order to the inverse-volatility cash target primed for
+        # this run. The target lots are floored off the SAME cage limit the
+        # notional caps bind against (single-source lot size). A 0-lot target
+        # means allocation says do not buy this name today (conservative
+        # under-deployment) → degrade, never coerce to 1 lot (would violate the
+        # tranche envelope + Pydantic ``volume > 0``). The clamp only tightens;
+        # the RiskEngine 14-check stays independently authoritative.
+        if self._target_cash_by_code is not None:
+            target_lots = cash_to_lots(
+                self._target_cash_by_code.get(lead.code, 0.0),
+                limit_price,
+                lot=limits.volume_lot_size,
+            )
+            if target_lots <= 0:
+                # The quote was usable — allocation simply did not fund this name
+                # today. A distinct skip (not a quote degrade) so the runner does
+                # not mislabel it QUOTE_DEGRADED / emit a non-actionable-quote
+                # notice (codex/code-review P-003 finding).
+                return Line1AllocationSkip(
+                    code=lead.code,
+                    name=lead.name,
+                    reason="allocation target 0 lots today (inverse-vol under-deploy)",
+                )
+            volume = min(volume, target_lots)
         # Per-code DQ gate (C3 fix A): evaluate the real DataQualityProvider for
         # this lead's bare code.  Fail-closed: any probe exception → blocking
         # DataQualityState so the builder's check_data_quality early-return fires

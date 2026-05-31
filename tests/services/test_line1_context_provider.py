@@ -42,11 +42,18 @@ from backend.marketdata_snapshot import MarketDataSnapshot
 from backend.models.market import StockOrderbook, StockQuote
 from backend.orchestration.line1_runner import (
     CommittedBuy,
+    Line1AllocationSkip,
     Line1Outcome,
     Line1QuoteDegrade,
     Line1Runner,
 )
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteMode
+from backend.portfolio_allocation import (
+    INVERSE_VOLATILITY,
+    AllocationPolicy,
+    cash_to_lots,
+    compute_target_cash,
+)
 from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.engine import RiskEngine
 from backend.screening.factors import FactorVector
@@ -317,6 +324,7 @@ async def _make_provider(
     router: _StubRouter,
     positions: tuple[Position, ...] = (),
     market_data: Any | None = None,
+    allocation_policy: AllocationPolicy | None = None,
 ) -> Line1ContextProvider:
     run_state = await build_line1_run_state(
         broker=_FakeBroker(cash=cash, positions=positions),
@@ -334,6 +342,26 @@ async def _make_provider(
         # U-E2: inject the stub live-quote layer so the cage path engages; tests
         # that exercise degrade branches pass a configured _FakeMarketData.
         market_data=market_data if market_data is not None else _FakeMarketData(),
+        allocation_policy=allocation_policy,
+    )
+
+
+def _alloc_policy(
+    *,
+    per_name_target_pct: float = 0.10,
+    deploy_fraction: float = 0.33,
+    cash_buffer_pct: float = 0.05,
+) -> AllocationPolicy:
+    """A directly-constructed P-003 allocation policy (caps mirror risk.yaml)."""
+    return AllocationPolicy(
+        method=INVERSE_VOLATILITY,
+        deploy_fraction=deploy_fraction,
+        per_name_target_pct=per_name_target_pct,
+        cash_buffer_pct=cash_buffer_pct,
+        vol_lookback=20,
+        single_stock_cap_pct=0.15,
+        single_instruction_cap=50_000.0,
+        lot_size=100,
     )
 
 
@@ -698,6 +726,93 @@ async def test_build_lead_context_committed_shrinks_volume_toward_total_cap() ->
     ).brief.proposed_volume
     assert shrunk < baseline
     assert shrunk % 100 == 0 and shrunk >= 100  # still a whole lot ≥ 1 lot
+
+
+@pytest.mark.asyncio
+async def test_prime_allocation_clamps_volume_to_inverse_vol_target() -> None:
+    # P-003 (P0-7-amendment-2026-05-30): after prime_allocation computes each
+    # name's inverse-volatility cash target, build_lead_context clamps
+    # volume = min(max_compliant, cash_to_lots(target, limit)). The target
+    # (per-name 10% of ¥98k = ¥9,800) is tighter than the 15% max_compliant, so
+    # the primed volume is SMALLER than the un-primed baseline.
+    lead = _lead_600000()
+    base_provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
+    )
+    baseline = (await base_provider.build_lead_context(lead)).brief.proposed_volume
+
+    provider = await _make_provider(
+        frame=_stock_frame(),
+        cash=98_000.0,
+        router=_StubRouter(),
+        allocation_policy=_alloc_policy(),
+    )
+    provider.prime_allocation([lead])
+    ctx = await provider.build_lead_context(lead)
+    primed = ctx.brief.proposed_volume
+
+    # Independently recompute the expected target lots off the carried cage limit.
+    target_cash = compute_target_cash(
+        {"600000": 1.0},
+        deployable=min(98_000.0 * 0.33, 98_000.0 - 0.05 * 98_000.0),
+        total_assets=98_000.0,
+        existing_value_by_code={},
+        per_name_target_pct=0.10,
+        single_stock_cap_pct=0.15,
+        single_instruction_cap=50_000.0,
+    )
+    expected = cash_to_lots(
+        target_cash["600000"], ctx.brief.proposed_limit_price, lot=100
+    )
+    assert primed == expected
+    assert 0 < primed < baseline  # allocation only tightened
+    assert primed % 100 == 0
+    # The AssemblyContext (single construction point) carries the SAME clamped
+    # volume — allocation never re-relaxes the number downstream.
+    asm = ctx.make_assembly_context(
+        signal_id="SIG-a", seq=1, debate_round_count=1,
+        analysis_record_id="ar", risk_validation_id="rv",
+    )
+    assert asm.proposed_volume == primed
+
+
+@pytest.mark.asyncio
+async def test_prime_allocation_zero_lot_target_degrades_not_one_lot() -> None:
+    # A per-name target too small to afford even one lot (0.5% of ¥98k = ¥490 <
+    # one lot ≈ ¥1,316) means allocation says "do not buy this name today" →
+    # the provider degrades (skip), NEVER coerces to 1 lot (that would breach the
+    # tranche envelope + Pydantic volume > 0).
+    lead = _lead_600000()
+    provider = await _make_provider(
+        frame=_stock_frame(),
+        cash=98_000.0,
+        router=_StubRouter(),
+        allocation_policy=_alloc_policy(per_name_target_pct=0.005),
+    )
+    provider.prime_allocation([lead])
+    out = await provider.build_lead_context(lead)
+    # A distinct skip type — NOT Line1QuoteDegrade — so the runner classifies
+    # ALLOCATION_SKIPPED (not QUOTE_DEGRADED) and emits no quote notice.
+    assert isinstance(out, Line1AllocationSkip)
+    assert not isinstance(out, Line1QuoteDegrade)
+    assert "allocation target 0 lots" in out.reason
+
+
+@pytest.mark.asyncio
+async def test_no_allocation_policy_leaves_volume_at_max_compliant() -> None:
+    # Back-compat: with no allocation policy injected, prime_allocation is a
+    # no-op and sizing stays at the existing max_compliant (un-primed) volume.
+    lead = _lead_600000()
+    provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
+    )
+    provider.prime_allocation([lead])  # no-op (no policy)
+    primed = (await provider.build_lead_context(lead)).brief.proposed_volume
+    base_provider = await _make_provider(
+        frame=_stock_frame(), cash=98_000.0, router=_StubRouter()
+    )
+    baseline = (await base_provider.build_lead_context(lead)).brief.proposed_volume
+    assert primed == baseline
 
 
 # ---------------------------------------------------------------------------
