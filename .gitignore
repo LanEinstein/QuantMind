@@ -82,4 +82,5 @@ backups/
 docs/next-session-prompt-feishu-ack-livetest.md
 docs/next-session-prompt-feishu-inbound-websockets-fix.md
 docs/next-session-prompt-feishu-receiver-fix.md
+docs/next-session-prompt-phase-p.md
 scripts/e2e_interactive_test.py

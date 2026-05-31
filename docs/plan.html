@@ -3082,7 +3082,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         notes: "**done feature a70e8c7(核心 e2e 部分)**。新增 tests/test_e2e_production_path.py:0-network/0-LLM/0-真Mongo 离线生产路径 e2e,驱动**真实**编排链(InstructionPlanBuilder/RiskEngine/RouteCoordinator/InstructionDispatcher/InboundGate/parser/ExecutionReportApplier/MockBroker/ReconciliationApplier/DataQualityProvider/状态机),仅外缘打 fake(frame 数据源/LLM 辩论/FeishuSender/Mongo/Redis/时钟)。8 测试逐阶段**值断言**:frame 非None→真 builder 出 VALIDATED BUY(schema-valid id+DQ 门未误拦)→dispatch sink 收1条+ledger PLAN_DISPATCHED+outbox SENT→owner FILLED 经 InboundGate(allowlist)+parser 出 report→applier 令现金减 gross+费/持仓+量/成本价正确→对账匹配无票·注入差异出 fail-closed 票。M-004 不破(plan 仅经真 builder)。门禁 redline PASS/ruff clean/全量 4157 passed/13 skipped(+8)。**诚实覆盖边界(test docstring 记)**:真飞书 HTTP 发送/真 Redis 预留/真 DQ 探针/16:00 EOD 对账 离线未驱动——周一 09:35 真 cron 为最终验证。**本任务原 scope 余项 deferred(非 MVP 阻塞·doc/lint)**:backend/orchestration/CLAUDE.md 模块文档 + redline-check.sh orchestration 隔离断言 + I-002 re-scope。"
       },
       {
-        id: "P-001", phase: "P 组合配置与仓位", status: "doing", priority: "P0",
+        id: "P-001", phase: "P 组合配置与仓位", status: "done", priority: "P0",
         title: "amendments + SSoT(组合配比 / 篮子汇总 / 止盈减仓)",
         summary: "amendment-first:3 决策修订 — P0-7 组合层逆波动率配比 + 稳健分批部署封套 / P0-3 飞书篮子汇总(第 6 个 FeishuMessageKind display-only)/ P0-10-line2 确定性止盈 + 超配减仓。+ plan.html Phase P 7 任务条目。",
         scope: "docs/decisions/P0-7-amendment-2026-05-30-portfolio-allocation.md, docs/decisions/P0-3-amendment-2026-05-30-basket-digest.md, docs/decisions/P0-10-amendment-line2-2026-05-30-take-profit-trim.md, docs/plan.html",
@@ -3090,7 +3090,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "3 amendment 锁红线(配比只压不放 + RiskEngine 独立 / digest display-only 入站不匹配 / 止盈减仓部分 SELL 单一构造点)+ plan.html Phase P 条目;docs-only。",
         tests: "(docs-only,无代码;门实现测试在 P-002..P-007)。",
         sources: "P0-7, P0-3, P0-10, R0 §2.0, owner AskUserQuestion 2026-05-30(逆波动率/稳健分批/汇总+逐只/都补)",
-        commit: "", session_date: "2026-05-30", notes: "owner 调查问答确认:MVP 部分具备(篮子已接线但逐条发、Line-1 无组合配比、Line-2 缺止盈减仓);Plan agent 校验集成缝(配比在 provider 两层算 / SELL 去重键改 (code,trigger_kind) / 止盈 tranche ledger 派生 / digest 独立幂等发送不走 InstructionDispatcher / 第 6 FeishuMessageKind)。计划 docs/.claude/plans/twinkly-wishing-glade.md。"
+        commit: "1017f96", session_date: "2026-05-30", notes: "owner 调查问答确认:MVP 部分具备(篮子已接线但逐条发、Line-1 无组合配比、Line-2 缺止盈减仓);Plan agent 校验集成缝(配比在 provider 两层算 / SELL 去重键改 (code,trigger_kind) / 止盈 tranche ledger 派生 / digest 独立幂等发送不走 InstructionDispatcher / 第 6 FeishuMessageKind)。计划 docs/.claude/plans/twinkly-wishing-glade.md。"
       },
       {
         id: "P-002", phase: "P 组合配置与仓位", status: "todo", priority: "P0",
