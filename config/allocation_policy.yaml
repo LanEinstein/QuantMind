@@ -1,0 +1,9 @@
+# Phase P P-002 — 组合层配比策略(runtime 不可改;改需 amendment + 重启)
+# 治理: docs/decisions/P0-7-amendment-2026-05-30-portfolio-allocation.md
+allocation:
+  method: inverse_volatility   # 逆波动率加权;σ 缺/≤ε 自动等权兜底
+  deploy_fraction: 0.33        # 单日最多部署「可用现金」的比例(稳健分批)
+  per_name_target_pct: 0.10    # 单只目标权重上限(< 15% 硬顶)
+  cash_buffer_pct: 0.05        # 部署后保留 ≥ 该比例×总资产 的现金缓冲
+  vol_lookback: 20             # 波动率窗口(对齐 screening volatility_20d)
+# 单股硬顶 15% / 单笔 ¥50k / 整手 100 从 config/risk.yaml position_limits 读(单源,不在此重复)
