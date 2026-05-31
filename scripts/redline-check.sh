@@ -1214,6 +1214,64 @@ else
   green "  ok    no monitoring module present yet (skip)"
 fi
 
+# ----------------------------------------------------------------------
+echo
+yellow "[P-002] portfolio_allocation isolation (no backend.{llm,agents,mirofish}; not imported by backend/risk)"
+# The config-layer allocation module is pure upstream (P0-7-amendment-2026-05-30
+# §4): it must not import the LLM/agents/mirofish decision path, and the
+# RiskEngine (independent authority) must not import IT — allocation only
+# tightens sizing, it never sits inside the risk gate.
+if [ -d backend/portfolio_allocation ]; then
+  P002_FAIL=0
+  # Mirror the N-005 pattern set so dotted, name-level (``from backend import
+  # llm``) and relative (``from ..agents import x``) import forms are ALL caught
+  # — the AST pytest (tests/portfolio_allocation/test_module_contract.py) is the
+  # authoritative guard; this grep is the standalone-CI fast gate (codex P-007 P2).
+  _P002_NAMES='llm|agents|mirofish'
+  P002_IMP="$(grep -rnE \
+    "import +backend\.($_P002_NAMES)\b|from +backend\.($_P002_NAMES)\b|from +backend +import +.*\b($_P002_NAMES)\b|from +\.+($_P002_NAMES)\b|from +\.+ +import +.*\b($_P002_NAMES)\b" \
+    backend/portfolio_allocation 2>/dev/null || true)"
+  if [ -n "$P002_IMP" ]; then
+    red "  FAIL  portfolio_allocation imports a forbidden subpackage:"
+    printf '%s\n' "$P002_IMP" | sed 's/^/        /'
+    P002_FAIL=1
+  fi
+  P002_RISK="$(grep -rn 'portfolio_allocation' backend/risk 2>/dev/null || true)"
+  if [ -n "$P002_RISK" ]; then
+    red "  FAIL  backend/risk imports portfolio_allocation (must stay upstream-only):"
+    printf '%s\n' "$P002_RISK" | sed 's/^/        /'
+    P002_FAIL=1
+  fi
+  if [ "$P002_FAIL" -eq 0 ]; then
+    green "  ok    portfolio_allocation free of llm/agents/mirofish + not imported by backend/risk"
+  else
+    FAIL=$((FAIL + 1))
+  fi
+else
+  green "  ok    no portfolio_allocation module present yet (skip)"
+fi
+
+# ----------------------------------------------------------------------
+echo
+yellow "[P-004] FeishuMessageKind locked at 6 (basket_digest, P0-3-amendment-2026-05-30)"
+FMK_OUT="$(python3 - <<'PY' 2>/dev/null || echo "SCANNER_ERROR"
+from backend.integrations.feishu.renderer import FeishuMessageKind
+
+kinds = {k.value for k in FeishuMessageKind}
+expected = {
+    "instruction_plan", "clarification", "reconciliation_request",
+    "reconciliation_result", "alert", "basket_digest",
+}
+print("OK" if kinds == expected else f"MISMATCH:{sorted(kinds)}")
+PY
+)"
+if [ "$FMK_OUT" = "OK" ]; then
+  green "  ok    FeishuMessageKind has exactly the 6 locked members (incl basket_digest)"
+else
+  red "  FAIL  FeishuMessageKind != the 6 locked members: $FMK_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

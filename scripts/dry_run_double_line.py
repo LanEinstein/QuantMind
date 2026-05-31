@@ -342,9 +342,20 @@ def _build_runners(*, coordinator: Any, exclusion_rules: Any, risk_yaml: str,
 
 async def _run_line1(ctx: DryRunContext, now: dt.datetime) -> None:
     """Run Line-1 once; record the rendered BUY (prereq 2: count increments)."""
+    from backend.portfolio_allocation import load_allocation_policy
     from backend.services.line1_context_provider import (
         Line1ContextProvider,
         build_line1_run_state,
+    )
+
+    # P-002/P-003: exercise the inverse-volatility allocation clamp end-to-end —
+    # the dry-run basket is sized by the allocation envelope (not each name to
+    # 15%), demonstrating "充分考虑持仓配比" over a multi-name shortlist.
+    allocation_policy = load_allocation_policy(
+        os.environ.get(
+            "QUANTMIND_ALLOCATION_CONFIG_PATH", "config/allocation_policy.yaml"
+        ),
+        os.environ.get("QUANTMIND_RISK_CONFIG_PATH", "config/risk.yaml"),
     )
 
     run_state = await build_line1_run_state(
@@ -365,6 +376,7 @@ async def _run_line1(ctx: DryRunContext, now: dt.datetime) -> None:
         # T-1 close). PIT sink records the live cage inputs for replay.
         market_data=ctx.market_data,
         snapshot_store=ctx.snapshot_store,
+        allocation_policy=allocation_policy,
     )
     # Stage the BUY metadata so the sink can attach the rendered text. The
     # runner records the lead AFTER the debate; we cannot know it pre-call, so
