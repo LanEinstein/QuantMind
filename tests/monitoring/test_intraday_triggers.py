@@ -231,6 +231,131 @@ def test_sell_no_trigger_on_calm_quote() -> None:
 
 
 # ---------------------------------------------------------------------------
+# P-005 — take-profit (+1R tranche) + over-allocation weight-trim triggers
+# ---------------------------------------------------------------------------
+
+
+def _near_high_closes(n: int = 21) -> tuple[float, ...]:
+    # Rises 4.50 → 4.95 by +0.0225/day → close_atr ≈ 0.0225, recent_high 4.95.
+    # A live price AT the recent high stays just above the ATR stop (4.95 −
+    # 2×0.0225 ≈ 4.905), so the ATR exit does NOT fire — isolating take-profit.
+    return tuple(round(4.50 + 0.0225 * i, 4) for i in range(n))
+
+
+def test_take_profit_fires_and_sells_tranche() -> None:
+    # price 4.95 ≥ cost 4.0 + 1R; ATR exit does not fire (price ≥ stop).
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}  # -1% calm
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+    assert intents[0].available_volume == 100  # floor(300 × 0.5 / 100) × 100
+    assert intents[0].limit_price == 4.95
+
+
+def test_take_profit_suppressed_when_already_taken() -> None:
+    # P-006 gate: a still-open episode that already took profit does not repeat.
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        take_profit_already_taken=frozenset({"510300"}),
+    )
+    assert intents == ()
+
+
+def test_take_profit_sub_one_lot_tranche_skips() -> None:
+    # 100 settled × 0.5 = 50 → floors below one lot → no take-profit (never 0).
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=100, available=100, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert intents == ()
+
+
+def test_take_profit_skips_underwater_position() -> None:
+    # Cost 4.5 above the recent high (3.82): price 3.79 is a loss, so no
+    # take-profit, and ≥ the ATR stop (3.74) so no ATR exit either → no intent.
+    closes_series = tuple(3.78 if i % 2 else 3.82 for i in range(25))
+    spots = {"510300": _spot("510300", price=3.79, prev_close=3.80)}  # calm
+    pos = _position("510300", volume=300, available=300, cost=4.5)
+    intents = evaluate_intraday_sell_intents(
+        spots, {"510300": closes_series}, (pos,), account=_account()
+    )
+    assert intents == ()
+
+
+def test_weight_trim_fires_and_trims_to_target() -> None:
+    # weight 5000×4.0 / 100k = 20% > 15%×1.10 (16.5%) → trim back toward 13%.
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.02)}  # calm
+    closes = {"510300": _volatile_closes()}  # ATR stop 3.6 (well below 4.0)
+    pos = _position("510300", volume=5000, available=5000, cost=4.5)  # below cost
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
+    # excess = 5000×4.0 − 0.13×100k = 7000 → floor(7000 / 400) × 100 = 1700.
+    assert intents[0].available_volume == 1700
+    assert intents[0].available_volume % 100 == 0
+
+
+def test_weight_trim_within_band_does_not_fire() -> None:
+    # weight 4000×4.0 / 100k = 16% ≤ 16.5% band → no trim.
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.02)}
+    closes = {"510300": _volatile_closes()}
+    pos = _position("510300", volume=4000, available=4000, cost=4.5)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+    )
+    assert intents == ()
+
+
+def test_priority_take_profit_over_weight_trim() -> None:
+    # Both fire (in +1R profit AND over-weight) → take-profit wins.
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=5000, available=5000, cost=4.0)  # 24.75% wt
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+
+
+def test_priority_drawdown_over_take_profit() -> None:
+    # In +1R profit AND an −8% intraday drawdown, ATR not fired → the risk exit
+    # (drawdown) outranks take-profit (a protective exit is never masked).
+    closes_series = tuple(4.45 if i % 2 else 4.55 for i in range(25))  # high 4.55
+    spots = {"510300": _spot("510300", price=4.6, prev_close=5.0)}  # -8% dd
+    pos = _position("510300", volume=300, available=300, cost=4.0)  # in profit
+    intents = evaluate_intraday_sell_intents(
+        spots, {"510300": closes_series}, (pos,), account=_account()
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+
+
+def test_no_account_skips_take_profit_and_trim() -> None:
+    # Back-compat: legacy callers pass no account → only the two risk exits;
+    # a +1R / over-weight position produces no intent.
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=5000, available=5000, cost=4.0)
+    intents = evaluate_intraday_sell_intents(spots, closes, (pos,))  # no account
+    assert intents == ()
+
+
+# ---------------------------------------------------------------------------
 # make_intraday_sell_context — LINE2-MON- guard
 # ---------------------------------------------------------------------------
 

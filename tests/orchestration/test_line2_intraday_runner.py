@@ -419,6 +419,16 @@ def _add_provider() -> FakeIntradayProvider:
     )
 
 
+def _take_profit_provider() -> FakeIntradayProvider:
+    # P-005: cost 4.0, price 4.95 at the recent high (≥ +1R, ATR stop not hit).
+    closes = [round(4.50 + 0.0225 * i, 4) for i in range(21)]
+    return FakeIntradayProvider(
+        positions=(_position("510300", volume=300, available=300, cost=4.0),),
+        spots={"510300": _spot("510300", price=4.95, prev_close=5.0)},
+        closes_by_code={"510300": closes},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Deterministic triggers + routing modes
 # ---------------------------------------------------------------------------
@@ -764,6 +774,48 @@ async def test_dedup_same_code_side_within_day(builder, tmp_path) -> None:
     # A deduped repeat routes no new signal, so it is NOT re-persisted — the
     # originating signal's lineage is already durable from the first fire.
     assert second.quote_snapshot_id is None
+
+
+async def test_feishu_mode_routes_take_profit_sell(builder, tmp_path) -> None:
+    # P-005: a +1R position routes a deterministic TAKE_PROFIT partial SELL
+    # end-to-end (single construction point → 14-check → decision group).
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path,
+    )
+    result = await runner.run(provider=_take_profit_provider(), now=_NOW)
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1
+    assert routed[0].code == "510300"
+    assert routed[0].kind == "take_profit"
+    assert routed[0].route_outcome.action == "dispatched"
+    assert "-510300-SELL-" in sender.calls[0]["content"]
+
+
+async def test_dedup_distinct_trigger_kinds_independent(builder, tmp_path) -> None:
+    # P-005: the dedup key is (code, trigger_kind). A take-profit fired today
+    # does NOT suppress a later drawdown-stop on the SAME code — distinct kinds
+    # dedup independently (a protective exit must never be deduped away by an
+    # earlier profit-take).
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path,
+    )
+    first = await runner.run(provider=_take_profit_provider(), now=_NOW)
+    assert first.routes[0].kind == "take_profit"
+    # Same code, 30s later, now in a sharp intraday drawdown → a DISTINCT kind.
+    drawdown = FakeIntradayProvider(
+        positions=(_position("510300", volume=300, available=300, cost=4.0),),
+        spots={"510300": _spot("510300", price=4.185, prev_close=4.5)},  # -7%
+        closes_by_code={"510300": _volatile_closes()},
+    )
+    second = await runner.run(provider=drawdown, now=_NOW + timedelta(seconds=30))
+    routed = [r for r in second.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1  # NOT deduped — different trigger_kind
+    assert routed[0].kind == "drawdown_stop"
+    assert len(sender.calls) == 2
 
 
 async def test_empty_portfolio_short_circuits(builder, tmp_path) -> None:

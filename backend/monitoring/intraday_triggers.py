@@ -79,8 +79,10 @@ log = structlog.get_logger(component="monitoring.intraday_triggers")
 _LOT = 100
 
 # Pinned feature-code version — bump when the trigger maths changes so a stale
-# replay manifest fails closed instead of silently recomputing.
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v1"
+# replay manifest fails closed instead of silently recomputing. v2: added the
+# TAKE_PROFIT (+1R tranche) + WEIGHT_TRIM triggers (P-005), which change the
+# deterministic SELL-intent outputs (codex P-005 P2).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v2"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -103,6 +105,14 @@ class IntradayTriggerKind(StrEnum):
     """Intraday drawdown vs ``prev_close`` beyond ``drawdown_threshold``."""
     ATR_TRAILING_STOP = "atr_trailing_stop"
     """Live price below ``recent_high − k·ATR`` (daily-history ATR + high)."""
+    TAKE_PROFIT = "take_profit"
+    """Live price ≥ cost + ``r_multiple``×R (R = ``atr_stop_mult``×ATR) AND net
+    profit → sell a ``tranche_fraction`` slice to lock gains (P0-10-amendment-
+    line2-2026-05-30). The residual rides the existing ATR trailing stop."""
+    WEIGHT_TRIM = "weight_trim"
+    """Position weight (vol×live / total_assets) above ``max_single_stock_pct``
+    × (1 + ``trim_band``) → trim back toward ``trim_target_pct`` (over-allocation
+    rebalance, P0-10-amendment-line2-2026-05-30)."""
 
 
 @dataclass(frozen=True)
@@ -120,6 +130,11 @@ class IntradayTriggerConfig:
     atr_stop_mult: float = 2.0  # k in recent_high − k·ATR
     recent_high_window: int = 20  # trailing daily closes for the recent high
     max_quote_staleness_seconds: float = 60.0  # older spot → fail-closed
+    # Take-profit + over-allocation trim (P0-10-amendment-line2-2026-05-30).
+    r_multiple: float = 1.0  # take profit at cost + r_multiple × R
+    tranche_fraction: float = 0.5  # sell this fraction of settled volume on +1R
+    trim_band: float = 0.10  # trigger trim above cap × (1 + trim_band) = 16.5%
+    trim_target_pct: float = 0.13  # trim the position back toward this weight
 
 
 @dataclass(frozen=True)
@@ -249,6 +264,107 @@ def serialize_intraday_quotes(
 # ---------------------------------------------------------------------------
 
 
+def _take_profit_intent(
+    *,
+    code: str,
+    name: str,
+    spot: WatchlistMarketSnapshot,
+    pos: Position,
+    atr: float | None,
+    cfg: IntradayTriggerConfig,
+    already_taken: frozenset[str],
+) -> IntradaySellIntent | None:
+    """Lock a tranche of gains at ``cost + r_multiple × R`` (R = k×ATR).
+
+    Returns ``None`` (no take-profit) when this episode already took profit,
+    the ATR/cost is unusable, the price is not yet at the +R target, the
+    position is not net-profitable, or the tranche floors below one lot.
+    """
+    if code in already_taken or atr is None or atr <= 0:
+        return None
+    cost = pos.cost_price
+    price = spot.price
+    if cost <= 0:
+        return None
+    r_unit = cfg.atr_stop_mult * atr
+    target = cost + cfg.r_multiple * r_unit
+    if price < target or price <= cost:  # not at +R target, or not net profit
+        return None
+    settled = (pos.available_volume // _LOT) * _LOT
+    sell_vol = int((settled * cfg.tranche_fraction) // _LOT) * _LOT
+    if sell_vol <= 0:  # sub-1-lot tranche → skip (never sell 0)
+        return None
+    detail = (
+        f"止盈 +{cfg.r_multiple:.0f}R: 实时价 {price:.3f} ≥ 成本 {cost:.3f} + "
+        f"{cfg.r_multiple:.0f}×R({r_unit:.3f}); 减 {sell_vol} 股锁盈,余仓续交移动止损"
+    )
+    return IntradaySellIntent(
+        code=code,
+        name=name,
+        available_volume=sell_vol,
+        limit_price=price,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT,
+        anomaly_reason=detail,
+        drawdown_pct=round((price - spot.prev_close) / spot.prev_close, 6),
+        atr=round(atr, 4),
+        recent_high=0.0,
+        stop_level=round(target, 4),
+    )
+
+
+def _weight_trim_intent(
+    *,
+    code: str,
+    name: str,
+    spot: WatchlistMarketSnapshot,
+    pos: Position,
+    account: AccountInfo,
+    cfg: IntradayTriggerConfig,
+    max_single_stock_pct: float,
+) -> IntradaySellIntent | None:
+    """Trim an over-allocated position back toward ``trim_target_pct``.
+
+    Fires only when the position weight (full holding × live / total assets)
+    exceeds ``max_single_stock_pct × (1 + trim_band)``. The trim quantity is
+    clamped to the lot-aligned **settled** ``available_volume`` (a fresh,
+    unsettled BUY cannot be sold under T+1). Returns ``None`` when total assets
+    are non-positive, the weight is within band, or the trim floors below a lot.
+    """
+    total = float(account.total_assets)
+    price = spot.price
+    if total <= 0:
+        return None
+    weight = pos.volume * price / total
+    threshold = max_single_stock_pct * (1.0 + cfg.trim_band)
+    if weight <= threshold:
+        return None
+    excess_value = pos.volume * price - cfg.trim_target_pct * total
+    if excess_value <= 0:
+        return None
+    trim_shares = int(excess_value // (price * _LOT)) * _LOT
+    settled = (pos.available_volume // _LOT) * _LOT
+    trim_shares = min(trim_shares, settled)
+    if trim_shares <= 0:  # nothing settled to trim, or sub-1-lot → skip
+        return None
+    detail = (
+        f"超配回调: 持仓权重 {weight:.1%} > {threshold:.1%} (上限 "
+        f"{max_single_stock_pct:.0%}×{1 + cfg.trim_band:.2f}); 减 {trim_shares} 股 "
+        f"回 ~{cfg.trim_target_pct:.0%}"
+    )
+    return IntradaySellIntent(
+        code=code,
+        name=name,
+        available_volume=trim_shares,
+        limit_price=price,
+        trigger_kind=IntradayTriggerKind.WEIGHT_TRIM,
+        anomaly_reason=detail,
+        drawdown_pct=round((price - spot.prev_close) / spot.prev_close, 6),
+        atr=0.0,
+        recent_high=0.0,
+        stop_level=0.0,
+    )
+
+
 def evaluate_intraday_sell_intents(
     spots: Mapping[str, WatchlistMarketSnapshot],
     closes_by_code: Mapping[str, tuple[float, ...]],
@@ -256,21 +372,35 @@ def evaluate_intraday_sell_intents(
     *,
     name_by_code: Mapping[str, str] | None = None,
     config: IntradayTriggerConfig | None = None,
+    account: AccountInfo | None = None,
+    max_single_stock_pct: float = 0.15,
+    take_profit_already_taken: frozenset[str] = frozenset(),
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
-    For each held code with a fresh spot we evaluate the two intraday triggers
-    and emit at most one :class:`IntradaySellIntent`. When both fire the
-    structural ``ATR_TRAILING_STOP`` (a break below trend support) takes
-    precedence over the single-bar ``DRAWDOWN_STOP`` — a fixed, explainable
-    priority (no fragile cross-unit magnitude comparison). The order is sized
-    to the lot-aligned **settled** ``available_volume`` (T+1) and priced at
-    the live spot. Output is ordered by code for stable, replayable results.
+    For each held code with a fresh spot we evaluate up to four intraday
+    triggers and emit at most one :class:`IntradaySellIntent`, by a fixed,
+    explainable priority (no fragile cross-unit magnitude comparison):
+
+        ATR_TRAILING_STOP > DRAWDOWN_STOP > TAKE_PROFIT > WEIGHT_TRIM
+
+    Risk exits (a break below trend support, then a single-bar intraday
+    drawdown) always outrank the profit-taking / rebalance triggers — a
+    protective stop is never masked by a take-profit. The risk exits sell the
+    full lot-aligned **settled** ``available_volume``; take-profit sells a
+    ``tranche_fraction`` slice; weight-trim sells just enough to rebalance.
+    Output is ordered by code for stable, replayable results.
+
+    ``account`` enables the TAKE_PROFIT + WEIGHT_TRIM triggers (legacy callers
+    that pass no account get only the two risk exits — back-compat).
+    ``take_profit_already_taken`` (P-006, ledger-derived) suppresses a repeat
+    take-profit on a still-open episode. ``max_single_stock_pct`` is the
+    single-source single-stock cap (P0-7) the trim band references.
 
     ``closes_by_code`` is the daily close history per bare code (parsed from
     the persisted T-1 frame by ``add_position.parse_held_series``); a code
-    without enough daily history simply cannot fire the ATR trigger (the
-    drawdown trigger needs only the live spot).
+    without enough daily history cannot fire the ATR trigger or take-profit (R
+    needs the ATR); the drawdown trigger needs only the live spot.
     """
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
@@ -350,6 +480,36 @@ def evaluate_intraday_sell_intents(
                     stop_level=0.0,
                 )
             )
+        elif account is not None:
+            # No risk exit fired → consider the lower-priority profit-taking /
+            # rebalance triggers (only when an account is supplied). Take-profit
+            # outranks weight-trim; at most one fires.
+            tp = _take_profit_intent(
+                code=code,
+                name=names.get(code, code),
+                spot=spot,
+                pos=pos,
+                atr=atr,
+                cfg=cfg,
+                already_taken=take_profit_already_taken,
+            )
+            trim = (
+                None
+                if tp is not None
+                else _weight_trim_intent(
+                    code=code,
+                    name=names.get(code, code),
+                    spot=spot,
+                    pos=pos,
+                    account=account,
+                    cfg=cfg,
+                    max_single_stock_pct=max_single_stock_pct,
+                )
+            )
+            if tp is not None:
+                intents.append(tp)
+            elif trim is not None:
+                intents.append(trim)
     log.info("intraday_sell_intents_evaluated", intents=len(intents))
     return tuple(intents)
 

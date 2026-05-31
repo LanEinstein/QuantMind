@@ -34,9 +34,10 @@ Seven defensive invariants (§设计4) are enforced here, each tested:
    consumed-quote lineage + rule inputs) BEFORE any signal routes, so a crash
    cannot lose the replay lineage.
 
-A per-day ``(code, side)`` dedup stops a still-breached trigger from re-routing
-every 30s (it would spam the decision group); ADD (BUY) and SELL are distinct
-keys so a morning ADD does not suppress an afternoon SELL.
+A per-day ``(code, trigger_kind)`` dedup stops a still-breached trigger from
+re-routing every 30s (it would spam the decision group); distinct trigger kinds
+are distinct keys (P-005) so a morning ADD does not suppress an afternoon SELL,
+and a drawdown-stop does not suppress a later take-profit on the same code.
 
 LLM red line (orchestration isolation + Line-2 zero-LLM): imports NO
 ``backend.{api,broker,risk,llm,agents,agents_team,mirofish,data}``. The
@@ -269,7 +270,11 @@ class Line2IntradayRunner:
         self._in_flight = False
         # Per-day (code, side) dedup so a still-breached trigger does not
         # re-route every 30s; only today's keys are retained.
-        self._fired: dict[date, set[tuple[str, InstructionSide]]] = {}
+        # Per-day dedup keyed by (code, trigger_kind) — distinct kinds dedup
+        # independently (P-005): a drawdown-stop firing does not suppress a
+        # later take-profit / weight-trim on the same code, and ADD ("add") is
+        # its own key. The "kind" is _kind_of(intent, side).
+        self._fired: dict[date, set[tuple[str, str]]] = {}
         self._config_hash = self._compute_config_hash()
 
     def _compute_config_hash(self) -> str:
@@ -385,6 +390,13 @@ class Line2IntradayRunner:
                 held,
                 name_by_code=name_by_code,
                 config=self._trigger_cfg,
+                # P-005: account enables the TAKE_PROFIT + WEIGHT_TRIM triggers;
+                # the single-stock cap is the runner's one max_single_stock_pct
+                # (shared with the ADD headroom — no new constant). The
+                # ledger-derived take_profit_already_taken gate is wired in P-006
+                # (defaults empty here → a fresh episode can take profit once).
+                account=account,
+                max_single_stock_pct=self._add_cfg.max_single_stock_pct,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
@@ -415,7 +427,7 @@ class Line2IntradayRunner:
         routes: list[TriggerRoute] = []
         to_route: list[tuple[Any, InstructionSide]] = []
         for intent, side in candidates:
-            if (intent.code, side) in fired_today:
+            if (intent.code, self._kind_of(intent, side)) in fired_today:
                 routes.append(
                     TriggerRoute(
                         code=intent.code,
@@ -454,7 +466,7 @@ class Line2IntradayRunner:
                     TriggerRouteOutcome.ROUTED,
                     TriggerRouteOutcome.REJECTED,
                 ):
-                    fired_today.add((intent.code, side))
+                    fired_today.add((intent.code, self._kind_of(intent, side)))
 
         log.info(
             "intraday_tick_complete",
