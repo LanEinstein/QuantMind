@@ -31,7 +31,7 @@ helpers):
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -78,9 +78,12 @@ text — no tz argument plumbing."""
 class FeishuMessageKind(StrEnum):
     """Locked outbound message kinds — every send must be one of these.
 
-    Tightened deliberately: a sixth kind is a P0-2 §2.5 / red-line
-    extension, not a casual addition. Tests assert the enum membership
-    stays at five (F-004 + F-005 + F-006 fill in the remaining four).
+    Tightened deliberately: each kind is a P0-2 §2.5 / red-line extension,
+    not a casual addition. The sixth kind ``BASKET_DIGEST`` is the
+    display-only Line-1 basket overview (P0-3-amendment-2026-05-30): it
+    carries NO order, NO instruction_id, and nothing the inbound execution-
+    report parser can match — a summary, never an instruction. Tests assert
+    the enum membership stays at six.
     """
 
     INSTRUCTION_PLAN = "instruction_plan"
@@ -88,6 +91,7 @@ class FeishuMessageKind(StrEnum):
     RECONCILIATION_REQUEST = "reconciliation_request"
     RECONCILIATION_RESULT = "reconciliation_result"
     ALERT = "alert"
+    BASKET_DIGEST = "basket_digest"
 
 
 class BuySignalTemplate(StrEnum):
@@ -192,6 +196,47 @@ class MessageRenderer:
                 "如已收到,请回复『收到 自检』以验证回程链路。",
             ]
         )
+
+    # -- Basket allocation digest (P-004 — display-only overview) ------
+
+    def render_basket_digest(
+        self, plans: Sequence[InstructionPlan], *, pilot: bool = False
+    ) -> str:
+        """Render a display-only Line-1 basket allocation overview.
+
+        A SUMMARY, never an instruction (P0-3-amendment-2026-05-30): it lists
+        each routed BUY's name + code + whole-lot count + notional + basket
+        weight + the total deployed cash, with a non-actionable disclaimer
+        (mirrors :meth:`render_smoke_ping`). It carries NO instruction_id and NO
+        execution verb (已成交 / 已执行 / 已拒绝), so feeding it to the inbound
+        execution-report parser yields ``no_pattern_match`` — it can never be
+        parsed as, or mistaken for, an order (CLAUDE.md §2.6). The per-name 配比
+        weight is the name's notional share of the basket (derived here,
+        display-only — never an LLM number). Empty ``plans`` is a fail-closed
+        ``ValueError`` (the caller only sends when ≥1 BUY routed).
+        """
+        if not plans:
+            raise ValueError("render_basket_digest requires >= 1 routed BUY plan")
+        notionals = [
+            int(p.volume or 0) * float(p.limit_price or 0.0) for p in plans
+        ]
+        total = sum(notionals)
+        lines = [
+            *self._pilot_prefix(pilot),
+            "【QuantMind 组合配比概览】",
+            "本条为今日已发买入指令的组合配比汇总,仅供参考,非交易指令,无需回复。",
+            f"共 {len(plans)} 只 · 合计部署 ¥{total:,.0f}",
+            "——",
+        ]
+        for plan, notional in zip(plans, notionals, strict=True):
+            lots = int(plan.volume or 0) // 100
+            weight_pct = (notional / total * 100.0) if total > 0 else 0.0
+            name = _single_line(plan.stock_name or "")
+            lines.append(
+                f"· {name}({plan.stock_code}) {lots}手 "
+                f"¥{notional:,.0f} 占{weight_pct:.1f}%"
+            )
+        return "\n".join(lines)
 
     # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------
 

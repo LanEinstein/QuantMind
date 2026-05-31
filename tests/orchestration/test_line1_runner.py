@@ -465,6 +465,7 @@ def _make_runner(
     builder: InstructionPlanBuilder,
     tmp_path: Path,
     selection_mode: Line1SelectionMode = Line1SelectionMode.BASKET,
+    digest_outbox: InMemoryOutboxRepository | None = None,
 ) -> Line1Runner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -506,6 +507,11 @@ def _make_runner(
         ledger=ledger,
         redis_client=_FakeRedis(),
         selection_mode=selection_mode,
+        # P-004 basket digest: wired only when a digest_outbox is supplied (most
+        # tests leave it off so their sender.calls counts stay order-only).
+        digest_sender=sender if digest_outbox is not None else None,
+        digest_chat_id=_DECISION_CHAT if digest_outbox is not None else "",
+        digest_outbox=digest_outbox,
     )
 
 
@@ -570,6 +576,80 @@ async def test_feishu_mode_routes_validated_buy_basket(builder, tmp_path) -> Non
     assert all("【QuantMind 买入信号 · 合规】" in c["content"] for c in sender.calls)
     ids = {rb.plan.instruction_id for rb in result.routed_buys}
     assert len(ids) == 3  # distinct ids (code segment differs per candidate)
+
+
+async def test_basket_digest_sent_once_after_routing(builder, tmp_path) -> None:
+    # P-004: after the per-name orders, ONE display-only basket digest is sent
+    # to the decision group (independent of the dispatcher).
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        digest_outbox=InMemoryOutboxRepository(),
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    digests = [c for c in sender.calls if "组合配比概览" in c["content"]]
+    assert len(digests) == 1  # exactly one digest
+    orders = [c for c in sender.calls if "买入信号" in c["content"]]
+    assert len(orders) == 3  # the 3 per-name orders are unchanged
+    # Display-only: the digest carries no instruction_id / execution verb.
+    assert "QM-" not in digests[0]["content"]
+
+
+async def test_basket_digest_excludes_send_failed_orders(builder, tmp_path) -> None:
+    # P-004 (codex P2): a per-name dispatch that failed to reach Feishu
+    # (send_failed) is still ROUTED, but the digest must NOT claim it — only
+    # delivered orders (dispatched / skipped_duplicate) appear in the summary.
+    sender = FakeFeishuSender(fail_first_n=1)  # first BUY send fails
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        digest_outbox=InMemoryOutboxRepository(),
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    # 3 candidates routed; 1 send_failed, 2 dispatched.
+    assert len(result.routed_buys) == 3
+    digests = [c for c in sender.calls if "组合配比概览" in c["content"]]
+    assert len(digests) == 1
+    assert "共 2 只" in digests[0]["content"]  # only the 2 delivered orders
+
+
+async def test_basket_digest_idempotent_across_reruns(builder, tmp_path) -> None:
+    # P-004: a same-day rerun (same signal_id) must NOT re-send the digest —
+    # the durable outbox claim is the at-most-once gate.
+    sender = FakeFeishuSender()
+    shared_outbox = InMemoryOutboxRepository()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        digest_outbox=shared_outbox,
+    )
+    router = _StubRouter(action="买入")
+    for _ in range(2):
+        await runner.run(
+            frame=_snapshot(),
+            provider=FakeProvider(cash=98_000.0, router=router),
+            now=_NOW,
+        )
+    digests = [c for c in sender.calls if "组合配比概览" in c["content"]]
+    assert len(digests) == 1  # two runs → one digest
 
 
 async def test_buy_signal_carries_display_only_rationale(builder, tmp_path) -> None:

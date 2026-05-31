@@ -688,6 +688,21 @@ async def _init_line2_runners(
     selector_yaml = os.environ.get(
         "QUANTMIND_SELECTOR_CONFIG_PATH", "config/candidate_weights/v1.yaml"
     )
+    # P-002/P-003 portfolio allocation (P0-7-amendment-2026-05-30): load the
+    # inverse-volatility policy once (caps single-sourced from risk.yaml) and
+    # pass it to the per-run provider. FAIL-CLOSED (codex P-004 P1): a missing /
+    # malformed allocation config is a deploy-time invariant breach — let
+    # load_allocation_policy raise (matching load_budget_tier_config /
+    # load_selector_config below) rather than silently reverting every BUY to
+    # max_compliant 15%-per-name sizing, which is the aggressive behaviour this
+    # allocation layer exists to prevent. The shipped config is always present;
+    # a broken one must abort startup, not quietly disable the envelope.
+    from backend.portfolio_allocation import load_allocation_policy
+
+    allocation_yaml = os.environ.get(
+        "QUANTMIND_ALLOCATION_CONFIG_PATH", "config/allocation_policy.yaml"
+    )
+    allocation_policy = load_allocation_policy(allocation_yaml, risk_yaml)
     policy_path = os.environ.get(
         "QUANTMIND_UNIVERSE_POLICY_PATH", "config/universe_policy.yaml"
     )
@@ -710,6 +725,12 @@ async def _init_line2_runners(
         ledger=ledger,
         redis_client=getattr(application.state, "redis", None),
         pilot=pilot,
+        # P-004 basket digest: reuse the dispatcher's Feishu client + durable
+        # outbox + decision chat. Empty decision_chat (simulation_auto) → the
+        # digest is silently skipped inside the runner.
+        digest_sender=getattr(application.state, "feishu_client", None),
+        digest_chat_id=decision_chat,
+        digest_outbox=outbox,
     )
     application.state.line1_runner = line1_runner
 
@@ -923,6 +944,8 @@ async def _init_line2_runners(
             data_quality_provider=getattr(
                 application.state, "data_quality_provider", None
             ),
+            # P-003: inverse-volatility allocation clamp (None → max_compliant).
+            allocation_policy=allocation_policy,
         )
         await line1_runner.run(frame=frame, provider=provider, now=now)
 

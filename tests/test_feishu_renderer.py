@@ -33,6 +33,10 @@ from backend.models.instruction import (
     PositionSummary,
     RiskCheckSummary,
 )
+from backend.services.execution_report_parser import (
+    ExecutionReportParseError,
+    parse_execution_report,
+)
 
 _SH = ZoneInfo("Asia/Shanghai")
 
@@ -570,16 +574,74 @@ class TestAlert:
 # -----------------------------------------------------------------------------
 
 
+class TestBasketDigest:
+    """P-004 display-only basket overview (P0-3-amendment-2026-05-30)."""
+
+    def _plans(self) -> list[InstructionPlan]:
+        a = _buy_plan()  # 510300, 1000 @ 3.85 → ¥3,850
+        b = a.model_copy(
+            update={
+                "instruction_id": "QM-20260516-103000-600000-BUY-002",
+                "stock_code": "600000",
+                "stock_name": "浦发银行",
+                "volume": 500,
+                "limit_price": 12.90,  # ¥6,450
+            }
+        )
+        return [a, b]
+
+    def test_digest_lists_names_codes_lots_and_total(self) -> None:
+        text = MessageRenderer().render_basket_digest(self._plans())
+        assert "组合配比概览" in text
+        assert "沪深 300 ETF(510300)" in text
+        assert "浦发银行(600000)" in text
+        assert "10手" in text and "5手" in text  # 1000/100, 500/100
+        assert "共 2 只" in text
+        assert "10,300" in text  # 合计部署 3850 + 6450
+        # Weight = notional share: 3850/10300 ≈ 37.4%, 6450/10300 ≈ 62.6%.
+        assert "占37.4%" in text and "占62.6%" in text
+
+    def test_digest_carries_no_instruction_id_or_execution_verb(self) -> None:
+        # Display-only: no QM- instruction_id and no fill/reject verb that the
+        # inbound parser keys on — it is a summary, never an order.
+        text = MessageRenderer().render_basket_digest(self._plans())
+        assert "QM-" not in text
+        for verb in ("已成交", "已执行", "已拒绝", "部分成交", "废单"):
+            assert verb not in text
+
+    def test_digest_is_not_parseable_as_execution_report(self) -> None:
+        # Adversarial: feeding the digest to the inbound parser MUST raise
+        # no_pattern_match — it can never be mistaken for / parsed as an order.
+        text = MessageRenderer().render_basket_digest(self._plans())
+        with pytest.raises(ExecutionReportParseError) as exc:
+            parse_execution_report(
+                text,
+                channel=ExecutionReportChannel.FEISHU,
+                received_at=datetime(2026, 5, 31, 10, 0, tzinfo=_SH),
+            )
+        assert exc.value.reason == "no_pattern_match"
+
+    def test_digest_pilot_banner(self) -> None:
+        text = MessageRenderer().render_basket_digest(self._plans(), pilot=True)
+        assert "试点" in text  # PILOT banner prepended
+
+    def test_digest_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least 1|>= 1|routed BUY"):
+            MessageRenderer().render_basket_digest([])
+
+
 class TestRedLines:
     def test_feishu_message_kind_count_locked(self) -> None:
-        """A sixth kind requires a P0-2 §2.5 amendment."""
-        assert len(list(FeishuMessageKind)) == 5
+        """A seventh kind requires a P0-2 §2.5 amendment. The sixth
+        (basket_digest) landed via P0-3-amendment-2026-05-30 (display-only)."""
+        assert len(list(FeishuMessageKind)) == 6
         assert {k.value for k in FeishuMessageKind} == {
             "instruction_plan",
             "clarification",
             "reconciliation_request",
             "reconciliation_result",
             "alert",
+            "basket_digest",
         }
 
     def test_clarification_count_locked(self) -> None:

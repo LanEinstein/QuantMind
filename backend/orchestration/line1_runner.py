@@ -52,7 +52,11 @@ from backend.models.instruction import (
     InstructionSide,
     InstructionStatus,
 )
-from backend.orchestration.instruction_dispatcher import OutboundSignal
+from backend.orchestration.instruction_dispatcher import (
+    FeishuSender,
+    OutboundSignal,
+    OutboxRepository,
+)
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteOutcome
 from backend.screening.screener import CandidateRow, Screener
 from backend.services.cost_guard import DailyBudgetExceededError
@@ -325,6 +329,9 @@ class Line1Runner:
         redis_client: Any,
         pilot: bool = False,
         selection_mode: Line1SelectionMode = Line1SelectionMode.BASKET,
+        digest_sender: FeishuSender | None = None,
+        digest_chat_id: str = "",
+        digest_outbox: OutboxRepository | None = None,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -340,6 +347,14 @@ class Line1Runner:
         # BASKET (default, owner 2026-05-26): collect every VALIDATED BUY in the
         # shortlist; SINGLE: stop at the first (P1-7-amendment-2026-05-26 §2.2).
         self._selection_mode = selection_mode
+        # P-004 basket digest (P0-3-amendment-2026-05-30): a display-only
+        # overview sent ONCE per run after the basket routes, INDEPENDENT of the
+        # InstructionDispatcher (own idempotency key, own outbox claim). All
+        # three must be wired (feishu_interactive) for it to send; otherwise the
+        # digest is silently skipped (simulation_auto / offline).
+        self._digest_sender = digest_sender
+        self._digest_chat_id = digest_chat_id
+        self._digest_outbox = digest_outbox
 
     async def run(
         self,
@@ -466,7 +481,7 @@ class Line1Runner:
                 if self._selection_mode is Line1SelectionMode.SINGLE:
                     break
 
-        return self._aggregate(
+        result = self._aggregate(
             signal_id=sid,
             shortlist=selection.shortlist,
             tier=assessment.tier,
@@ -474,6 +489,78 @@ class Line1Runner:
             last=last,
             budget_stopped=budget_stopped,
         )
+        # P-004: a display-only basket overview AFTER the per-name orders, once
+        # per run, idempotent. Never gates routing (the orders already went out).
+        if result.routed_buys:
+            await self._send_basket_digest(sid, result.routed_buys, now)
+        return result
+
+    async def _send_basket_digest(
+        self, signal_id: str, routed_buys: tuple[RoutedBuy, ...], now: datetime
+    ) -> None:
+        """Send the display-only basket overview once per run (idempotent).
+
+        Independent of the InstructionDispatcher (P0-3-amendment-2026-05-30):
+        its own outbox key ``{signal_id}-basket-digest`` is the at-most-once
+        gate, so a same-day rerun (same signal_id) never double-sends. Skipped
+        when the digest channel is not wired (simulation_auto / offline). Never
+        raises: a digest is an audit/operator convenience, not a tradeability
+        gate — the orders already routed.
+        """
+        if (
+            self._digest_sender is None
+            or self._digest_outbox is None
+            or not self._digest_chat_id
+        ):
+            return
+        # Only summarize orders that actually reached the owner (codex P-004 P2):
+        # a send_failed dispatch is still ROUTED in routed_buys, but the digest
+        # must not claim a basket the owner never received. dispatched (fresh) +
+        # skipped_duplicate (already delivered) are the delivered actions.
+        delivered = [
+            rb
+            for rb in routed_buys
+            if rb.route_outcome is not None
+            and rb.route_outcome.action in {"dispatched", "skipped_duplicate"}
+        ]
+        if not delivered:
+            log.info("line1_basket_digest_skipped_no_delivered", signal_id=signal_id)
+            return
+        key = f"{signal_id}-basket-digest"
+        try:
+            if not await self._digest_outbox.try_claim(key, at=now):
+                log.info("line1_basket_digest_skipped_duplicate", signal_id=signal_id)
+                return
+            text = self._renderer.render_basket_digest(
+                [rb.plan for rb in delivered], pilot=self._pilot
+            )
+            result = await self._digest_sender.send_message(
+                self._digest_chat_id, text, uuid=key
+            )
+            if result.ok:
+                await self._digest_outbox.mark_sent(
+                    key, message_id=result.message_id, at=now
+                )
+                log.info(
+                    "line1_basket_digest_sent",
+                    signal_id=signal_id,
+                    count=len(delivered),
+                    message_id=result.message_id,
+                )
+            else:
+                # Definitive API rejection → release the claim so a later rerun
+                # can re-send (no message reached the owner). A transport
+                # EXCEPTION (below) leaves the claim PENDING — never auto-resent.
+                await self._digest_outbox.release(key)
+                log.warning(
+                    "line1_basket_digest_send_failed",
+                    signal_id=signal_id,
+                    code=result.code,
+                )
+        except Exception as exc:  # noqa: BLE001 — digest never blocks the run
+            log.warning(
+                "line1_basket_digest_error", signal_id=signal_id, error=str(exc)
+            )
 
     async def _process_candidate(
         self,
