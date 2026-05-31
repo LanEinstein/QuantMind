@@ -3082,6 +3082,83 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         notes: "**done feature a70e8c7(核心 e2e 部分)**。新增 tests/test_e2e_production_path.py:0-network/0-LLM/0-真Mongo 离线生产路径 e2e,驱动**真实**编排链(InstructionPlanBuilder/RiskEngine/RouteCoordinator/InstructionDispatcher/InboundGate/parser/ExecutionReportApplier/MockBroker/ReconciliationApplier/DataQualityProvider/状态机),仅外缘打 fake(frame 数据源/LLM 辩论/FeishuSender/Mongo/Redis/时钟)。8 测试逐阶段**值断言**:frame 非None→真 builder 出 VALIDATED BUY(schema-valid id+DQ 门未误拦)→dispatch sink 收1条+ledger PLAN_DISPATCHED+outbox SENT→owner FILLED 经 InboundGate(allowlist)+parser 出 report→applier 令现金减 gross+费/持仓+量/成本价正确→对账匹配无票·注入差异出 fail-closed 票。M-004 不破(plan 仅经真 builder)。门禁 redline PASS/ruff clean/全量 4157 passed/13 skipped(+8)。**诚实覆盖边界(test docstring 记)**:真飞书 HTTP 发送/真 Redis 预留/真 DQ 探针/16:00 EOD 对账 离线未驱动——周一 09:35 真 cron 为最终验证。**本任务原 scope 余项 deferred(非 MVP 阻塞·doc/lint)**:backend/orchestration/CLAUDE.md 模块文档 + redline-check.sh orchestration 隔离断言 + I-002 re-scope。"
       },
       {
+        id: "P-001", phase: "P 组合配置与仓位", status: "doing", priority: "P0",
+        title: "amendments + SSoT(组合配比 / 篮子汇总 / 止盈减仓)",
+        summary: "amendment-first:3 决策修订 — P0-7 组合层逆波动率配比 + 稳健分批部署封套 / P0-3 飞书篮子汇总(第 6 个 FeishuMessageKind display-only)/ P0-10-line2 确定性止盈 + 超配减仓。+ plan.html Phase P 7 任务条目。",
+        scope: "docs/decisions/P0-7-amendment-2026-05-30-portfolio-allocation.md, docs/decisions/P0-3-amendment-2026-05-30-basket-digest.md, docs/decisions/P0-10-amendment-line2-2026-05-30-take-profit-trim.md, docs/plan.html",
+        depends: "N-005, U-D5",
+        acceptance: "3 amendment 锁红线(配比只压不放 + RiskEngine 独立 / digest display-only 入站不匹配 / 止盈减仓部分 SELL 单一构造点)+ plan.html Phase P 条目;docs-only。",
+        tests: "(docs-only,无代码;门实现测试在 P-002..P-007)。",
+        sources: "P0-7, P0-3, P0-10, R0 §2.0, owner AskUserQuestion 2026-05-30(逆波动率/稳健分批/汇总+逐只/都补)",
+        commit: "", session_date: "2026-05-30", notes: "owner 调查问答确认:MVP 部分具备(篮子已接线但逐条发、Line-1 无组合配比、Line-2 缺止盈减仓);Plan agent 校验集成缝(配比在 provider 两层算 / SELL 去重键改 (code,trigger_kind) / 止盈 tranche ledger 派生 / digest 独立幂等发送不走 InstructionDispatcher / 第 6 FeishuMessageKind)。计划 docs/.claude/plans/twinkly-wishing-glade.md。"
+      },
+      {
+        id: "P-002", phase: "P 组合配置与仓位", status: "todo", priority: "P0",
+        title: "backend/portfolio_allocation/ 纯模块 + allocation_policy.yaml",
+        summary: "逆波动率加权(等权兜底)+ 稳健分批部署封套 + 贪心整手分配,确定性纯函数 over PIT frame;σ 取自 frame 已有 closes(对齐 volatility_20d);单股 hard cap 从 RiskConfig 读(单源)。",
+        scope: "backend/portfolio_allocation/{policy,volatility,allocator,__init__}.py, backend/portfolio_allocation/CLAUDE.md, config/allocation_policy.yaml",
+        depends: "P-001",
+        acceptance: "逆波动率 + 等权兜底(σ≤ε/None)+ 配比永不超 15%/¥50k/现金 + 贪心 100 手 + incremental 减持有 + 同输入同输出;import 隔离(禁 backend.{llm,agents,mirofish})+ 覆盖率 ≥80%。",
+        tests: "逆波动率公式 / 等权兜底 / σ=0/None / 贪心整手 / incremental + 对抗(任意 σ 不超 caps)+ replay 可复现 + AST 隔离(clone tests/budget_policy/test_module_contract.py)。",
+        sources: "P0-7-amendment-2026-05-30, R0 §2.0, 调研(skfolio 逆波动率 / PyPortfolioOpt greedy_portfolio)",
+        commit: "", session_date: "", notes: "loader mirror backend/budget_policy/policy.py:230-264;greedy_portfolio 纯 numpy 移植不引 cvxpy。"
+      },
+      {
+        id: "P-003", phase: "P 组合配置与仓位", status: "todo", priority: "P0",
+        title: "Line-1 接线(provider 内配比 → builder proposed_volume)",
+        summary: "provider 加 prime_allocation(walk 前算目标现金额 map);build_lead_context 内 volume = min(max_compliant, cash_to_lots(target_cash[code], 限价));两处 proposed_volume 同步。committed 线程/单一构造点/RiskEngine 不动。",
+        scope: "backend/services/line1_context_provider.py, backend/orchestration/line1_runner.py",
+        depends: "P-002",
+        acceptance: "篮子按逆波动率 size(非每只 15%)+ 配比只压不放 + RiskEngine 仍权威 + 掉票欠配;FakeProvider no-op prime_allocation,test_line1_runner volume==200 仍绿。",
+        tests: "tests/services/test_line1_context_provider.py 配比-clamp + tests/orchestration/test_line1_runner.py no-op prime_allocation + 单一构造点/隔离全绿。",
+        sources: "P0-7-amendment-2026-05-30, R0 §4",
+        commit: "", session_date: "", notes: "cage 限价仅 build_lead_context 内可得且可 DEGRADE → 两层算(walk 前现金额 / walk 内换整手)。每码任务 codex-review。"
+      },
+      {
+        id: "P-004", phase: "P 组合配置与仓位", status: "todo", priority: "P1",
+        title: "飞书篮子汇总(display-only 第 6 FeishuMessageKind + 独立幂等发送)",
+        summary: "render_basket_digest(全部 ≤5 只 + 目标手数·权重·金额 + 合计部署 + 现金占用,display-only,无可解析订单字段);run 末经独立幂等发送(键 run signal_id-basket-digest,走 outbox,不走 InstructionDispatcher);逐只指令不变。",
+        scope: "backend/integrations/feishu/renderer.py, backend/orchestration/line1_runner.py, backend/main.py",
+        depends: "P-003",
+        acceptance: "FeishuMessageKind 5→6 + digest display-only 发决策群 + 逐只 INSTRUCTION_PLAN 不变 + 幂等(两 run 一发);对抗:digest 喂 parse_execution_report 必 no_pattern_match。",
+        tests: "renderer 快照 + 对抗 parse 必失败 + 幂等 + 成员数测试 5→6。",
+        sources: "P0-3-amendment-2026-05-30, P0-2",
+        commit: "", session_date: "", notes: "mirror render_smoke_ping 非可执行文风;digest 不构造 InstructionPlan(单一构造点)。每码任务 codex-review。"
+      },
+      {
+        id: "P-005", phase: "P 组合配置与仓位", status: "todo", priority: "P0",
+        title: "Line-2 新 SELL 触发(R 倍数止盈 + 阈值带减仓 + 优先级 + 去重键)",
+        summary: "IntradayTriggerKind 加 TAKE_PROFIT(+1R 减半,R=atr_stop_mult×ATR)+ WEIGHT_TRIM(>16.5% 减回 13%);并入 evaluate_intraday_sell_intents(加 account+config+take_profit_already_taken 默认空);去重键 (code,side)→(code,trigger_kind);优先级 ATR>回撤>止盈>减仓。复用 IntradaySellIntent → 现有 context/render/manifest 不改。",
+        scope: "backend/monitoring/intraday_triggers.py, backend/orchestration/line2_intraday_runner.py",
+        depends: "P-001",
+        acceptance: "止盈仅 ≥+1R 且净盈利触发 + 减仓 >16.5% 减回 13% + settled available_volume + sub-1-lot 跳过 + 去重键改 + 保护性止损不被止盈压住 + 止盈与 ADD 互斥;原 15 intraday 测试绿。",
+        tests: "tests/monitoring/test_intraday_triggers.py 新 kinds + tests/orchestration/test_line2_intraday_runner.py 优先级/去重键/互斥。",
+        sources: "P0-10-amendment-line2-2026-05-30, 调研(freqtrade/jesse 止盈 + 阈值带 rebalance)",
+        commit: "", session_date: "", notes: "无 TRIM side = 部分 SELL 经 assemble_monitoring_plan;R 复用 add_position.py:259。每码任务 codex-review。"
+      },
+      {
+        id: "P-006", phase: "P 组合配置与仓位", status: "todo", priority: "P0",
+        title: "止盈 tranche gate(ledger 派生连续持仓 episode)",
+        summary: "provider 端从 broker_events 流式过滤(side=SELL + evidence MARKET-{code}-take_profit,限连续持仓 episode)算 take_profit_already_taken: frozenset[code] 传入纯评估器;保 replay 非内存;不新增 LedgerEventKind。",
+        scope: "backend/services/line2_context_providers.py",
+        depends: "P-005",
+        acceptance: "tranche ledger 派生 + 已减半不再止盈 + 全平重买新 episode 可再止盈 + monitoring 仍 import-clean;replay 重跑同结果。",
+        tests: "tests/services 端 reader + replay 测试 + episode 边界(归零重买)。",
+        sources: "P0-10-amendment-line2-2026-05-30 §2.4, daily_state_assembler.py:128(stream-and-filter 先例)",
+        commit: "", session_date: "", notes: "episode 复原过脆则退化按交易日去重(仍 ledger 派生)报 owner。每码任务 codex-review。"
+      },
+      {
+        id: "P-007", phase: "P 组合配置与仓位", status: "todo", priority: "P1",
+        title: "红线扫描 + 双线 dry-run 整合 + Phase P 收尾",
+        summary: "redline-check.sh 加 [P-002] 隔离 + FeishuMessageKind 成员数=6 + 确认 M-004 InstructionPlan( scope;dry_run_double_line.py 扩(逆波动率 size + ≤1/3 现金 + digest 不可解析 + 止盈/减仓);全套绿 + SSoT done + session log。",
+        scope: "scripts/redline-check.sh, scripts/dry_run_double_line.py, docs/plan.html",
+        depends: "P-003, P-004, P-005, P-006",
+        acceptance: "redline 全绿(新 [P-002]+第6 enum+单一构造点)+ 双线 dry-run 断言行为值 + pytest/ruff/前端全绿 + Phase P 全 done + session log;push owner-gated。",
+        tests: "redline-check.sh + dry_run_double_line.py(扩版)+ 全量 pytest。",
+        sources: "P0-7/P0-3/P0-10-amendment-2026-05-30, R0 §7",
+        commit: "", session_date: "", notes: "Phase 末一次 docs-only session log;codex-review(撞额度→claude /code-review high)。"
+      },
+      {
         id: "O-001", phase: "O MiroFish 核心", status: "todo", priority: "P1",
         title: "信息汇总文档生成(趋势/情绪/政治舆论/板块热度/关联板块 + 指数/历史)",
         summary: "聚合多域 5 源新闻 + 国内外大盘指数/板块涨跌 + 历史 → 真实信息汇总文档,作 MiroFish 输入 + 辩论输入(场外信息之一)。",
