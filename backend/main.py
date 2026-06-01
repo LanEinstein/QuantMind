@@ -7,7 +7,7 @@ import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -740,9 +740,15 @@ async def _init_line2_runners(
     except Exception as exc:  # noqa: BLE001 — defaults are the locked values
         log.warning("line1_exclusion_rules_fallback", error=str(exc))
         exclusion_rules = ExclusionRules()
+    # Capture the screener + budget policy as locals so the V-004 rotation step
+    # in _line1_daily_callback re-derives the SAME deterministic screen +
+    # affordability the BUY line uses (no core-runner edits; both passes are 0-LLM
+    # and bit-identical on the same frame).
+    screener = Screener(exclusion_rules)
+    budget_policy = BudgetTierPolicy(load_budget_tier_config(risk_yaml))
     line1_runner = Line1Runner(
-        screener=Screener(exclusion_rules),
-        budget_policy=BudgetTierPolicy(load_budget_tier_config(risk_yaml)),
+        screener=screener,
+        budget_policy=budget_policy,
         selector=CandidateSelector(load_selector_config(selector_yaml)),
         builder=builder,
         renderer=renderer,
@@ -758,6 +764,46 @@ async def _init_line2_runners(
         digest_outbox=outbox,
     )
     application.state.line1_runner = line1_runner
+
+    # V-004 — ≤5-slot rotation runner. Shares the builder + RouteCoordinator +
+    # ledger so the rotation SELL goes through the SAME single construction point
+    # as a Line-2 SELL (R0 §4). Default-ON in the daily cron (owner 2026-06-01);
+    # it activates only on push + restart. Append-only JSONL stores hold the
+    # entry baselines + rotation intents. Init failures NEVER block the Line-1
+    # BUY line (fail-open: rotation_runner stays None).
+    from backend.broker.models import load_risk_config
+    from backend.orchestration.rotation_runner import RotationRunner
+    from backend.slot_portfolio.entry_rank import EntryRankStore
+    from backend.slot_portfolio.policy import load_rotation_policy_config
+    from backend.slot_portfolio.rotation_intent import RotationIntentStore
+
+    rotation_yaml = os.environ.get(
+        "QUANTMIND_ROTATION_POLICY_PATH", "config/slot_rotation_policy.yaml"
+    )
+    rotation_state_root = os.environ.get(
+        "QUANTMIND_ROTATION_STATE_ROOT", "data/slot_rotation"
+    )
+    rotation_runner: Any = None
+    try:
+        _max_pos = load_risk_config(risk_yaml).position_limits.max_total_positions
+        rotation_runner = RotationRunner(
+            policy_config=load_rotation_policy_config(rotation_yaml),
+            intent_store=RotationIntentStore(
+                f"{rotation_state_root}/rotation_intents.jsonl"
+            ),
+            entry_store=EntryRankStore(
+                f"{rotation_state_root}/entry_ranks.jsonl"
+            ),
+            builder=builder,
+            renderer=renderer,
+            coordinator=coordinator,
+            ledger=ledger,
+            max_total_positions=_max_pos,
+            pilot=pilot,
+        )
+        application.state.rotation_runner = rotation_runner
+    except Exception as exc:  # noqa: BLE001 — rotation must never block Line-1 BUY
+        log.warning("rotation_runner_init_failed", error=str(exc))
 
     def _risk_engine_or_none() -> RiskEngine | None:
         cfg = getattr(application.state, "risk_config", None)
@@ -973,6 +1019,91 @@ async def _init_line2_runners(
             allocation_policy=allocation_policy,
         )
         await line1_runner.run(frame=frame, provider=provider, now=now)
+
+        # V-004 — ≤5-slot rotation (default-ON; owner 2026-06-01). FAIL-OPEN: a
+        # rotation failure must NEVER break the Line-1 BUY that already ran above.
+        # Reuses the SAME T-1 frame + the Line-2 daily machinery to source the
+        # deterministic incumbent health; the rotation SELL goes through the
+        # single construction point (assemble_monitoring_plan).
+        if rotation_runner is not None:
+            try:
+                await _run_rotation_step(
+                    now, frame, risk_engine, policy, open_tickets, risk_config
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-open, never block BUY
+                log.warning("rotation_step_failed", error=str(exc))
+
+    async def _run_rotation_step(
+        now: datetime, frame: Any, risk_engine: Any, policy: Any,
+        open_tickets: tuple[Any, ...], risk_config: Any,
+    ) -> None:
+        """Drive the ≤5-slot rotation once over the shared T-1 frame (V-004)."""
+        from backend.monitoring.anomaly import AnomalyDetector
+        from backend.services.rotation_context_provider import (
+            ProductionRotationProvider,
+            compute_qualified_codes,
+        )
+
+        run_state = await build_line2_run_state(
+            broker=broker,
+            risk_engine=risk_engine,
+            circuit_breaker=_circuit_breaker(),
+            watchlist_policy=policy,
+            now=now,
+            open_tickets=open_tickets,
+        )
+        if not run_state.positions:
+            return  # nothing held → no rotation (Line-1 fills empty slots)
+        trade_date = frame.trade_date
+        sid = f"LINE2-MON-{trade_date}-rotation"
+        screen = screener.screen(frame, sid)
+        qualified = compute_qualified_codes(
+            screen, budget_policy, run_state.account.available_cash
+        )
+        names = _names(run_state.positions)
+        contexts = await build_line2_code_contexts(
+            codes=[p.code for p in run_state.positions],
+            name_by_code=names,
+            market_meta=market_meta,
+            frame=frame,
+            data_quality_provider=getattr(
+                application.state, "data_quality_provider", None
+            ),
+            now=now,
+        )
+        line2_provider = Line2DailyProvider(
+            run_state=run_state, code_contexts=contexts, name_by_code=names,
+            snapshot_at=frame.fetch_time_utc,
+        )
+        scan = AnomalyDetector().scan(
+            frame, [p.code.split(".")[0].strip() for p in run_state.positions], sid
+        )
+        rotations_today = sum(
+            1
+            for i in rotation_runner.intent_store.open_intents()
+            if i.created_trade_date == trade_date
+        )
+        # The combined ≤5 orders/day cap is structurally safe across the BUY +
+        # rotation legs: a rotation is proposed ONLY when the portfolio is full
+        # (held == max_total_positions), and when full every Line-1 new-name BUY
+        # is rejected by RiskEngine check#6 (already at the position cap) — so the
+        # two never co-issue in one run. ``today_instruction_count`` is the
+        # broker_events count (0 until the U-D3 wiring lands, shared with Line-1);
+        # RiskEngine check-10 remains the hard per-day authority regardless.
+        max_daily = risk_config.position_limits.max_daily_new_instructions
+        provider = ProductionRotationProvider(
+            line2_provider=line2_provider,
+            scan=scan,
+            frame=frame,
+            rotations_today=rotations_today,
+            daily_new_instruction_budget_remaining=max(
+                0, max_daily - run_state.today_instruction_count
+            ),
+        )
+        await rotation_runner.run(
+            screen=screen, provider=provider, qualified_codes=qualified,
+            now=now, trade_date=trade_date, signal_id=sid,
+        )
 
     log.info("double_line_runners_initialized", route_mode=route_mode.value)
     return _line2_daily_callback, _line2_intraday_callback, _line1_daily_callback

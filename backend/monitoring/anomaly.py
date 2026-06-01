@@ -75,6 +75,12 @@ class AnomalyKind(StrEnum):
     VOLUME_ZSCORE = "volume_zscore"
     EWMA_DEVIATION = "ewma_deviation"
     BOLLINGER_BREAKOUT = "bollinger_breakout"
+    ROTATION = "rotation"
+    """Not an anomaly-detector output — the deterministic ≤5-slot rotation SELL
+    (Phase V-004) reuses this enum to tag its monitoring-class SELL intent so it
+    flows through the SAME single construction point as a Line-2 SELL. NEVER a
+    member of ``SELL_TRIGGER_KINDS`` (``evaluate_sell_intents`` never emits it);
+    it is constructed only by the rotation runner's context provider."""
 
 
 class AnomalyDirection(StrEnum):

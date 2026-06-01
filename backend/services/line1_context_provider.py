@@ -331,6 +331,19 @@ class Line1ContextProvider:
         """Investable cash for the budget tier (``account.available_cash``)."""
         return self._run.account.available_cash
 
+    @property
+    def held_codes(self) -> frozenset[str]:
+        """Bare 6-digit codes currently held (volume > 0) — holdings-aware Line-1.
+
+        Line-1 excludes these from the BUY candidate set so it only fills genuine
+        empty slots with NEW names (P0-7-amendment-2026-06-01 §1.4). Codes are
+        normalised to bare form so a ``.SH`` / ``.SZ``-suffixed holding still
+        matches the screener's bare candidate codes.
+        """
+        return frozenset(
+            _bare_code(p.code) for p in self._run.positions if p.volume > 0
+        )
+
     def per_lot_cost(self, code: str, last_price: float) -> float:
         """One A-share lot cost in ¥ (``last_price × lot_size``).
 

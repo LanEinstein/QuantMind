@@ -264,6 +264,9 @@ class FakeProvider:
     blocking_data_quality: bool = False
     degrade_codes: frozenset[str] = frozenset()
     alloc_skip_codes: frozenset[str] = frozenset()
+    # V-004 holdings-aware Line-1: codes already held are excluded from the BUY
+    # candidate set (default empty → holdings-blind, the pre-V-004 behaviour).
+    held_codes: frozenset[str] = frozenset()
 
     @property
     def available_cash(self) -> float:
@@ -758,6 +761,45 @@ async def test_basket_debates_each_shortlist_candidate(builder, tmp_path) -> Non
     # Single construction point holds for EVERY basket BUY: the deterministic
     # provider volume (200), never a number parsed from the LLM "买入" text.
     assert all(rb.plan.volume == 200 for rb in result.routed_buys)
+
+
+async def test_holdings_aware_excludes_held_codes_from_buy(builder, tmp_path) -> None:
+    # V-004: Line-1 is holdings-aware — an already-held code is excluded from the
+    # BUY candidate set so Line-1 only fills genuine EMPTY slots with NEW names
+    # (never re-buys a holding; the ≤5-slot rotation is what frees a slot). The
+    # screen has 3 codes (600000/600004/600006); holding 600000 → shortlist 2.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path,
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(
+            cash=98_000.0, router=router, held_codes=frozenset({"600000"})
+        ),
+        now=_NOW,
+    )
+    assert "600000" not in result.shortlist  # held → never a BUY candidate
+    assert len(result.shortlist) == 2
+    assert all(rb.plan.stock_code != "600000" for rb in result.routed_buys)
+
+
+async def test_holdings_blind_without_held_codes(builder, tmp_path) -> None:
+    # Backward-compat: a provider without held_codes (getattr default frozenset)
+    # keeps the pre-V-004 holdings-blind behaviour — all 3 codes are candidates.
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert len(result.shortlist) == 3
 
 
 async def test_basket_falls_through_rejected_lead_to_next(builder, tmp_path) -> None:

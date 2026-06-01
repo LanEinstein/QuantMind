@@ -230,6 +230,18 @@ class Line1ContextProvider(Protocol):
         """Investable cash for the budget tier (``account.available_cash``)."""
         ...
 
+    @property
+    def held_codes(self) -> frozenset[str]:
+        """Currently held, settled, bare 6-digit codes (holdings-aware Line-1).
+
+        Line-1 excludes these from the BUY candidate set so it only fills
+        genuine *empty* slots with NEW names — it never re-buys a holding
+        (adding to a position is Line-2's job) and the ≤5-slot rotation
+        (Phase V-004) is what frees a slot for a stronger challenger. Optional
+        for backward compatibility: a provider without it (older tests /
+        offline) yields no exclusion (``getattr`` default ``frozenset()``)."""
+        ...
+
     def per_lot_cost(self, code: str, last_price: float) -> float:
         """One A-share lot cost in ¥ (``last_price × lot_size``)."""
         ...
@@ -399,11 +411,17 @@ class Line1Runner:
         # single construction point (U-C4). RiskEngine still re-validates it.
         afford_by_code = {a.code: a for a in assessment.affordable}
 
-        # 3. Deterministic selection over the affordable quant set.
+        # 3. Deterministic selection over the affordable quant set, holdings-aware:
+        # exclude already-held codes so Line-1 only fills genuine EMPTY slots with
+        # NEW names (P0-7-amendment-2026-06-01 §1.4). It never re-buys a holding
+        # (adding is Line-2's job) and the ≤5-slot rotation frees a slot for a
+        # stronger challenger. ``getattr`` default keeps older providers / tests
+        # (no held_codes) on the prior holdings-blind behaviour (codex-safe).
+        held_codes = frozenset(getattr(provider, "held_codes", frozenset()))
         quant = [
             QuantCandidate(code=c.code, score=c.score)
             for c in screen.candidates
-            if c.code in affordable_codes
+            if c.code in affordable_codes and c.code not in held_codes
         ]
         selection = self._selector.select(quant)
         if not selection.shortlist:
