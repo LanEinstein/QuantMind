@@ -971,7 +971,8 @@ fi
 # ----------------------------------------------------------------------
 yellow "[L-002] pure-quant module isolation (no backend.{llm,agents,mirofish})"
 L002_DIRS=""
-for d in backend/screening backend/budget_policy backend/candidate_selector; do
+for d in backend/screening backend/budget_policy backend/candidate_selector \
+         backend/slot_portfolio; do
   [ -d "$d" ] && L002_DIRS="$L002_DIRS $d"
 done
 if [ -z "$L002_DIRS" ]; then
@@ -1269,6 +1270,98 @@ if [ "$FMK_OUT" = "OK" ]; then
   green "  ok    FeishuMessageKind has exactly the 6 locked members (incl basket_digest)"
 else
   red "  FAIL  FeishuMessageKind != the 6 locked members: $FMK_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# ----------------------------------------------------------------------
+# V-002 / P0-7-amendment-2026-06-01 — slot_portfolio rotation layer.
+# The deterministic ≤5-slot rotation module must:
+#   1. NOT import backend.{llm,agents,mirofish} (pure quant — the decision uses
+#      only Line-1 quant + deterministic Line-2 health; §1.6 decoupling).
+#   2. NEVER construct an InstructionPlan (R0 §4 single construction point — it
+#      only proposes / records intent; the SELL/BUY go through the builder).
+# The M-004 AST scan already forbids InstructionPlan construction across ALL of
+# backend/; this block asserts the slot_portfolio-specific closure explicitly so
+# a regression here is pinned to V-002. Paired with
+# tests/slot_portfolio/test_module_contract.py (authoritative AST guard).
+# ----------------------------------------------------------------------
+echo
+yellow "[V-002] slot_portfolio isolation + no InstructionPlan construction"
+V002_OUT="$(python3 - <<'PY' 2>/dev/null || echo "SCANNER_ERROR"
+import ast
+import pathlib
+import sys
+
+ROOT = pathlib.Path("backend/slot_portfolio")
+FORBIDDEN = {"llm", "agents", "mirofish"}
+violations: list[str] = []
+
+if not ROOT.exists():
+    print("")  # module not present yet — skip cleanly
+    sys.exit(0)
+
+for path in sorted(ROOT.rglob("*.py")):
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        violations.append(f"{path}: SyntaxError: {exc}")
+        continue
+    # 1. import isolation (dotted / name-level / relative).
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if len(parts) >= 2 and parts[0] == "backend" and parts[1] in FORBIDDEN:
+                    violations.append(f"{path}:{node.lineno}: import {a.name}")
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".") if mod else []
+            if (
+                node.level == 0 and len(parts) >= 2
+                and parts[0] == "backend" and parts[1] in FORBIDDEN
+            ):
+                violations.append(f"{path}:{node.lineno}: from {mod} import ...")
+            if node.level == 0 and mod == "backend":
+                for a in node.names:
+                    if a.name in FORBIDDEN:
+                        violations.append(f"{path}:{node.lineno}: from backend import {a.name}")
+            if node.level > 0 and parts and parts[0] in FORBIDDEN:
+                violations.append(f"{path}:{node.lineno}: relative import of forbidden")
+            if node.level > 0 and not mod:
+                for a in node.names:
+                    if a.name in FORBIDDEN:
+                        violations.append(f"{path}:{node.lineno}: relative import {a.name}")
+    # 2. no InstructionPlan construction (alias-aware, mirrors M-004).
+    names = {
+        a.asname or a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for a in node.names
+        if a.name == "InstructionPlan"
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in names:
+            violations.append(f"{path}:{node.lineno}: InstructionPlan(...)")
+        elif isinstance(f, ast.Attribute) and f.attr == "InstructionPlan":
+            violations.append(f"{path}:{node.lineno}: *.InstructionPlan(...)")
+
+if violations:
+    print("\n".join(violations))
+    sys.exit(1)
+PY
+)"
+V002_RC=$?
+if [ "$V002_OUT" = "SCANNER_ERROR" ]; then
+  red "  FAIL  [V-002] slot_portfolio AST scanner error"
+  FAIL=$((FAIL + 1))
+elif [ "$V002_RC" -eq 0 ]; then
+  green "  ok    slot_portfolio pure (no llm/agents/mirofish) + no InstructionPlan"
+else
+  red "  FAIL  slot_portfolio isolation / InstructionPlan red line violated:"
+  printf '%s\n' "$V002_OUT" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 fi
 

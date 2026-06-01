@@ -214,6 +214,7 @@ class DryRunContext:
     line1_runner: Any
     line2_daily_runner: Any
     line2_intraday_runner: Any
+    rotation_runner: Any
     broker: Any
     risk_engine: Any
     risk_config: Any
@@ -236,6 +237,7 @@ class DryRunContext:
     line1_results: list[Line1RunResult] = field(default_factory=list)
     line2_daily_results: list[Any] = field(default_factory=list)
     line2_intraday_results: list[Any] = field(default_factory=list)
+    rotation_results: list[Any] = field(default_factory=list)
 
 
 def _build_coordinator(
@@ -334,7 +336,36 @@ def _build_runners(*, coordinator: Any, exclusion_rules: Any, risk_yaml: str,
         manifest_store=manifest_store,
         pilot=pilot,
     )
-    return line1, line2_daily, line2_intraday, snapshot_store
+    # V-004 — the ≤5-slot rotation runner shares the SAME builder + coordinator +
+    # ledger so the rotation SELL goes through the identical single construction
+    # point as the Line-2 SELL (R0 §4). Render-only here (DRY_RUN coordinator);
+    # append-only stores land under the dry-run scratch root.
+    from backend.broker.models import load_risk_config
+    from backend.orchestration.rotation_runner import RotationRunner
+    from backend.slot_portfolio.entry_rank import EntryRankStore
+    from backend.slot_portfolio.policy import load_rotation_policy_config
+    from backend.slot_portfolio.rotation_intent import RotationIntentStore
+
+    rotation_yaml = os.environ.get(
+        "QUANTMIND_ROTATION_POLICY_PATH", "config/slot_rotation_policy.yaml"
+    )
+    rotation_root = os.environ.get(
+        "QUANTMIND_DRYRUN_ROTATION_ROOT", "data/dry_run/slot_rotation"
+    )
+    rotation = RotationRunner(
+        policy_config=load_rotation_policy_config(rotation_yaml),
+        intent_store=RotationIntentStore(f"{rotation_root}/rotation_intents.jsonl"),
+        entry_store=EntryRankStore(f"{rotation_root}/entry_ranks.jsonl"),
+        builder=builder,
+        renderer=renderer,
+        coordinator=coordinator,
+        ledger=ledger,
+        max_total_positions=load_risk_config(
+            risk_yaml
+        ).position_limits.max_total_positions,
+        pilot=pilot,
+    )
+    return line1, line2_daily, line2_intraday, snapshot_store, rotation
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +481,80 @@ async def _run_line2_daily(ctx: DryRunContext, now: dt.datetime) -> None:
             )
 
 
+async def _run_rotation(ctx: DryRunContext, now: dt.datetime) -> None:
+    """Run the ≤5-slot rotation render-only over the same T-1 frame (V-004).
+
+    Reuses the Line-2 daily machinery to source deterministic incumbent health;
+    the rotation SELL (if the ≤5 portfolio is full AND the double condition holds)
+    routes through the shared DRY_RUN coordinator (render-only, no broker
+    mutation). On a non-full / no-weak portfolio it cleanly records a no-rotation
+    result. Fail-open: a rotation error never aborts the dry-run walk."""
+    from backend.budget_policy.policy import (
+        BudgetTierPolicy,
+        load_budget_tier_config,
+    )
+    from backend.monitoring.anomaly import AnomalyDetector
+    from backend.screening.screener import Screener
+    from backend.services.line2_context_providers import (
+        Line2DailyProvider,
+        build_line2_code_contexts,
+        build_line2_run_state,
+    )
+    from backend.services.rotation_context_provider import (
+        ProductionRotationProvider,
+        compute_qualified_codes,
+    )
+    from backend.services.universe_policy import ExclusionRules
+
+    run_state = await build_line2_run_state(
+        broker=ctx.broker, risk_engine=ctx.risk_engine,
+        circuit_breaker=ctx.circuit_breaker,
+        watchlist_policy=ctx.watchlist_policy, now=now, open_tickets=(),
+    )
+    if not run_state.positions:
+        return
+    trade_date = ctx.frame.trade_date
+    sid = f"LINE2-MON-{trade_date}-rotation"
+    exclusion = (
+        ctx.watchlist_policy.exclusion_rules
+        if ctx.watchlist_policy is not None else ExclusionRules()
+    )
+    screen = Screener(exclusion).screen(ctx.frame, sid)
+    risk_yaml = os.environ.get("QUANTMIND_RISK_CONFIG_PATH", "config/risk.yaml")
+    qualified = compute_qualified_codes(
+        screen, BudgetTierPolicy(load_budget_tier_config(risk_yaml)),
+        run_state.account.available_cash,
+    )
+    names = {p.code.split(".")[0].strip(): p.code.split(".")[0].strip()
+             for p in run_state.positions}
+    contexts = await build_line2_code_contexts(
+        codes=[p.code for p in run_state.positions], name_by_code=names,
+        market_meta=ctx.market_meta, frame=ctx.frame,
+        data_quality_provider=ctx.data_quality_provider, now=now,
+    )
+    line2_provider = Line2DailyProvider(
+        run_state=run_state, code_contexts=contexts, name_by_code=names,
+        snapshot_at=ctx.frame.fetch_time_utc,
+    )
+    scan = AnomalyDetector().scan(
+        ctx.frame, [p.code.split(".")[0].strip() for p in run_state.positions], sid
+    )
+    provider = ProductionRotationProvider(
+        line2_provider=line2_provider, scan=scan, frame=ctx.frame,
+        rotations_today=0, daily_new_instruction_budget_remaining=5,
+    )
+    result = await ctx.rotation_runner.run(
+        screen=screen, provider=provider, qualified_codes=qualified,
+        now=now, trade_date=trade_date, signal_id=sid,
+    )
+    ctx.rotation_results.append(result)
+    if result.sell_routed and result.sell_plan is not None:
+        ctx.collector.label(
+            result.sell_plan.instruction_id, line="rotation",
+            side="SELL", code=result.sell_plan.stock_code,
+        )
+
+
 async def _run_line2_intraday(ctx: DryRunContext, now: dt.datetime) -> None:
     """Run one Line-2 30s intraday tick (deterministic SELL/ADD; zero LLM)."""
     from backend.services.line2_context_providers import (
@@ -518,6 +623,13 @@ def _make_tick_callback(
         if label == _LINE1_TICK:
             await _run_line1(ctx, when)
             await _run_line2_daily(ctx, when)
+            # V-004 — ≤5-slot rotation runs render-only after both lines, over the
+            # same frame. Fail-open: a rotation error never aborts the dry-run.
+            if ctx.rotation_runner is not None:
+                try:
+                    await _run_rotation(ctx, when)
+                except Exception as exc:  # noqa: BLE001 — fail-open
+                    log.warning("dry_run_rotation_failed", error=str(exc))
         elif label == _LINE2_INTRADAY_TICK:
             await _run_line2_intraday(ctx, when)
         # Other pinned labels (morning_close / afternoon_* / eod_pipeline /
@@ -705,7 +817,7 @@ async def build_real_context(
 
     collector = DryRunCollector()
     coordinator, executor, dispatcher = _build_coordinator(collector)
-    line1, line2_daily, line2_intraday, snapshot_store = _build_runners(
+    line1, line2_daily, line2_intraday, snapshot_store, rotation = _build_runners(
         coordinator=coordinator,
         exclusion_rules=exclusion_rules,
         risk_yaml=risk_yaml,
@@ -723,6 +835,7 @@ async def build_real_context(
         line1_runner=line1,
         line2_daily_runner=line2_daily,
         line2_intraday_runner=line2_intraday,
+        rotation_runner=rotation,
         broker=broker,
         risk_engine=risk_engine,
         risk_config=risk_config,

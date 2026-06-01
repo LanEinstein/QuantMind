@@ -258,12 +258,14 @@ async def _make_ctx(
     collector = harness.DryRunCollector()
     coordinator, executor, dispatcher = harness._build_coordinator(collector)
     policy = load_policy(Path(_POLICY))
-    line1, line2_daily, line2_intraday, snapshot_store = harness._build_runners(
-        coordinator=coordinator,
-        exclusion_rules=ExclusionRules(),
-        risk_yaml=_RISK_YAML,
-        selector_yaml=_SELECTOR_YAML,
-        redis_client=_FakeRedis(),
+    line1, line2_daily, line2_intraday, snapshot_store, rotation = (
+        harness._build_runners(
+            coordinator=coordinator,
+            exclusion_rules=ExclusionRules(),
+            risk_yaml=_RISK_YAML,
+            selector_yaml=_SELECTOR_YAML,
+            redis_client=_FakeRedis(),
+        )
     )
 
     broker = MockBroker(config=BrokerConfig(initial_capital=harness._INITIAL_CAPITAL))
@@ -283,6 +285,7 @@ async def _make_ctx(
         line1_runner=line1,
         line2_daily_runner=line2_daily,
         line2_intraday_runner=line2_intraday,
+        rotation_runner=rotation,
         broker=broker,
         risk_engine=RiskEngine(risk_config),
         risk_config=risk_config,
@@ -338,6 +341,9 @@ def _zero_spend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     )
     monkeypatch.setenv(
         "QUANTMIND_DRYRUN_AUDIT_JSONL", str(tmp_path / "audit.jsonl")
+    )
+    monkeypatch.setenv(
+        "QUANTMIND_DRYRUN_ROTATION_ROOT", str(tmp_path / "slot_rotation")
     )
 
 
@@ -445,6 +451,35 @@ async def test_both_lines_exercised(tmp_path) -> None:
     sides = {s.side for s in ctx.collector.signals}
     assert "BUY" in sides
     assert "SELL" in sides, "Line-2 daily SELL render expected on the crashing ETF"
+
+
+# ---------------------------------------------------------------------------
+# (c2) V-004 — ≤5-slot rotation runs render-only in the double-line walk
+# ---------------------------------------------------------------------------
+
+
+async def test_rotation_step_runs_render_only(tmp_path) -> None:
+    # The rotation runs over the SAME frame after both lines. On a fresh
+    # account holding 1 ETF (< the 5-slot cap) it correctly records a
+    # no-rotation result (portfolio not full) WITHOUT mutating the broker — the
+    # DRY_RUN coordinator never reaches the executor / dispatcher.
+    router = _StubRouter(action="买入")
+    ctx = await _make_ctx(
+        frame=_buy_frame(), router=router, tmp_path=tmp_path,
+        held_positions=_held_etf(),
+        market_meta=_FakeMarketMeta({"510300": _crash()[-2]}),
+    )
+    await harness.run_dry_run(
+        ctx, start_date=_trading_start(), out_path=tmp_path / "rot.json"
+    )
+    assert ctx.rotation_results, "rotation step was not exercised"
+    result = ctx.rotation_results[0]
+    assert not result.portfolio_full  # 1 held < 5-slot cap
+    assert not result.sell_routed
+    assert "not full" in result.reason
+    # Render-only: the rotation never reached the broker (no executor/dispatcher).
+    assert ctx.executor.calls == 0
+    assert ctx.dispatcher.calls == 0
 
 
 # ---------------------------------------------------------------------------
