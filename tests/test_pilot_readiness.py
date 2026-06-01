@@ -16,6 +16,7 @@ import pytest
 
 from backend.services.pilot_readiness import (
     PilotReadinessProbe,
+    is_llm_timeout_rate_acceptable,
     read_manifest_flags,
 )
 
@@ -224,3 +225,46 @@ def test_committed_manifest_schema_locked_and_all_signed() -> None:
         f"every manifest cond must be signed off; unsigned: "
         f"{[k for k, v in flags.items() if not v]}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# cond10a policy — is_llm_timeout_rate_acceptable single-transient-timeout
+# grace (P0-6-amendment-2026-06-01). The 5% ceiling and 45-day acceptance gate
+# are unchanged; this only refines the small-denominator live verdict so a lone
+# transient timeout on a low-volume morning cannot dead-lock PILOT go-live.
+# --------------------------------------------------------------------------- #
+
+_CEIL = 0.05
+
+
+class TestIsLlmTimeoutRateAcceptable:
+    def test_cold_start_zero_zero_healthy(self) -> None:
+        assert is_llm_timeout_rate_acceptable(0, 0, ceiling=_CEIL) is True
+
+    def test_zero_timeouts_any_calls_healthy(self) -> None:
+        assert is_llm_timeout_rate_acceptable(0, 200, ceiling=_CEIL) is True
+
+    def test_single_transient_timeout_low_volume_grace(self) -> None:
+        # The exact 2026-06-01 go-live block: 1/18 = 5.56% > 5% must pass.
+        assert is_llm_timeout_rate_acceptable(1, 18, ceiling=_CEIL) is True
+
+    def test_single_timeout_tiny_sample_grace(self) -> None:
+        assert is_llm_timeout_rate_acceptable(1, 1, ceiling=_CEIL) is True
+        assert is_llm_timeout_rate_acceptable(1, 5, ceiling=_CEIL) is True
+
+    def test_single_timeout_large_sample_within_ratio(self) -> None:
+        assert is_llm_timeout_rate_acceptable(1, 20, ceiling=_CEIL) is True
+        assert is_llm_timeout_rate_acceptable(1, 1000, ceiling=_CEIL) is True
+
+    def test_two_timeouts_above_ceiling_unmet(self) -> None:
+        # ≥2 timeouts → grace does not apply; ratio decides. 2/20 = 10% > 5%.
+        assert is_llm_timeout_rate_acceptable(2, 20, ceiling=_CEIL) is False
+
+    def test_two_timeouts_within_ceiling_met(self) -> None:
+        # 2/40 = 5% == ceiling (≤ is met).
+        assert is_llm_timeout_rate_acceptable(2, 40, ceiling=_CEIL) is True
+
+    def test_catastrophic_small_sample_unmet(self) -> None:
+        # Grace must NOT blind catastrophic startup failure.
+        assert is_llm_timeout_rate_acceptable(5, 5, ceiling=_CEIL) is False
+        assert is_llm_timeout_rate_acceptable(3, 5, ceiling=_CEIL) is False

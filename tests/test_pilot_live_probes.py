@@ -320,10 +320,36 @@ class TestBuildPilotProbeWiring:
         from backend.main import _build_pilot_probe
 
         redis = _FakeRedis()
-        # 1 timeout out of 5 calls = 20% > 5%.
-        for _ in range(5):
+        # 2 timeouts out of 10 calls = 20% > 5% (≥2 so the single-transient
+        # grace does not apply; the ratio decides — P0-6-amendment-2026-06-01).
+        for _ in range(10):
             await track_llm_call(redis)
         await track_llm_timeout(redis)
+        await track_llm_timeout(redis)
+        probe = _build_pilot_probe(_app(redis=redis, market_data=None), object())
+        assert await probe.llm_timeout_within_ceiling() is False
+
+    async def test_cond10a_single_transient_timeout_grace(self) -> None:
+        # P0-6-amendment-2026-06-01 regression — a lone transient timeout on a
+        # low-volume morning (1/18 = 5.56% > 5%) must NOT dead-lock the gate.
+        from backend.main import _build_pilot_probe
+
+        redis = _FakeRedis()
+        for _ in range(18):
+            await track_llm_call(redis)
+        await track_llm_timeout(redis)
+        probe = _build_pilot_probe(_app(redis=redis, market_data=None), object())
+        assert await probe.llm_timeout_within_ceiling() is True
+
+    async def test_cond10a_catastrophic_small_sample_unmet(self) -> None:
+        # The single-timeout grace must NOT blind catastrophic startup failure:
+        # 5 timeouts out of 5 calls (100%) is ≥2 timeouts AND above ceiling.
+        from backend.main import _build_pilot_probe
+
+        redis = _FakeRedis()
+        for _ in range(5):
+            await track_llm_call(redis)
+            await track_llm_timeout(redis)
         probe = _build_pilot_probe(_app(redis=redis, market_data=None), object())
         assert await probe.llm_timeout_within_ceiling() is False
 

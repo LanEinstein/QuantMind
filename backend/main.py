@@ -104,7 +104,10 @@ def _build_pilot_probe(
         MANDATORY_ETF_CANARIES,
         canary_quotes_reachable,
     )
-    from backend.services.pilot_readiness import PilotReadinessProbe
+    from backend.services.pilot_readiness import (
+        PilotReadinessProbe,
+        is_llm_timeout_rate_acceptable,
+    )
 
     def _is_sim_broker() -> bool:
         return isinstance(broker, MockBroker)
@@ -127,16 +130,22 @@ def _build_pilot_probe(
         )
 
     async def _llm_timeout_ok() -> bool:
-        # cond10a — live daily timeout rate ≤ ceiling
-        # (P0-6-amendment-2026-05-29 §2). Cold-start (0 calls) reads 0.0 ==
-        # healthy. Fail-closed when Redis is unwired (same convention as the
-        # cost_guard probe below); read_llm_timeout_rate still raises defensively
-        # so the gate's _safe_await stays a backstop.
+        # cond10a — live daily timeout rate within ceiling, with a single
+        # transient-timeout grace (P0-6-amendment-2026-05-29 §2 +
+        # P0-6-amendment-2026-06-01). The shared UTC-daily counter is not cold
+        # at go-live start, so a lone transient timeout on a low-volume morning
+        # (e.g. 1/18) must not dead-lock the gate; two-plus timeouts enforce the
+        # 5% ratio. Cold-start (0 calls) is healthy. Fail-closed when Redis is
+        # unwired (same convention as the cost_guard probe below);
+        # read_llm_timeout_rate still raises defensively so the gate's
+        # _safe_await stays a backstop.
         redis = getattr(application.state, "redis", None)
         if redis is None:
             return False
         timeouts, calls = await read_llm_timeout_rate(redis)
-        return (timeouts / max(calls, 1)) <= _PILOT_LLM_TIMEOUT_CEILING
+        return is_llm_timeout_rate_acceptable(
+            timeouts, calls, ceiling=_PILOT_LLM_TIMEOUT_CEILING
+        )
 
     async def _cost_guard_hard_reserve_active() -> bool:
         redis = getattr(application.state, "redis", None)

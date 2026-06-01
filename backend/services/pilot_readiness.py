@@ -124,6 +124,29 @@ def read_manifest_flags(path: Path) -> dict[str, bool]:
     return flags
 
 
+def is_llm_timeout_rate_acceptable(
+    timeouts: int, calls: int, *, ceiling: float
+) -> bool:
+    """cond10a live-probe policy — single transient-timeout grace + ratio.
+
+    P0-6-amendment-2026-06-01: the PILOT **live daily** counter
+    (``llm:{timeouts,calls}:{utc_date}``) is shared cross-process and not
+    actually cold at go-live start, so on a low-volume morning a lone transient
+    timeout (e.g. ``1/18 == 5.56%``) trips the 5% ceiling and dead-locks the
+    gate (gate fails → backend never starts → denominator never grows). Healthy
+    iff **at most one** timeout (a single transient blip never trips the gate)
+    OR the rate is within ``ceiling``. This catches catastrophic startup
+    failure even at small samples (``5/5`` → two-plus timeouts AND 100% rate →
+    UNMET) while clearing the small-sample false positive. ``ceiling`` (0.05)
+    and the 45-day acceptance ``llm_timeout_rate ≤ 5%`` gate are unchanged —
+    this only refines the small-denominator live verdict. Cold start (0/0) is
+    healthy via the ``timeouts <= 1`` branch.
+    """
+    if timeouts <= 1:
+        return True
+    return (timeouts / max(calls, 1)) <= ceiling
+
+
 @dataclass(frozen=True)
 class PilotReadinessProbe:
     """Concrete 11-condition PILOT readiness probe (fail-closed per condition).
