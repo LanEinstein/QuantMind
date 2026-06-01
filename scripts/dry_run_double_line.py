@@ -256,11 +256,13 @@ def _build_coordinator(
 
 
 def _build_runners(*, coordinator: Any, exclusion_rules: Any, risk_yaml: str,
-                   selector_yaml: str, redis_client: Any
+                   selector_yaml: str, redis_client: Any, pilot: bool = False
                    ) -> tuple[Any, Any, Any, SnapshotStore]:
-    """Construct the three import-isolated production runners (pilot=False).
+    """Construct the three import-isolated production runners.
 
-    pilot=False: this is a dry run, NOT a pilot — no "模拟盘·人工·试点" banner.
+    pilot defaults to False (a dry run is NOT a pilot — no "模拟盘·人工·试点"
+    banner). An on-demand real send in PILOT go-live (run_line1_now) threads
+    pilot=True so the order-bearing wire carries the mandatory pilot banner.
     All three runners share ONE builder + ONE coordinator so the single
     construction point + mode-switch / freeze gates are identical across lines
     (mirrors ``backend.main._init_line2_runners``).
@@ -313,7 +315,7 @@ def _build_runners(*, coordinator: Any, exclusion_rules: Any, risk_yaml: str,
         coordinator=coordinator,
         ledger=ledger,
         redis_client=redis_client,
-        pilot=False,
+        pilot=pilot,
     )
     line2_daily = Line2DailyRunner(
         anomaly_detector=AnomalyDetector(),
@@ -321,7 +323,7 @@ def _build_runners(*, coordinator: Any, exclusion_rules: Any, risk_yaml: str,
         renderer=renderer,
         coordinator=coordinator,
         ledger=ledger,
-        pilot=False,
+        pilot=pilot,
     )
     line2_intraday = Line2IntradayRunner(
         builder=builder,
@@ -330,7 +332,7 @@ def _build_runners(*, coordinator: Any, exclusion_rules: Any, risk_yaml: str,
         ledger=ledger,
         snapshot_store=snapshot_store,
         manifest_store=manifest_store,
-        pilot=False,
+        pilot=pilot,
     )
     return line1, line2_daily, line2_intraday, snapshot_store
 
@@ -611,7 +613,9 @@ async def _read_cost_guard_spend(ctx: DryRunContext) -> float | None:
         return None
 
 
-async def build_real_context(*, start_date: dt.date) -> DryRunContext:
+async def build_real_context(
+    *, start_date: dt.date, pilot: bool = False
+) -> DryRunContext:
     """Assemble the real-data DryRunContext (real Tushare frame + real qwen).
 
     Owner-driven: builds the real TushareClient frame, the real LLMRouter, a
@@ -707,6 +711,7 @@ async def build_real_context(*, start_date: dt.date) -> DryRunContext:
         risk_yaml=risk_yaml,
         selector_yaml=selector_yaml,
         redis_client=redis_client,
+        pilot=pilot,
     )
 
     market_data, market_meta, dq_provider = await build_data_layer()

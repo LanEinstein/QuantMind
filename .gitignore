@@ -33,6 +33,9 @@ data/processed/
 # U-D1 — Line-2 intraday runtime stores (PIT snapshots + trigger manifests).
 data/line2_intraday_snapshots/
 data/intraday_manifests/
+# Line-1 daily frame SnapshotStore — generated runtime Tushare frames (~40MB);
+# never committed (stale frames would shadow fresh fetches). codex P2.
+data/line1_frames/
 # U-D3/U-D4b — render-only dry-run output (frame store + artifacts); generated
 # runtime state, never committed (committing stale frames would make future
 # dry-runs reuse them instead of fetching fresh — Codex U-D4b P2).
