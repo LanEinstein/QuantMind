@@ -431,12 +431,25 @@ class InstructionDispatcher:
         )
 
         # 2. Best-effort / fail-open derived bookkeeping (audit append-only;
-        #    read-model upsert keyed by id; dedup-tolerant WS publish).
+        #    read-model upsert keyed by id; dedup-tolerant WS publish). The send
+        #    already committed (mark_sent above), so a transient failure here
+        #    MUST NOT raise — that would abort the caller (e.g. the Line-1 basket
+        #    loop) AFTER the owner already received the message. The plan-repo
+        #    upsert is now wired in production (main.py) for owner-reply
+        #    correlation; ``MongoInstructionPlanRepository.upsert`` has no internal
+        #    guard, so wrap it here to honour the fail-open contract above.
         await self._audit_send(
             plan, signal, _sent_result(message_id), ok=True, at=now
         )
         if self._plans is not None:
-            await self._plans.upsert(dispatched)
+            try:
+                await self._plans.upsert(dispatched)
+            except Exception as exc:  # noqa: BLE001 — fail-open bookkeeping
+                log.warning(
+                    "dispatch_plan_persist_failed",
+                    instruction_id=plan.instruction_id,
+                    error=str(exc),
+                )
         if self._publish_update is not None:
             await self._publish_update(dispatched)
 

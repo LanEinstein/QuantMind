@@ -255,6 +255,34 @@ class TestReadModelHooks:
         assert len(published) == 1
         assert published[0].status is InstructionStatus.DISPATCHED
 
+    async def test_plan_upsert_failure_is_fail_open(self, ledger, audit_store):
+        # The post-send plan upsert (wired in production by main.py for
+        # owner-reply correlation) is fail-open derived bookkeeping: the send is
+        # already committed, so a transient Mongo error must NOT raise and abort
+        # the caller (e.g. the Line-1 basket loop) after the owner got the order.
+        plan = make_plan()
+        await ledger.open_for_plan(plan)
+
+        class _BoomRepo:
+            async def upsert(self, p):
+                raise RuntimeError("mongo down")
+
+        sender = FakeFeishuSender()
+        dispatcher = InstructionDispatcher(
+            feishu_client=sender,
+            decision_chat_id=_CHAT,
+            outbox=InMemoryOutboxRepository(),
+            ledger=ledger,
+            audit_store=audit_store,
+            plan_repository=_BoomRepo(),
+        )
+
+        outcome = await dispatcher.dispatch(_signal(plan), now=_NOW)
+
+        # Send succeeded despite the upsert failure (no exception propagated).
+        assert outcome.action == "dispatched"
+        assert outcome.feishu_message_id is not None
+
 
 class TestDispatchGuards:
     async def test_hold_plan_is_rejected(self, ledger, audit_store):

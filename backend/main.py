@@ -624,12 +624,28 @@ async def _init_line2_runners(
             "outbox_fallback_in_memory",
             reason="mongodb._db unavailable; durable outbox disabled",
         )
+    # Persist every dispatched plan to ``instruction_plans`` so the inbound
+    # owner-reply path can correlate it: the ExecutionReportOrchestrator's
+    # ``plan_lookup`` (line ~1568) READS this collection to find the plan an
+    # owner reply names. Without it a real cron-dispatched BUY is sent to Feishu
+    # but never persisted, so the owner's "已执行 QM-…" reply finds no plan and
+    # cannot be applied. The dispatcher upserts the DISPATCHED plan on a
+    # successful send (best-effort, fail-open). Same Mongo db handle the outbox
+    # uses; None in the dev fallback (feishu_interactive is gated off there).
+    from backend.services.mongo_repositories import MongoInstructionPlanRepository
+
+    _dispatch_plan_repo = (
+        MongoInstructionPlanRepository(_outbox_db)
+        if _outbox_db is not None
+        else None
+    )
     dispatcher = InstructionDispatcher(
         feishu_client=getattr(application.state, "feishu_client", None),
         decision_chat_id=decision_chat or "SIMULATION_AUTO_NO_DECISION_CHAT",
         outbox=outbox,
         ledger=ledger,
         audit_store=audit_store,
+        plan_repository=_dispatch_plan_repo,
     )
 
     coordinator = RouteCoordinator(
