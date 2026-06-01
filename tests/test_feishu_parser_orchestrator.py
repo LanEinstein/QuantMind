@@ -376,8 +376,10 @@ class TestClarification:
             valid_until=datetime(2026, 5, 16, 11, 0, 0, tzinfo=_SH),
         )
         audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
-        # Simulate now() AFTER valid_until.
-        future_now = datetime(2026, 5, 16, 13, 0, 0, tzinfo=_SH)
+        # P0-4-amendment-2026-06-01: the report window is the 14:55 same-day
+        # cutoff (not the 5-min valid_until), so EXPIRED requires now > 14:55. A
+        # late report BEFORE 14:55 now applies (test_late_report_before_cutoff).
+        future_now = datetime(2026, 5, 16, 15, 0, 0, tzinfo=_SH)
         orchestrator, applier, feishu, _, _ = _build_orchestrator(
             plans={plan.instruction_id: plan},
             audit=audit,
@@ -391,46 +393,41 @@ class TestClarification:
         assert applier.calls == []
 
     @pytest.mark.asyncio
-    async def test_volume_mismatch_filled_routes_to_field_cross_check(
+    async def test_filled_volume_deviation_applies_as_truth(
         self, tmp_path
     ) -> None:
-        """P1-2: FILLED report whose filled_volume != plan.volume
-        must NOT reach the applier — route to FIELD_CROSS_CHECK_FAILED."""
+        """P0-4-amendment-2026-06-01 (回填即真相): a FILLED report whose
+        filled_volume != plan.volume is the owner's actual discretionary
+        execution — applied as truth (not AMBIGUOUS)."""
         plan = _make_plan()  # plan.volume = 1000
         audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
-        # text claims 2000 shares filled but plan was 1000.
-        wrong_volume = (
+        # owner bought 2000 (a valid 100-lot) though the suggestion was 1000.
+        deviating = (
             "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
             "2000股 成交价 3.85"
         )
-        orchestrator, applier, feishu, _, _ = _build_orchestrator(
+        orchestrator, applier, _, _, _ = _build_orchestrator(
             plans={plan.instruction_id: plan},
             audit=audit,
             now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
         )
         outcome = await orchestrator.handle_feishu(
-            _received_message(wrong_volume)
+            _received_message(deviating)
         )
-        assert outcome.ambiguous is True
-        assert (
-            outcome.template_id
-            == ClarificationTemplate.FIELD_CROSS_CHECK_FAILED
-        )
-        assert applier.calls == []
-        assert any(
-            "无法识别" not in body  # noqa: SIM102 — just ensure feishu was hit
-            for _, body in feishu.calls
-        ) if feishu.calls else True
+        assert outcome.success is True
+        assert outcome.ambiguous is False
+        assert len(applier.calls) == 1
 
     @pytest.mark.asyncio
-    async def test_volume_mismatch_partial_sum_routes_to_field_cross_check(
+    async def test_partial_sum_deviation_applies_as_truth(
         self, tmp_path
     ) -> None:
-        """P1-2: PARTIAL filled+remain must equal plan.volume."""
+        """P0-4-amendment-2026-06-01: a PARTIAL whose filled+remain != plan.volume
+        is the owner's actual execution — applied as truth, not AMBIGUOUS."""
         plan = _make_plan()  # plan.volume = 1000
         audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
-        # 700 + 200 = 900, but plan = 1000.
-        wrong_sum = (
+        # 700 + 200 = 900 != 1000 — the owner's actual; recorded as truth.
+        deviating_sum = (
             "部分执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
             "700股 成交价 3.85 剩余未成交 200股"
         )
@@ -440,14 +437,54 @@ class TestClarification:
             now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
         )
         outcome = await orchestrator.handle_feishu(
-            _received_message(wrong_sum)
+            _received_message(deviating_sum)
         )
+        assert outcome.success is True
+        assert outcome.ambiguous is False
+        assert len(applier.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_non_lot_volume_still_rejected(self, tmp_path) -> None:
+        """Lot-size guard kept: a non-100-lot filled volume is a real A-share
+        typo → AMBIGUOUS (never applied)."""
+        plan = _make_plan()
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        non_lot = (
+            "已执行 QM-20260516-103000-510300-BUY-001 买入 510300 "
+            "250股 成交价 3.85"
+        )
+        orchestrator, applier, _, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            audit=audit,
+            now=lambda: datetime(2026, 5, 16, 10, 35, 0, tzinfo=_SH),
+        )
+        outcome = await orchestrator.handle_feishu(_received_message(non_lot))
         assert outcome.ambiguous is True
         assert (
             outcome.template_id
             == ClarificationTemplate.FIELD_CROSS_CHECK_FAILED
         )
         assert applier.calls == []
+
+    @pytest.mark.asyncio
+    async def test_late_report_before_cutoff_applies(self, tmp_path) -> None:
+        """P0-4-amendment-2026-06-01: a report after the 5-min valid_until but
+        before the 14:55 same-day cutoff is a live report (the owner executes +
+        reports minutes-to-hours later) — applies, not EXPIRED."""
+        plan = _make_plan(
+            valid_until=datetime(2026, 5, 16, 11, 0, 0, tzinfo=_SH),
+        )
+        audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
+        # 13:00 is well past valid_until (11:00) but before the 14:55 cutoff.
+        late_now = datetime(2026, 5, 16, 13, 0, 0, tzinfo=_SH)
+        orchestrator, applier, _, _, _ = _build_orchestrator(
+            plans={plan.instruction_id: plan},
+            audit=audit,
+            now=lambda: late_now,
+        )
+        outcome = await orchestrator.handle_feishu(_received_message())
+        assert outcome.success is True
+        assert len(applier.calls) == 1
 
     @pytest.mark.asyncio
     async def test_volume_correct_filled_applies(self, tmp_path) -> None:
@@ -589,7 +626,12 @@ class TestFrontendChannel:
 
 class TestApplyFailure:
     @pytest.mark.asyncio
-    async def test_apply_error_returns_failure(self, tmp_path) -> None:
+    async def test_apply_error_sends_clarification(self, tmp_path) -> None:
+        # P0-4-amendment-2026-06-01: relaxing the volume cross-check makes the
+        # applier the gate for an IMPOSSIBLE fill (unaffordable BUY / over-sell
+        # beyond holdings). The report MUST still get exactly one reply (contract
+        # 2026-05-30b) — apply failure sends a field-cross-check clarification,
+        # never silence.
         plan = _make_plan()
         audit = AuditStore(InMemoryAuditCollection(), jsonl_path=tmp_path / "a.jsonl")
         applier = _RecordingApplier(raise_on_apply=True)
@@ -601,10 +643,14 @@ class TestApplyFailure:
         )
         outcome = await orchestrator.handle_feishu(_received_message())
         assert outcome.success is False
-        assert outcome.ambiguous is False
-        # No clarification sent on apply failure — that's an internal
-        # bug, not an ambiguity.
-        assert feishu.calls == []
+        assert outcome.ambiguous is True
+        assert (
+            outcome.template_id
+            == ClarificationTemplate.FIELD_CROSS_CHECK_FAILED
+        )
+        assert outcome.send_result is not None
+        # Exactly one reply (the clarification) — never silence.
+        assert len(feishu.calls) == 1
 
 
 # -----------------------------------------------------------------------------

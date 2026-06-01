@@ -718,6 +718,19 @@ class MockBroker(IBroker):
             trade_id = uuid.uuid4().hex[:12]
 
             if side_is_buy:
+                # P0-4-amendment-2026-06-01: the report's volume is the owner's
+                # actual execution (no longer cross-checked == plan.volume), so
+                # an IMPOSSIBLE over-buy (a volume/price typo — e.g. an extra
+                # zero) can reach here. A fill the account cannot afford is not
+                # "truth"; reject it (mirrors the SELL over-holding guard below)
+                # before mutating, so the orchestrator sends a clarification
+                # rather than silently driving _cash negative.
+                if net > self._cash:
+                    raise ValueError(
+                        f"apply_external_fill BUY net {net} exceeds available "
+                        f"cash {self._cash} ({volume}@{code}); reported fill is "
+                        f"unaffordable (likely a volume/price typo)"
+                    )
                 cash_delta = -net
                 self._cash -= net
                 self._apply_buy(code, buy_cost_basis, volume)

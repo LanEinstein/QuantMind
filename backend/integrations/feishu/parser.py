@@ -48,6 +48,7 @@ from backend.services.execution_report_parser import (
     ExecutionReportParseError,
     parse_execution_report,
 )
+from backend.utils.trading_hours import SHANGHAI
 
 _VOLUME_LOT_SIZE = 100
 
@@ -55,17 +56,24 @@ _VOLUME_LOT_SIZE = 100
 def _cross_check_volume(
     report: ExecutionReport, plan: InstructionPlan
 ) -> str | None:
-    """Return a reason tag when the report's volumes don't match the plan.
+    """Return a reason tag when the report's volume is structurally invalid.
 
-    Reasons (mirror the parser's ``ExecutionReportParseError.reason`` set
-    so the audit row uses the same vocabulary):
+    P0-4-amendment-2026-06-01 (回填即真相): the report's filled/remain volume is
+    the owner's ACTUAL discretionary execution and is NOT required to equal the
+    SUGGESTED ``plan.volume`` (the owner trades on their own judgement; the
+    mirror records reality). Identity (``instruction_id`` + ``stock_code`` +
+    ``side``) is already enforced by the ``ExecutionReport`` model validator, so
+    the only remaining structural reject here is a non-100-lot volume — a real
+    A-share typo. A volume that merely differs from ``plan.volume`` is recorded
+    as truth (+ audited as a deviation by the caller), never rejected.
 
-    * ``volume_mismatch_filled`` — FILLED with filled_volume != plan.volume.
-    * ``volume_mismatch_partial_sum`` — PARTIAL with filled+remain != plan.volume.
+    Reasons:
+
     * ``volume_lot_violation`` — any volume not a multiple of 100.
+    * ``field_cross_check_failed`` — HOLD plan reaching here (fail-closed).
 
-    ``None`` means the report passes the volume cross-check. UNFILLED
-    reports carry no volume by schema, so always pass here.
+    ``None`` means the report passes. UNFILLED reports carry no volume by
+    schema, so always pass here.
     """
     if report.kind is ExecutionReportKind.UNFILLED:
         return None
@@ -75,21 +83,31 @@ def _cross_check_volume(
         return "field_cross_check_failed"
 
     if report.kind is ExecutionReportKind.FILLED:
-        if report.filled_volume != plan.volume:
-            return "volume_mismatch_filled"
         if report.filled_volume % _VOLUME_LOT_SIZE != 0:
             return "volume_lot_violation"
     elif report.kind is ExecutionReportKind.PARTIAL:
         filled = report.filled_volume or 0
         remain = report.remain_volume or 0
-        if filled + remain != plan.volume:
-            return "volume_mismatch_partial_sum"
         if (
             filled % _VOLUME_LOT_SIZE != 0
             or remain % _VOLUME_LOT_SIZE != 0
         ):
             return "volume_lot_violation"
     return None
+
+
+def _report_window_deadline(plan: InstructionPlan) -> datetime:
+    """Live-report deadline = 14:55 Asia/Shanghai of the signal's trade day.
+
+    P0-4-amendment-2026-06-01: a report against a DISPATCHED instruction is
+    "live" until the same-day 14:55 execution cutoff. The 5-min ``valid_until``
+    is the routing window (already consumed by dispatch); the owner executes at
+    the broker and reports minutes-to-hours later. After 14:55 / on a later
+    trade day the 盘后补录 prefix is required (P0-3 §1.4 unchanged).
+    """
+    created_local = plan.created_at.astimezone(SHANGHAI)
+    return created_local.replace(hour=14, minute=55, second=0, microsecond=0)
+
 
 log = logging.getLogger("backend.integrations.feishu.parser")
 
@@ -267,11 +285,13 @@ class ExecutionReportOrchestrator:
                 target_chat_id=target_chat_id,
             )
 
-        # P0-3 §1.4 — expired instructions cannot apply unless the
-        # report carries the 盘后补录 prefix. The parser preserves the
-        # prefix on the report.
+        # P0-3 §1.4 + P0-4-amendment-2026-06-01 — the live-report window is the
+        # 14:55 same-day EXECUTION deadline, not the 5-min valid_until routing
+        # window (the owner executes + reports minutes-to-hours after dispatch).
+        # After 14:55 / a later trade day the 盘后补录 prefix is required; the
+        # parser preserves the prefix on the report.
         is_post_close = report.prefix.value == "POST_CLOSE"
-        if not is_post_close and parsed_at > plan.valid_until:
+        if not is_post_close and parsed_at > _report_window_deadline(plan):
             return await self._handle_expired_plan(
                 report=report,
                 plan=plan,
@@ -282,20 +302,39 @@ class ExecutionReportOrchestrator:
             apply_result = await self._applier.apply(
                 report, side_is_buy=plan.side is InstructionSide.BUY
             )
-        except Exception as exc:  # noqa: BLE001 — surfaced via audit
+        except Exception as exc:  # noqa: BLE001 — surfaced via audit + reply
+            # P0-4-amendment-2026-06-01: relaxing the volume cross-check makes
+            # the applier the gate that rejects an IMPOSSIBLE reported fill
+            # (unaffordable BUY / over-sell beyond holdings — both raise before
+            # mutating, so the mirror is unchanged). The report MUST still get
+            # exactly one reply (contract 2026-05-30b); send a field-cross-check
+            # clarification instead of going silent.
             log.warning(
                 "execution_report_apply_failed instruction_id=%s "
-                "error_class=%s",
+                "error_class=%s error=%s",
                 report.instruction_id,
                 exc.__class__.__name__,
+                str(exc),
+            )
+            await self._audit_parse_failure(
+                channel=report.channel,
+                reason="apply_failed",
+                raw_text=report.raw_text,
+                instruction_id=report.instruction_id,
+            )
+            send_result = await self._send_clarification(
+                template=ClarificationTemplate.FIELD_CROSS_CHECK_FAILED,
+                instruction_id=report.instruction_id,
+                raw_text=report.raw_text,
+                target_chat_id=target_chat_id,
             )
             return ParseOutcome(
                 success=False,
-                ambiguous=False,
+                ambiguous=True,
                 instruction_id=report.instruction_id,
-                template_id=None,
+                template_id=ClarificationTemplate.FIELD_CROSS_CHECK_FAILED,
                 apply_result=None,
-                send_result=None,
+                send_result=send_result,
             )
 
         log.info(
@@ -303,6 +342,23 @@ class ExecutionReportOrchestrator:
             report.instruction_id,
             report.kind.value,
         )
+        # P0-4-amendment-2026-06-01 (回填即真相) — the owner executes on their
+        # own judgement, so a filled volume != the SUGGESTED plan.volume is
+        # recorded as truth (above) and surfaced here as a deviation marker for
+        # the reason drawer / observability (a formal AuditEventType is a P1-6
+        # enum change, deferred; the structured log lands in quantmind.jsonl).
+        if (
+            report.filled_volume is not None
+            and plan.volume is not None
+            and report.filled_volume != plan.volume
+        ):
+            log.warning(
+                "execution_report_volume_deviation instruction_id=%s "
+                "suggested=%s actual=%s",
+                report.instruction_id,
+                plan.volume,
+                report.filled_volume,
+            )
         # P0-4-amendment-2026-05-30b — confirm back to the operator so every
         # report gets exactly one reply (ack on success / clarification on
         # failure). Fail-open: the broker mirror is already the source of

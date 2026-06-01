@@ -743,6 +743,30 @@ class TestMockBrokerExternalWrites:
                 report_id="r", kind="FILLED", report_schema_version=2,
             )
 
+    @pytest.mark.asyncio
+    async def test_apply_external_fill_buy_over_cash_rejected(self) -> None:
+        # P0-4-amendment-2026-06-01 (回填即真相): the report volume is the
+        # owner's actual execution (no longer cross-checked == plan.volume), so
+        # an over-buy typo can reach the broker. A fill the account cannot
+        # afford is NOT truth — reject before mutating (mirror of the SELL
+        # over-holding guard) so the orchestrator can clarify, not corrupt the
+        # mirror into negative cash.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        with pytest.raises(ValueError, match="unaffordable|exceeds available"):
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-100000-600519-BUY-001",
+                code="600519", volume=200_000,  # extra-zero typo
+                fill_price=63.0, side_is_buy=True,
+                traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+                report_id="r", kind="FILLED", report_schema_version=2,
+            )
+        # Mirror untouched — the raise happened before any mutation.
+        account = await broker.get_account()
+        assert account.available_cash == pytest.approx(100_000.0)
+
 
 # ---------------------------------------------------------------------------
 # P0-4-amendment-2026-05-27 — v1 (owner fee) vs v2 (system-computed fee)
