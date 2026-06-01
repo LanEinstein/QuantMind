@@ -549,7 +549,18 @@ class RiskEngine:
         daily_state: DailyTradingState | None,
         stock_meta: StockMetadata | None,
     ) -> ValidationResult:
-        """Check 6: max number of distinct positions."""
+        """Check 6: max number of distinct positions (≤5; ETF counts).
+
+        ``max_total_positions`` is locked at 5 by
+        P0-7-amendment-2026-06-01-five-slot-rotation §1.1 (owner hard cap). The
+        semantics here already fit ≤5 with no change: a SELL is skipped (an exit
+        must never be trapped by the cap), adding to an already-held code does
+        not increase the count, and every distinct held code — ETF included —
+        occupies a slot. This is the hard guard that rejects the 6th
+        new-position BUY; the rotation decision (sell one to free a slot for a
+        stronger challenger) is made UPSTREAM in ``backend/slot_portfolio/`` and
+        is not a 15th check (``risk_summary`` stays min=max=14).
+        """
         if order.direction == OrderDirection.SELL:
             return ValidationResult(passed=True)
 

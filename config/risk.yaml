@@ -10,7 +10,18 @@
 position_limits:
   max_single_stock_pct: 0.15            # Conservative trio #1 (P0-7)
   max_sector_pct: 0.40                  # P1 sector check; field kept for parity
-  max_total_positions: 10               # Concurrent distinct positions
+  max_total_positions: 5                # ≤5 concurrent distinct positions, ETF
+                                        # incl. (P0-7-amendment-2026-06-01-five-
+                                        # slot-rotation §1.1, owner hard lock).
+                                        # check#6 already SELL-skips, doesn't
+                                        # count adds to a held code, and counts
+                                        # every distinct code incl. ETF — so the
+                                        # ≤5 cap is a config-only change + restart
+                                        # (no 15th check; risk_summary stays 14).
+                                        # Rotation past the cap is decided
+                                        # UPSTREAM in backend/slot_portfolio/;
+                                        # check#6 is the hard guard that rejects
+                                        # the 6th new-position BUY.
   price_deviation_limit: 0.05           # Fallback only — board table below wins
   volume_lot_size: 100                  # A-share min lot
   max_total_position_pct: 0.70          # Conservative trio #2 (P0-7)
