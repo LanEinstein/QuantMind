@@ -796,6 +796,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-01 session #61 phase-V-five-slot-rotation full(V-001..V-005 全 done)🚀 — <strong>③ ≤5 槽组合轮动实施</strong>(P0-7-amendment-2026-06-01-five-slot-rotation 落地;ship 序 V→W→Y→Z 的 V)。5 feature commit:<code>ab2a5af</code>(V-001 config ≤5)/ <code>5a25174</code>(V-002 slot_portfolio scoring+policy 100% cov)/ <code>76e10d6</code>(V-003 append-only RotationIntent+churn+到期 fallback 100% cov)/ <code>f132453</code>(V-004 holdings-aware Line-1 + entry_rank 库 + rotation_runner + 生产 provider + main.py live-cron 接线 + AnomalyKind.ROTATION)/ <code>2d97fed</code>(V-005 [V-002] redline AST + dry-run render-only 整合)。<strong>owner 决策(AskUserQuestion)</strong>:rotation 接 live cron(default-on,push+重启激活)+ 自带 first-seen 入场分位库(不依赖 Phase W)。<strong>审查</strong>:codex review --uncommitted 撞 600s timeout(5071 行 diff)→ 回退 Claude /code-review high(4 角度)→ 6 真问题全修(<code>docs/reviews/phase-V-rotation-code-review-summary.md</code>)。门禁全绿:pytest <strong>4462 passed/13 skipped</strong> + ruff + redline(含新 [V-002])ALL PASS;slot_portfolio 97–100% cov。安全地基红线一条未破(单一构造点/import 隔离/14-check 不变 risk_summary=14/LLM 不写决策/PIT/fail-closed)。<strong>push origin main 待 owner 授权</strong>(owner 复核 V-004 接线后 push+重启激活轮动)。下一站 = Phase W(② 持仓 thesis)。</li>
         <li>2026-06-01 session #60 line-strategy-rearch-planning — <strong>双线投研逻辑 + 编排 + 前端 4 方向规划/调研 📐(无运行代码)</strong>。按 workflow:4 并行 grounding agent + 2 外部调研 dossier + design draft + <strong>3 轮 codex 对抗</strong> + AskUserQuestion owner 4 拍板 → 落 <strong>4 份 decision amendment</strong>(<code>P0-8-amendment-2026-06-01-llm-theme-research-peer-sourcing</code> ① / <code>P0-10-amendment-line2-2026-06-01-position-thesis-advisory</code> ② / <code>P0-7-amendment-2026-06-01-five-slot-rotation</code> ③ / <code>P1-5-amendment-2026-06-01-dual-line-panels-and-page-reconcile</code> ④)+ <strong>plan.html 新 Phase V/W/Y/Z</strong>(V 组合轮动 ship-first / W 持仓 thesis / Y 主题研究 peer-sourcing / Z 双线前端)。owner 决策:① 大模型联网调查做第一层 peer-sourcing(量化仍资格权威,定时+留痕+人工 pin)/ ② advisory 先 quant-break 后 / ③ append-only RotationIntent + ≤5 持仓 / ④ panel 内嵌 + 如实修订页锁(11→13 / 12→14 WS)。安全地基红线一条未破。**docs commit + push 待 owner 授权**。</li>
         <li>2026-06-01 session #59 monday-real-launch — <strong>周一完整 MVP 真启 + 首笔真实 Line-1 BUY 全闭环 ✅</strong>。真启暴露并修 2 个『只真启才触发』bug:① <code>cond10a</code> 安全门误拒(09:35 boot SystemExit,当日 1超时/18调用=5.56%>5% 小样本伪阳;feature <code>958e9b9</code> + <code>P0-6-amendment-2026-06-01-cond10a-single-timeout-grace</code>:单次瞬态超时宽限,5%/45日门不动)② <code>bug2</code> 生产 cron dispatcher 从未接 <code>plan_repository</code>→真 cron BUY 不写 instruction_plans→owner 回填无法关联(人工执行闭环静默断裂;feature <code>de12259</code>:接 repo + dispatcher upsert fail-open + 回归测试)。建 <strong>run_line1_now 补发工具</strong>(feature <code>3df7f7f</code>,09:35 cron 在 misfire 窗口内错过且无按需真发工具;复用生产选股+dispatcher,M-004 不破;<strong>3 轮 codex + 1 轮 /code-review 共 11 findings 全修</strong>:PROD_RUN 守门/允许清单/preflight owner 授权+feishu_interactive 模式+净 100k 账户+无冻结/去重/open_for_plan/pilot 横幅)。下午盘真发 605111 新洁能 100 股 @ 64.57 到决策群(<code>om_x100b6ee...</code>,允许清单拦下 002138)。owner 按自己判断买 <strong>200 股 @ 63.035</strong>(≠建议 100)被旧严格匹配拒 → owner 拍板『<strong>回填即真相</strong>』(feature <code>496928f</code> + <code>P0-4-amendment-2026-06-01-report-is-truth</code>:放开数量强匹配仅留 身份+100整手;报告窗口 5min valid_until→14:55 当日截止;偏离记日志;两 review HIGH 一并修=超买拒负现金+applier 抛错必回复)。收盘后 owner 加『盘后补录』回填 200 股 → <strong>applied</strong>:镜像 605111×200/现金 87389/T+1 avail 0/deviation 日志/owner 收【QuantMind 已记录】。门禁 <strong>4331 passed/13 skipped</strong> + ruff + redline ALL PASS。follow-up:instruction_plans 成交后未转 FILLED(镜像真相正确,指令状态机待查)+ AMEND 前缀过 14:55 豁免 + 超限告警。<strong>push origin main 待 owner 授权(6 commit)</strong>。</li>
         <li>2026-05-31 session #58 monday-real-preflight — <strong>周一(2026-06-01)09:35 完整 MVP 真启前实测复核 ✅/⚠️</strong>。本 session 不改运行代码,按 owner 要求把可真实跑的环节逐项跑满:后端 clean-env <code>pytest -q -p no:cacheprovider</code> <strong>4317 passed/13 skipped</strong>,<code>ruff check .</code> 全绿,<code>scripts/redline-check.sh</code> 全绿;前端 <code>type-check/test/build</code> 全绿(139 tests)。cold-start strict PASS(29/23 slots,LLM stub=true,Mongo rs0 gate pass);45 交易日 pinned-clock 从 2026-06-01 到 2026-08-03 PASS(360 ticks,0 reset,0 real LLM)。飞书只读 chat-list 真 API OK:bot 同时在告警群和决策群,决策群存在且≠告警群。真实 Tushare+真实 qwen render-only dry-run(<code>--start 2026-05-29</code>,scratch=/tmp,0 send/0 broker mutation) PASS:Line-1 真实筛选/配比/价格笼子/qwen 4-agent/RiskEngine/renderer 跑通,渲染 3 条 BUY(<code>605111/002185/000725</code>),成本计数 <strong>¥0.1465</strong>,远低于 ¥100 daily hard cap。owner-in-loop fixture <code>e2e_interactive_test.py --preview</code> PASS,能构造 VALIDATED 指令和精确飞书文本,仍未发送。现有 8000 backend 6min soak 12/12 health OK,uptime 76min+,30s market/MTM/Line-2 jobs 持续成功。<strong>真实限制/风险点</strong>:周日闭市无法让 <code>smoke_live_double_line.py --real --no-feishu</code> 针对 2026-06-01 的 5s live quote freshness 通过,它按设计因周日/隔夜行情 <code>spot stale</code> 降级为 0 BUY,没有进入 LLM;此门不可放宽,必须周一 09:35 现场用真实开盘行情复验。另当前 8000 进程是 <code>simulation_auto=true/feishu_interactive=false</code>,且其 Tushare fallback 环境未拿到 token,不能直接作为周一真启进程;周一必须用已验证的 go-live shell env 重启/启动(owner gate)后再等自然 cron。真实飞书发送+owner 回填仍 owner-gated,本 session 没有发飞书。</li>
@@ -874,6 +875,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-01",
+        session: "#61 phase-V-five-slot-rotation full — ③ ≤5 槽组合轮动实施(V-001..V-005 全 done)🚀",
+        owner: "Claude Opus 4.8 (1M ctx)",
+        state_in: "续 #60:4 方向已落 SSoT(4 amendment + Phase V/W/Y/Z),ship 序 V→W→Y→Z。本 session = 实施 Phase V(③ ≤5 槽 + 卖一买一轮动,ship-first),按 P0-7-amendment-2026-06-01-five-slot-rotation 落地。amendment-first 已完成,纯写代码。",
+        actions: "**Phase V 全 5 任务实施 + codex/code-review + 5 feature commit + 本记账。** ① **V-001(ab2a5af)**:config/risk.yaml max_total_positions 10→5(owner 锁定 ≤5 持仓;check#6 已 SELL 跳过/加仓不计/ETF 计入 → config-only;risk_summary 仍 14);engine.py 仅 docstring;test_five_slot_cap.py 7 测试(6th 拒/5th 准/SELL 跳/ETF 计/0-vol 腾槽)。② **V-002(5a25174)**:新 backend/slot_portfolio/ 纯模块 — scoring.py(incumbent 7 条『独立够弱』+ challenger 4 条 margin,fail-closed 向不动作)+ policy.py(propose_rotation 最弱弱在位×最强合格挑战者 + 全 config schema 含 churn/expiry + fail-closed loader)+ CLAUDE.md + config/slot_rotation_policy.yaml;100% cov;解耦①②(只用 Line-1 量化分 + 确定性 Line-2 健康)。③ **V-003(76e10d6)**:rotation_intent.py append-only event-log ledger(folds 派生 open/cooldown/underinvested-block,replay bit-exact;非 broker_events 反查根除 P-006)+ churn 6 闸门(让位保护性止损优先)+ 3 路到期 fallback(原挑战者→最佳≥P75→留现金 UNDERINVESTED 阻断);100% cov。④ **V-004(f132453)**:holdings-aware Line-1(line1_runner 排已持码,getattr 向后兼容;line1_context_provider 暴露 held_codes)+ entry_rank.py(first-seen 入场基线 open/close 生命周期,owner 拍板自带库不依赖 Phase W;re-buy 得新基线)+ orchestration/rotation_runner.py(编排枢纽:screen composite-score 作 line1_percentile + entry 基线 + Line-2 健康 → propose → churn → 轮动 SELL 经 assemble_monitoring_plan 单一构造点 + append intent;到期 incumbent-still-held→lapse 优先)+ services/rotation_context_provider.py(复用 Line-2 daily 机器 + AnomalyDetector 取健康;SELL 量按手取整;停牌 veto 从 frame 缺失派生;交易日历;compute_qualified_codes 可负担)+ main.py live-cron 接线(Line-1 后跑,fail-open 永不阻断 BUY;≤5/日组合 cap 结构安全=满仓才轮动⊥满仓Line-1 BUY被check#6拒)+ monitoring/anomaly.py 加 AnomalyKind.ROTATION(永不入 SELL_TRIGGER_KINDS);**owner 决策:接 live cron(default-on,push+重启激活)+ 自带 first-seen 入场分位库**;runner 94%/entry 98%/provider 92% cov。⑤ **V-005(2d97fed)**:redline-check.sh 加 [V-002] AST(slot_portfolio 隔离 + 不构造 InstructionPlan,alias-aware)+ slot_portfolio 入 [L-002];dry_run_double_line.py 轮动 render-only 整合(复用 Line-2 机器,DRY_RUN 无 broker mutation,fail-open)+ dry-run 测试。**审查**:`codex review --uncommitted` 撞 600s timeout(28 文件/5071 行,codex 自身建议拆分)→ 按既定 fallback 回退 **Claude /code-review high**(4 并行 finder agent)→ **6 条真问题全修**(resolve_expiry [0,1] 边界 / _percentile_map 改 composite-score 修 top-N 误判 / _resolve_open_intents incumbent-held 优先修审计失真 / available_volume 按手取整 + suspended veto / holdings-aware Line-1 测试 / cooldown↔churn 集成测试)+ dismiss 数条(已核实不可达/有意),详见 docs/reviews/phase-V-rotation-code-review-summary.md。**门禁全程绿**:`pytest` **4462 passed/13 skipped** + ruff + redline(含新 [V-002])ALL PASS;slot_portfolio 97–100% cov。",
+        commit: "5 feature:ab2a5af(V-001)/5a25174(V-002)/76e10d6(V-003)/f132453(V-004)/2d97fed(V-005);本 docs-only 记账 + review summary。**push origin main 待 owner 授权**(owner-gated;rotation 接 live cron 默认 on,owner 复核代码后 push+重启才激活)。",
+        next: "【新 session 从这里恢复 —— 权威下一步指针】 **Phase V(③ ≤5 槽组合轮动)全 5 任务 done + 全门禁绿。** 5 feature commit 本地落定(未 push)。 ▸▸ **push origin main 待 owner 授权**;rotation 接 live cron(default-on)— owner **复核 V-004 main.py 接线 + rotation_context_provider 健康取数后** push+重启才激活(安全地基红线一条未破:单一构造点/import 隔离/14-check 不变/LLM 不写决策/PIT/fail-closed)。 ▸▸ **下一站 = Phase W(② 持仓 thesis)**,见 docs/decisions/P0-10-amendment-line2-2026-06-01-position-thesis-advisory(W-001 PositionThesis 持久化先做,无依赖;W-002 盘后复盘 EOD cron + LLM advisory)。 ▸▸ **V-004 已知后续(非阻塞,文档化)**:① `today_instruction_count` 仍 0(U-D3 未接;与 Line-1 共享;RiskEngine check-10 仍硬权威;轮动 cap 结构安全已注释)② line1_percentile=composite_score 为 ship-first 简化,rank-distinct 全市场百分位待 screener 暴露全宇宙 rank ③ limit_down/corporate_action veto 仍保守 False(RiskEngine check-12 兜底 limit-down)。 ▸▸ **环境**:全量 pytest 必带 FEISHU_INTERACTIVE_ENABLED=false;codex CLI 大 diff(>500 行)易 timeout → 拆分或回退 /code-review high(本 session 已回退)。",
+      },
       {
         date: "2026-06-01",
         session: "#60 line-strategy-rearch-planning — 双线投研逻辑 + 编排 + 前端 4 方向规划/调研(无运行代码;产出 4 decision amendment + plan.html 新 Phase V/W/Y/Z 任务)📐",
@@ -3408,7 +3418,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: "qlib 推迟到此(若其数据/模型工作流变核心);验收框架完全沿用 P0-6。"
       },
       {
-        id: "V-001", phase: "V 组合轮动", status: "todo", priority: "P0",
+        id: "V-001", phase: "V 组合轮动", status: "done", priority: "P0",
         title: "≤5 持仓硬约束(check#6 max_total_positions 10→5,含 ETF)",
         summary: "config/risk.yaml position_limits.max_total_positions 10→5(check#6 已含 ETF 计数 + SELL 跳过 + 加仓已持不增计数,语义天然契合 ≤5;无需 15th check,risk_summary min=max=14 不破);runtime 不可改 + hot-reload 禁;重启生效。",
         scope: "config/risk.yaml, backend/risk/(不改 14-check,仅 docstring), tests/risk/",
@@ -3416,10 +3426,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "max_total_positions=5 + check#6 拒第 6 笔新持仓 BUY + SELL/加仓已持仍过 + ETF 计入 + risk_summary 仍 14;redline 全绿。",
         tests: "check#6 ≤5 边界 + 第6笔拒 + SELL 跳过 + 加仓已持不增计数 + ETF 计入。",
         sources: "P0-7-amendment-2026-06-01-five-slot-rotation §1.1, P0-9(check#6), R0",
-        commit: "", session_date: "", notes: "硬 guard(RiskEngine 拒第6笔),非轮动;轮动决策在上游 slot_portfolio。codex round-2 锁定。"
+        commit: "ab2a5af", session_date: "2026-06-01", notes: "config-only 10→5 + check#6 docstring;risk_summary 仍 14。What:≤5 持仓硬约束;Why:owner 锁定+轮动 guard。test_five_slot_cap.py(7)。"
       },
       {
-        id: "V-002", phase: "V 组合轮动", status: "todo", priority: "P0",
+        id: "V-002", phase: "V 组合轮动", status: "done", priority: "P0",
         title: "backend/slot_portfolio/ 纯模块 — 确定性 incumbent-weak + challenger-margin",
         summary: "确定性轮动评分模块(纯量化,禁 import backend.{llm,agents,mirofish},不构造 InstructionPlan,确定性 over PIT-pin frame,可 replay):incumbent_independently_weak 7 条(无保护止损/无硬退出/龄≥5td/Line-1 分位≤P40/恶化≥20分位/≥1确认/无否决)+ challenger margin(≥P75 且领先≥25分位 且绝对组合分胜出);只用现有 Line-1 量化分 + 确定性 Line-2 在位健康(解耦①②)。",
         scope: "backend/slot_portfolio/{scoring,policy,__init__}.py, backend/slot_portfolio/CLAUDE.md, config/slot_rotation_policy.yaml",
@@ -3427,10 +3437,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "7 条 incumbent-weak 全真才弱 + challenger 双 margin + 同输入同输出 + import 隔离(AST)+ 不构造 InstructionPlan(grep ⊆ {model,builder,tests})+ 覆盖率 ≥80%。",
         tests: "incumbent-weak 各条 + 健康在位不卖 + challenger margin 边界 + 对抗(分数任意不破单一构造点)+ replay 可复现 + AST 隔离。",
         sources: "P0-7-amendment-2026-06-01 §1.3/§1.6, 调研(qlib TopkDropoutStrategy topk=5/n_drop=1/hold_thresh), codex round-2 §Q2",
-        commit: "", session_date: "", notes: "解耦 ship:theme/thesis 作可选在位/挑战分组件,后并入,非前置依赖(codex:替换分=带 provenance 的接口)。"
+        commit: "5a25174", session_date: "2026-06-01", notes: "scoring(7条+4margin,fail-closed 向不动作)+policy(propose_rotation+全config schema含churn/expiry)+CLAUDE.md+yaml。100% cov。What:确定性轮动评分;Why:健康在位绝不被换。解耦①②(只用 Line-1 量化分+确定性 Line-2 健康)。"
       },
       {
-        id: "V-003", phase: "V 组合轮动", status: "todo", priority: "P0",
+        id: "V-003", phase: "V 组合轮动", status: "done", priority: "P0",
         title: "append-only RotationIntent + churn 控制 + 到期 fallback",
         summary: "append-only RotationIntent 记录(卖出 instruction/incumbent/challenger/双方分数/expires_at/replay 输入;非 broker_events 反查,根除 P-006 脆弱性);churn:每日≤1 轮动 + ≤1 open intent + subcap≤1 + 让位保护性止损 + 同 incumbent 20td 冷却 + 对 30td 冷却;expires_at=min(3td,下次再平衡);到期 fallback(原挑战者→最佳≥P75→留现金标 UNDERINVESTED_ROTATION_EXPIRED 阻断后续轮动至人工 gate)。",
         scope: "backend/slot_portfolio/rotation_intent.py, backend/(持久化), tests/slot_portfolio/",
@@ -3438,10 +3448,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "RotationIntent append-only 可 replay + churn 4 闸门 + 轮动让位保护性止损 + 到期 fallback 不静默欠配 + UNDERINVESTED 阻断;不新增脆弱反查。",
         tests: "intent 往返 + churn 各闸门 + 到期 3 路 fallback + 让位止损 + 阻断后续轮动 + replay。",
         sources: "P0-7-amendment-2026-06-01 §1.2/§1.5, codex round-1(否决无状态)/round-2(到期 fallback)",
-        commit: "", session_date: "", notes: "codex round-1:无状态会『丢失卖出理由』→隔夜未卖+候选失格=卖好持仓没买回;append-only intent 合规(P-006 否的是反查非显式 intent)。"
+        commit: "76e10d6", session_date: "2026-06-01", notes: "rotation_intent.py:append-only event log(folds 派生 open/cooldown/block,replay bit-exact)+churn 6闸门(让位止损优先)+3路到期 fallback。100% cov。What:显式 intent 根除 P-006 反查脆弱性;Why:防『卖了没买回』静默欠配。"
       },
       {
-        id: "V-004", phase: "V 组合轮动", status: "todo", priority: "P0",
+        id: "V-004", phase: "V 组合轮动", status: "done", priority: "P0",
         title: "Line-1 holdings-aware 改造 + 轮动 SELL 建议接线(T+1 跨日)",
         summary: "Line-1 选股从 holdings-blind 改 holdings-aware(知当前 5 持仓 + 已结算空槽);满 5 且挑战者过 margin + 在位者够弱 → T 日发轮动 SELL 最弱建议 + 落 RotationIntent,当日不买;T+1 槽位实际腾出(从 settled 持仓观察,非 in-flight 承诺)+ 候选仍合格 → 用 settled cash 买空槽。SELL/买经 builder 单一构造点。",
         scope: "backend/orchestration/line1_runner.py, backend/services/line1_context_provider.py, backend/orchestration/(line2 SELL 接线)",
@@ -3449,10 +3459,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "holdings-aware + T 日轮动 SELL 建议不买 + T+1 条件买真实空槽 + 不假设当日回笼 + 单一构造点不破 + 让位保护性止损。",
         tests: "holdings-aware 选股 + 满5轮动 SELL + T+1 跨日条件买 + 真实空槽观察 + 不当日回笼 + 单一构造点。",
         sources: "P0-7-amendment-2026-06-01 §1.4, R0 §4, P0-7-amendment-2026-05-30(不假设当日回笼)",
-        commit: "", session_date: "", notes: "T+1 真相:股票当日买不可当日卖;轮动=今卖+次日条件买,无原子卖一买一。"
+        commit: "f132453", session_date: "2026-06-01", notes: "holdings-aware Line-1(排已持,getattr 向后兼容)+entry_rank.py(first-seen 入场基线,owner 拍板自带库)+rotation_runner.py(决策+SELL经单一构造点+intent+到期)+rotation_context_provider.py(复用 Line-2 机器+量取整+停牌veto)+main.py live-cron 接线(fail-open)+AnomalyKind.ROTATION。owner:接 live cron(push+重启激活)。runner 94%/entry 98%/provider 92% cov。"
       },
       {
-        id: "V-005", phase: "V 组合轮动", status: "todo", priority: "P1",
+        id: "V-005", phase: "V 组合轮动", status: "done", priority: "P1",
         title: "对抗测试 + dry-run 整合 + redline + Phase V 收尾",
         summary: "redline-check.sh 加 [V-002] slot_portfolio 隔离 + 不构造 InstructionPlan;dry_run_double_line.py 扩(≤5 持仓 + 轮动双条件 + RotationIntent 到期);全套绿 + SSoT done + session log。",
         scope: "scripts/redline-check.sh, scripts/dry_run_double_line.py, docs/plan.html",
@@ -3460,7 +3470,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "redline 全绿(新 [V-002])+ dry-run 断言轮动行为值 + pytest/ruff 全绿 + Phase V 全 done。",
         tests: "redline-check.sh + dry_run_double_line.py(扩版)+ 全量 pytest。",
         sources: "P0-7-amendment-2026-06-01, R0",
-        commit: "", session_date: "", notes: "ship-first 收尾。"
+        commit: "2d97fed", session_date: "2026-06-01", notes: "redline-check.sh 加 [V-002] AST(隔离+不构造 InstructionPlan)+slot_portfolio 入 [L-002];dry_run_double_line.py 轮动 render-only 整合;dry-run 测试断行为值+render-only 契约。codex review --uncommitted 撞 600s timeout(5071行)→回退 /code-review high(4角度),6 findings 全修(docs/reviews/phase-V-rotation-code-review-summary.md)。全门禁绿:pytest 4462 passed/13 skipped。"
       },
       {
         id: "W-001", phase: "W 持仓 thesis", status: "todo", priority: "P0",
