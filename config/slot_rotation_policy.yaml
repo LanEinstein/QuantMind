@@ -1,0 +1,42 @@
+# Slot-rotation policy — P0-7-amendment-2026-06-01-five-slot-rotation §1.3.
+#
+# Runtime-immutable + git-versioned (same discipline as config/risk.yaml): any
+# change requires (a) a git diff, (b) a paired P0-7 amendment, (c) a restart.
+# Hot-reload / setattr is a redline violation. backend/slot_portfolio reads this
+# once at startup; the ``config_hash`` is the LiveArtifactRegistry pin (Phase R).
+#
+# These thresholds gate the deterministic rotation decision (sell the weakest
+# *independently-weak* incumbent when a challenger beats it by an absolute
+# margin). The values below are INITIAL — calibrate from realised rotation
+# behaviour (mirrors the budget_tiers "initial values" note in risk.yaml). All
+# percentiles are cross-sectional ranks in [0, 1] (higher = stronger).
+version: "v1"
+
+# 7-condition ``incumbent_independently_weak`` gate (the protection core — a
+# position is rotated out ONLY when every one of the 7 conditions holds).
+incumbent_weak:
+  min_holding_age_trading_days: 5   # cond 3 — min hold period before rotatable
+  max_line1_percentile: 0.40        # cond 4 — weak band: current percentile <= P40
+  min_rank_deterioration_pct: 0.20  # cond 5 — entry−current percentile >= 20 pct
+  confirmation:                     # cond 6 — >= 1 of the three must fire
+    score_below_median_mad_mult: 0.75  # 6a — median−score >= 0.75·MAD (20d)
+    drawdown_soft_threshold: 0.08      # 6c — drawdown from local high >= 8%
+
+# ``challenger wins by absolute margin`` gate (all four must hold).
+challenger_margin:
+  min_percentile: 0.75                # challenger percentile >= P75
+  min_rank_lead_pct: 0.25             # challenger − incumbent percentile >= 25 pct
+  min_composite_score_margin: 0.10    # absolute composite-score margin (not rank)
+
+# Anti-churn gates (V-003 — backend/slot_portfolio/rotation_intent).
+churn:
+  max_rotations_per_day: 1            # <= 1 rotation SELL initiated per day
+  max_open_intents: 1                 # <= 1 unresolved RotationIntent at a time
+  rotation_subcap: 1                  # rotation occupies <= 1 of the ≤5/day cap
+  same_incumbent_cooldown_td: 20      # don't re-rotate an incumbent within 20 td
+  same_pair_cooldown_td: 30           # don't repeat a (challenger,incumbent) 30 td
+
+# RotationIntent expiry (V-003). expires_at = min(this many trading days ahead,
+# next rebalance close) — the trading-day arithmetic is the orchestration's.
+expiry:
+  max_trading_days: 3
