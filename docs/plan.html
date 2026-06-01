@@ -682,6 +682,11 @@
         <div class="lane q"><div class="lane-head">Q 知识图谱</div><div class="lane-body">SQLite+NetworkX KG(双时态 + SUPERSEDES)+ 冷启动因子/启发式 + LightRAG 离线只读。</div></div>
         <div class="lane r"><div class="lane-head">R 自进化v2</div><div class="lane-body">LiveArtifactRegistry(只认批准哈希)+ 策略生命周期 + rqalpha 差分 oracle + 45 日 shadow + 人工 gate。</div></div>
         <div class="lane t"><div class="lane-head">T 交易员与全栈</div><div class="lane-body">≥2 交易员人格卡(frozen git)+ 全异动栈 + Reflexion/exemplars 行为进化 + 程序级验收。</div></div>
+        <div class="lane v2-sep"><div class="lane-head">▼ 双线投研逻辑 v3(2026-06-01 #60 规划)</div><div class="lane-body">4 方向(产业链倒推 / 持仓 thesis / ≤5 槽轮动 / 前端)经 3 轮 codex 对抗 + owner 4 拍板,落 4 amendment + 新 Phase V/W/Y/Z。<strong>ship 序(amendment-first)</strong>:V(③轮动,最低风险)→ W(②thesis)→ Y(①主题,最复杂)→ Z(④前端贯穿)。安全地基红线全留。</div></div>
+        <div class="lane v"><div class="lane-head">V 组合轮动(③ ship-first)</div><div class="lane-body">≤5 持仓硬约束(check#6 10→5,含 ETF)+ 确定性 slot_portfolio + append-only RotationIntent;在位者『独立够弱』AND 挑战者『margin 胜出』双条件;subcap≤1 让位保护性止损;T+1 跨日(今卖次日买真实空槽,不当日回笼)+ 到期 fallback 防『卖了没买回』。锁定文档 P0-7-amendment-2026-06-01。</div></div>
+        <div class="lane w"><div class="lane-head">W 持仓 thesis 与盘后复盘(②)</div><div class="lane-body">PositionThesis 持久化(LLM 支柱文本 advisory + 确定性量化失效阈值);阶段1 LLM advisory 盘后复盘(EOD cron,evidence-only + display-only 飞书,owner 人工执行,monitoring 仍 0-LLM);阶段2 确定性 THESIS_QUANT_BREAK(白名单模板,只增卖压不放松现有止损)。锁定文档 P0-10-amendment-line2-2026-06-01。</div></div>
+        <div class="lane y"><div class="lane-head">Y 主题研究 peer-sourcing(① 最后)</div><div class="lane-body">LLM 联网调查·产业链倒推作 peer-sourcing 层:定时·留痕(provenance 捕获)·人工 pin;THEME- 第 6 evidence 前缀;量化仍资格权威(过排除四件套+可负担+14-check+人工 gate);主题配额 ≤cap−3(≤2),≥3 量化名额保留;无 pin 则配额空、纯量化照跑。前置 Phase Q 产业链 KG pin 快照。锁定文档 P0-8-amendment-2026-06-01。</div></div>
+        <div class="lane z"><div class="lane-head">Z 双线前端可视化(④ 贯穿)</div><div class="lane-body">先 reconcile doc/代码漂移(页锁 11→13 / WS 12→14 如实入账);双线新 viz 全作现有页内 panel/tab/抽屉(产业链链路→InstructionPlans;thesis+5槽→Portfolio;双线运行态→Dashboard/SystemStatus);仅 2 写端点不变、全只读、127.0.0.1。锁定文档 P1-5-amendment-2026-06-01。</div></div>
       </div>
     </section>
 
@@ -791,6 +796,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-01 session #60 line-strategy-rearch-planning — <strong>双线投研逻辑 + 编排 + 前端 4 方向规划/调研 📐(无运行代码)</strong>。按 workflow:4 并行 grounding agent + 2 外部调研 dossier + design draft + <strong>3 轮 codex 对抗</strong> + AskUserQuestion owner 4 拍板 → 落 <strong>4 份 decision amendment</strong>(<code>P0-8-amendment-2026-06-01-llm-theme-research-peer-sourcing</code> ① / <code>P0-10-amendment-line2-2026-06-01-position-thesis-advisory</code> ② / <code>P0-7-amendment-2026-06-01-five-slot-rotation</code> ③ / <code>P1-5-amendment-2026-06-01-dual-line-panels-and-page-reconcile</code> ④)+ <strong>plan.html 新 Phase V/W/Y/Z</strong>(V 组合轮动 ship-first / W 持仓 thesis / Y 主题研究 peer-sourcing / Z 双线前端)。owner 决策:① 大模型联网调查做第一层 peer-sourcing(量化仍资格权威,定时+留痕+人工 pin)/ ② advisory 先 quant-break 后 / ③ append-only RotationIntent + ≤5 持仓 / ④ panel 内嵌 + 如实修订页锁(11→13 / 12→14 WS)。安全地基红线一条未破。**docs commit + push 待 owner 授权**。</li>
         <li>2026-06-01 session #59 monday-real-launch — <strong>周一完整 MVP 真启 + 首笔真实 Line-1 BUY 全闭环 ✅</strong>。真启暴露并修 2 个『只真启才触发』bug:① <code>cond10a</code> 安全门误拒(09:35 boot SystemExit,当日 1超时/18调用=5.56%>5% 小样本伪阳;feature <code>958e9b9</code> + <code>P0-6-amendment-2026-06-01-cond10a-single-timeout-grace</code>:单次瞬态超时宽限,5%/45日门不动)② <code>bug2</code> 生产 cron dispatcher 从未接 <code>plan_repository</code>→真 cron BUY 不写 instruction_plans→owner 回填无法关联(人工执行闭环静默断裂;feature <code>de12259</code>:接 repo + dispatcher upsert fail-open + 回归测试)。建 <strong>run_line1_now 补发工具</strong>(feature <code>3df7f7f</code>,09:35 cron 在 misfire 窗口内错过且无按需真发工具;复用生产选股+dispatcher,M-004 不破;<strong>3 轮 codex + 1 轮 /code-review 共 11 findings 全修</strong>:PROD_RUN 守门/允许清单/preflight owner 授权+feishu_interactive 模式+净 100k 账户+无冻结/去重/open_for_plan/pilot 横幅)。下午盘真发 605111 新洁能 100 股 @ 64.57 到决策群(<code>om_x100b6ee...</code>,允许清单拦下 002138)。owner 按自己判断买 <strong>200 股 @ 63.035</strong>(≠建议 100)被旧严格匹配拒 → owner 拍板『<strong>回填即真相</strong>』(feature <code>496928f</code> + <code>P0-4-amendment-2026-06-01-report-is-truth</code>:放开数量强匹配仅留 身份+100整手;报告窗口 5min valid_until→14:55 当日截止;偏离记日志;两 review HIGH 一并修=超买拒负现金+applier 抛错必回复)。收盘后 owner 加『盘后补录』回填 200 股 → <strong>applied</strong>:镜像 605111×200/现金 87389/T+1 avail 0/deviation 日志/owner 收【QuantMind 已记录】。门禁 <strong>4331 passed/13 skipped</strong> + ruff + redline ALL PASS。follow-up:instruction_plans 成交后未转 FILLED(镜像真相正确,指令状态机待查)+ AMEND 前缀过 14:55 豁免 + 超限告警。<strong>push origin main 待 owner 授权(6 commit)</strong>。</li>
         <li>2026-05-31 session #58 monday-real-preflight — <strong>周一(2026-06-01)09:35 完整 MVP 真启前实测复核 ✅/⚠️</strong>。本 session 不改运行代码,按 owner 要求把可真实跑的环节逐项跑满:后端 clean-env <code>pytest -q -p no:cacheprovider</code> <strong>4317 passed/13 skipped</strong>,<code>ruff check .</code> 全绿,<code>scripts/redline-check.sh</code> 全绿;前端 <code>type-check/test/build</code> 全绿(139 tests)。cold-start strict PASS(29/23 slots,LLM stub=true,Mongo rs0 gate pass);45 交易日 pinned-clock 从 2026-06-01 到 2026-08-03 PASS(360 ticks,0 reset,0 real LLM)。飞书只读 chat-list 真 API OK:bot 同时在告警群和决策群,决策群存在且≠告警群。真实 Tushare+真实 qwen render-only dry-run(<code>--start 2026-05-29</code>,scratch=/tmp,0 send/0 broker mutation) PASS:Line-1 真实筛选/配比/价格笼子/qwen 4-agent/RiskEngine/renderer 跑通,渲染 3 条 BUY(<code>605111/002185/000725</code>),成本计数 <strong>¥0.1465</strong>,远低于 ¥100 daily hard cap。owner-in-loop fixture <code>e2e_interactive_test.py --preview</code> PASS,能构造 VALIDATED 指令和精确飞书文本,仍未发送。现有 8000 backend 6min soak 12/12 health OK,uptime 76min+,30s market/MTM/Line-2 jobs 持续成功。<strong>真实限制/风险点</strong>:周日闭市无法让 <code>smoke_live_double_line.py --real --no-feishu</code> 针对 2026-06-01 的 5s live quote freshness 通过,它按设计因周日/隔夜行情 <code>spot stale</code> 降级为 0 BUY,没有进入 LLM;此门不可放宽,必须周一 09:35 现场用真实开盘行情复验。另当前 8000 进程是 <code>simulation_auto=true/feishu_interactive=false</code>,且其 Tushare fallback 环境未拿到 token,不能直接作为周一真启进程;周一必须用已验证的 go-live shell env 重启/启动(owner gate)后再等自然 cron。真实飞书发送+owner 回填仍 owner-gated,本 session 没有发飞书。</li>
         <li>2026-05-31 session #57 monday-preflight — <strong>周一(2026-06-01)09:35 MVP 真启验证前置门禁复核 ✅</strong>。本 session 不改运行代码,只按 owner 要求读 SSoT 并做运行前 hardening 复核:当前计划指针为 Phase P 全 done, U-E5 仍 owner-gated doing,下一步是周一 09:35 真 cron 真 BUY + Phase P 真账户验证 + U-E5(B) 真发/回填/镜像/对账收官。门禁实跑:<code>pytest -q -p no:cacheprovider</code> clean env <strong>4317 passed/13 skipped</strong>,<code>ruff check .</code> 全绿,<code>bash scripts/redline-check.sh</code> 全绿;前端 <code>npm run type-check</code> / <code>npm run test</code>(139 passed) / <code>npm run build</code> 全绿。生产式 cold-start <code>scripts/smoke_test_cold_start.py --strict --json</code> PASS(Mongo rs0 gate 通过,23 required orchestration slots + 6 base slots 全在,LLM stub=true)。Docker Mongo/Redis 均 healthy;已有 <code>127.0.0.1:8000</code> backend 健康运行约 45min+,<code>/api/health/detailed</code> Mongo/Redis/LLM/data_scheduler/analysis_scheduler OK,账户接口确认现金 99595 / 持仓 510300×100 / InstructionPlan repo OK;日志显示 30s market/MTM/Line-2 intraday jobs 持续成功。唯一观察项:新闻源 <code>cls_news_failed</code> 404 和 <code>eastmoney_empty_payload</code> 属已降级 warning/info,不在 09:35 BUY 主链,不阻断 MVP。下一步仍为 owner-gated 真启:发飞书前必须明示内容+目标群并拿确认。</li>
@@ -870,7 +876,12 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
     const SESSION_LOG = [
       {
         date: "2026-06-01",
-        session: "#59 monday-real-launch — 周一完整 MVP 真启:真启暴露并修 2 bug + 补发首笔真实 Line-1 BUY + 回填即真相(真实人工执行闭环跑通)✅",
+        session: "#60 line-strategy-rearch-planning — 双线投研逻辑 + 编排 + 前端 4 方向规划/调研(无运行代码;产出 4 decision amendment + plan.html 新 Phase V/W/Y/Z 任务)📐",
+        owner: "Claude Opus 4.8 (1M ctx)",
+        state_in: "续 #59:周一 MVP 真启全闭环已通(首笔真实 Line-1 BUY 605111×200 经 go-live 真发→盘后补录回填→镜像→ack)。owner 召开**规划/调研 session**(不写运行代码),把 4 个方向系统落进 SSoT:① Line-1 第一性原理·产业链倒推选股 / ② Line-2 盘后复盘 + 持仓 thesis + 长短线智能决策 / ③ 双线并行 + ≤5 持仓 + 卖一买一 + T+1 / ④ 前端。流程锁定:调研+深思 → codex 多轮对抗 → AskUserQuestion 拿 owner 拍板 → 才落 plan.html + decision docs。",
+        actions: "**严格按 workflow 执行,产出 = 4 份 decision amendment + plan.html 4 新 Phase + 3 份 research/design dossier;零运行代码。** ① **Grounding(4 并行 agent)**:精确侦察 Line-1(纯自下而上量化、MiroFish AdvisorySignal seam 未接线、买入 thesis 几乎不持久化)/ Line-2(严格零 LLM、对持仓『为何买』无知、无盘后复盘 runner)/ 边界 docs(P0-8/P0-9/P0-7/P0-10/P2-2 红线)/ 前端(实建 13 页/14 WS 类 vs doc 11/12 漂移 + 无 ≤5 持仓约束,仅 check#6=10 + check#10=5 单/日)。② **外部调研(2 dossier)**:`industry-chain-reverse-deduction`(数据诚实判断:产业链图/卡脖子无干净 API → 人工 pin + LLM 抽取;liuhuanyong/ChainKnowledgeGraph 种子;choke-point=NetworkX 中心性)+ `thesis-tracking-and-t1-rotation`(thesis=预定义失效判据;qlib TopkDropoutStrategy topk=5/n_drop=1;T+1 跨日两腿)。③ **design draft** `line-strategy-rearch-design-draft-2026-06-01.md`。④ **codex 3 轮对抗**:round-1 全面挑战(否决①保留槽『保数量不保质量』→改 advisory-first;否决②『thesis intact 放宽止盈』;否决③无状态→改 append-only RotationIntent;④拒橡皮图章 13 页)/ round-2 钻 3 点(给出确定性 incumbent-weak 7 条锁定 + 替换 margin/hysteresis + 到期 fallback;判③轮动 ship-first)/ round-3 专攻① owner 答案的红线兼容性(LLM 联网调查唯一红线安全实现 = 定时·留痕·人工 pin 的 peer-sourcing,量化仍资格权威;照字面 LLM 剪枝被否)。⑤ **AskUserQuestion owner 4 拍板**:① 答『大模型联网调查做第一层筛选→再量化』(codex round-3 落红线安全 peer-sourcing 实现)/ ② 答『advisory 先 quant-break 后』/ ③ 答『append-only RotationIntent』/ ④ 答『panel 内嵌 + 如实修订页锁』。⑥ **4 decision amendment**(边界锁定,实施前置门):`P0-8-amendment-2026-06-01-llm-theme-research-peer-sourcing`(①;新 THEME- 前缀 + 定时留痕人工 pin + 量化资格权威 + 主题配额 ≤cap−3 + R0§3 provenance 扩展 + prompt-injection 容器化)/ `P0-10-amendment-line2-2026-06-01-position-thesis-advisory`(②;PositionThesis 持久化 + LLM advisory 盘后复盘 evidence-only + 确定性 THESIS_QUANT_BREAK 白名单模板 add-only)/ `P0-7-amendment-2026-06-01-five-slot-rotation`(③;check#6 10→5 + slot_portfolio + RotationIntent + 双条件 + churn/到期 fallback + T+1 跨日)/ `P1-5-amendment-2026-06-01-dual-line-panels-and-page-reconcile`(④;如实 13 页/14 WS + panel 内嵌 + 仅 2 写端点不变)。⑦ **plan.html**:新 4 lane V/W/Y/Z + 任务条目(V 组合轮动 ship-first / W 持仓 thesis / Y 主题研究 / Z 双线前端)+ 本 SESSION_LOG + 修订记录。",
+        commit: "docs-only 规划 session(本条 + 4 decision amendment + 3 dossier + plan.html 新 Phase/任务/SESSION_LOG/修订记录)。**无运行代码改动**。**docs commit + push origin main 均待 owner 授权**(prompt 明确规划 session 的 docs commit 也 owner-gated)。",
+        next: "【新 session 从这里恢复 —— 权威下一步指针】 **4 方向已系统落 SSoT(4 amendment 锁边界 + plan.html Phase V/W/Y/Z 任务)。** ▸▸ **codex 判 ship 序(amendment-first,每条 amendment 是实施门)**:① **Phase V = ③ ≤5 槽 + 卖一买一轮动**(ship-first:无 LLM 权限 / 无 KG·thesis 依赖 / PIT 可 replay / 安全包络窄 = check#6 改 5 + slot_portfolio + append-only RotationIntent)→ ② **Phase W = ② 持仓 thesis**(advisory 先持久化 + 盘后复盘,quant-break 白名单模板后做)→ ③ **Phase Y = ① LLM 主题研究 peer-sourcing**(最复杂/依赖下游最少,放最后;前置 Phase Q 产业链 KG pin 快照)→ ④ **Phase Z = ④ 前端**(贯穿;先做 doc/代码漂移 reconcile,viz panel 跟各方向后端读模型稳定后)。 ▸▸ **实施前必读**:对应 amendment(决策边界)+ 本 design draft;每个有代码的任务 commit 前跑 codex-review 修 P0/P1/P2(CLAUDE.md §3)。 ▸▸ **⚠️ 待 owner 确认点**:① 的实现把 owner『LLM 第一层筛选』落成『定时+人工 pin 的 peer-sourcing,量化仍资格权威』(照字面『LLM 先剪 universe』撞 PIT/LLM-数据隔离/screening-0-LLM 三条不可动红线被否)——若 owner 本意是更激进的 LLM 直接剪枝,需先松绑这些安全地基红线(prompt §1 列为不可动),请 owner 复核 P0-8-amendment-2026-06-01 §1/§2 边界再 commit。 ▸▸ **本规划 session 全部 docs 待 owner 授权 commit + push**。 ▸▸ **并行存量**:Phase O(MiroFish 核心)/Q(KG)/R(自进化)/T(交易员全栈)仍 todo;① 主题层与 O/Q 强相关(产业链 KG = Q 子能力),实施时整合。",
         owner: "Claude Opus 4.8 (1M ctx)",
         state_in: "续 #58 preflight。周一 09:30 owner 要求重启 MVP 确保一切就绪无 bug、等 09:35 cron 真启。go-live env(FEISHU_INTERACTIVE_ENABLED=true/QUANTMIND_PROD_RUN=1/TIER=pilot/owner auth valid/决策群≠告警群)全 present;当前 8000 是旧 sim backend(无 Tushare token)须替换。",
         actions: "**真启暴露 2 个『只有真启才触发』的 bug,均修复+审查+提交+真机验证;并完成首笔真实 Line-1 BUY 全闭环。** ① **cond10a 安全门误拒(feature 958e9b9 + P0-6-amendment-2026-06-01-cond10a-single-timeout-grace)**:09:35 用 go-live env 真启,PILOT gate fail-closed SystemExit 唯一未达 cond10a——当日 UTC `1 超时/18 调用=5.56%>5%`(旧 sim backend 昨夜遗留小样本,17/18 成功=LLM 健康)。修=单次瞬态超时宽限(`timeouts<=1 OR rate<=ceiling`,纯函数 is_llm_timeout_rate_acceptable;5% 与 45 日 acceptance 门不动;保留对灾难性 5/5 检测);+10 测试;真机 boot 验证 gate 通过。② **bug2 生产 cron 不持久化指令(feature de12259)**:生产 dispatcher(main.py _init_line2_runners)从未接 plan_repository → 真 cron BUY 发飞书但不写 instruction_plans → owner 回填的 plan_lookup 找不到 → **人工执行闭环对 cron BUY 静默断裂**(#54/#55 能通仅因 e2e 手动 upsert)。修=接 MongoInstructionPlanRepository;review 抓出该 upsert 非 fail-open(我接线后才激活)→ 包 try/except fail-open + 回归测试。③ **run_line1_now 补发工具(feature 3df7f7f)**:09:35 cron 在 gate 阻塞窗口(misfire 300s)内错过且无现成按需真发工具 → 建 scripts/run_line1_now.py(复用 dry_run build_real_context+_run_line1 生产选股 + 生产 InstructionDispatcher 真发+持久化;M-004 单一构造点不破)。**3 轮 codex + 1 轮 /code-review high 共 11 findings 全修**:要求 QUANTMIND_PROD_RUN(防 build_real_context 重置 live gate)/ --send 需 FEISHU_INTERACTIVE+--confirm+--approve-codes 允许清单 / _preflight_or_exit(owner J-007 授权+backend 健康+feishu_interactive 模式+净 100k 账户+零持仓+无冻结)/ 去重 vs 当日 active BUY / open_for_plan 防发后 ledger 崩 / 14:50 截止守门 / dry_run 加 pilot kwarg 使 pilot 横幅上线。④ **真发(下午盘 13:33)**:owner --preview 审后 --send --confirm --approve-codes 605111 → 真发 605111 新洁能 100 股 @ 64.57 到决策群(message_id om_x100b6ee5e6473088c3c856c3cf200b8),**允许清单拦下同批 002138**;指令持久化 instruction_plans=DISPATCHED(bug2 验证)。⑤ **回填即真相(feature 496928f + P0-4-amendment-2026-06-01-report-is-truth)**:owner 按自己判断买 **200 股 @ 63.035**(≠建议 100),旧严格匹配判 AMBIGUOUS 拒记。owner 拍板『回填即真相』口径 → 放开 _cross_check_volume 数量强匹配(仅留身份 instruction_id+code+side[模型校验器]+100 整手;偏离记 execution_report_volume_deviation 日志)+ 报告窗口从 5min valid_until 改 14:55 当日截止(过则盘后补录)。放开后两 review HIGH 一并修:超买负现金(apply_external_fill BUY 加现金充足 raise)+ applier 抛错静默无回复(except 走 FIELD_CROSS_CHECK 澄清,守 2026-05-30b 每报必有且仅一回复)。⑥ **owner 回填闭环(收盘后 15:2x)**:过 14:55 → owner 加『盘后补录』前缀重发 200 股 → **applied**:镜像 605111×200 / 现金 100000→87389 / cost 63.05 含费 / available 0 T+1 / `execution_report_volume_deviation suggested=100 actual=200` / **owner 收到【QuantMind 已记录】**。门禁全程:clean env `pytest` 最终 **4331 passed/13 skipped** + ruff + redline ALL PASS;backend 多次重启均过 PILOT gate(cond10a 修+report-is-truth+bug2 上线)。",
@@ -3395,6 +3406,237 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         tests: "全栈端到端 + 45 日 + 切换 gate。",
         sources: "P0-6, R0 §7, 回测调研 dossier",
         commit: "", session_date: "", notes: "qlib 推迟到此(若其数据/模型工作流变核心);验收框架完全沿用 P0-6。"
+      },
+      {
+        id: "V-001", phase: "V 组合轮动", status: "todo", priority: "P0",
+        title: "≤5 持仓硬约束(check#6 max_total_positions 10→5,含 ETF)",
+        summary: "config/risk.yaml position_limits.max_total_positions 10→5(check#6 已含 ETF 计数 + SELL 跳过 + 加仓已持不增计数,语义天然契合 ≤5;无需 15th check,risk_summary min=max=14 不破);runtime 不可改 + hot-reload 禁;重启生效。",
+        scope: "config/risk.yaml, backend/risk/(不改 14-check,仅 docstring), tests/risk/",
+        depends: "(amendment 前置:P0-7-amendment-2026-06-01)",
+        acceptance: "max_total_positions=5 + check#6 拒第 6 笔新持仓 BUY + SELL/加仓已持仍过 + ETF 计入 + risk_summary 仍 14;redline 全绿。",
+        tests: "check#6 ≤5 边界 + 第6笔拒 + SELL 跳过 + 加仓已持不增计数 + ETF 计入。",
+        sources: "P0-7-amendment-2026-06-01-five-slot-rotation §1.1, P0-9(check#6), R0",
+        commit: "", session_date: "", notes: "硬 guard(RiskEngine 拒第6笔),非轮动;轮动决策在上游 slot_portfolio。codex round-2 锁定。"
+      },
+      {
+        id: "V-002", phase: "V 组合轮动", status: "todo", priority: "P0",
+        title: "backend/slot_portfolio/ 纯模块 — 确定性 incumbent-weak + challenger-margin",
+        summary: "确定性轮动评分模块(纯量化,禁 import backend.{llm,agents,mirofish},不构造 InstructionPlan,确定性 over PIT-pin frame,可 replay):incumbent_independently_weak 7 条(无保护止损/无硬退出/龄≥5td/Line-1 分位≤P40/恶化≥20分位/≥1确认/无否决)+ challenger margin(≥P75 且领先≥25分位 且绝对组合分胜出);只用现有 Line-1 量化分 + 确定性 Line-2 在位健康(解耦①②)。",
+        scope: "backend/slot_portfolio/{scoring,policy,__init__}.py, backend/slot_portfolio/CLAUDE.md, config/slot_rotation_policy.yaml",
+        depends: "V-001",
+        acceptance: "7 条 incumbent-weak 全真才弱 + challenger 双 margin + 同输入同输出 + import 隔离(AST)+ 不构造 InstructionPlan(grep ⊆ {model,builder,tests})+ 覆盖率 ≥80%。",
+        tests: "incumbent-weak 各条 + 健康在位不卖 + challenger margin 边界 + 对抗(分数任意不破单一构造点)+ replay 可复现 + AST 隔离。",
+        sources: "P0-7-amendment-2026-06-01 §1.3/§1.6, 调研(qlib TopkDropoutStrategy topk=5/n_drop=1/hold_thresh), codex round-2 §Q2",
+        commit: "", session_date: "", notes: "解耦 ship:theme/thesis 作可选在位/挑战分组件,后并入,非前置依赖(codex:替换分=带 provenance 的接口)。"
+      },
+      {
+        id: "V-003", phase: "V 组合轮动", status: "todo", priority: "P0",
+        title: "append-only RotationIntent + churn 控制 + 到期 fallback",
+        summary: "append-only RotationIntent 记录(卖出 instruction/incumbent/challenger/双方分数/expires_at/replay 输入;非 broker_events 反查,根除 P-006 脆弱性);churn:每日≤1 轮动 + ≤1 open intent + subcap≤1 + 让位保护性止损 + 同 incumbent 20td 冷却 + 对 30td 冷却;expires_at=min(3td,下次再平衡);到期 fallback(原挑战者→最佳≥P75→留现金标 UNDERINVESTED_ROTATION_EXPIRED 阻断后续轮动至人工 gate)。",
+        scope: "backend/slot_portfolio/rotation_intent.py, backend/(持久化), tests/slot_portfolio/",
+        depends: "V-002",
+        acceptance: "RotationIntent append-only 可 replay + churn 4 闸门 + 轮动让位保护性止损 + 到期 fallback 不静默欠配 + UNDERINVESTED 阻断;不新增脆弱反查。",
+        tests: "intent 往返 + churn 各闸门 + 到期 3 路 fallback + 让位止损 + 阻断后续轮动 + replay。",
+        sources: "P0-7-amendment-2026-06-01 §1.2/§1.5, codex round-1(否决无状态)/round-2(到期 fallback)",
+        commit: "", session_date: "", notes: "codex round-1:无状态会『丢失卖出理由』→隔夜未卖+候选失格=卖好持仓没买回;append-only intent 合规(P-006 否的是反查非显式 intent)。"
+      },
+      {
+        id: "V-004", phase: "V 组合轮动", status: "todo", priority: "P0",
+        title: "Line-1 holdings-aware 改造 + 轮动 SELL 建议接线(T+1 跨日)",
+        summary: "Line-1 选股从 holdings-blind 改 holdings-aware(知当前 5 持仓 + 已结算空槽);满 5 且挑战者过 margin + 在位者够弱 → T 日发轮动 SELL 最弱建议 + 落 RotationIntent,当日不买;T+1 槽位实际腾出(从 settled 持仓观察,非 in-flight 承诺)+ 候选仍合格 → 用 settled cash 买空槽。SELL/买经 builder 单一构造点。",
+        scope: "backend/orchestration/line1_runner.py, backend/services/line1_context_provider.py, backend/orchestration/(line2 SELL 接线)",
+        depends: "V-003",
+        acceptance: "holdings-aware + T 日轮动 SELL 建议不买 + T+1 条件买真实空槽 + 不假设当日回笼 + 单一构造点不破 + 让位保护性止损。",
+        tests: "holdings-aware 选股 + 满5轮动 SELL + T+1 跨日条件买 + 真实空槽观察 + 不当日回笼 + 单一构造点。",
+        sources: "P0-7-amendment-2026-06-01 §1.4, R0 §4, P0-7-amendment-2026-05-30(不假设当日回笼)",
+        commit: "", session_date: "", notes: "T+1 真相:股票当日买不可当日卖;轮动=今卖+次日条件买,无原子卖一买一。"
+      },
+      {
+        id: "V-005", phase: "V 组合轮动", status: "todo", priority: "P1",
+        title: "对抗测试 + dry-run 整合 + redline + Phase V 收尾",
+        summary: "redline-check.sh 加 [V-002] slot_portfolio 隔离 + 不构造 InstructionPlan;dry_run_double_line.py 扩(≤5 持仓 + 轮动双条件 + RotationIntent 到期);全套绿 + SSoT done + session log。",
+        scope: "scripts/redline-check.sh, scripts/dry_run_double_line.py, docs/plan.html",
+        depends: "V-001, V-002, V-003, V-004",
+        acceptance: "redline 全绿(新 [V-002])+ dry-run 断言轮动行为值 + pytest/ruff 全绿 + Phase V 全 done。",
+        tests: "redline-check.sh + dry_run_double_line.py(扩版)+ 全量 pytest。",
+        sources: "P0-7-amendment-2026-06-01, R0",
+        commit: "", session_date: "", notes: "ship-first 收尾。"
+      },
+      {
+        id: "W-001", phase: "W 持仓 thesis", status: "todo", priority: "P0",
+        title: "PositionThesis 持久化(LLM 支柱文本 + 确定性量化失效阈值)",
+        summary: "买入(Line-1 dispatch)时落结构化 PositionThesis:3–5 支柱文本(fund_manager reasoning,P0-10 允许字段)+ 每支柱白名单量化模板派生的确定性失效阈值(买入时确定性算,无 LLM)+ time-stop/催化窗 + 原始 evidence_ids + 因子快照引用 + SignalInputManifest 引用(可 replay);非 InstructionPlan(M-004 不破),由 instruction_id 关联。",
+        scope: "backend/models/(PositionThesis), backend/services/(买入时落库), tests/",
+        depends: "(amendment 前置:P0-10-amendment-line2-2026-06-01)",
+        acceptance: "PositionThesis 显式落库(非 broker_events 反查)+ 量化阈值确定性派生 + thesis 文本永不入决策字段 + replay 引用完整 + 非 InstructionPlan。",
+        tests: "落库往返 + 阈值确定性 + thesis 文本不入数值字段(对抗)+ replay + 单一构造点不破。",
+        sources: "P0-10-amendment-line2-2026-06-01 §1.1, 调研(thesis=预定义失效判据), R0 §3/§4",
+        commit: "", session_date: "", notes: "显式落库根除 P-006 反查脆弱性;LLM 写支柱文本合规,永不反向写决策字段。"
+      },
+      {
+        id: "W-002", phase: "W 持仓 thesis", status: "todo", priority: "P1",
+        title: "盘后复盘 EOD cron + LLM advisory(monitoring 外)+ evidence-only",
+        summary: "新 EOD Line-2 复盘 cron(~17:30,MiroFish postclose 后;派生 P1-2.A BrokerScheduler 新 job);LLM 比对当前证据 vs 原 thesis 支柱 → intact/weakening/broken + 理由文本;调用在 backend/monitoring 之外(orchestration 层,N-004 触发式范式),计 llm:usage + cost-gate;仅写 evidence_collection(前缀);monitoring 保持 0-LLM + 隔离。",
+        scope: "backend/broker/scheduler.py(新 cron), backend/orchestration/(advisory 调用), backend/(evidence writer)",
+        depends: "W-001",
+        acceptance: "EOD 复盘 cron + LLM advisory 在 monitoring 外 + evidence-only(by-construction 无 RiskCheckSummary)+ 计预算 + monitoring 仍 0-LLM/隔离。",
+        tests: "cron 触发 + advisory 输出 evidence-only + 预算计数 + monitoring import 隔离 + 决策路径不变。",
+        sources: "P0-10-amendment-line2-2026-06-01 §1.2, P1-2.A(新 cron 派生), P1-7(成本)",
+        commit: "", session_date: "", notes: "派生 P1-2.A amendment 候选(BrokerScheduler 第 N cron);LLM 当感知/证据,规则当 actuator。"
+      },
+      {
+        id: "W-003", phase: "W 持仓 thesis", status: "todo", priority: "P1",
+        title: "display-only 飞书 thesis 复盘 digest + owner 人工执行路径",
+        summary: "render thesis 复盘 digest(display-only,仿 basket_digest,无 QM-/无成交动词,对抗 parse_execution_report 必 no_pattern_match);独立幂等发决策群;owner 据 advisory 走现有飞书人工 gate 执行;确定性 SELL 路径完全不变。",
+        scope: "backend/integrations/feishu/renderer.py, backend/orchestration/",
+        depends: "W-002",
+        acceptance: "digest display-only + 对抗 parse 必失败 + 幂等 + owner 人工执行不动确定性 SELL。",
+        tests: "renderer 快照 + 对抗 parse no_pattern_match + 幂等。",
+        sources: "P0-10-amendment-line2-2026-06-01 §1.2, P0-3/P0-4(display-only 范式)",
+        commit: "", session_date: "", notes: "advisory 永不碰 side/volume/limit_price/RiskCheckSummary。"
+      },
+      {
+        id: "W-004", phase: "W 持仓 thesis", status: "todo", priority: "P1",
+        title: "阶段2 确定性 THESIS_QUANT_BREAK 触发(白名单模板,add-only)",
+        summary: "新 IntradayTriggerKind.THESIS_QUANT_BREAK(确定性派生,经 assemble_monitoring_plan → 14-check → 飞书人工);阈值仅来自预批准白名单确定性量化模板(NOT LLM 文本选指标/阈值);只能增卖压、永不放松/压制现有止损/止盈/减仓;保护性止损优先级永不被调制;LINE2-MON- + (code,trigger_kind) 去重 + SELL 不熔断。",
+        scope: "backend/monitoring/intraday_triggers.py, backend/services/instruction_plan_builder.py(assemble_monitoring_plan)",
+        depends: "W-001",
+        acceptance: "THESIS_QUANT_BREAK 仅白名单模板派生 + 只增卖压不放松现有止损 + monitoring 0-LLM + 单一构造点 + 对抗测试(LLM/thesis 文本不入数值字段)。",
+        tests: "白名单模板触发 + 只增卖压(对抗:不放松止盈带)+ monitoring 隔离 + 单一构造点 + 优先级保护止损。",
+        sources: "P0-10-amendment-line2-2026-06-01 §1.3, codex round-1(否决放宽带/LLM 选阈值)",
+        commit: "", session_date: "", notes: "gated 后做 + shadow 验证;codex:LLM 选阈值=偷渡语义进零LLM SELL,只准白名单模板 add-only。"
+      },
+      {
+        id: "W-005", phase: "W 持仓 thesis", status: "todo", priority: "P1",
+        title: "模块 CLAUDE.md + import 隔离测试 + Phase W 收尾",
+        summary: "thesis 相关子任务 CLAUDE.md + monitoring 0-LLM 隔离回归 + redline + dry-run thesis 复盘演示 + SSoT done + session log。",
+        scope: "backend/(CLAUDE.md), scripts/redline-check.sh, docs/plan.html",
+        depends: "W-001, W-002, W-003, W-004",
+        acceptance: "monitoring 仍 0-LLM/隔离 + redline 全绿 + pytest/ruff 绿 + Phase W 全 done。",
+        tests: "AST 隔离 + redline + 全量 pytest。",
+        sources: "P0-10-amendment-line2-2026-06-01",
+        commit: "", session_date: "", notes: "advisory 先(W-001~003)+ quant-break 后(W-004,shadow 验证)。"
+      },
+      {
+        id: "Y-001", phase: "Y 主题研究", status: "todo", priority: "P1",
+        title: "Phase Q 产业链 KG 子能力(节点/边 + liuhuanyong 种子 + 中心性)",
+        summary: "在 Phase Q 知识图谱内加产业链应用:节点 Trend→Sector→ChainLink/Product→Stock + 边 DRIVES/REQUIRES/UPSTREAM_OF/SUPPLIES/BELONGS_TO + criticality/chokepoint_score/crowding_pct/valuation_pct 属性;冷启动种子重建 liuhuanyong/ChainKnowledgeGraph(无 license → 重建,记 provenance);choke-point=NetworkX betweenness/PageRank(确定性,无 Neo4j);双时态 + SUPERSEDES。",
+        scope: "backend/knowledge_graph/(产业链 schema + seed + centrality)",
+        depends: "Q-001, Q-002",
+        acceptance: "产业链节点/边 + 种子 provenance + NetworkX 中心性确定性 + 双时态 + KG 仍 import 隔离。",
+        tests: "节点/边往返 + 种子 provenance + 中心性确定性 + SUPERSEDES。",
+        sources: "P0-8-amendment-2026-06-01 §2.10, 调研 industry-chain-reverse-deduction(liuhuanyong + 中心性), P2-2-amendment-2026-05-24",
+        commit: "", session_date: "", notes: "产业链=天然图;前置 ① 主题层中心性特征(无 pin 快照则该特征权重=0)。"
+      },
+      {
+        id: "Y-002", phase: "Y 主题研究", status: "todo", priority: "P0",
+        title: "结构化倒推 prompt SOP(如何调查/怎样分析)+ LLM+web 调查 job + provenance 全捕获",
+        summary: "**核心 = 一等设计物:结构化第一性原理·产业链倒推 prompt SOP**(owner 2026-06-01 强调必须设计好、明确如何调查/怎样分析)——显式 5 步方法论(① 判大方向[宏观/政策/技术拐点,限源 allowlist] → ② 圈受益板块[映射申万/概念] → ③ 倒推必需产业链[读 pin KG] → ④ 识别卡脖子环节[断供负面×替代难度×供应集中度×『还没炒热』低关注/低估值] → ⑤ 挖代表性标的)+ 分析框架(第一性原理非跟风 + 每步引用证据+置信度 + null result 透明)+ 输出 schema(趋势→板块→链环节→卡脖子理由→候选codes+理由+置信度);prompt 经文件式版本化 registry 注入(见 Y-006,不硬编码)。配套定时有界 research job(盘前/周频,非 per-signal runtime fetch);web 输入 + LLM 输出调查时全捕获进 append-only content-addressed 快照(SERP/页/prompt/model/response 字节 + checksum,仿 MarketDataSnapshot);replay 永不联网/不调 LLM(只校验哈希 + 消费 pin artifact);引用入 SignalInputManifest;隐藏字节的 run=non-promotable。",
+        scope: "backend/theme_research/{investigator,prompts_loader,provenance,__init__}.py, backend/theme_research/CLAUDE.md, config/prompts/theme_research/v1.yaml",
+        depends: "Y-001, Y-006",
+        acceptance: "结构化 5 步 SOP prompt(显式调查/分析方法 + 输出 schema)+ 定时非实时 + 全留痕(原始字节+checksum)+ replay 不联网/不调LLM + non-promotable 守门 + SignalInputManifest 引用 + 成本 bound(cadence/max fetches/max LLM/timeout,计同一 llm:usage)。",
+        tests: "SOP 5 步结构 + 输出 schema 校验 + provenance 全捕获 + replay bit-exact 不联网 + 隐藏字节非 promotable + 成本 bound + 同一计数器。",
+        sources: "P0-8-amendment-2026-06-01 §2.1/§2.2/§2.9/§2.11, R0 §3, codex round-3, 调研(Expert Investment Teams 细粒度 SOP prompt p<0.0001 / nexus 5-agent+RedTeam)",
+        commit: "", session_date: "", notes: "owner:必须设计好结构化 prompt、明确如何调查/怎样分析;SOP 骨架 frozen,措辞/exemplars 可进化(Y-006)。唯一红线安全实现=定时+留痕+人工 pin;严禁进运行时数据路径。"
+      },
+      {
+        id: "Y-003", phase: "Y 主题研究", status: "todo", priority: "P1",
+        title: "THEME- 第6 evidence 前缀 + evidence/机读候选分离 + prompt-injection 容器化",
+        summary: "validate_evidence_id 扩第 6 前缀 THEME-(P0-8 原锁 5);LLM 原始产出只写 evidence_collection.content(展示/审计文本),严禁 live code 正则解析成候选;机读候选集=独立人工批准 content-addressed pin artifact(与 evidence 文本物理分离);prompt-injection:源 allowlist + 无 secrets/交易状态/RiskConfig 访问 + 严格输出 schema + 确定性校验 + 固定转义 renderer。",
+        scope: "backend/models/evidence.py(THEME-), backend/theme_research/(候选 artifact + 校验)",
+        depends: "Y-002",
+        acceptance: "THEME- 第6前缀 + by-construction 无 RiskCheckSummary + 无 live selector 解析 LLM 文本 + 机读候选 artifact 分离 + prompt-injection 容器化 6 件。",
+        tests: "前缀校验 + evidence-only + 候选 artifact 分离 + 恶意 web 文本不污染候选(对抗)+ 无 secrets 访问。",
+        sources: "P0-8-amendment-2026-06-01 §2.3/§2.4/§2.8, codex round-3(新前缀需 amendment)",
+        commit: "", session_date: "", notes: "P0-8 5 前缀锁 → 本任务依 amendment 解锁第 6;evidence 文本 ≠ 机读候选。"
+      },
+      {
+        id: "Y-004", phase: "Y 主题研究", status: "todo", priority: "P1",
+        title: "人工 pin/审批 + LiveArtifactRegistry + CandidateSelector peer-sourcing 接线",
+        summary: "候选 artifact 经飞书/人工逐条批准 + 按批准哈希 pin(LiveArtifactRegistry,P2-2 沿用)才影响 live 选股;CandidateSelector peer-sourcing 接线(过排除四件套+可负担+14-check+人工 gate);主题配额 ≤cap−3(当前≤2)+ ≥3 量化名额保留 + 纯量化永不被否决 + 无新鲜 pin artifact 则配额空、纯量化照跑;日频可跑特征(估值/拥挤/板块动量分位,无 pin KG 则中心性权重=0)。",
+        scope: "backend/candidate_selector/selector.py(peer-sourcing), backend/strategy_evolution/live_artifact_registry.py(复用), backend/(飞书审批通道)",
+        depends: "Y-003, R-001",
+        acceptance: "人工 pin gate + 哈希校验 + peer-sourcing 过全部硬门 + 配额≤cap−3 + ≥3 量化保留 + 无 pin 配额空纯量化照跑 + 纯量化不被否决。",
+        tests: "人工 pin 拒未批准 + 哈希校验 + peer-sourcing 过硬门 + 配额上限 + 无 pin 配额空 + 纯量化不被否决(对抗)。",
+        sources: "P0-8-amendment-2026-06-01 §2.5/§2.6/§2.7/§2.10, P2-2-amendment-2026-05-24, codex round-3",
+        commit: "", session_date: "", notes: "LLM 浮现候选,量化定资格,人工执行;两路互不否决;依赖 R-001 LiveArtifactRegistry。"
+      },
+      {
+        id: "Y-005", phase: "Y 主题研究", status: "todo", priority: "P0",
+        title: "对抗测试先写(RED)+ 模块隔离 + Phase Y 收尾",
+        summary: "对抗测试先写(R0 §4):种入恶意 web 文本 → 断言不污染候选 / 不写决策字段 / 纯量化候选不被否决 / 无 pin 则配额空 / replay bit-exact 不联网;theme_research import 隔离(可调 LLM+web 但只写 evidence+pin artifact;screening/marketdata_snapshot/risk 保持 0-LLM);redline + SSoT done + session log。",
+        scope: "tests/theme_research/, scripts/redline-check.sh, docs/plan.html",
+        depends: "Y-001, Y-002, Y-003, Y-004",
+        acceptance: "对抗测试先红后绿 + 模块隔离(screening/marketdata/risk 仍 0-LLM)+ redline 全绿 + Phase Y 全 done。",
+        tests: "对抗 5 项 + AST 隔离 + redline + 全量 pytest。",
+        sources: "P0-8-amendment-2026-06-01 §5, R0 §4, codex round-3",
+        commit: "", session_date: "", notes: "① 最复杂、依赖下游最少 → ship 序最后;对抗测试先写是单一构造点纪律。"
+      },
+      {
+        id: "Y-006", phase: "Y 主题研究", status: "todo", priority: "P1",
+        title: "调查 prompt 文件式版本化 registry + 保留进化接口(P2-2 沿用)",
+        summary: "调查/分析 prompt 不硬编码,走文件式版本化 registry(config/prompts/theme_research/{version}.yaml + prompts.lock.json,git 版本化 + restart-gated + 改动走 amendment);保留升级进化(owner 2026-06-01 强调):经 P2-2 保守 3 路径离线进化(DSPy/GEPA ≤¥5/次 + FinMem exemplars ≤3/prompt + RAG provenance-gated),全程人工 gate + 45 日 shadow + 重启;进化只动措辞/exemplars/参数,第一性原理倒推 SOP 骨架 frozen(类比 T-001 人格卡 vs T-004 exemplars 分离);prompt version hash 入 LiveArtifactRegistry,实时只认批准版本。",
+        scope: "config/prompts/theme_research/, backend/theme_research/prompts_loader.py, backend/strategy_evolution/(进化 hook 复用)",
+        depends: "Y-002",
+        acceptance: "文件式版本化 registry + git+restart-gated + SOP 骨架 frozen + 措辞/exemplars 可进化(经 P2-2 人工 gate+shadow+重启)+ prompt hash 入 LiveArtifactRegistry + 实时只认批准版本。",
+        tests: "registry 加载 + 版本 pin + 未批准 prompt 版本被拒(对抗)+ SOP 骨架不可 runtime 改 + 进化走 shadow+人工 gate。",
+        sources: "P0-8-amendment-2026-06-01 §2.12, P2-2-amendment-2026-05-24(自进化 3 路径), P2-2(文件式 prompt registry), 用户 2026-06-01『保留升级进化的可能』",
+        commit: "", session_date: "", notes: "owner:保留后续升级进化可能;接 Phase R 自进化 infra(R-001 LiveArtifactRegistry / R-004 evolution_shadow_run)。"
+      },
+      {
+        id: "Z-001", phase: "Z 双线前端", status: "todo", priority: "P1",
+        title: "doc/代码漂移 reconcile(页锁 11→13 / WS 12→14 如实入账)",
+        summary: "plan.html + CLAUDE.md §2.11 页锁/WS 数字如实更新到实际枚举集:13 页(4 决策闭环分组逐页枚举,Simulation.vue 仍 hidden,Settings 4 子页不计)+ 14 WS 类(6 保留 + 8 新;auth_mode_change/approval_update 永禁不变);再加顶级页/WS 类仍需 amendment。轻量、早做。",
+        scope: "docs/plan.html, CLAUDE.md, frontend/(无功能改,仅核对)",
+        depends: "(amendment 前置:P1-5-amendment-2026-06-01)",
+        acceptance: "页锁/WS 数字与实际一致 + 枚举集锁定 + 纪律(再加需 amendment)+ 永禁 2 WS 类不变。",
+        tests: "枚举集核对 + FORBIDDEN_WS_* 不变。",
+        sources: "P1-5-amendment-2026-06-01 §1.1",
+        commit: "", session_date: "", notes: "如实承认漂移(owner 选 A),不收敛回 11;纪律不松。"
+      },
+      {
+        id: "Z-002", phase: "Z 双线前端", status: "todo", priority: "P2",
+        title: "产业链倒推可解释链路 viz(InstructionPlans 抽屉 tab)",
+        summary: "趋势→板块→链→卡脖子环节→标的可解释链路,进 InstructionPlans 详情抽屉新 tab 或现有页内 panel;读 pin 主题候选 artifact + THEME- evidence(display-only);ECharts 有向图;全只读。",
+        scope: "frontend/src/views/InstructionPlans.vue, frontend/src/components/",
+        depends: "Y-004, Z-001",
+        acceptance: "链路 viz 现有页内 panel + 读 pin artifact + THEME- evidence display-only + 全只读 + 不加写端点。",
+        tests: "vitest 组件 + type-check + 只读断言。",
+        sources: "P1-5-amendment-2026-06-01 §1.2, P0-8-amendment-2026-06-01",
+        commit: "", session_date: "", notes: "建议调 frontend-design skill。"
+      },
+      {
+        id: "Z-003", phase: "Z 双线前端", status: "todo", priority: "P2",
+        title: "持仓 thesis 追踪 + 长持vs止盈 panel(Portfolio)",
+        summary: "Portfolio 页 panel:读 PositionThesis 读模型(支柱 + 量化失效阈值健康度)+ advisory 复盘 evidence(display-only,不可解析);thesis 健康度时间线;全只读。",
+        scope: "frontend/src/views/Portfolio.vue, frontend/src/components/",
+        depends: "W-001, Z-001",
+        acceptance: "thesis 追踪 panel + 健康度时间线 + advisory display-only + 全只读。",
+        tests: "vitest + type-check + display-only 不可解析。",
+        sources: "P1-5-amendment-2026-06-01 §1.2, P0-10-amendment-line2-2026-06-01",
+        commit: "", session_date: "", notes: "长线看逻辑(thesis 健康)+ 短线看量化指标 双视图。"
+      },
+      {
+        id: "Z-004", phase: "Z 双线前端", status: "todo", priority: "P2",
+        title: "5 槽组合 + 换仓视图 panel(Portfolio)",
+        summary: "Portfolio 页 panel:5 槽占用 + 在位/挑战分 + RotationIntent 读模型(卖谁换谁/到期/状态)+ T+1 跨日轮动态;全只读。",
+        scope: "frontend/src/views/Portfolio.vue, frontend/src/components/",
+        depends: "V-003, Z-001",
+        acceptance: "5 槽 + 在位/挑战分 + RotationIntent viz + 跨日态 + 全只读。",
+        tests: "vitest + type-check + 只读。",
+        sources: "P1-5-amendment-2026-06-01 §1.2, P0-7-amendment-2026-06-01",
+        commit: "", session_date: "", notes: "卖一买一可视化;到期 fallback/UNDERINVESTED 态显示。"
+      },
+      {
+        id: "Z-005", phase: "Z 双线前端", status: "todo", priority: "P2",
+        title: "双线每日并行运行态 panel(Dashboard/SystemStatus)+ Phase Z 收尾",
+        summary: "Dashboard/SystemStatus panel:Line-1 选股 + Line-2 监控双线每日并行运行态(最近运行/产出/cap 占用);三层 reason 抽屉延展(命名空间区分,不加写交互);新推送优先复用现有 14 WS 类或轮询;type-check/vitest/build 绿 + Phase Z 全 done。",
+        scope: "frontend/src/views/{Dashboard,SystemStatus}.vue, docs/plan.html",
+        depends: "Z-002, Z-003, Z-004",
+        acceptance: "双线运行态 panel + 复用现有 WS/轮询(新 WS 类需 amendment)+ 全只读 + 仅 2 写端点不变 + type-check/vitest/build 绿 + Phase Z 全 done。",
+        tests: "vitest + type-check + build + 仅 2 写端点 redline。",
+        sources: "P1-5-amendment-2026-06-01 §1.2/§1.3",
+        commit: "", session_date: "", notes: "贯穿 4 方向的运行态总览;WS 不扩张(MVP 倾向轮询)。"
       }
     ];
 
