@@ -148,6 +148,128 @@ class TestRun:
             assert forbidden not in mongo
 
 
+class _FakeSender:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def send_message(self, chat_id: str, text: str, *, uuid: str):  # noqa: ANN201
+        from types import SimpleNamespace
+
+        self.calls.append((chat_id, text, uuid))
+        return SimpleNamespace(ok=True, message_id="m1", code=None)
+
+
+class TestDigest:
+    def _provider(self) -> _Provider:
+        return _Provider(
+            held=frozenset({"600519"}),
+            theses={"600519": _thesis("600519")},
+            contexts={},
+        )
+
+    def _runner(self, sender, outbox, *, writer=None) -> Line2ThesisReviewRunner:  # noqa: ANN001
+        from backend.integrations.feishu.renderer import MessageRenderer
+
+        return Line2ThesisReviewRunner(
+            client=_Client(),
+            # codex W-003 P2: a verdict only digests when its evidence persisted.
+            evidence_writer=writer if writer is not None else _Writer(),
+            renderer=MessageRenderer(),
+            digest_sender=sender,
+            digest_chat_id="oc_decision",
+            digest_outbox=outbox,
+        )
+
+    @pytest.mark.asyncio
+    async def test_digest_sent_once_after_reviews(self) -> None:
+        from backend.orchestration.instruction_dispatcher import (
+            InMemoryOutboxRepository,
+        )
+
+        sender = _FakeSender()
+        runner = self._runner(sender, InMemoryOutboxRepository())
+        await runner.run(provider=self._provider(), now=_NOW)
+        assert len(sender.calls) == 1
+        assert "持仓复盘概览" in sender.calls[0][1]
+
+    @pytest.mark.asyncio
+    async def test_digest_idempotent_across_reruns(self) -> None:
+        from backend.orchestration.instruction_dispatcher import (
+            InMemoryOutboxRepository,
+        )
+
+        sender = _FakeSender()
+        outbox = InMemoryOutboxRepository()
+        runner = self._runner(sender, outbox)
+        await runner.run(provider=self._provider(), now=_NOW)
+        await runner.run(provider=self._provider(), now=_NOW)  # same trade_date
+        assert len(sender.calls) == 1  # at-most-once
+
+    @pytest.mark.asyncio
+    async def test_digest_skipped_when_unwired(self) -> None:
+        sender = _FakeSender()
+        # No renderer / outbox / chat → digest silently skipped.
+        runner = Line2ThesisReviewRunner(client=_Client(), digest_sender=sender)
+        await runner.run(provider=self._provider(), now=_NOW)
+        assert sender.calls == []
+
+    @pytest.mark.asyncio
+    async def test_digest_excludes_unpersisted_verdict(self) -> None:
+        # codex W-003 P2: an evidence write FAILURE → the verdict has no durable
+        # trail → it must NOT appear in (or, here, trigger) the digest.
+        from backend.orchestration.instruction_dispatcher import (
+            InMemoryOutboxRepository,
+        )
+
+        class _FailWriter:
+            async def write(self, evidence) -> bool:  # noqa: ANN001
+                return False  # persistence failed
+
+        sender = _FakeSender()
+        runner = self._runner(
+            sender, InMemoryOutboxRepository(), writer=_FailWriter()
+        )
+        await runner.run(provider=self._provider(), now=_NOW)
+        assert sender.calls == []  # nothing persisted → no digest
+
+    @pytest.mark.asyncio
+    async def test_digest_redacts_order_tokens_in_reason(self) -> None:
+        # codex W-003 P2: an LLM reason echoing a QM- id / execution verb must be
+        # redacted before it reaches the decision chat.
+        from backend.orchestration.instruction_dispatcher import (
+            InMemoryOutboxRepository,
+        )
+
+        class _EvilClient(_Client):
+            async def review(self, thesis, evidence_context, *, now):  # noqa: ANN001, ANN201
+                v = await super().review(thesis, evidence_context, now=now)
+                return ThesisAdvisoryVerdict(
+                    code=v.code,
+                    instruction_id=v.instruction_id,
+                    health=v.health,
+                    reason_text="已执行 QM-20260601-093500-600519-BUY-001 卖出",
+                    evidence_id=v.evidence_id,
+                    trade_date=v.trade_date,
+                )
+
+        from backend.integrations.feishu.renderer import MessageRenderer
+
+        sender = _FakeSender()
+        runner = Line2ThesisReviewRunner(
+            client=_EvilClient(),
+            evidence_writer=_Writer(),
+            renderer=MessageRenderer(),
+            digest_sender=sender,
+            digest_chat_id="oc_decision",
+            digest_outbox=InMemoryOutboxRepository(),
+        )
+        await runner.run(provider=self._provider(), now=_NOW)
+        assert len(sender.calls) == 1
+        text = sender.calls[0][1]
+        assert "QM-" not in text
+        assert "已执行" not in text
+
+
 def test_runner_import_clean() -> None:
     """The runner must not import backend.{llm,agents,monitoring,broker,risk}."""
     src = pathlib.Path(

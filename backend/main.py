@@ -1221,7 +1221,16 @@ async def _init_line2_runners(
             ThesisReviewEvidenceWriter(mongodb) if mongodb is not None else None
         )
         runner = Line2ThesisReviewRunner(
-            client=reviewer, evidence_writer=writer, pilot=pilot
+            client=reviewer,
+            evidence_writer=writer,
+            # W-003 display-only digest: reuse the dispatcher's Feishu client +
+            # durable outbox + decision chat (empty decision_chat in
+            # simulation_auto → the digest is silently skipped in the runner).
+            renderer=renderer,
+            digest_sender=getattr(application.state, "feishu_client", None),
+            digest_chat_id=decision_chat,
+            digest_outbox=outbox,
+            pilot=pilot,
         )
         provider = _ThesisReviewProvider(
             held_codes=held, theses=targets, contexts=contexts

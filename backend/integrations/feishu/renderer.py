@@ -54,6 +54,28 @@ from backend.models.instruction import (
     InstructionStatus,
     RiskCheckSummary,
 )
+from backend.models.position_thesis import ThesisHealth
+
+_THESIS_HEALTH_LABEL: dict[ThesisHealth, str] = {
+    ThesisHealth.INTACT: "逻辑完好",
+    ThesisHealth.WEAKENING: "逻辑削弱",
+    ThesisHealth.BROKEN: "逻辑破坏",
+}
+
+# Defence-in-depth (codex W-003 P2): the thesis-review reason is LLM-written, so
+# it could echo a QM- instruction id or an execution-report verb. Redact both
+# before they reach the decision chat so the display-only digest can never carry
+# order-id / report-looking text (CLAUDE.md §2.6 single-display-gate).
+_QM_ID_RE = re.compile(r"QM-\d[\d:-]*")
+_ORDER_VERB_RE = re.compile(
+    "已成交|已执行|已拒绝|部分成交|部分执行|未执行|废单|已撤单"
+)
+
+
+def _redact_order_tokens(text: str) -> str:
+    """Strip QM- instruction ids + execution-report verbs from free text."""
+    text = _QM_ID_RE.sub("[指令号已隐去]", text)
+    return _ORDER_VERB_RE.sub("□", text)
 
 _REPORT_KIND_LABEL: dict[ExecutionReportKind, str] = {
     ExecutionReportKind.FILLED: "已执行",
@@ -236,6 +258,49 @@ class MessageRenderer:
                 f"· {name}({plan.stock_code}) {lots}手 "
                 f"¥{notional:,.0f} 占{weight_pct:.1f}%"
             )
+        return "\n".join(lines)
+
+    # -- Thesis-review digest (W-003 — display-only post-close summary) -
+
+    def render_thesis_review_digest(
+        self, verdicts: Sequence[object], *, pilot: bool = False
+    ) -> str:
+        """Render a display-only Line-2 thesis-review overview (W-003).
+
+        A SUMMARY of the 17:30 post-close advisory — per held position it shows
+        the health verdict (逻辑完好 / 削弱 / 破坏) + the LLM reason. Like
+        :meth:`render_basket_digest` it is NOT an instruction: it carries NO
+        ``QM-`` instruction_id and NO execution verb (已成交 / 已执行 / 已拒绝),
+        so feeding it to the inbound execution-report parser yields
+        ``no_pattern_match`` — it can never be parsed as, or mistaken for, an
+        order (CLAUDE.md §2.6 / P0-3 §display-only). The verdicts are duck-typed
+        (``code`` / ``health`` :class:`ThesisHealth` / ``reason_text``) so the
+        renderer stays decoupled from the advisory service. Empty ``verdicts`` is
+        a fail-closed ``ValueError`` (the caller only sends when ≥1 review ran).
+
+        The advisory is EVIDENCE-ONLY: the owner reads this digest and acts
+        through the existing Feishu human gate; the digest itself routes nothing.
+        """
+        if not verdicts:
+            raise ValueError("render_thesis_review_digest requires >= 1 verdict")
+        lines = [
+            *self._pilot_prefix(pilot),
+            "【QuantMind 持仓复盘概览】",
+            "本条为今日持仓买入逻辑盘后复盘汇总,仅供参考,非交易指令,无需回复。",
+            f"共复盘 {len(verdicts)} 只",
+            "——",
+        ]
+        for v in verdicts:
+            health = getattr(v, "health", None)
+            label = _THESIS_HEALTH_LABEL.get(health, "未知")  # type: ignore[arg-type]
+            code = _single_line(str(getattr(v, "code", "")))
+            reason = _truncate(
+                _redact_order_tokens(
+                    _single_line(str(getattr(v, "reason_text", "")))
+                ),
+                120,
+            )
+            lines.append(f"· {code} [{label}]: {reason}")
         return "\n".join(lines)
 
     # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------

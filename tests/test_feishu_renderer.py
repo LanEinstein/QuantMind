@@ -630,6 +630,88 @@ class TestBasketDigest:
             MessageRenderer().render_basket_digest([])
 
 
+class TestThesisReviewDigest:
+    """W-003 — display-only post-close thesis-review digest."""
+
+    def _verdicts(self) -> list:
+        from backend.models.position_thesis import ThesisHealth
+        from backend.services.thesis_advisory import ThesisAdvisoryVerdict
+
+        return [
+            ThesisAdvisoryVerdict(
+                code="600519",
+                instruction_id="QM-20260601-093500-600519-BUY-001",
+                health=ThesisHealth.BROKEN,
+                reason_text="主业受供应链冲击,逻辑破坏",
+                evidence_id="DEBATE-thesis-20260602-600519",
+                trade_date="2026-06-02",
+            ),
+            ThesisAdvisoryVerdict(
+                code="000001",
+                instruction_id="QM-20260601-093500-000001-BUY-002",
+                health=ThesisHealth.INTACT,
+                reason_text="基本面稳健,逻辑完好",
+                evidence_id="DEBATE-thesis-20260602-000001",
+                trade_date="2026-06-02",
+            ),
+        ]
+
+    def test_digest_lists_codes_and_health_labels(self) -> None:
+        text = MessageRenderer().render_thesis_review_digest(self._verdicts())
+        assert "持仓复盘概览" in text
+        assert "共复盘 2 只" in text
+        assert "600519" in text and "逻辑破坏" in text
+        assert "000001" in text and "逻辑完好" in text
+
+    def test_digest_carries_no_instruction_id_or_execution_verb(self) -> None:
+        text = MessageRenderer().render_thesis_review_digest(self._verdicts())
+        assert "QM-" not in text
+        for verb in ("已成交", "已执行", "已拒绝", "部分成交", "废单"):
+            assert verb not in text
+
+    def test_digest_is_not_parseable_as_execution_report(self) -> None:
+        # Adversarial: the inbound parser MUST raise no_pattern_match.
+        text = MessageRenderer().render_thesis_review_digest(self._verdicts())
+        with pytest.raises(ExecutionReportParseError) as exc:
+            parse_execution_report(
+                text,
+                channel=ExecutionReportChannel.FEISHU,
+                received_at=datetime(2026, 6, 2, 17, 30, tzinfo=_SH),
+            )
+        assert exc.value.reason == "no_pattern_match"
+
+    def test_digest_pilot_banner(self) -> None:
+        text = MessageRenderer().render_thesis_review_digest(
+            self._verdicts(), pilot=True
+        )
+        assert "试点" in text
+
+    def test_digest_redacts_qm_id_and_execution_verb(self) -> None:
+        # codex W-003 P2: the LLM reason is redacted of any QM- id / execution
+        # verb at the single display gate (renderer) — defence-in-depth.
+        from backend.models.position_thesis import ThesisHealth
+        from backend.services.thesis_advisory import ThesisAdvisoryVerdict
+
+        evil = [
+            ThesisAdvisoryVerdict(
+                code="600519",
+                instruction_id="QM-20260601-093500-600519-BUY-001",
+                health=ThesisHealth.BROKEN,
+                reason_text="已执行 QM-20260601-093500-600519-BUY-001 部分执行",
+                evidence_id="DEBATE-thesis-20260602-600519",
+                trade_date="2026-06-02",
+            )
+        ]
+        text = MessageRenderer().render_thesis_review_digest(evil)
+        assert "QM-" not in text
+        for verb in ("已执行", "部分执行", "已成交", "已拒绝"):
+            assert verb not in text
+
+    def test_digest_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match=">= 1 verdict"):
+            MessageRenderer().render_thesis_review_digest([])
+
+
 class TestRedLines:
     def test_feishu_message_kind_count_locked(self) -> None:
         """A seventh kind requires a P0-2 §2.5 amendment. The sixth
