@@ -1350,19 +1350,113 @@ for path in sorted(ROOT.rglob("*.py")):
 
 if violations:
     print("\n".join(violations))
-    sys.exit(1)
 PY
 )"
-V002_RC=$?
+# Dispatch on OUTPUT non-emptiness (mirrors [M-004]) — NOT on the exit code:
+# ``$(... || echo SCANNER_ERROR)`` masks a Python ``sys.exit(1)`` (the
+# substitution status becomes echo's 0), so the prior RC-based check reported a
+# real violation as a pass (codex W-001 P2 — same latent bug here). The scanner
+# prints violations + exits 0; ``|| echo`` now fires ONLY on an interpreter crash.
 if [ "$V002_OUT" = "SCANNER_ERROR" ]; then
   red "  FAIL  [V-002] slot_portfolio AST scanner error"
   FAIL=$((FAIL + 1))
-elif [ "$V002_RC" -eq 0 ]; then
-  green "  ok    slot_portfolio pure (no llm/agents/mirofish) + no InstructionPlan"
-else
+elif [ -n "$V002_OUT" ]; then
   red "  FAIL  slot_portfolio isolation / InstructionPlan red line violated:"
   printf '%s\n' "$V002_OUT" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
+else
+  green "  ok    slot_portfolio pure (no llm/agents/mirofish) + no InstructionPlan"
+fi
+
+# ----------------------------------------------------------------------
+# W-001 / P0-10-amendment-line2-2026-06-01 — position_thesis layer.
+# The deterministic PositionThesis derivation module must:
+#   1. NOT import backend.{llm,agents,agents_team,mirofish} (pure quant — the
+#      LLM only writes the opaque pillar text upstream; thresholds are derived
+#      from the buy-time snapshot with no LLM input, §1.1).
+#   2. NEVER construct an InstructionPlan (R0 §4 — a thesis is advisory data,
+#      never an order; a SELL it justifies goes through the builder).
+# Paired with tests/position_thesis/test_module_contract.py (authoritative AST).
+# ----------------------------------------------------------------------
+echo
+yellow "[W-001] position_thesis isolation + no InstructionPlan construction"
+W001_OUT="$(python3 - <<'PY' 2>/dev/null || echo "SCANNER_ERROR"
+import ast
+import pathlib
+import sys
+
+ROOT = pathlib.Path("backend/position_thesis")
+FORBIDDEN = {"llm", "agents", "agents_team", "mirofish"}
+violations: list[str] = []
+
+if not ROOT.exists():
+    print("")  # module not present yet — skip cleanly
+    sys.exit(0)
+
+for path in sorted(ROOT.rglob("*.py")):
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        violations.append(f"{path}: SyntaxError: {exc}")
+        continue
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if len(parts) >= 2 and parts[0] == "backend" and parts[1] in FORBIDDEN:
+                    violations.append(f"{path}:{node.lineno}: import {a.name}")
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".") if mod else []
+            if (
+                node.level == 0 and len(parts) >= 2
+                and parts[0] == "backend" and parts[1] in FORBIDDEN
+            ):
+                violations.append(f"{path}:{node.lineno}: from {mod} import ...")
+            if node.level == 0 and mod == "backend":
+                for a in node.names:
+                    if a.name in FORBIDDEN:
+                        violations.append(f"{path}:{node.lineno}: from backend import {a.name}")
+            if node.level > 0 and parts and parts[0] in FORBIDDEN:
+                violations.append(f"{path}:{node.lineno}: relative import of forbidden")
+            if node.level > 0 and not mod:
+                for a in node.names:
+                    if a.name in FORBIDDEN:
+                        violations.append(f"{path}:{node.lineno}: relative import {a.name}")
+    names = {
+        a.asname or a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for a in node.names
+        if a.name == "InstructionPlan"
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in names:
+            violations.append(f"{path}:{node.lineno}: InstructionPlan(...)")
+        elif isinstance(f, ast.Attribute) and f.attr == "InstructionPlan":
+            violations.append(f"{path}:{node.lineno}: *.InstructionPlan(...)")
+
+if violations:
+    print("\n".join(violations))
+PY
+)"
+# Dispatch on OUTPUT non-emptiness (mirrors [M-004]/[P-004]) — NOT on the
+# exit code: ``$(... || echo SCANNER_ERROR)`` masks a Python ``sys.exit(1)``
+# (the substitution's status becomes echo's 0), so an RC-based check reported
+# a real violation as a pass (codex W-001 P2). The scanner prints violations +
+# exits 0; ``|| echo`` now fires ONLY on an actual interpreter crash.
+if [ "$W001_OUT" = "SCANNER_ERROR" ]; then
+  red "  FAIL  [W-001] position_thesis AST scanner error"
+  FAIL=$((FAIL + 1))
+elif [ -n "$W001_OUT" ]; then
+  red "  FAIL  position_thesis isolation / InstructionPlan red line violated:"
+  printf '%s\n' "$W001_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    position_thesis pure (no llm/agents/mirofish) + no InstructionPlan"
 fi
 
 echo

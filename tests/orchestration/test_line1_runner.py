@@ -469,6 +469,7 @@ def _make_runner(
     tmp_path: Path,
     selection_mode: Line1SelectionMode = Line1SelectionMode.BASKET,
     digest_outbox: InMemoryOutboxRepository | None = None,
+    thesis_writer: object | None = None,
 ) -> Line1Runner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -515,6 +516,7 @@ def _make_runner(
         digest_sender=sender if digest_outbox is not None else None,
         digest_chat_id=_DECISION_CHAT if digest_outbox is not None else "",
         digest_outbox=digest_outbox,
+        thesis_writer=thesis_writer,
     )
 
 
@@ -1264,6 +1266,135 @@ async def test_empty_universe_short_circuits(builder, tmp_path) -> None:
     assert result.outcome is Line1Outcome.EMPTY_UNIVERSE
     assert router.calls == 0  # no debate when no candidate survives the screen
     assert sender.calls == []
+
+
+async def test_thesis_persisted_for_each_routed_buy(builder, tmp_path) -> None:
+    """W-001: a buy-time PositionThesis is stored when a BUY routes."""
+    from backend.position_thesis.store import PositionThesisStore
+
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        thesis_writer=store,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    open_theses = store.open_theses()
+    # One thesis per routed BUY, joined by stock_code.
+    assert len(open_theses) == len(result.routed_buys)
+    for rb in result.routed_buys:
+        thesis = open_theses[rb.plan.stock_code]
+        assert thesis.instruction_id == rb.plan.instruction_id
+        assert thesis.signal_id == rb.plan.signal_id
+        assert thesis.entry_price == rb.plan.limit_price
+        # 3 deterministic whitelist conditions, derived (not LLM).
+        assert len(thesis.invalidation_conditions) == 3
+        assert 3 <= len(thesis.pillars) <= 5
+        # Replay reference is complete.
+        assert thesis.snapshot_id and thesis.feature_code_version
+
+
+async def test_thesis_not_persisted_for_send_failed_buy(builder, tmp_path) -> None:
+    """W-001 (codex P2): a send_failed BUY never reached the owner — no thesis."""
+    from backend.position_thesis.store import PositionThesisStore
+
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    sender = FakeFeishuSender(fail_first_n=1)  # the first BUY's send fails
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        thesis_writer=store,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    # 3 routed (1 send_failed, 2 dispatched) → only the 2 delivered get a thesis.
+    assert len(result.routed_buys) == 3
+    open_theses = store.open_theses()
+    assert len(open_theses) == 2
+    delivered_codes = {
+        rb.plan.stock_code
+        for rb in result.routed_buys
+        if rb.route_outcome is not None
+        and rb.route_outcome.action in {"dispatched", "skipped_duplicate"}
+    }
+    assert set(open_theses) == delivered_codes
+
+
+async def test_thesis_persisted_in_simulation_auto_fill(builder, tmp_path) -> None:
+    """W-001: a simulation_routed auto-fill creates a holding → persist a thesis."""
+    from backend.position_thesis.store import PositionThesisStore
+
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.SIMULATION_AUTO,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        thesis_writer=store,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(store.open_theses()) == len(result.routed_buys)
+
+
+async def test_thesis_writer_failure_never_blocks_routing(builder, tmp_path) -> None:
+    """W-001: a thesis-store error is swallowed — the order still routes."""
+
+    class _BoomWriter:
+        def open_thesis(self, thesis) -> bool:  # noqa: ANN001
+            raise RuntimeError("disk full")
+
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        thesis_writer=_BoomWriter(),
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) >= 1
+    assert len(sender.calls) == len(result.routed_buys)
+
+
+async def test_no_thesis_when_writer_unwired(builder, tmp_path) -> None:
+    """W-001: without a writer the run is unchanged (offline / simulation)."""
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
 
 
 def test_runner_is_import_clean() -> None:

@@ -52,12 +52,14 @@ from backend.models.instruction import (
     InstructionSide,
     InstructionStatus,
 )
+from backend.models.position_thesis import MAX_PILLARS, MIN_PILLARS, PositionThesis
 from backend.orchestration.instruction_dispatcher import (
     FeishuSender,
     OutboundSignal,
     OutboxRepository,
 )
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteOutcome
+from backend.position_thesis.derivation import build_position_thesis
 from backend.screening.screener import CandidateRow, Screener
 from backend.services.cost_guard import DailyBudgetExceededError
 from backend.services.instruction_plan_builder import (
@@ -296,6 +298,21 @@ class Line1ContextProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class ThesisWriter(Protocol):
+    """Persists a buy-time :class:`PositionThesis` (W-001).
+
+    Injected so the runner stays import-clean of the broker/store layer — the
+    concrete :class:`backend.position_thesis.store.PositionThesisStore` is wired
+    by ``main.py``. A thesis write is an audit side-effect that never gates
+    routing (the order already went out); the runner swallows any failure.
+    """
+
+    def open_thesis(self, thesis: PositionThesis) -> bool:
+        """Record the thesis. Returns False on an idempotent no-op."""
+        ...
+
+
 @dataclass(frozen=True)
 class Line1RunResult:
     """Audit-grade summary of one Line-1 run.
@@ -344,6 +361,7 @@ class Line1Runner:
         digest_sender: FeishuSender | None = None,
         digest_chat_id: str = "",
         digest_outbox: OutboxRepository | None = None,
+        thesis_writer: ThesisWriter | None = None,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -367,6 +385,9 @@ class Line1Runner:
         self._digest_sender = digest_sender
         self._digest_chat_id = digest_chat_id
         self._digest_outbox = digest_outbox
+        # W-001: persist the buy-time PositionThesis when a BUY routes. Optional
+        # (None on the offline / simulation paths) — never gates routing.
+        self._thesis_writer = thesis_writer
 
     async def run(
         self,
@@ -444,6 +465,8 @@ class Line1Runner:
         committed: list[CommittedBuy] = []
         last: _CandidateResult | None = None
         budget_stopped = False
+        # PIT replay reference stamped onto every buy-time thesis (W-001).
+        snapshot_id = str(frame.snapshot_id)
         for seq, code in enumerate(selection.shortlist, start=1):
             afford = afford_by_code.get(code)
             concentration_exception = bool(
@@ -458,6 +481,7 @@ class Line1Runner:
                     signal_id=sid,
                     seq=seq,
                     now=now,
+                    snapshot_id=snapshot_id,
                 )
             except DailyBudgetExceededError as exc:
                 # ¥100 reservation OR max_debates_per_day cap refused this
@@ -590,6 +614,7 @@ class Line1Runner:
         signal_id: str,
         seq: int,
         now: datetime,
+        snapshot_id: str = "",
     ) -> _CandidateResult:
         """Debate + assemble (single construction point) + route one candidate.
 
@@ -658,13 +683,76 @@ class Line1Runner:
         # NEVER written onto the InstructionPlan (single construction point
         # M-004) nor consumed by the parser / idempotency key.
         rationale = _build_buy_rationale(candidate, debate.state)
-        return await self._route_candidate(
+        result = await self._route_candidate(
             built,
             signal_id=signal_id,
             code=candidate.code,
             now=now,
             rationale=rationale,
         )
+        # W-001: persist the buy-time PositionThesis when the BUY actually
+        # reached the owner / was filled — NOT merely ROUTED. A send_failed or
+        # skipped_in_flight dispatch is still Line1Outcome.ROUTED but never
+        # produced a holding, so persisting then would leave a stale open thesis
+        # for a non-held position (codex W-001 P2). Only the delivered actions
+        # (dispatched / skipped_duplicate / simulation_routed) create a holding.
+        # The pillars are the debate's LLM reasoning (P0-10-permitted free text);
+        # the invalidation thresholds are derived deterministically from the fill
+        # anchor + score (never from the pillar text). A failure here NEVER
+        # unwinds the order (audit side-effect, like the digest).
+        if (
+            result.outcome is Line1Outcome.ROUTED
+            and result.plan is not None
+            and result.route_outcome is not None
+            and result.route_outcome.action in _THESIS_DELIVERED_ACTIONS
+        ):
+            self._persist_thesis(candidate, debate.state, result.plan, snapshot_id)
+        return result
+
+    def _persist_thesis(
+        self,
+        candidate: CandidateRow,
+        state: TeamState,
+        plan: InstructionPlan,
+        snapshot_id: str,
+    ) -> None:
+        """Build + persist the buy-time PositionThesis (W-001). Never raises."""
+        if self._thesis_writer is None:
+            return
+        try:
+            pillars = _build_thesis_pillars(state)
+            if len(pillars) < MIN_PILLARS:
+                log.info(
+                    "line1_thesis_skipped_insufficient_pillars",
+                    instruction_id=plan.instruction_id,
+                    pillars=len(pillars),
+                )
+                return
+            thesis = build_position_thesis(
+                instruction_id=plan.instruction_id,
+                signal_id=plan.signal_id,
+                stock_code=plan.stock_code,
+                stock_name=plan.stock_name,
+                created_at=plan.created_at,
+                trade_date=plan.trade_date,
+                pillars=pillars,
+                entry_price=float(plan.limit_price or 0.0),
+                entry_score=float(candidate.score),
+                snapshot_id=snapshot_id or "unknown",
+                evidence_ids=tuple(plan.evidence_ids),
+            )
+            wrote = self._thesis_writer.open_thesis(thesis)
+            log.info(
+                "line1_thesis_persisted",
+                instruction_id=plan.instruction_id,
+                wrote=wrote,
+            )
+        except Exception as exc:  # noqa: BLE001 — thesis never blocks the order
+            log.warning(
+                "line1_thesis_persist_failed",
+                instruction_id=plan.instruction_id,
+                error=str(exc),
+            )
 
     async def _route_candidate(
         self,
@@ -852,6 +940,40 @@ def _build_buy_rationale(
     )
 
 
+_THESIS_DELIVERED_ACTIONS: frozenset[str] = frozenset(
+    {"dispatched", "skipped_duplicate", "simulation_routed"}
+)
+"""Route actions that mean the BUY reached the owner / was filled — the only
+states under which a holding (and therefore a thesis) exists. send_failed /
+skipped_in_flight / dry_run_rendered never produced a holding (codex W-001 P2)."""
+
+
+_PILLAR_SOURCES: tuple[tuple[str, str], ...] = (
+    ("基金经理", "fund_manager_reasoning"),
+    ("基本面", "fundamental_report"),
+    ("技术面", "technical_report"),
+    ("风控", "risk_officer_report"),
+)
+_PILLAR_MAX_CHARS = 480
+
+
+def _build_thesis_pillars(state: TeamState) -> tuple[str, ...]:
+    """Derive the 3–5 LLM buy-logic pillars from the debate state (W-001).
+
+    Each pillar is the (single-lined, truncated) reasoning of one mandatory
+    agent. A routed BUY passed the 4-agent gate, so all four are non-empty in
+    practice; empties are dropped + the result is capped at ``MAX_PILLARS``. The
+    text is LLM-written (P0-10-permitted) and is opaque to the deterministic
+    threshold derivation — it can never influence an invalidation threshold.
+    """
+    pillars: list[str] = []
+    for label, key in _PILLAR_SOURCES:
+        text = " ".join(str(state.get(key) or "").split())[:_PILLAR_MAX_CHARS]
+        if text:
+            pillars.append(f"[{label}] {text}")
+    return tuple(pillars[:MAX_PILLARS])
+
+
 def _mandatory_records_from_state(
     state: TeamState, signal_id: str
 ) -> MandatoryAgentRecords:
@@ -887,4 +1009,5 @@ __all__ = [
     "Line1Runner",
     "Line1SelectionMode",
     "RoutedBuy",
+    "ThesisWriter",
 ]

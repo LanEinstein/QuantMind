@@ -746,6 +746,26 @@ async def _init_line2_runners(
     # and bit-identical on the same frame).
     screener = Screener(exclusion_rules)
     budget_policy = BudgetTierPolicy(load_budget_tier_config(risk_yaml))
+
+    # W-001 — shared PositionThesisStore. Line-1 persists a buy-time thesis here
+    # when a BUY is delivered; W-002 (EOD advisory review) + W-004 (deterministic
+    # THESIS_QUANT_BREAK) read it. Append-only JSONL (same discipline as the
+    # rotation stores). FAIL-OPEN: a store init failure must NEVER block the
+    # Line-1 BUY line — a thesis is an audit side-effect, not a tradeability gate.
+    from backend.position_thesis.store import PositionThesisStore
+
+    thesis_state_root = os.environ.get(
+        "QUANTMIND_THESIS_STATE_ROOT", "data/position_thesis"
+    )
+    position_thesis_store: Any = None
+    try:
+        position_thesis_store = PositionThesisStore(
+            f"{thesis_state_root}/theses.jsonl"
+        )
+        application.state.position_thesis_store = position_thesis_store
+    except Exception as exc:  # noqa: BLE001 — thesis must never block Line-1 BUY
+        log.warning("position_thesis_store_init_failed", error=str(exc))
+
     line1_runner = Line1Runner(
         screener=screener,
         budget_policy=budget_policy,
@@ -762,6 +782,8 @@ async def _init_line2_runners(
         digest_sender=getattr(application.state, "feishu_client", None),
         digest_chat_id=decision_chat,
         digest_outbox=outbox,
+        # W-001: persist a buy-time PositionThesis on every delivered BUY.
+        thesis_writer=position_thesis_store,
     )
     application.state.line1_runner = line1_runner
 
