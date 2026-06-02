@@ -80,9 +80,11 @@ _LOT = 100
 
 # Pinned feature-code version — bump when the trigger maths changes so a stale
 # replay manifest fails closed instead of silently recomputing. v2: added the
-# TAKE_PROFIT (+1R tranche) + WEIGHT_TRIM triggers (P-005), which change the
-# deterministic SELL-intent outputs (codex P-005 P2).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v2"
+# TAKE_PROFIT (+1R tranche) + WEIGHT_TRIM triggers (P-005). v3: added the
+# THESIS_QUANT_BREAK trigger (W-004), which adds a deterministic SELL-intent
+# output when a held thesis is broken (the maths is otherwise unchanged — an
+# empty thesis-break map reproduces v2 outputs bit-for-bit).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v3"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -113,6 +115,14 @@ class IntradayTriggerKind(StrEnum):
     """Position weight (vol×live / total_assets) above ``max_single_stock_pct``
     × (1 + ``trim_band``) → trim back toward ``trim_target_pct`` (over-allocation
     rebalance, P0-10-amendment-line2-2026-05-30)."""
+    THESIS_QUANT_BREAK = "thesis_quant_break"
+    """The held position's deterministic PositionThesis is BROKEN over PIT data
+    (whitelist quant templates only, computed by ``monitoring.thesis_break`` —
+    zero LLM; P0-10-amendment-line2-2026-06-01 §1.3). A full settled-volume exit.
+    Strictly ADD-only sell pressure: it ranks BELOW the protective risk exits
+    (ATR / drawdown) and is never evaluated when one of them fired, so it can
+    never relax / suppress an existing stop — only add an exit a thesis break
+    justifies."""
 
 
 @dataclass(frozen=True)
@@ -365,6 +375,49 @@ def _weight_trim_intent(
     )
 
 
+def _thesis_break_intent(
+    *,
+    code: str,
+    name: str,
+    vol: int,
+    price: float,
+    drawdown: float,
+    reason: str,
+    max_single_instruction_amount: float,
+    atr: float | None,
+) -> IntradaySellIntent | None:
+    """Full-exit SELL for a broken thesis, clamped to the single-instruction cap.
+
+    The clamp keeps the SELL ≤ ``max_single_instruction_amount`` (P0-7 check #9,
+    ¥50k 单次) so the builder never REJECTS it for size — preserving the
+    only-add-pressure invariant even for a large position (codex W-004 P2): a
+    rejected full exit must never replace a smaller pre-existing trigger that
+    would have passed. Returns ``None`` when even one lot exceeds the cap, so the
+    caller falls back to the lower-priority triggers (the feature never
+    suppresses them).
+    """
+    cap_lots = (
+        int(max_single_instruction_amount // (price * _LOT)) * _LOT
+        if max_single_instruction_amount > 0
+        else vol
+    )
+    sell_vol = min(vol, cap_lots) if cap_lots > 0 else 0
+    if sell_vol <= 0:
+        return None
+    return IntradaySellIntent(
+        code=code,
+        name=name,
+        available_volume=sell_vol,
+        limit_price=price,
+        trigger_kind=IntradayTriggerKind.THESIS_QUANT_BREAK,
+        anomaly_reason=reason,
+        drawdown_pct=round(drawdown, 6),
+        atr=round(atr, 4) if atr else 0.0,
+        recent_high=0.0,
+        stop_level=0.0,
+    )
+
+
 def evaluate_intraday_sell_intents(
     spots: Mapping[str, WatchlistMarketSnapshot],
     closes_by_code: Mapping[str, tuple[float, ...]],
@@ -375,27 +428,39 @@ def evaluate_intraday_sell_intents(
     account: AccountInfo | None = None,
     max_single_stock_pct: float = 0.15,
     take_profit_already_taken: frozenset[str] = frozenset(),
+    thesis_break_by_code: Mapping[str, str] | None = None,
+    max_single_instruction_amount: float = 50_000.0,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
-    For each held code with a fresh spot we evaluate up to four intraday
-    triggers and emit at most one :class:`IntradaySellIntent`, by a fixed,
-    explainable priority (no fragile cross-unit magnitude comparison):
+    For each held code with a fresh spot we evaluate the intraday triggers and
+    emit at most one :class:`IntradaySellIntent`, by a fixed, explainable
+    priority (no fragile cross-unit magnitude comparison):
 
-        ATR_TRAILING_STOP > DRAWDOWN_STOP > TAKE_PROFIT > WEIGHT_TRIM
+        ATR_TRAILING_STOP > DRAWDOWN_STOP > THESIS_QUANT_BREAK
+          > TAKE_PROFIT > WEIGHT_TRIM
 
     Risk exits (a break below trend support, then a single-bar intraday
-    drawdown) always outrank the profit-taking / rebalance triggers — a
-    protective stop is never masked by a take-profit. The risk exits sell the
-    full lot-aligned **settled** ``available_volume``; take-profit sells a
-    ``tranche_fraction`` slice; weight-trim sells just enough to rebalance.
+    drawdown) always outrank everything — a protective stop is never masked.
+    THESIS_QUANT_BREAK (a broken deterministic PositionThesis, W-004) ranks just
+    below the protective stops and just ABOVE the profit-taking triggers: a
+    broken thesis fully exits rather than merely taking a tranche of profit, yet
+    it can NEVER relax an existing stop. Crucially it is **strictly ADD-only**:
+    an empty ``thesis_break_by_code`` reproduces the prior (v2) outputs
+    bit-for-bit, so the feature can only ever ADD a SELL, never remove or weaken
+    one (the W-004 only-add-pressure red line). The risk exits + THESIS_QUANT_BREAK
+    sell the full lot-aligned **settled** ``available_volume``; take-profit sells
+    a ``tranche_fraction`` slice; weight-trim sells just enough to rebalance.
     Output is ordered by code for stable, replayable results.
 
     ``account`` enables the TAKE_PROFIT + WEIGHT_TRIM triggers (legacy callers
-    that pass no account get only the two risk exits — back-compat).
+    that pass no account get only the risk exits — back-compat).
     ``take_profit_already_taken`` (P-006, ledger-derived) suppresses a repeat
     take-profit on a still-open episode. ``max_single_stock_pct`` is the
     single-source single-stock cap (P0-7) the trim band references.
+    ``thesis_break_by_code`` (code → deterministic break reason, computed by
+    ``monitoring.thesis_break``) drives the THESIS_QUANT_BREAK exit; absent /
+    empty → no thesis exits (the prior behaviour exactly).
 
     ``closes_by_code`` is the daily close history per bare code (parsed from
     the persisted T-1 frame by ``add_position.parse_held_series``); a code
@@ -405,6 +470,7 @@ def evaluate_intraday_sell_intents(
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
     pos_by_code = {_bare(p.code): p for p in positions}
+    thesis_breaks = thesis_break_by_code or {}
 
     intents: list[IntradaySellIntent] = []
     for code in sorted(spots):
@@ -480,36 +546,62 @@ def evaluate_intraday_sell_intents(
                     stop_level=0.0,
                 )
             )
-        elif account is not None:
-            # No risk exit fired → consider the lower-priority profit-taking /
-            # rebalance triggers (only when an account is supplied). Take-profit
-            # outranks weight-trim; at most one fires.
-            tp = _take_profit_intent(
-                code=code,
-                name=names.get(code, code),
-                spot=spot,
-                pos=pos,
-                atr=atr,
-                cfg=cfg,
-                already_taken=take_profit_already_taken,
+        else:
+            # No protective stop fired. A broken deterministic thesis (W-004)
+            # exits FIRST (ranked above the profit-taking triggers so a broken
+            # thesis fully exits rather than merely trims) — but ONLY when it can
+            # size a SELL that passes the single-instruction cap. If it cannot
+            # (a position so large that even the cap-clamped lot floors to 0), we
+            # fall through to the lower-priority triggers, so enabling the feature
+            # NEVER suppresses a smaller exit that would have passed (codex W-004
+            # P2 / the only-add-pressure red line). An empty thesis_breaks map
+            # skips this entirely (v2-identical output).
+            thesis_intent = (
+                _thesis_break_intent(
+                    code=code,
+                    name=names.get(code, code),
+                    vol=vol,
+                    price=price,
+                    drawdown=drawdown,
+                    reason=thesis_breaks[code],
+                    max_single_instruction_amount=max_single_instruction_amount,
+                    atr=atr,
+                )
+                if code in thesis_breaks
+                else None
             )
-            trim = (
-                None
-                if tp is not None
-                else _weight_trim_intent(
+            if thesis_intent is not None:
+                intents.append(thesis_intent)
+            elif account is not None:
+                # The lower-priority profit-taking / rebalance triggers (only
+                # when an account is supplied). Take-profit outranks weight-trim;
+                # at most one fires.
+                tp = _take_profit_intent(
                     code=code,
                     name=names.get(code, code),
                     spot=spot,
                     pos=pos,
-                    account=account,
+                    atr=atr,
                     cfg=cfg,
-                    max_single_stock_pct=max_single_stock_pct,
+                    already_taken=take_profit_already_taken,
                 )
-            )
-            if tp is not None:
-                intents.append(tp)
-            elif trim is not None:
-                intents.append(trim)
+                trim = (
+                    None
+                    if tp is not None
+                    else _weight_trim_intent(
+                        code=code,
+                        name=names.get(code, code),
+                        spot=spot,
+                        pos=pos,
+                        account=account,
+                        cfg=cfg,
+                        max_single_stock_pct=max_single_stock_pct,
+                    )
+                )
+                if tp is not None:
+                    intents.append(tp)
+                elif trim is not None:
+                    intents.append(trim)
     log.info("intraday_sell_intents_evaluated", intents=len(intents))
     return tuple(intents)
 

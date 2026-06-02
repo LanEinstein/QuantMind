@@ -469,3 +469,110 @@ def test_add_config_default_reused() -> None:
     # Sanity: the intraday add reuses the locked add_position thresholds.
     assert AddConfig().max_add_drawdown_pct == 0.10
     assert AddConfig().max_single_stock_pct == 0.15
+
+
+# ---------------------------------------------------------------------------
+# THESIS_QUANT_BREAK (W-004) — strictly ADD-only sell pressure
+# ---------------------------------------------------------------------------
+
+
+def test_thesis_break_fires_full_volume_sell_when_no_risk_exit() -> None:
+    # Price flat (no drawdown), no closes (no ATR), but the deterministic thesis
+    # is broken → a full settled-volume THESIS_QUANT_BREAK exit.
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.0)}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {}, (pos,), account=_account(),
+        thesis_break_by_code={"510300": "买入逻辑失效(确定性)"},
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.THESIS_QUANT_BREAK
+    assert intents[0].available_volume == 300  # full settled exit
+    assert "买入逻辑失效" in intents[0].anomaly_reason
+
+
+def test_empty_thesis_break_map_reproduces_baseline() -> None:
+    # ADD-only red line: an empty map must reproduce the prior outputs exactly
+    # (a flat, ATR-less, profit-less position yields NO intent either way).
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.0)}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    baseline = evaluate_intraday_sell_intents(spots, {}, (pos,), account=_account())
+    with_empty = evaluate_intraday_sell_intents(
+        spots, {}, (pos,), account=_account(), thesis_break_by_code={}
+    )
+    assert baseline == with_empty == ()
+
+
+def test_drawdown_stop_outranks_thesis_break() -> None:
+    # A protective stop is NEVER masked by a thesis break (priority red line).
+    spots = {"510300": _spot("510300", price=3.7, prev_close=4.0)}  # -7.5% drawdown
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {}, (pos,), account=_account(),
+        thesis_break_by_code={"510300": "thesis broke"},
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+
+
+def test_atr_trailing_stop_outranks_thesis_break() -> None:
+    # The ATR trailing stop (strongest protective exit) also wins.
+    spots = {"510300": _spot("510300", price=3.5, prev_close=3.55)}
+    # 20+ closes with a high near 5.0 so recent_high − 2·ATR is above 3.5.
+    closes = tuple([5.0] * 19 + [3.6])
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {"510300": closes}, (pos,), account=_account(),
+        thesis_break_by_code={"510300": "thesis broke"},
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.ATR_TRAILING_STOP
+
+
+def test_thesis_break_outranks_take_profit_full_exit_not_tranche() -> None:
+    # A broken thesis FULLY exits rather than merely taking a +1R tranche — this
+    # is ADDED pressure (full > tranche), never a relaxation of take-profit.
+    spots = {"510300": _spot("510300", price=4.6, prev_close=4.0)}
+    closes = tuple([3.9 + 0.01 * i for i in range(20)])  # gives a small ATR
+    pos = _position("510300", volume=400, available=400, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {"510300": closes}, (pos,), account=_account(),
+        thesis_break_by_code={"510300": "thesis broke"},
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.THESIS_QUANT_BREAK
+    assert intents[0].available_volume == 400  # full, not a 0.5 tranche
+
+
+def test_thesis_break_does_not_widen_take_profit_when_intact() -> None:
+    # A code NOT in the break map (thesis intact) → take-profit behaves exactly
+    # as before (the feature never loosens an existing trigger).
+    spots = {"510300": _spot("510300", price=4.6, prev_close=4.0)}
+    closes = tuple([3.9 + 0.01 * i for i in range(20)])
+    pos = _position("510300", volume=400, available=400, cost=4.0)
+    without = evaluate_intraday_sell_intents(
+        spots, {"510300": closes}, (pos,), account=_account()
+    )
+    with_intact = evaluate_intraday_sell_intents(
+        spots, {"510300": closes}, (pos,), account=_account(),
+        thesis_break_by_code={"000001": "other code broke"},  # not this code
+    )
+    assert without == with_intact  # identical → take-profit not widened
+
+
+def test_thesis_break_clamps_to_single_instruction_cap() -> None:
+    # codex W-004 P2: a large full exit (> ¥50k single-instruction cap) is
+    # CLAMPED so the SELL passes RiskEngine check #9 — the feature can only ADD
+    # pressure, never have a rejected oversized full-exit replace a passing
+    # smaller trigger. 30000 @ 4.0 = ¥120k → clamp to floor(50000/400)*100=12500.
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.0)}
+    pos = _position("510300", volume=30_000, available=30_000, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {}, (pos,), account=_account(total=500_000.0),
+        thesis_break_by_code={"510300": "thesis broke"},
+        max_single_instruction_amount=50_000.0,
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.THESIS_QUANT_BREAK
+    assert intents[0].available_volume == 12_500  # clamped to the ¥50k cap
+    assert intents[0].available_volume * intents[0].limit_price <= 50_000.0

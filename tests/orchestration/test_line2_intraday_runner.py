@@ -952,3 +952,27 @@ def test_runner_and_manifest_are_import_clean(module_path: str) -> None:
                     raise AssertionError(
                         f"{module_path} imports forbidden {alias.name}"
                     )
+
+
+def test_thesis_breaks_fail_open_on_provider_error() -> None:
+    # codex W-004 P2: a provider whose thesis source raises must NEVER break the
+    # tick — _thesis_breaks degrades to an empty map (the existing ATR/drawdown/
+    # ADD monitoring keeps running).
+    from types import SimpleNamespace
+
+    class _BoomProvider:
+        def theses_by_code(self):  # noqa: ANN202
+            raise RuntimeError("corrupt thesis store")
+
+    fresh_spots = {"510300": SimpleNamespace(price=4.0)}
+    out = Line2IntradayRunner._thesis_breaks(_BoomProvider(), fresh_spots)  # noqa: SLF001
+    assert out == {}
+
+
+def test_thesis_breaks_empty_when_provider_lacks_method() -> None:
+    from types import SimpleNamespace
+
+    out = Line2IntradayRunner._thesis_breaks(  # noqa: SLF001
+        SimpleNamespace(), {"510300": SimpleNamespace(price=4.0)}
+    )
+    assert out == {}

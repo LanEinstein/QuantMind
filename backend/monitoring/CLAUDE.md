@@ -26,7 +26,7 @@
 7. **InstructionPlan 单一构造点**(R0 §4):本模块**不构造** InstructionPlan;SELL/ADD 经 `instruction_plan_builder.assemble_monitoring_plan`(side/volume/limit_price 确定性派生);`debate_round_count=1` = 确定性监控评估轮。SELL 跳过 watchlist 早返(退出不被入场规则困住),ADD(BUY)跑全 5 早返。
 
 ## import 隔离
-严禁 `import backend.{llm,agents,agents_team,mirofish}`(异动纯量化;`agents_team` 是 Line-1 LLM 辩论路径 `run_shortlist`/`fund_manager`,引入即把多 agent LLM 路径漏回零 LLM 的 Line-2 决策路径 —— codex N-005;redline-check `[N-005]` grep(覆盖 dotted/name-level/relative 三种 import 形式)+ `tests/monitoring/test_module_contract.py` AST 双重守门 + ruff TID251 per-line noqa)。可用:`backend.{marketdata_snapshot,broker,data,risk,services,integrations,models}`(后者经 per-line `# noqa: TID251`)+ ruptures/hmmlearn(Phase T)。LLM 触发式经 `cost_guard` 预留(编排层在本模块外发起实际调用)。
+严禁 `import backend.{llm,agents,agents_team,mirofish}`(异动纯量化;`agents_team` 是 Line-1 LLM 辩论路径 `run_shortlist`/`fund_manager`,引入即把多 agent LLM 路径漏回零 LLM 的 Line-2 决策路径 —— codex N-005;redline-check `[N-005]` grep(覆盖 dotted/name-level/relative 三种 import 形式)+ `tests/monitoring/test_module_contract.py` AST 双重守门 + ruff TID251 per-line noqa)。可用:`backend.{marketdata_snapshot,broker,data,risk,services,integrations,models,position_thesis}`(`data/risk/broker` 经 per-line `# noqa: TID251`)+ ruptures/hmmlearn(Phase T)。**W-004 新增** `backend.position_thesis`(纯量化失效阈值评估,无 LLM)= `thesis_break.py` 的 `evaluate_thesis_breaks` 依赖,仍零 LLM。LLM 触发式经 `cost_guard` 预留(编排层在本模块外发起实际调用)。
 
 ## 测试
 `tests/monitoring/`:anomaly(26)+ sell_signal(15)+ add_position(21)+ degrade(8)+ 模块契约/隔离(8)+ ★MVP gate 双线端到端 e2e(3,含 J-005 N 日预演)= 77。新模块覆盖率 94-100%;包覆盖率 ≥80%。`tests/test_cost_guard_anomaly.py` 6(触发式 LLM 门)。

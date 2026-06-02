@@ -321,6 +321,8 @@ class Line2IntradayProvider(_Line2ProviderBase):
         daily_frame: MarketDataSnapshot,
         index_closes: tuple[float, ...],
         fetch_spots_fn: Callable[[Sequence[str]], Awaitable[Mapping[str, Any]]],
+        theses_by_code: Mapping[str, Any] | None = None,
+        holding_trade_days_by_code: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__(
             run_state=run_state, code_contexts=code_contexts, name_by_code=name_by_code
@@ -329,6 +331,19 @@ class Line2IntradayProvider(_Line2ProviderBase):
         self._index_closes = index_closes
         self._fetch = fetch_spots_fn
         self._spots: dict[str, Any] = {}
+        # W-004 — held PositionThesis + holding trading-days for the deterministic
+        # THESIS_QUANT_BREAK trigger. Empty unless the caller wires them (gated):
+        # an empty map makes the trigger inert, so it is strictly additive.
+        self._theses = dict(theses_by_code or {})
+        self._holding_days = dict(holding_trade_days_by_code or {})
+
+    def theses_by_code(self) -> Mapping[str, Any]:
+        """Held code → open PositionThesis (W-004; empty when not wired)."""
+        return self._theses
+
+    def holding_trade_days_by_code(self) -> Mapping[str, int]:
+        """Held code → holding trading-days since buy (W-004 TIME_STOP input)."""
+        return self._holding_days
 
     @property
     def account(self) -> AccountInfo:

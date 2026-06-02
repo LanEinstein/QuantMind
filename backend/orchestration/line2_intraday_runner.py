@@ -89,6 +89,7 @@ from backend.monitoring.intraday_triggers import (
     filter_fresh_quotes,
     serialize_intraday_quotes,
 )
+from backend.monitoring.thesis_break import evaluate_thesis_breaks
 from backend.orchestration.instruction_dispatcher import OutboundSignal
 from backend.orchestration.intraday_manifest import (
     IntradayTriggerManifest,
@@ -384,6 +385,11 @@ class Line2IntradayRunner:
             fresh_spots = {c: spots[c] for c in fresh}
             series = parse_held_series(daily_frame, sorted(fresh))
             closes_by_code = {c: closes for c, (closes, _amounts) in series.items()}
+            # W-004: deterministic THESIS_QUANT_BREAK over the fresh prices. The
+            # theses + holding days come from the provider (absent → empty map →
+            # no thesis exits, behaviour unchanged). Zero LLM: the break is a
+            # pure quant evaluation of the buy-time whitelist thresholds.
+            thesis_break_by_code = self._thesis_breaks(provider, fresh_spots)
             sell_intents = evaluate_intraday_sell_intents(
                 fresh_spots,
                 closes_by_code,
@@ -397,6 +403,7 @@ class Line2IntradayRunner:
                 # (defaults empty here → a fresh episode can take profit once).
                 account=account,
                 max_single_stock_pct=self._add_cfg.max_single_stock_pct,
+                thesis_break_by_code=thesis_break_by_code,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
@@ -700,6 +707,42 @@ class Line2IntradayRunner:
             code=intent.code, side=side, kind=kind,
             outcome=TriggerRouteOutcome.ROUTED, route_outcome=outcome, plan=plan,
         )
+
+    @staticmethod
+    def _thesis_breaks(
+        provider: Line2IntradayContextProvider,
+        fresh_spots: Mapping[str, Any],
+    ) -> dict[str, str]:
+        """Deterministic THESIS_QUANT_BREAK reasons keyed by code (W-004).
+
+        Reads the provider's optional ``theses_by_code`` + ``holding_trade_days_
+        by_code`` (a provider without them — older deploys / tests — yields no
+        breaks, so the trigger is purely additive). Pure quant over the fresh
+        prices; zero LLM.
+        """
+        theses_attr = getattr(provider, "theses_by_code", None)
+        if theses_attr is None:
+            return {}
+        # FAIL-OPEN (codex W-004 P2): a provider / store error here must NEVER
+        # break the tick — the existing drawdown / ATR / ADD monitoring keeps
+        # running. The thesis-break feature is optional + add-only, so any
+        # failure degrades to an empty break map (prior behaviour).
+        try:
+            theses = theses_attr() if callable(theses_attr) else theses_attr
+            if not theses:
+                return {}
+            price_by_code = {c: s.price for c, s in fresh_spots.items()}
+            days_attr = getattr(provider, "holding_trade_days_by_code", None)
+            days = (days_attr() if callable(days_attr) else days_attr) or {}
+            breaks = evaluate_thesis_breaks(
+                theses,
+                price_by_code=price_by_code,
+                holding_trade_days_by_code=days,
+            )
+            return {code: b.reason for code, b in breaks.items()}
+        except Exception as exc:  # noqa: BLE001 — thesis break never breaks a tick
+            log.warning("thesis_break_eval_failed", error=str(exc))
+            return {}
 
     @staticmethod
     def _kind_of(intent: Any, side: InstructionSide) -> str:
