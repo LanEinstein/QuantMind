@@ -114,6 +114,20 @@ _ANOMALY_COUNT_KEY_PREFIX = "llm:anomaly"
 _ANOMALY_DEDUP_KEY_PREFIX = "llm:anomaly:dedup"
 _ANOMALY_TTL_SECONDS = 36 * 3600
 
+# Line-2 thesis-review LLM gate (W-002 / P0-10-amendment-line2-2026-06-01 §1.2).
+# The post-close advisory review fires one LLM call per open PositionThesis; the
+# count key bounds the daily budget, the dedup SET stops the same (code, date)
+# review from firing twice (a same-day cron re-run), and the actual spend still
+# reserves on the unified ``llm:usage`` counter via reserve_budget so the
+# advisory cannot bypass the ¥100 daily hard cap. Mirrors the N-004 anomaly gate.
+_DEFAULT_MAX_THESIS_REVIEW_LLM_PER_DAY = 10
+"""Max Line-2 thesis-review LLM calls per UTC day. Naturally bounded by the
+≤5-slot held cap; the explicit cap is a fail-closed backstop. Override via
+``QUANTMIND_MAX_THESIS_REVIEW_LLM_PER_DAY`` (env override is amendment-blessed)."""
+_THESIS_REVIEW_COUNT_KEY_PREFIX = "llm:thesis_review"
+_THESIS_REVIEW_DEDUP_KEY_PREFIX = "llm:thesis_review:dedup"
+_THESIS_REVIEW_TTL_SECONDS = 36 * 3600
+
 
 # ---------------------------------------------------------------------------
 # State envelopes
@@ -498,6 +512,17 @@ def get_max_anomaly_llm_per_day() -> int:
     )
 
 
+def get_max_thesis_review_llm_per_day() -> int:
+    """Max Line-2 thesis-review LLM calls per UTC day (W-002)."""
+    return int(
+        _read_env_float(
+            "QUANTMIND_MAX_THESIS_REVIEW_LLM_PER_DAY",
+            float(_DEFAULT_MAX_THESIS_REVIEW_LLM_PER_DAY),
+            minimum=0.0,
+        )
+    )
+
+
 def _utc_date_str(today: datetime.date | None = None) -> str:
     base = today or datetime.datetime.now(tz=datetime.UTC).date()
     return base.isoformat()
@@ -696,6 +721,11 @@ async def reset_daily_gate_counters(
         _reserved_key(date_str),
         _anomaly_count_key(date_str),
         _anomaly_dedup_key(date_str),
+        # W-002 (codex P3): the thesis-review count/dedup are per-day gates too —
+        # clear them with the rest so a fresh-day dry-run / same-day rerun is not
+        # spuriously deduped out of reviewing.
+        _thesis_review_count_key(date_str),
+        _thesis_review_dedup_key(date_str),
     )
     try:
         await redis_client.delete(*keys)
@@ -709,6 +739,80 @@ def _anomaly_count_key(date_str: str) -> str:
 
 def _anomaly_dedup_key(date_str: str) -> str:
     return f"{_ANOMALY_DEDUP_KEY_PREFIX}:{date_str}"
+
+
+def _thesis_review_count_key(date_str: str) -> str:
+    return f"{_THESIS_REVIEW_COUNT_KEY_PREFIX}:{date_str}"
+
+
+def _thesis_review_dedup_key(date_str: str) -> str:
+    return f"{_THESIS_REVIEW_DEDUP_KEY_PREFIX}:{date_str}"
+
+
+async def reserve_thesis_review_slot(
+    redis_client: redis.asyncio.Redis,
+    *,
+    trigger_key: str,
+    estimated_rmb: float,
+    today: datetime.date | None = None,
+) -> BudgetReservation | None:
+    """Gate an OPTIONAL Line-2 thesis-review advisory LLM call (W-002).
+
+    The 17:30 post-close review fires one LLM call per open ``PositionThesis``.
+    The call is **non-decision advisory** (it only writes ``evidence_collection``
+    + a display-only digest), so any limit simply **skips** it — this function
+    never raises (the caller treats ``None`` as "do not call the LLM"). The spend
+    reserves on the SAME ``llm:usage:{utc_date}`` counter as every other LLM path
+    so the ¥100/day hard cap cannot be bypassed (P1-7-amendment §2.4).
+
+    Returns a :class:`BudgetReservation` when permitted, or ``None`` when it must
+    be skipped — already reviewed today for this ``trigger_key`` (dedup, e.g. a
+    same-day cron re-run), the daily thesis-review cap is exhausted, or the ¥100
+    reservation refuses. Mirrors :func:`reserve_anomaly_llm_slot`.
+    """
+    date_str = _utc_date_str(today)
+    dedup_key = _thesis_review_dedup_key(date_str)
+    count_key = _thesis_review_count_key(date_str)
+
+    try:
+        added = int(await redis_client.sadd(dedup_key, trigger_key))
+    except Exception as exc:  # noqa: BLE001 — fail-closed: skip optional LLM
+        log.warning("thesis_review_dedup_failed", trigger=trigger_key, error=str(exc))
+        return None
+    await _safe_expire(redis_client, dedup_key, _THESIS_REVIEW_TTL_SECONDS)
+    if added == 0:
+        # Already reviewed today for this (code, date) — dedup skip.
+        return None
+
+    cap = get_max_thesis_review_llm_per_day()
+    try:
+        new_count = int(await redis_client.incr(count_key))
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        log.warning("thesis_review_count_failed", trigger=trigger_key, error=str(exc))
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        return None
+    await _safe_expire(redis_client, count_key, _THESIS_REVIEW_TTL_SECONDS)
+    if new_count > cap:
+        await _safe_decr(redis_client, count_key)
+        log.info("thesis_review_cap_reached", cap=cap, attempted=new_count)
+        return None
+
+    try:
+        return await reserve_budget(
+            redis_client,
+            agent_name=f"line2:thesis_review:{trigger_key}"[:64],
+            estimated_rmb=estimated_rmb,
+            today=today,
+        )
+    except DailyBudgetExceededError:
+        await _safe_decr(redis_client, count_key)
+        log.info("thesis_review_budget_skip", trigger=trigger_key)
+        return None
+    except Exception as exc:  # noqa: BLE001 — fail-closed: never raise on this path
+        log.warning("thesis_review_reserve_failed", trigger=trigger_key, error=str(exc))
+        await _safe_decr(redis_client, count_key)
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        return None
 
 
 async def reserve_anomaly_llm_slot(
@@ -862,10 +966,12 @@ __all__ = [
     "get_kimi_budget_state",
     "get_max_anomaly_llm_per_day",
     "get_max_debates_per_day",
+    "get_max_thesis_review_llm_per_day",
     "get_monthly_budget_state",
     "reserve_anomaly_llm_slot",
     "reserve_budget",
     "reserve_debate_slot",
+    "reserve_thesis_review_slot",
     "reset_daily_gate_counters",
     "settle_budget",
 ]

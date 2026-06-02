@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -514,6 +514,7 @@ async def _init_line2_runners(
     market_meta: object,
     pilot: bool = False,
 ) -> tuple[
+    Callable[[datetime], Awaitable[None]],
     Callable[[datetime], Awaitable[None]],
     Callable[[datetime], Awaitable[None]],
     Callable[[datetime], Awaitable[None]],
@@ -1127,8 +1128,113 @@ async def _init_line2_runners(
             now=now, trade_date=trade_date, signal_id=sid,
         )
 
+    # W-002 — Line-2 post-close thesis review (17:30 cron). LLM advisory in the
+    # orchestration layer (monitoring stays zero-LLM); writes DEBATE- evidence +
+    # (W-003) a display-only Feishu digest. Cost-gated; the verdict carries no
+    # decision field. Reads live state lazily at fire time + skips cleanly until
+    # the store / router / redis are wired.
+    from dataclasses import dataclass as _dataclass
+
+    from backend.orchestration.line2_thesis_review_runner import (
+        Line2ThesisReviewRunner,
+    )
+    from backend.services.thesis_advisory import (
+        ThesisAdvisoryReviewer,
+        ThesisReviewEvidenceWriter,
+    )
+
+    @_dataclass(frozen=True)
+    class _ThesisReviewProvider:
+        held_codes: frozenset[str]
+        theses: Mapping[str, Any]
+        contexts: Mapping[str, str]
+
+        def open_theses(self) -> Mapping[str, Any]:
+            return self.theses
+
+        def evidence_context_for(self, code: str) -> str:
+            return self.contexts.get(code, "")
+
+    async def _thesis_evidence_contexts(
+        mongodb: Any, codes: list[str]
+    ) -> dict[str, str]:
+        """Recent evidence_collection content per code (LLM compares vs thesis)."""
+        out: dict[str, str] = {c: "" for c in codes}
+        if mongodb is None:
+            return out
+        try:
+            coll = mongodb._db["evidence_collection"]  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            return out
+        for code in codes:
+            try:
+                # Exclude this feature's OWN prior thesis-review rows (codex
+                # W-002 P2): feeding yesterday's verdict back as "current
+                # evidence" would make the health labels self-reinforcing and
+                # crowd out fresh market / news / MiroFish evidence.
+                cursor = coll.find(
+                    {"stock_codes": code, "path": {"$ne": "thesis_review"}}
+                ).sort("created_at", -1).limit(3)
+                docs = await cursor.to_list(length=3)
+                out[code] = " | ".join(
+                    str(d.get("content", "")) for d in docs
+                )[:2000]
+            except Exception as exc:  # noqa: BLE001 — advisory context best-effort
+                log.warning("thesis_evidence_context_failed", code=code, error=str(exc))
+        return out
+
+    async def _thesis_review_callback(now: datetime) -> None:
+        store = getattr(application.state, "position_thesis_store", None)
+        router = getattr(application.state, "llm_router", None)
+        redis = getattr(application.state, "redis", None)
+        mongodb = getattr(application.state, "mongodb", None)
+        if store is None or router is None or redis is None:
+            log.info(
+                "thesis_review_skipped_unwired",
+                has_store=store is not None,
+                has_router=router is not None,
+                has_redis=redis is not None,
+            )
+            return
+        try:
+            positions = await broker.get_positions()
+        except Exception as exc:  # noqa: BLE001 — advisory never crashes
+            log.warning("thesis_review_positions_failed", error=str(exc))
+            return
+        held = frozenset(
+            p.code.split(".")[0].strip()
+            for p in positions
+            if getattr(p, "volume", 0) > 0
+        )
+        try:
+            store.sync_holdings(held, trade_date=now.strftime("%Y-%m-%d"))
+        except Exception as exc:  # noqa: BLE001 — sync is hygiene, not correctness
+            log.warning("thesis_review_sync_failed", error=str(exc))
+        theses = store.open_theses()
+        targets = {c: t for c, t in theses.items() if c in held}
+        if not targets:
+            log.info("thesis_review_no_targets", held=len(held))
+            return
+        contexts = await _thesis_evidence_contexts(mongodb, sorted(targets))
+        reviewer = ThesisAdvisoryReviewer(router=router, redis_client=redis)
+        writer = (
+            ThesisReviewEvidenceWriter(mongodb) if mongodb is not None else None
+        )
+        runner = Line2ThesisReviewRunner(
+            client=reviewer, evidence_writer=writer, pilot=pilot
+        )
+        provider = _ThesisReviewProvider(
+            held_codes=held, theses=targets, contexts=contexts
+        )
+        await runner.run(provider=provider, now=now)
+
     log.info("double_line_runners_initialized", route_mode=route_mode.value)
-    return _line2_daily_callback, _line2_intraday_callback, _line1_daily_callback
+    return (
+        _line2_daily_callback,
+        _line2_intraday_callback,
+        _line1_daily_callback,
+        _thesis_review_callback,
+    )
 
 
 async def _init_orchestration_layer(application: FastAPI) -> None:
@@ -1604,7 +1710,12 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # scheduler. simulation_executor / ledger_service / market_meta are all live
     # by now (llm_router / risk_config / watchlist_policy are read lazily in the
     # Line-1 callback at cron-fire time).
-    line2_daily_cb, line2_intraday_cb, line1_cb = await _init_line2_runners(
+    (
+        line2_daily_cb,
+        line2_intraday_cb,
+        line1_cb,
+        thesis_review_cb,
+    ) = await _init_line2_runners(
         application,
         broker=broker,
         audit_store=audit_store,
@@ -1640,6 +1751,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         line2_daily_runner_callback=line2_daily_cb,
         line2_intraday_runner_callback=line2_intraday_cb,
         line1_runner_callback=line1_cb,
+        thesis_review_runner_callback=thesis_review_cb,
         # U-A2 / U-D1 — align the scheduler's NAV fallback to the ¥100k
         # 同花顺模拟盘 the broker config loads (recovery still wins when a
         # snapshot exists).

@@ -225,6 +225,13 @@ class BrokerScheduler:
     """17:00 MiroFish post-close re-analysis (P0-8). Failures are
     best-effort — audit + log, no freeze."""
 
+    THESIS_REVIEW_CRON = "0 30 17 * * mon-fri"
+    """17:30 mon-fri — Line-2 post-close thesis review (W-002 / P1-2.A-amendment-
+    2026-06-02). Runs AFTER mirofish_postclose 17:00 so the day's evidence is
+    already written. LLM advisory in the orchestration layer (monitoring stays
+    zero-LLM); writes evidence + a display-only Feishu digest only — owner acts
+    manually. Holiday-gated; a no-op when no callback is wired."""
+
     ADVANCE_DAY_CRON = "0 30 16 * * mon-fri"
     """16:30 advance_day — clears today_bought_volume so T+1 holdings
     are sellable on the next session."""
@@ -282,6 +289,9 @@ class BrokerScheduler:
         line1_runner_callback: Callable[
             [datetime], Awaitable[None]
         ] | None = None,
+        thesis_review_runner_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
         now_func: Callable[[], datetime] | None = None,
         initial_capital: float = 100_000.0,
     ) -> None:
@@ -307,6 +317,7 @@ class BrokerScheduler:
         self._line2_daily = line2_daily_runner_callback
         self._line2_intraday = line2_intraday_runner_callback
         self._line1 = line1_runner_callback
+        self._thesis_review = thesis_review_runner_callback
         self._now = now_func or (lambda: datetime.now(tz=SHANGHAI))
         self._initial_capital = initial_capital
         self._scheduler: AsyncIOScheduler | None = None
@@ -411,6 +422,18 @@ class BrokerScheduler:
             replace_existing=True,
             misfire_grace_time=300,
         )
+        # W-002 — Line-2 post-close thesis review (17:30, after mirofish 17:00).
+        # Same always-register / no-op-when-unwired pattern as the other runner
+        # crons (P1-2.A-amendment-2026-06-02).
+        self._scheduler.add_job(
+            self._thesis_review_job,
+            trigger=CronTrigger.from_crontab(
+                "30 17 * * mon-fri", timezone="Asia/Shanghai"
+            ),
+            id="thesis_review_runner",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
         self._scheduler.start()
         await self._audit.write(
             event_type=AuditEventType.BROKERSCHEDULER_STARTED,
@@ -419,7 +442,8 @@ class BrokerScheduler:
             payload={"jobs": ["eod_pipeline", "intraday_mtm",
                               "mirofish_postclose", "advance_day",
                               "line2_daily_runner", "line2_intraday_runner",
-                              "line1_runner", "evolution_shadow_run"]},
+                              "line1_runner", "thesis_review_runner",
+                              "evolution_shadow_run"]},
             outcome=AuditOutcome.SUCCESS,
         )
         log.info("broker_scheduler_started")
@@ -541,6 +565,29 @@ class BrokerScheduler:
             await self._line1(now)
         except Exception as exc:  # noqa: BLE001 — log + continue
             log.warning("line1_daily_failed", error=str(exc))
+
+    async def _thesis_review_job(self) -> None:
+        """17:30 cron — Line-2 post-close thesis review (W-002).
+
+        Holiday-gated (mirrors :meth:`_line2_daily_job`): a weekday exchange
+        holiday skips the review. A ``None`` callback (main.py has not wired the
+        orchestration layer yet) is a clean no-op. A failure is logged + swallowed
+        — the advisory review must never freeze next-day routing.
+        """
+        if self._thesis_review is None:
+            return
+        now = self._now()
+        trade_date = now.astimezone(SHANGHAI).date()
+        if not is_trading_day(trade_date):
+            log.info(
+                "thesis_review_skipped_non_trading_day",
+                date=trade_date.isoformat(),
+            )
+            return
+        try:
+            await self._thesis_review(now)
+        except Exception as exc:  # noqa: BLE001 — log + continue (advisory)
+            log.warning("thesis_review_failed", error=str(exc))
 
     async def _line2_intraday_job(self) -> None:
         """30s cron — Line-2 deterministic intraday trigger tick (U-D1).

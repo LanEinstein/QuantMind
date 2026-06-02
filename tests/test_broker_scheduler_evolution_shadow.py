@@ -275,6 +275,8 @@ async def test_start_registers_evolution_shadow_run_job(tmp_path: Path) -> None:
     assert "line2_intraday_runner" in job_ids
     # U-D1b — the Line-1 BUY-selection cron too.
     assert "line1_runner" in job_ids
+    # W-002 — the Line-2 post-close thesis-review cron too.
+    assert "thesis_review_runner" in job_ids
 
     started_events = [
         d for d in audit.documents
@@ -290,6 +292,7 @@ async def test_start_registers_evolution_shadow_run_job(tmp_path: Path) -> None:
         "line2_daily_runner",
         "line2_intraday_runner",
         "line1_runner",
+        "thesis_review_runner",
         "evolution_shadow_run",
     ]
 

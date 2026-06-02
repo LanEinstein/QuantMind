@@ -341,6 +341,7 @@ def _scheduler_with(
     now: dt.datetime,
     line2_daily_runner_callback=None,  # noqa: ANN001
     line2_intraday_runner_callback=None,  # noqa: ANN001
+    thesis_review_runner_callback=None,  # noqa: ANN001
 ) -> BrokerScheduler:
     """Build a BrokerScheduler pinned to ``now`` with optional Line-2 callbacks."""
     broker = MockBroker(
@@ -357,6 +358,7 @@ def _scheduler_with(
         audit_store=audit_store,
         line2_daily_runner_callback=line2_daily_runner_callback,
         line2_intraday_runner_callback=line2_intraday_runner_callback,
+        thesis_review_runner_callback=thesis_review_runner_callback,
         now_func=lambda: now,
     )
 
@@ -410,6 +412,61 @@ class TestAdvanceDayHolidayGating:
             doc["event_type"] == BrokerEventType.DAY_ADVANCED.value
             for doc in event_coll.docs
         )
+
+
+class TestThesisReviewCron:
+    """W-002 — Line-2 post-close thesis-review cron callback + gating."""
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_callback_missing(self, tmp_path: Path) -> None:
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 17, 30, tzinfo=SHANGHAI),
+        )
+        await sched._thesis_review_job()  # noqa: SLF001 — must not raise
+
+    @pytest.mark.asyncio
+    async def test_runs_on_trading_day(self, tmp_path: Path) -> None:
+        calls: list[dt.datetime] = []
+
+        async def cb(now: dt.datetime) -> None:
+            calls.append(now)
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 17, 30, tzinfo=SHANGHAI),  # Fri
+            thesis_review_runner_callback=cb,
+        )
+        await sched._thesis_review_job()  # noqa: SLF001
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_skipped_on_weekday_holiday(self, tmp_path: Path) -> None:
+        calls: list[dt.datetime] = []
+
+        async def cb(now: dt.datetime) -> None:
+            calls.append(now)
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 1, 17, 30, tzinfo=SHANGHAI),  # 劳动节 holiday
+            thesis_review_runner_callback=cb,
+        )
+        await sched._thesis_review_job()  # noqa: SLF001
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_failure_swallowed(self, tmp_path: Path) -> None:
+        async def boom(now: dt.datetime) -> None:
+            raise RuntimeError("advisory blew up")
+
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 15, 17, 30, tzinfo=SHANGHAI),
+            thesis_review_runner_callback=boom,
+        )
+        # Must not raise — a thesis-review failure never freezes routing.
+        await sched._thesis_review_job()  # noqa: SLF001
 
 
 class TestLine2RunnerCrons:
