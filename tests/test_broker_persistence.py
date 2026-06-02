@@ -521,6 +521,39 @@ class TestBrokerSnapshotStore:
         store = BrokerSnapshotStore(_FakeClient(), _FakeCollection())
         assert await store.read_latest() is None
 
+    @pytest.mark.asyncio
+    async def test_read_latest_rehydrates_bson_list_positions(self) -> None:
+        # Real Mongo/BSON has no tuple type: BrokerSnapshot.positions (a
+        # tuple) round-trips through BSON as an array, so on read it comes
+        # back a list, which strict-mode validation rejects. The in-memory
+        # _FakeCollection preserves the tuple (hiding the bug), so this test
+        # deliberately downgrades positions to a list to mimic a real Mongo
+        # read — the same failure that refused broker boot (fail-closed
+        # recover_state) whenever the latest snapshot held open positions.
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerSnapshotStore(client, coll)
+
+        positions = (
+            BrokerSnapshotPosition(
+                code="600519", volume=100, today_bought_volume=0, cost_price=1500.0
+            ),
+            BrokerSnapshotPosition(
+                code="000001", volume=200, today_bought_volume=0, cost_price=12.5
+            ),
+        )
+        snap = _seed_snapshot(sequence=7, positions=positions)
+        doc = snap.model_dump(mode="python")
+        doc["snapshot_id"] = str(snap.snapshot_id)
+        doc["positions"] = list(doc["positions"])  # Mongo array downgrade
+        coll.docs.append(doc)
+
+        latest = await store.read_latest()
+        assert latest is not None
+        assert isinstance(latest.positions, tuple)
+        assert {p.code for p in latest.positions} == {"600519", "000001"}
+        assert latest.last_event_sequence == 7
+
 
 # ---------------------------------------------------------------------------
 # Recovery integration — snapshot + replay

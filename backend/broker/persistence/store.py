@@ -95,6 +95,27 @@ def _rehydrate_event_doc(doc: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _rehydrate_snapshot_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """Clean a broker_snapshot doc for strict-mode :class:`BrokerSnapshot`
+    validation.
+
+    Rehydrates ``snapshot_id`` (UUID) and coerces ``positions`` back to a
+    tuple. BSON has no tuple type, so the ``tuple[BrokerSnapshotPosition, ...]``
+    written by ``model_dump(mode="python")`` round-trips through real Mongo as
+    an array → ``list``, which strict-mode validation rejects (it wants a
+    tuple). The in-memory ``_FakeCollection`` used by the unit suite preserves
+    the tuple, so this downgrade is invisible to tests and only bites on a real
+    Mongo recovery replay — restore the tuple here so recovery stays strict
+    (fail-closed on genuine corruption) without refusing boot on a
+    validly-written snapshot whose only "fault" is having open positions.
+    """
+    out = _clean_mongo_doc(doc, "snapshot_id")
+    positions = out.get("positions")
+    if isinstance(positions, list):
+        out["positions"] = tuple(positions)
+    return out
+
+
 class BrokerPersistenceError(RuntimeError):
     """Raised when the broker_events / broker_snapshots invariants fail.
 
@@ -361,7 +382,7 @@ class BrokerSnapshotStore:
         cursor = self._coll.find({}).sort("last_event_sequence", -1).limit(1)
         async for doc in cursor:
             return BrokerSnapshot.model_validate(
-                _clean_mongo_doc(doc, "snapshot_id")
+                _rehydrate_snapshot_doc(doc)
             )
         return None
 
