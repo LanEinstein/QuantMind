@@ -1,6 +1,8 @@
 # backend/position_thesis/ — 子任务上下文(Phase W)
 
-> 状态:**doing(W-001 模型+派生+落库+Line-1 接线)**。治理:[P0-10-amendment-line2-2026-06-01-position-thesis-advisory](../../docs/decisions/P0-10-amendment-line2-2026-06-01-position-thesis-advisory.md) + R0 §3(PIT)+ R0 §4(单一构造点)。任务:plan.html W-001 / W-004。
+> 状态:**done(W-001 模型+派生+落库+Line-1 接线;evaluation 经 W-004 monitoring/thesis_break 消费)**。治理:[P0-10-amendment-line2-2026-06-01-position-thesis-advisory](../../docs/decisions/P0-10-amendment-line2-2026-06-01-position-thesis-advisory.md) + R0 §3(PIT)+ R0 §4(单一构造点)。任务:plan.html W-001 / W-004。
+>
+> **消费者**:W-002 LLM advisory 盘后复盘读 `PositionThesisStore.open_theses()`(orchestration 层,monitoring 外);W-004 确定性 `THESIS_QUANT_BREAK`(`backend/monitoring/thesis_break.evaluate_thesis_breaks` 引本模块 `evaluation`,monitoring 仍零 LLM)。**写入点**:Line-1 dispatch(送达 BUY)经 `Line1Runner._persist_thesis`。
 
 ## 职责
 **买入时显式落库的「为何买」记录**(缺失原语;根除 P-006 反查脆弱性)。买入(Line-1 dispatch)时落 `PositionThesis` = **3–5 支柱文本(LLM,advisory)** + **每条确定性量化失效阈值(无 LLM,机检)** + time-stop/催化窗 + 原始 evidence_ids + 因子锚 + replay 引用。两个下游消费:W-002 LLM 盘后复盘(advisory,只写 evidence)+ W-004 确定性 `THESIS_QUANT_BREAK`(monitoring 零 LLM,经 builder → SELL)。
