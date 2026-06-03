@@ -187,6 +187,35 @@ class _LazyAuditCollection:
         return await db["audit_events"].insert_one(document)
 
 
+async def _read_held_position_codes(application: FastAPI) -> list[str]:
+    """Read the broker's currently-held codes (volume > 0) for the 30s collector.
+
+    P0-8-amendment-2026-06-03-collect-held-positions: the data scheduler
+    unions the configured watchlist with these held codes so intraday MTM /
+    the equity curve can mark every open position. This reader is wired into
+    :class:`DataScheduler` as a late-bound callback because the broker
+    registry is attached to ``app.state`` only in ``_init_trading_layer``
+    (after the data layer is built) — reading it lazily on each tick avoids
+    an init-order trap while keeping the data layer import-clean of
+    ``backend.broker``.
+
+    Fail-open (infra glitch, not data corruption — CLAUDE.md §3): a missing
+    registry (early ticks before the trading layer is up) returns ``[]``
+    silently, and any broker read error logs a warning and returns ``[]`` so
+    the collector degrades to watchlist-only rather than crashing the tick.
+    """
+    registry = getattr(application.state, "broker_registry", None)
+    if registry is None:
+        return []
+    try:
+        broker = registry.get_broker("default")
+        positions = await broker.get_positions()
+    except Exception as exc:
+        log.warning("held_position_codes_read_failed", error=str(exc))
+        return []
+    return [p.code for p in positions if getattr(p, "volume", 0) > 0]
+
+
 async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     """Initialize the data layer: MongoDB, services, scheduler."""
     import motor.motor_asyncio as motor
@@ -248,7 +277,15 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
 
     mirofish_writer = MiroFishEvidenceWriter(mongodb_service)
 
-    # Scheduler
+    # Scheduler — ``held_codes_provider`` is a late-bound closure so the 30s
+    # collector reads the broker's held codes at tick time (the broker
+    # registry is attached to app.state in _init_trading_layer, after this
+    # data layer init). Unioning held codes into the snapshot universe lets
+    # intraday MTM price every open position
+    # (P0-8-amendment-2026-06-03-collect-held-positions).
+    async def _held_position_codes() -> list[str]:
+        return await _read_held_position_codes(application)
+
     scheduler = DataScheduler(
         market_data=market_data,
         news_crawler=news_crawler,
@@ -258,6 +295,7 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         market_interval_seconds=config.market_data.refresh_interval_seconds,
         news_interval_seconds=config.news.refresh_interval_seconds,
         mirofish_writer=mirofish_writer,
+        held_codes_provider=_held_position_codes,
     )
     await scheduler.start()
 

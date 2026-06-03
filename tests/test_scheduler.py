@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from backend.data.market_meta_provider import _parse_redis_quote
 from backend.data.scheduler import (
     QUOTE_CACHE_KEY_PREFIX,
     QUOTE_CACHE_TTL_SECONDS,
@@ -232,6 +234,147 @@ class TestDataScheduler:
         mock_deps["news_crawler"].fetch_latest_news.side_effect = Exception("boom")
         # Should not raise
         await scheduler._run_news_job()
+
+
+class TestActiveWatchlistCodesUnion:
+    """Held-position union for the 30s collector.
+
+    P0-8-amendment-2026-06-03-collect-held-positions: the collector must
+    price held positions, not just the configured watchlist, so intraday
+    MTM / the equity curve can mark every open position. A BUY fill does
+    not add its code to the configured watchlist, so ``_active_watchlist_codes``
+    unions the watchlist with a fail-open ``held_codes_provider`` callback —
+    de-duplicated, order-preserving (watchlist first). Held-code read errors
+    degrade to watchlist-only (infra fail-open) rather than crashing the tick.
+    """
+
+    def _make(
+        self,
+        mock_deps: dict[str, AsyncMock],
+        held_provider: AsyncMock | None,
+    ) -> DataScheduler:
+        return DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            watchlist=mock_deps["watchlist"],
+            held_codes_provider=held_provider,
+        )
+
+    @pytest.mark.asyncio
+    async def test_union_dedup_order_preserving(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519"},
+            {"stock_code": "510300"},
+        ]
+        held = AsyncMock(return_value=["510300", "605111"])  # 510300 dup
+        s = self._make(mock_deps, held)
+
+        codes = await s._active_watchlist_codes()
+
+        assert codes == ["600519", "510300", "605111"]
+        held.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_provider_exception_falls_back_to_watchlist_only(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519"},
+        ]
+        held = AsyncMock(side_effect=RuntimeError("broker read boom"))
+        s = self._make(mock_deps, held)
+        s._log = MagicMock()
+
+        codes = await s._active_watchlist_codes()
+
+        # Degraded to watchlist-only — the tick did not crash.
+        assert codes == ["600519"]
+        s._log.warning.assert_called_once()
+        assert s._log.warning.call_args.args[0] == "held_codes_provider_failed"
+
+    @pytest.mark.asyncio
+    async def test_provider_none_is_watchlist_only(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519"},
+            {"stock_code": "510300"},
+        ]
+        s = self._make(mock_deps, None)
+
+        codes = await s._active_watchlist_codes()
+
+        assert codes == ["600519", "510300"]
+
+    @pytest.mark.asyncio
+    async def test_provider_non_str_codes_skipped(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["watchlist"].list_stocks.return_value = [
+            {"stock_code": "600519"},
+        ]
+        held = AsyncMock(return_value=["605111", None, 123, "600011"])
+        s = self._make(mock_deps, held)
+
+        codes = await s._active_watchlist_codes()
+
+        assert codes == ["600519", "605111", "600011"]
+
+    @pytest.mark.asyncio
+    async def test_held_codes_collected_when_watchlist_unwired(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        # watchlist=None but provider set → held codes still get priced.
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            watchlist=None,
+            held_codes_provider=AsyncMock(return_value=["605111"]),
+        )
+
+        codes = await s._active_watchlist_codes()
+
+        assert codes == ["605111"]
+
+
+class TestRedisQuoteProviderContract:
+    """Producer↔consumer contract for the 30s quote cache.
+
+    P0-8-amendment-2026-06-03-collect-held-positions §1.4: unioning held
+    codes into the collection set only prices them if the cached quote is
+    actually readable by ``MongoBackedMarketMetaProvider`` — whose
+    ``_parse_redis_quote`` requires ``price`` + ``timestamp``. Earlier tests
+    only asserted the union, never that the consumer can parse the blob; this
+    round-trips the producer's payload through the real provider parser.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cached_blob_carries_timestamp_and_is_parseable(
+        self, scheduler: DataScheduler, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        snap = _sample_snapshot("605111")
+
+        await scheduler._cache_quotes_to_redis([snap])
+
+        mock_deps["redis_client"].set.assert_called_once()
+        key, payload = mock_deps["redis_client"].set.call_args.args[:2]
+        assert key == f"{QUOTE_CACHE_KEY_PREFIX}605111"
+
+        blob = json.loads(payload)
+        # The provider's required field is mirrored from snapshot_at, and
+        # the native field is preserved for any OHLC reader.
+        assert blob["timestamp"] == blob["snapshot_at"]
+        assert blob["price"] == snap.price
+
+        # The real provider parser must accept the producer's blob (age 0).
+        price = _parse_redis_quote(payload, snap.snapshot_at, 60)
+        assert price == snap.price
 
 
 class TestIndexCronJob:

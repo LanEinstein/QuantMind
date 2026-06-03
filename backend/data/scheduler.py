@@ -37,6 +37,8 @@ QUOTE_CACHE_TTL_SECONDS = 120
 QUOTE_CACHE_KEY_PREFIX = "quote:"
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     import redis.asyncio
 
     from backend.data.database import MongoDBService
@@ -76,6 +78,7 @@ class DataScheduler:
         market_interval_seconds: int = 30,
         news_interval_seconds: int = 300,
         mirofish_writer: MiroFishEvidenceWriter | None = None,
+        held_codes_provider: Callable[[], Awaitable[list[str]]] | None = None,
     ) -> None:
         self._market_data = market_data
         self._news_crawler = news_crawler
@@ -84,6 +87,14 @@ class DataScheduler:
         self._watchlist = watchlist
         self._market_interval = market_interval_seconds
         self._news_interval = news_interval_seconds
+        # P0-8-amendment-2026-06-03-collect-held-positions: the 30s
+        # collector unions the configured watchlist with the broker's
+        # currently-held codes so intraday MTM / the equity curve can mark
+        # every open position (a BUY fill does not add its code to the
+        # configured watchlist). Injected as a late-bound async callback so
+        # the data layer stays import-clean of ``backend.broker``; ``None``
+        # keeps the legacy watchlist-only behaviour for dev/test envs.
+        self._held_codes_provider = held_codes_provider
         # C-006: 17:00 mon-fri Asia/Shanghai cron uses this writer to
         # land the EOD MiroFish review into evidence_collection. ``None``
         # is permitted so dev environments without the MiroFish stack
@@ -256,19 +267,46 @@ class DataScheduler:
         )
 
     async def _active_watchlist_codes(self) -> list[str]:
-        """Return the list of active watchlist codes, or [] if unwired."""
-        if self._watchlist is None:
-            return []
-        try:
-            rows = await self._watchlist.list_stocks()
-        except Exception as exc:
-            self._log.warning("watchlist_list_failed", error=str(exc))
-            return []
+        """Return the snapshot universe: configured watchlist ∪ held codes.
+
+        The configured watchlist (:class:`WatchlistService`) is the base
+        universe. Broker-held codes are *also* collected
+        (P0-8-amendment-2026-06-03-collect-held-positions) so intraday MTM
+        and the equity curve can mark every open position — a BUY fill does
+        not add its code to the configured watchlist, so without this union
+        a held code never gets a fresh ``market_realtime`` row and the MTM
+        path falls through to its red-line-banned cost-price fallback.
+
+        The union is de-duplicated and order-preserving (watchlist first).
+        Held-code collection is **fail-open**: a broker read glitch logs a
+        warning and degrades to watchlist-only rather than crashing the 30s
+        tick (this is an infra read, not data corruption — CLAUDE.md §3).
+        Returns ``[]`` when neither source is wired.
+        """
         codes: list[str] = []
-        for row in rows:
-            code = row.get("stock_code") if isinstance(row, dict) else None
-            if isinstance(code, str):
-                codes.append(code)
+        if self._watchlist is not None:
+            try:
+                rows = await self._watchlist.list_stocks()
+            except Exception as exc:
+                self._log.warning("watchlist_list_failed", error=str(exc))
+                rows = []
+            for row in rows:
+                code = row.get("stock_code") if isinstance(row, dict) else None
+                if isinstance(code, str):
+                    codes.append(code)
+
+        if self._held_codes_provider is not None:
+            try:
+                held = await self._held_codes_provider()
+            except Exception as exc:
+                self._log.warning("held_codes_provider_failed", error=str(exc))
+                held = []
+            seen = set(codes)
+            for code in held:
+                if isinstance(code, str) and code not in seen:
+                    codes.append(code)
+                    seen.add(code)
+
         return codes
 
     async def _cache_quotes_to_redis(
@@ -282,16 +320,28 @@ class DataScheduler:
         ``.model_dump(mode='json')`` which the model contract guarantees.
         Cache misses (no Redis client) are a silent no-op so the dev
         env can run without Redis.
+
+        The cached blob is the full ``WatchlistMarketSnapshot`` dump **plus**
+        a ``timestamp`` mirror of ``snapshot_at``: this is the producer half
+        of the contract that :func:`MongoBackedMarketMetaProvider` reads —
+        its ``_parse_redis_quote`` requires ``price`` + ``timestamp`` (ISO).
+        Without the mirror the provider's Redis fast-path KeyErrors and falls
+        through to ``market_realtime`` (index-only), leaving every collected
+        stock — including the held positions now unioned in via
+        ``_active_watchlist_codes`` — unpriced for intraday MTM
+        (P0-8-amendment-2026-06-03-collect-held-positions §1.4).
         """
         if self._redis is None:
             return
         try:
             for snap in snapshots:
                 key = f"{QUOTE_CACHE_KEY_PREFIX}{snap.code}"  # type: ignore[attr-defined]
-                payload = json.dumps(
-                    snap.model_dump(mode="json"),  # type: ignore[attr-defined]
-                    ensure_ascii=False,
-                )
+                blob = snap.model_dump(mode="json")  # type: ignore[attr-defined]
+                # Mirror the tick time onto the provider's expected key
+                # without dropping the native ``snapshot_at`` (any future
+                # OHLC reader of the blob keeps working).
+                blob.setdefault("timestamp", blob.get("snapshot_at"))
+                payload = json.dumps(blob, ensure_ascii=False)
                 await self._redis.set(
                     key, payload, ex=QUOTE_CACHE_TTL_SECONDS
                 )
