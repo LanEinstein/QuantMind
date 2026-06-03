@@ -313,6 +313,27 @@ class BrokerEventStore:
         async for doc in cursor:
             yield BrokerEvent.model_validate(_rehydrate_event_doc(doc))
 
+    async def read_last_event_of_type(
+        self, event_type: BrokerEventType
+    ) -> BrokerEvent | None:
+        """Return the highest-sequence event of ``event_type``, or None.
+
+        Used by :func:`backend.services.mode_router.resolve_durable_mode`
+        to derive the durable run-mode on boot from the most recent
+        ``MODE_SWITCH_RESET`` (P0-1-amendment-2026-06-03: a process
+        restart must not be mistaken for a mode switch). Read-only — the
+        mode is never persisted as separate mutable state, only derived
+        from this append-only log.
+        """
+        cursor = (
+            self._coll.find({"event_type": event_type.value})
+            .sort("sequence", -1)
+            .limit(1)
+        )
+        async for doc in cursor:
+            return BrokerEvent.model_validate(_rehydrate_event_doc(doc))
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Snapshot store — append-only EOD checkpoints

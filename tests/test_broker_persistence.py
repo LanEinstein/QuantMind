@@ -34,6 +34,11 @@ from backend.broker.persistence import (
     compute_snapshot_checksum,
     recover_state,
 )
+from backend.services.mode_router import (
+    FEISHU_INTERACTIVE,
+    SIMULATION_AUTO,
+    resolve_durable_mode,
+)
 
 # ---------------------------------------------------------------------------
 # In-memory test doubles for motor collections + sessions
@@ -139,6 +144,11 @@ class _FakeCollection:
             if isinstance(gt, dict) and "$gt" in gt:
                 threshold = gt["$gt"]
                 rows = [r for r in rows if r.get("sequence", 0) > threshold]
+            etype = filter.get("event_type")
+            if etype is not None:
+                # StrEnum member == its str value, so this matches both the
+                # in-memory (enum) and real-Mongo (str) doc shapes.
+                rows = [r for r in rows if r.get("event_type") == etype]
         return _FakeCursor(rows)
 
     async def find_one(
@@ -486,6 +496,120 @@ class TestBrokerEventStore:
 
         with pytest.raises(BrokerPersistenceError, match="corrupt event_type"):
             [ev async for ev in store.stream_since(0)]
+
+    @pytest.mark.asyncio
+    async def test_read_last_event_of_type_returns_most_recent(self) -> None:
+        # P0-1-amendment-2026-06-03: ModeRouter derives the durable mode from
+        # the most recent MODE_SWITCH_RESET. read_last_event_of_type must
+        # return the highest-sequence event of the requested type, ignoring
+        # both other types and earlier same-type events.
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(1),
+            payload={"to_mode": "simulation_auto"},
+        )
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(2),
+            payload={"to_mode": "feishu_interactive"},
+        )
+        # A newer event of a DIFFERENT type must not shadow the switch.
+        await store.append(
+            event_type=BrokerEventType.DAY_ADVANCED, occurred_at=_ts(3)
+        )
+
+        last = await store.read_last_event_of_type(
+            BrokerEventType.MODE_SWITCH_RESET
+        )
+        assert last is not None
+        assert last.event_type is BrokerEventType.MODE_SWITCH_RESET
+        assert last.payload["to_mode"] == "feishu_interactive"
+
+    @pytest.mark.asyncio
+    async def test_read_last_event_of_type_none_when_absent(self) -> None:
+        store = BrokerEventStore(_FakeClient(), _FakeCollection())
+        assert (
+            await store.read_last_event_of_type(
+                BrokerEventType.MODE_SWITCH_RESET
+            )
+            is None
+        )
+
+
+class TestResolveDurableMode:
+    """P0-1-amendment-2026-06-03 — a restart must NOT be a mode switch."""
+
+    @pytest.mark.asyncio
+    async def test_no_events_defaults_simulation_auto(self) -> None:
+        store = BrokerEventStore(_FakeClient(), _FakeCollection())
+        assert await resolve_durable_mode(store) == SIMULATION_AUTO
+
+    @pytest.mark.asyncio
+    async def test_last_switch_to_feishu_yields_feishu(self) -> None:
+        # The restart-while-feishu case: last MODE_SWITCH_RESET went to
+        # feishu_interactive, so a process restart must resolve to feishu
+        # (the lifespan guard then SKIPS the spurious re-switch + reset).
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(1),
+            payload={"from_mode": "simulation_auto", "to_mode": "feishu_interactive"},
+        )
+        assert await resolve_durable_mode(store) == FEISHU_INTERACTIVE
+
+    @pytest.mark.asyncio
+    async def test_rollback_to_simulation_yields_simulation(self) -> None:
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(1),
+            payload={"to_mode": "feishu_interactive"},
+        )
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(2),
+            payload={"to_mode": "simulation_auto"},
+        )
+        assert await resolve_durable_mode(store) == SIMULATION_AUTO
+
+    @pytest.mark.asyncio
+    async def test_non_switch_events_do_not_change_mode(self) -> None:
+        # A RECONCILIATION_RESET (or any non-switch event) after the switch
+        # must not move the mode away from feishu_interactive.
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(1),
+            payload={"to_mode": "feishu_interactive"},
+        )
+        await store.append(
+            event_type=BrokerEventType.RECONCILIATION_RESET,
+            occurred_at=_ts(2),
+            payload={"cash": 100000.0},
+        )
+        assert await resolve_durable_mode(store) == FEISHU_INTERACTIVE
+
+    @pytest.mark.asyncio
+    async def test_unknown_to_mode_falls_back_simulation(self) -> None:
+        client = _FakeClient()
+        coll = _FakeCollection()
+        store = BrokerEventStore(client, coll)
+        await store.append(
+            event_type=BrokerEventType.MODE_SWITCH_RESET,
+            occurred_at=_ts(1),
+            payload={"to_mode": "garbage_mode"},
+        )
+        assert await resolve_durable_mode(store) == SIMULATION_AUTO
 
 
 class TestBrokerSnapshotStore:

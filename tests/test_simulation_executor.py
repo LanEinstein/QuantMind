@@ -392,6 +392,68 @@ class TestModeRouter:
         assert (await broker.get_positions()) == ()
 
     @pytest.mark.asyncio
+    async def test_switch_feishu_to_simulation_resets_broker(
+        self, tmp_path: Path
+    ) -> None:
+        # P0-1-amendment-2026-06-03 regression (codex P1 on the ModeRouter
+        # restart fix) — the REVERSE transition. When the durable mode is
+        # feishu_interactive (ModeRouter now seeded from the last
+        # MODE_SWITCH_RESET) but the process restarts with
+        # FEISHU_INTERACTIVE_ENABLED=false, the lifespan runs a
+        # feishu→simulation switch_mode. That genuine transition MUST
+        # archive + reset, else the recovered feishu-mode positions stay
+        # live in the simulation account that SimulationExecutor auto-fills.
+        # Dropping to simulation needs no acceptance gate.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=1_000_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 9, 30, tzinfo=SHANGHAI),
+        )
+        event_coll = _FakeCollection()
+        event_store = BrokerEventStore(_FakeClient(), event_coll)
+        audit_coll = InMemoryAuditCollection()
+        audit_store = AuditStore(audit_coll, jsonl_path=tmp_path / "audit.jsonl")
+        # Seeded at feishu_interactive — the durable-mode-was-feishu case.
+        router = ModeRouter(
+            broker=broker, event_store=event_store, audit_store=audit_store,
+            initial_mode=FEISHU_INTERACTIVE,
+            acceptance_gate=_PassingAcceptanceGate(sanctioned=True),
+        )
+
+        from backend.models.reconciliation import ReportedPosition
+
+        await broker.reset_to_snapshot(
+            cash=650_000.0,
+            positions=(
+                ReportedPosition(code="600519", volume=100, cost_price=1_800.0),
+            ),
+            reset_at=dt.datetime(2026, 5, 15, 9, 30, tzinfo=SHANGHAI),
+            reason="recovered feishu positions",
+        )
+
+        result = await router.switch_mode(
+            to_mode=SIMULATION_AUTO,
+            reason="feishu_interactive_disabled_at_startup",
+            initiated_by="lifespan",
+            when=dt.datetime(2026, 5, 15, 16, 30, tzinfo=SHANGHAI),
+        )
+
+        assert result.from_mode == FEISHU_INTERACTIVE
+        assert result.to_mode == SIMULATION_AUTO
+        assert router.current_mode == SIMULATION_AUTO
+        # MODE_SWITCH_RESET event with to_mode=simulation_auto recorded.
+        switch_events = [
+            d
+            for d in event_coll.docs
+            if d["event_type"] == BrokerEventType.MODE_SWITCH_RESET.value
+        ]
+        assert switch_events
+        assert switch_events[-1]["payload"]["to_mode"] == SIMULATION_AUTO
+        # Broker mirror reset to initial capital, prior positions cleared.
+        account = await broker.get_account()
+        assert account.available_cash == pytest.approx(1_000_000.0)
+        assert (await broker.get_positions()) == ()
+
+    @pytest.mark.asyncio
     async def test_pilot_tier_persisted_in_audit_and_reset_event(
         self, tmp_path: Path
     ) -> None:

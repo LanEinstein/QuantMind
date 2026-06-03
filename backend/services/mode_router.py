@@ -138,6 +138,31 @@ FEISHU_INTERACTIVE = "feishu_interactive"
 VALID_MODES = frozenset({SIMULATION_AUTO, FEISHU_INTERACTIVE})
 
 
+async def resolve_durable_mode(event_store: BrokerEventStore) -> str:
+    """Derive the durable run-mode from the append-only broker event log.
+
+    Returns the ``to_mode`` of the most recent ``MODE_SWITCH_RESET`` event,
+    or :data:`SIMULATION_AUTO` when the account has never switched (fresh
+    account) or the stored ``to_mode`` is unrecognised.
+
+    P0-1-amendment-2026-06-03: a process restart in an unchanged mode is
+    NOT a mode switch. By seeding :class:`ModeRouter` with this value, the
+    lifespan guard ``if current_mode != feishu_interactive`` correctly
+    SKIPS the lifecycle reset on restart — preventing the recovered broker
+    positions from being wiped on every boot. The mode is derived (not
+    stored as separate mutable state), so it stays PIT-replayable (R0 §3).
+    """
+    last = await event_store.read_last_event_of_type(
+        BrokerEventType.MODE_SWITCH_RESET
+    )
+    if last is None:
+        return SIMULATION_AUTO
+    to_mode = last.payload.get("to_mode")
+    if to_mode in VALID_MODES:
+        return str(to_mode)
+    return SIMULATION_AUTO
+
+
 class AcceptanceGateMissingError(RuntimeError):
     """Raised when ModeRouter is asked to enter feishu_interactive but no
     AcceptanceService gate was injected. P0-6 §2 redline 5 — no env-var

@@ -1461,6 +1461,49 @@ def test_orchestration_layer_calls_recover_state_before_executor() -> None:
     )
 
 
+def test_lifespan_wires_feishu_to_simulation_rollback() -> None:
+    """P0-1-amendment-2026-06-03 (codex P1 on the ModeRouter restart fix) —
+    symmetric startup mode alignment. ModeRouter is now seeded from the
+    durable mode (last MODE_SWITCH_RESET). The gated feishu block only
+    handles the →feishu_interactive direction; the REVERSE must also be
+    wired: when feishu is disabled (feishu_client is None) but the durable
+    mode was feishu_interactive, a genuine feishu→simulation switch_mode
+    (archive + reset) must fire — else recovered feishu positions stay live
+    in the simulation account SimulationExecutor auto-fills.
+
+    AST: a ``switch_mode(to_mode=SIMULATION_AUTO, ...)`` call must exist in
+    main.py, plus the guard that triggers it.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path("backend/main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    found_rollback_switch = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "switch_mode"):
+            continue
+        kws = {k.arg: k.value for k in node.keywords}
+        to_mode = kws.get("to_mode")
+        if isinstance(to_mode, ast.Name) and to_mode.id == "SIMULATION_AUTO":
+            found_rollback_switch = True
+            break
+
+    assert found_rollback_switch, (
+        "lifespan must call switch_mode(to_mode=SIMULATION_AUTO, ...) for the "
+        "feishu→simulation rollback — otherwise a restart with "
+        "FEISHU_INTERACTIVE_ENABLED=false while the durable mode was "
+        "feishu_interactive leaves recovered feishu positions live in the "
+        "simulation account"
+    )
+    # The guard that triggers the reverse switch must be present.
+    assert "feishu_interactive_disabled_at_startup" in src
+    assert "feishu_client is None" in src
+
+
 def test_broker_scheduler_start_failure_is_not_swallowed() -> None:
     """Codex Cycle 6 P1 regression — ``await broker_scheduler.start()``
     MUST NOT be wrapped in a try/except that logs and continues. The

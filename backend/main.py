@@ -1538,16 +1538,27 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # 5. ModeRouter with the acceptance gate plumbed in. The mode-state
     # also exposes the :class:`ModeSwitchProbe` consumed by the Builder
     # + SimulationExecutor (5th freeze source).
-    from backend.services.mode_router import SIMULATION_AUTO, ModeRouter
+    #
+    # P0-1-amendment-2026-06-03: seed initial_mode from the DURABLE log
+    # (last MODE_SWITCH_RESET.to_mode) instead of hardcoding
+    # SIMULATION_AUTO. Without this, every process restart of an
+    # already-feishu account re-fired the lifespan switch_mode →
+    # MODE_SWITCH_RESET → wiping the recovered broker mirror to 0
+    # positions. Deriving the mode makes a restart a no-op; only a genuine
+    # mode transition still runs the lifecycle reset (the guard at the
+    # feishu-startup block below: `if current_mode != feishu_interactive`).
+    from backend.services.mode_router import ModeRouter, resolve_durable_mode
 
+    durable_mode = await resolve_durable_mode(event_store)
     mode_router = ModeRouter(
         broker=broker,
         event_store=event_store,
         audit_store=audit_store,
-        initial_mode=SIMULATION_AUTO,
+        initial_mode=durable_mode,
         acceptance_gate=acceptance_service,
     )
     application.state.mode_router = mode_router
+    log.info("mode_router_initialised", durable_mode=durable_mode)
 
     # 6. SimulationExecutor — the bridge that closes the audit Phase C
     # gap. The freeze_state plumbing arrives from the BrokerScheduler
@@ -2260,6 +2271,38 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # Constructs BrokerScheduler / SimulationExecutor / Appliers /
     # ModeRouter / 6 Mongo-backed repositories / orchestrators.
     await _init_orchestration_layer(application)
+
+    # P0-1-amendment-2026-06-03 — symmetric startup mode alignment. The
+    # gated feishu block below only handles the →feishu_interactive
+    # direction. Handle the reverse here: when feishu is disabled
+    # (feishu_client is None) but the DURABLE mode (seeded into ModeRouter
+    # from the last MODE_SWITCH_RESET) was feishu_interactive, this is a
+    # genuine feishu→simulation transition and MUST run the lifecycle reset
+    # (archive MODE_SWITCH_RESET + MockBroker reset + audit pair) — else the
+    # recovered feishu-mode positions would stay live in the simulation
+    # account that SimulationExecutor auto-fills. Dropping to simulation
+    # needs no acceptance gate (only entering feishu does), so it lives
+    # outside the gated block. A plain restart already in simulation is a
+    # no-op (current_mode == simulation_auto).
+    from backend.services.mode_router import FEISHU_INTERACTIVE, SIMULATION_AUTO
+
+    # getattr guard: _init_orchestration_layer fail-opens (skips wiring) when
+    # mongodb/broker_registry are unavailable, leaving mode_router unset.
+    # Short-circuit then so this rollback never turns a degradable startup
+    # into an AttributeError (codex cycle-2 P2).
+    _mode_router_startup = getattr(application.state, "mode_router", None)
+    if (
+        _mode_router_startup is not None
+        and application.state.feishu_client is None
+        and _mode_router_startup.current_mode == FEISHU_INTERACTIVE
+    ):
+        await _mode_router_startup.switch_mode(
+            to_mode=SIMULATION_AUTO,
+            reason="feishu_interactive_disabled_at_startup",
+            initiated_by="lifespan",
+            when=datetime.now(tz=SHANGHAI_TZ),
+        )
+        log.info("mode_router_rolled_back_to_simulation")
 
     # Feishu long-connection acceptance gate (P0-6 §2 红线 5). The
     # overlay can only start once the AcceptanceService reports PASS;
