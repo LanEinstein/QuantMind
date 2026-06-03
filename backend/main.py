@@ -542,12 +542,15 @@ async def _ensure_daily_frame(
                     )
 
 
-def _count_trading_days(trade_date_str: str, now: datetime) -> int:
+def _count_trading_days(trade_date_str: str, now: datetime) -> int | None:
     """Trading days from a buy date (exclusive) to ``now`` (inclusive) — W-004.
 
     Deterministic over the static holiday calendar (the THESIS_QUANT_BREAK
-    TIME_STOP input). A malformed buy date → 0 (fail-closed: TIME_STOP cannot
-    fire on a bad anchor). ``now`` is the Asia/Shanghai cron time.
+    TIME_STOP / take-profit-exemption input). A malformed **or future** buy date
+    → ``None`` (fail-closed): the caller omits it so TIME_STOP becomes
+    *unevaluable* rather than a spurious ``0`` that reads as "intact" and could
+    both suppress a break AND wrongly grant the long-term-hold exemption
+    (codex P2 cycle-5). ``now`` is the Asia/Shanghai cron time.
     """
     from datetime import date as _date
     from datetime import timedelta as _td
@@ -557,8 +560,10 @@ def _count_trading_days(trade_date_str: str, now: datetime) -> int:
     try:
         cursor = _date.fromisoformat(trade_date_str)
     except (ValueError, TypeError):
-        return 0
+        return None
     end = now.date()
+    if cursor > end:  # a buy date in the future is a corrupt anchor → fail closed
+        return None
     count = 0
     while cursor < end:
         cursor = cursor + _td(days=1)
@@ -1035,37 +1040,53 @@ async def _init_line2_runners(
             rows = await market_data.get_watchlist_snapshot(list(codes), snap_at)
             return {row.code: row for row in rows}
 
-        # W-004 — deterministic THESIS_QUANT_BREAK inputs. GATED default-OFF
-        # (QUANTMIND_THESIS_QUANT_BREAK_ENABLED=1) per the amendment's stage-2
-        # shadow-then-enable posture: shipped + wired + tested, but INERT in
-        # production until the owner enables it after shadow validation. When off
-        # (or no store) the maps are empty → the trigger is purely additive (no
-        # behaviour change; the SELL still passes the 14-check + Feishu gate).
-        thesis_map: dict[str, object] = {}
-        holding_days: dict[str, int] = {}
-        if (
+        # PositionThesis inputs for two INDEPENDENTLY env-gated features (both
+        # default-OFF, stage-2 shadow-then-enable; INERT in production until the
+        # owner enables after shadow). Decoupled by separate provider fields:
+        #   • W-004 THESIS_QUANT_BREAK → env QUANTMIND_THESIS_QUANT_BREAK_ENABLED
+        #     (theses_by_code; a broken thesis ADDS a SELL).
+        #   • take-profit EXEMPTION → env
+        #     QUANTMIND_LINE2_THESIS_TAKEPROFIT_EXEMPT_ENABLED (exempt_theses_by_code;
+        #     an intact thesis EXEMPTS the long-term hold from take-profit / soft
+        #     trim — P0-10-amendment-line2-2026-06-03).
+        # The raw theses are loaded once when EITHER gate is on, then handed to
+        # each feature only when ITS gate is on, so enabling the exemption never
+        # implicitly turns on THESIS_QUANT_BREAK (and vice-versa).
+        _break_on = (
             os.environ.get("QUANTMIND_THESIS_QUANT_BREAK_ENABLED", "0").strip()
             == "1"
-        ):
+        )
+        _exempt_on = (
+            os.environ.get(
+                "QUANTMIND_LINE2_THESIS_TAKEPROFIT_EXEMPT_ENABLED", "0"
+            ).strip()
+            == "1"
+        )
+        raw_theses: dict[str, object] = {}
+        holding_days: dict[str, int] = {}
+        if _break_on or _exempt_on:
             _store = getattr(application.state, "position_thesis_store", None)
             if _store is not None:
                 # FAIL-OPEN (codex W-004 P2): a corrupt / unreadable thesis store
                 # must NEVER disable the existing drawdown / ATR / ADD monitoring.
-                # The thesis-break feature is optional + add-only, so a read
-                # failure degrades to an empty break map (prior behaviour).
+                # Both features are optional + degrade to empty (prior behaviour).
                 try:
                     _held = {
                         p.code.split(".")[0].strip() for p in run_state.positions
                     }
                     for _c, _t in _store.open_theses().items():
                         if _c in _held:
-                            thesis_map[_c] = _t
-                            holding_days[_c] = _count_trading_days(
-                                _t.trade_date, now
-                            )
+                            raw_theses[_c] = _t
+                            # Omit a malformed/future anchor (None) so TIME_STOP
+                            # is unevaluable — never a spurious 0 that reads as
+                            # intact (codex P2 cycle-5). Break + exemption both
+                            # then fail closed on a corrupt date.
+                            _days = _count_trading_days(_t.trade_date, now)
+                            if _days is not None:
+                                holding_days[_c] = _days
                 except Exception as exc:  # noqa: BLE001 — never break the tick
-                    log.warning("thesis_break_inputs_failed", error=str(exc))
-                    thesis_map = {}
+                    log.warning("thesis_inputs_failed", error=str(exc))
+                    raw_theses = {}
                     holding_days = {}
         provider = Line2IntradayProvider(
             run_state=run_state,
@@ -1074,8 +1095,9 @@ async def _init_line2_runners(
             daily_frame=frame,
             index_closes=index_closes,
             fetch_spots_fn=_fetch_spots,
-            theses_by_code=thesis_map,
+            theses_by_code=dict(raw_theses) if _break_on else {},
             holding_trade_days_by_code=holding_days,
+            exempt_theses_by_code=dict(raw_theses) if _exempt_on else {},
         )
         await intraday_runner.run(provider=provider, now=now)
 

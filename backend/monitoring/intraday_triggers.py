@@ -83,8 +83,12 @@ _LOT = 100
 # TAKE_PROFIT (+1R tranche) + WEIGHT_TRIM triggers (P-005). v3: added the
 # THESIS_QUANT_BREAK trigger (W-004), which adds a deterministic SELL-intent
 # output when a held thesis is broken (the maths is otherwise unchanged — an
-# empty thesis-break map reproduces v2 outputs bit-for-bit).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v3"
+# empty thesis-break map reproduces v2 outputs bit-for-bit). v4: added the
+# long-term-hold (intact PositionThesis) exemption — such holds skip TAKE_PROFIT
+# + the soft WEIGHT_TRIM but are still trimmed at the single-stock hard cap; an
+# empty long_term_hold_codes set reproduces v3 outputs bit-for-bit
+# (P0-10-amendment-line2-2026-06-03-thesis-gated-takeprofit-exemption).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v4"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -331,6 +335,8 @@ def _weight_trim_intent(
     account: AccountInfo,
     cfg: IntradayTriggerConfig,
     max_single_stock_pct: float,
+    hard_cap_only: bool = False,
+    max_single_instruction_amount: float = 50_000.0,
 ) -> IntradaySellIntent | None:
     """Trim an over-allocated position back toward ``trim_target_pct``.
 
@@ -339,27 +345,62 @@ def _weight_trim_intent(
     clamped to the lot-aligned **settled** ``available_volume`` (a fresh,
     unsettled BUY cannot be sold under T+1). Returns ``None`` when total assets
     are non-positive, the weight is within band, or the trim floors below a lot.
+
+    ``hard_cap_only`` (a long-term-hold, P0-10-amendment-line2-2026-06-03):
+    such a position is exempt from the **soft** re-balance but still bounded by
+    the single-stock **hard cap** (P0-7) — it fires only above
+    ``max_single_stock_pct`` (no ``trim_band`` buffer) and trims back to exactly
+    that cap (not ``trim_target_pct``). So a conviction hold may ride up to the
+    cap but never breaches the concentration red line.
     """
     total = float(account.total_assets)
     price = spot.price
     if total <= 0:
         return None
     weight = pos.volume * price / total
-    threshold = max_single_stock_pct * (1.0 + cfg.trim_band)
+    if hard_cap_only:
+        threshold = max_single_stock_pct
+        target_pct = max_single_stock_pct
+    else:
+        threshold = max_single_stock_pct * (1.0 + cfg.trim_band)
+        target_pct = cfg.trim_target_pct
     if weight <= threshold:
         return None
-    excess_value = pos.volume * price - cfg.trim_target_pct * total
+    excess_value = pos.volume * price - target_pct * total
     if excess_value <= 0:
         return None
-    trim_shares = int(excess_value // (price * _LOT)) * _LOT
+    if hard_cap_only:
+        # Round UP to the next lot so the post-trim weight lands AT/BELOW the
+        # hard cap — flooring would leave a residual breach (e.g. 16% → 15.2%),
+        # violating the concentration red line this path enforces (codex P2).
+        trim_shares = math.ceil(excess_value / (price * _LOT)) * _LOT
+        # Clamp to the single-instruction cap (P0-7 check #9 applies to SELLs):
+        # an oversized full-excess trim would be REJECTED downstream and then
+        # deduped as "fired", leaving the position stuck above the cap with no
+        # sell. A capped partial trim is a VALID SELL that reduces the position
+        # now and re-fires on the next session until it converges ≤ cap (codex
+        # P2 cycle-2; mirrors the thesis-break exit clamp).
+        if max_single_instruction_amount > 0:
+            cap_lots = (
+                int(max_single_instruction_amount // (price * _LOT)) * _LOT
+            )
+            trim_shares = min(trim_shares, cap_lots)
+    else:
+        # Soft re-balance toward trim_target_pct (13%) has ample buffer below
+        # the cap, so flooring (sell no more than needed) is the safe direction.
+        trim_shares = int(excess_value // (price * _LOT)) * _LOT
     settled = (pos.available_volume // _LOT) * _LOT
     trim_shares = min(trim_shares, settled)
     if trim_shares <= 0:  # nothing settled to trim, or sub-1-lot → skip
         return None
+    band_label = (
+        f"硬顶 {max_single_stock_pct:.0%}"
+        if hard_cap_only
+        else f"上限 {max_single_stock_pct:.0%}×{1 + cfg.trim_band:.2f}"
+    )
     detail = (
-        f"超配回调: 持仓权重 {weight:.1%} > {threshold:.1%} (上限 "
-        f"{max_single_stock_pct:.0%}×{1 + cfg.trim_band:.2f}); 减 {trim_shares} 股 "
-        f"回 ~{cfg.trim_target_pct:.0%}"
+        f"超配回调: 持仓权重 {weight:.1%} > {threshold:.1%} ({band_label}); "
+        f"减 {trim_shares} 股回 ~{target_pct:.0%}"
     )
     return IntradaySellIntent(
         code=code,
@@ -430,6 +471,7 @@ def evaluate_intraday_sell_intents(
     take_profit_already_taken: frozenset[str] = frozenset(),
     thesis_break_by_code: Mapping[str, str] | None = None,
     max_single_instruction_amount: float = 50_000.0,
+    long_term_hold_codes: frozenset[str] = frozenset(),
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -461,6 +503,15 @@ def evaluate_intraday_sell_intents(
     ``thesis_break_by_code`` (code → deterministic break reason, computed by
     ``monitoring.thesis_break``) drives the THESIS_QUANT_BREAK exit; absent /
     empty → no thesis exits (the prior behaviour exactly).
+
+    ``long_term_hold_codes`` (P0-10-amendment-line2-2026-06-03, intact
+    PositionThesis) are conviction holds exempt from the discretionary
+    profit-taking: a code in this set skips TAKE_PROFIT and the **soft**
+    WEIGHT_TRIM, but is still trimmed at the single-stock **hard cap** (so it can
+    ride a winner without forced profit-taking yet never breaches the
+    concentration red line). The exemption only touches the else branch, so it
+    can NEVER relax a protective stop (ATR / drawdown) or the THESIS_QUANT_BREAK
+    exit — those outrank it and fire first. Empty set → v3 outputs bit-for-bit.
 
     ``closes_by_code`` is the daily close history per bare code (parsed from
     the persisted T-1 frame by ``add_position.parse_held_series``); a code
@@ -575,15 +626,23 @@ def evaluate_intraday_sell_intents(
             elif account is not None:
                 # The lower-priority profit-taking / rebalance triggers (only
                 # when an account is supplied). Take-profit outranks weight-trim;
-                # at most one fires.
-                tp = _take_profit_intent(
-                    code=code,
-                    name=names.get(code, code),
-                    spot=spot,
-                    pos=pos,
-                    atr=atr,
-                    cfg=cfg,
-                    already_taken=take_profit_already_taken,
+                # at most one fires. A long-term hold (intact thesis) is exempt
+                # from take-profit + the soft trim, but the hard-cap trim still
+                # bounds it (P0-10-amendment-line2-2026-06-03) — never relaxing
+                # the protective stops, which already fired above if applicable.
+                is_long_term = code in long_term_hold_codes
+                tp = (
+                    None
+                    if is_long_term
+                    else _take_profit_intent(
+                        code=code,
+                        name=names.get(code, code),
+                        spot=spot,
+                        pos=pos,
+                        atr=atr,
+                        cfg=cfg,
+                        already_taken=take_profit_already_taken,
+                    )
                 )
                 trim = (
                     None
@@ -596,6 +655,8 @@ def evaluate_intraday_sell_intents(
                         account=account,
                         cfg=cfg,
                         max_single_stock_pct=max_single_stock_pct,
+                        hard_cap_only=is_long_term,
+                        max_single_instruction_amount=max_single_instruction_amount,
                     )
                 )
                 if tp is not None:

@@ -323,6 +323,7 @@ class Line2IntradayProvider(_Line2ProviderBase):
         fetch_spots_fn: Callable[[Sequence[str]], Awaitable[Mapping[str, Any]]],
         theses_by_code: Mapping[str, Any] | None = None,
         holding_trade_days_by_code: Mapping[str, int] | None = None,
+        exempt_theses_by_code: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(
             run_state=run_state, code_contexts=code_contexts, name_by_code=name_by_code
@@ -336,6 +337,11 @@ class Line2IntradayProvider(_Line2ProviderBase):
         # an empty map makes the trigger inert, so it is strictly additive.
         self._theses = dict(theses_by_code or {})
         self._holding_days = dict(holding_trade_days_by_code or {})
+        # P0-10-amendment-line2-2026-06-03 — held PositionThesis for the
+        # long-term-hold take-profit EXEMPTION. A SEPARATE field (own env gate)
+        # so the THESIS_QUANT_BREAK wiring above is untouched: this is empty
+        # unless the exemption is enabled, keeping the two features decoupled.
+        self._exempt_theses = dict(exempt_theses_by_code or {})
 
     def theses_by_code(self) -> Mapping[str, Any]:
         """Held code → open PositionThesis (W-004; empty when not wired)."""
@@ -344,6 +350,13 @@ class Line2IntradayProvider(_Line2ProviderBase):
     def holding_trade_days_by_code(self) -> Mapping[str, int]:
         """Held code → holding trading-days since buy (W-004 TIME_STOP input)."""
         return self._holding_days
+
+    def exempt_theses_by_code(self) -> Mapping[str, Any]:
+        """Held code → open PositionThesis for the take-profit exemption.
+
+        P0-10-amendment-line2-2026-06-03; empty unless the exemption is enabled.
+        """
+        return self._exempt_theses
 
     @property
     def account(self) -> AccountInfo:

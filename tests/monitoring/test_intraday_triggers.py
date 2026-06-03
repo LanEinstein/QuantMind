@@ -356,6 +356,158 @@ def test_no_account_skips_take_profit_and_trim() -> None:
 
 
 # ---------------------------------------------------------------------------
+# long_term_hold_codes — thesis-gated take-profit exemption
+# (P0-10-amendment-line2-2026-06-03)
+# ---------------------------------------------------------------------------
+
+
+def test_long_term_hold_exempt_from_take_profit() -> None:
+    # Same +1R scenario as test_take_profit_fires_and_sells_tranche, but the
+    # code is a long-term hold (intact thesis) → take-profit is exempt.
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert intents == ()
+
+
+def test_non_long_term_code_takes_profit_normally() -> None:
+    # The gate is per-code: a +1R code NOT in the set still takes profit.
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        long_term_hold_codes=frozenset({"600519"}),  # a different code
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+
+
+def test_empty_long_term_hold_reproduces_baseline() -> None:
+    # Default empty set → identical to the pre-amendment (v3) behaviour.
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    base = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
+    exempt_empty = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        long_term_hold_codes=frozenset(),
+    )
+    assert base == exempt_empty
+    assert base[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+
+
+def test_long_term_hold_hard_cap_trims_back_to_cap() -> None:
+    # Over the 15% hard cap (20% weight): a long-term hold is exempt from the
+    # soft trim but STILL trimmed back to exactly 15% (not 13%).
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.02)}  # calm
+    closes = {"510300": _volatile_closes()}  # ATR stop 3.6 (well below 4.0)
+    pos = _position("510300", volume=5000, available=5000, cost=4.5)  # 20% wt
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
+    # excess to the 15% cap = 5000×4.0 − 0.15×100k = 5000 → ceil(5000/400)×100.
+    assert intents[0].available_volume == 1300  # rounded UP so post-trim ≤ 15%
+    # Post-trim weight must be AT/BELOW the 15% hard cap (codex P2 invariant).
+    remaining = (5000 - intents[0].available_volume) * 4.0
+    assert remaining / 100_000.0 <= 0.15
+
+
+def test_long_term_hold_trims_inside_soft_band_at_hard_cap() -> None:
+    # 16% weight: a NORMAL hold is within the 16.5% soft band → no trim, but a
+    # long-term hold is over the 15% hard cap → trims back to 15%.
+    spots = {"510300": _spot("510300", price=4.0, prev_close=4.02)}
+    closes = {"510300": _volatile_closes()}
+    pos = _position("510300", volume=4000, available=4000, cost=4.5)  # 16% wt
+    normal = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+    )
+    assert normal == ()  # within the soft band
+    long_term = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert len(long_term) == 1
+    assert long_term[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
+    # excess to 15% = 4000×4.0 − 0.15×100k = 1000 → ceil(1000/400)×100 = 300.
+    assert long_term[0].available_volume == 300  # rounded UP so post-trim ≤ 15%
+    remaining = (4000 - long_term[0].available_volume) * 4.0
+    assert remaining / 100_000.0 <= 0.15
+
+
+def test_long_term_hold_hard_cap_trim_clamped_to_single_instruction_cap() -> None:
+    # A large winner well over the cap: the full excess (¥100k) would exceed the
+    # ¥50k single-instruction cap (check #9 rejects SELLs too) → clamp to a VALID
+    # ¥50k partial trim that reduces the position now (codex P2 cycle-2), rather
+    # than emit a rejected order that dedups and strands the position over-cap.
+    spots = {"510300": _spot("510300", price=10.0, prev_close=10.05)}  # calm
+    closes = {"510300": _volatile_closes()}  # recent high 4.8 ≪ 10 → no ATR exit
+    pos = _position("510300", volume=25000, available=25000, cost=8.0)  # 25% wt
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(1_000_000.0),
+        max_single_stock_pct=0.15,
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
+    # excess ¥100k → 10000 sh, clamped to ¥50k cap → 5000 sh.
+    assert intents[0].available_volume == 5000
+    assert intents[0].available_volume * 10.0 <= 50_000.0  # within check #9
+
+
+def test_long_term_hold_below_hard_cap_rides_free() -> None:
+    # 14% weight, in +1R profit: exempt from take-profit AND below the hard cap
+    # → no intent (the conviction winner rides free).
+    spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
+    closes = {"510300": _near_high_closes()}
+    pos = _position("510300", volume=2800, available=2800, cost=4.0)  # ~13.9% wt
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert intents == ()
+
+
+def test_long_term_hold_still_stops_out_on_drawdown() -> None:
+    # The exemption NEVER relaxes a protective stop: an −8% drawdown on a
+    # long-term hold still fires DRAWDOWN_STOP (full settled volume).
+    closes_series = tuple(4.45 if i % 2 else 4.55 for i in range(25))
+    spots = {"510300": _spot("510300", price=4.6, prev_close=5.0)}  # -8% dd
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {"510300": closes_series}, (pos,), account=_account(),
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+    assert intents[0].available_volume == 300  # full settled, not a tranche
+
+
+def test_long_term_hold_still_stops_out_on_atr() -> None:
+    # ATR trailing stop also still fires for a long-term hold (stop not relaxed).
+    closes = _volatile_closes()  # recent high 4.8, ATR ≈ 0.6 → stop ≈ 3.6
+    spots = {"510300": _spot("510300", price=3.5, prev_close=3.55)}  # < stop
+    pos = _position("510300", volume=300, available=300, cost=3.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, {"510300": closes}, (pos,), account=_account(),
+        long_term_hold_codes=frozenset({"510300"}),
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.ATR_TRAILING_STOP
+
+
+# ---------------------------------------------------------------------------
 # make_intraday_sell_context — LINE2-MON- guard
 # ---------------------------------------------------------------------------
 

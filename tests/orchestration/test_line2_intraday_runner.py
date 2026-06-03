@@ -976,3 +976,92 @@ def test_thesis_breaks_empty_when_provider_lacks_method() -> None:
         SimpleNamespace(), {"510300": SimpleNamespace(price=4.0)}
     )
     assert out == {}
+
+
+# ---------------------------------------------------------------------------
+# _intact_thesis_codes — long-term-hold take-profit exemption
+# (P0-10-amendment-line2-2026-06-03)
+# ---------------------------------------------------------------------------
+
+
+def _exempt_thesis(code: str, *, entry_price: float = 10.0):
+    from backend.position_thesis.derivation import build_position_thesis
+
+    return build_position_thesis(
+        instruction_id=f"QM-20260601-093500-{code}-BUY-001",
+        signal_id="SIG-1",
+        stock_code=code,
+        stock_name="标的",
+        created_at=datetime(2026, 6, 2, 10, 0, tzinfo=UTC),
+        trade_date="2026-06-01",
+        pillars=("a", "b", "c"),
+        entry_price=entry_price,
+        entry_score=2.0,
+        snapshot_id="snap-1",
+    )
+
+
+def test_intact_thesis_codes_empty_when_provider_lacks_field() -> None:
+    from types import SimpleNamespace
+
+    out = Line2IntradayRunner._intact_thesis_codes(  # noqa: SLF001
+        SimpleNamespace(), {"510300": SimpleNamespace(price=4.0)}
+    )
+    assert out == frozenset()
+
+
+def test_intact_thesis_codes_fail_open_on_error() -> None:
+    # A provider whose exempt source raises must NEVER break the tick — the
+    # exemption degrades to empty (take-profit fires normally = conservative).
+    class _BoomProvider:
+        def exempt_theses_by_code(self):  # noqa: ANN202
+            raise RuntimeError("corrupt thesis store")
+
+    from types import SimpleNamespace
+
+    out = Line2IntradayRunner._intact_thesis_codes(  # noqa: SLF001
+        _BoomProvider(), {"510300": SimpleNamespace(price=4.0)}
+    )
+    assert out == frozenset()
+
+
+def test_intact_thesis_codes_returns_intact_excludes_broken() -> None:
+    from types import SimpleNamespace
+
+    class _Provider:
+        def exempt_theses_by_code(self):  # noqa: ANN202
+            return {
+                "600519": _exempt_thesis("600519"),  # intact at 9.5 (floor 8.8)
+                "510300": _exempt_thesis("510300"),  # broken at 8.0 (< floor)
+                "000001": _exempt_thesis("000001"),  # intact but NO fresh spot
+            }
+
+        def holding_trade_days_by_code(self):  # noqa: ANN202
+            return {"600519": 5, "510300": 5}  # < 30-day time stop → TIME intact
+
+    fresh_spots = {
+        "600519": SimpleNamespace(price=9.5),
+        "510300": SimpleNamespace(price=8.0),
+        # 000001 absent → cannot be confirmed intact → excluded.
+    }
+    out = Line2IntradayRunner._intact_thesis_codes(_Provider(), fresh_spots)  # noqa: SLF001
+    assert out == frozenset({"600519"})
+
+
+def test_intact_thesis_codes_excludes_when_holding_days_missing() -> None:
+    # codex P2 cycle-3: TIME_STOP is unevaluable without holding days → the
+    # thesis is only partially evaluated → NOT exempt (do not remove sell
+    # pressure on an unconfirmed thesis), even though the price is intact.
+    from types import SimpleNamespace
+
+    class _Provider:
+        def exempt_theses_by_code(self):  # noqa: ANN202
+            return {"600519": _exempt_thesis("600519")}  # price intact at 9.5
+
+        def holding_trade_days_by_code(self):  # noqa: ANN202
+            return {}  # no holding days → TIME_STOP cannot be evaluated
+
+    out = Line2IntradayRunner._intact_thesis_codes(  # noqa: SLF001
+        _Provider(), {"600519": SimpleNamespace(price=9.5)}
+    )
+    assert out == frozenset()

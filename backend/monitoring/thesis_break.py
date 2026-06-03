@@ -35,6 +35,7 @@ from backend.models.position_thesis import (
 )
 from backend.position_thesis.evaluation import (
     ThesisObservation,
+    evaluate_condition,
     evaluate_thesis_health,
 )
 
@@ -101,7 +102,72 @@ def evaluate_thesis_breaks(
     return out
 
 
+# Invalidation templates observable on the 30s intraday tick. SCORE_DECAY needs a
+# fresh Line-1 score, computed only on the daily cadence — so it is NOT an intraday
+# exemption criterion (the daily path owns it). The exemption requires EVERY one of
+# these to be *evaluated* AND intact, so a code is never exempted on a silently
+# skipped condition (codex P2 cycle-3).
+_INTRADAY_OBSERVABLE_TEMPLATES: frozenset[InvalidationTemplate] = frozenset(
+    {InvalidationTemplate.ANCHOR_DRAWDOWN, InvalidationTemplate.TIME_STOP}
+)
+
+
+def intraday_intact_codes(
+    theses_by_code: Mapping[str, PositionThesis],
+    *,
+    price_by_code: Mapping[str, float],
+    holding_trade_days_by_code: Mapping[str, int] | None = None,
+) -> frozenset[str]:
+    """Codes whose thesis is CONFIRMED intact on every intraday-observable condition.
+
+    Used by the long-term-hold take-profit exemption
+    (P0-10-amendment-line2-2026-06-03): a code is intact only when it has a fresh
+    price AND every intraday-observable invalidation condition (ANCHOR_DRAWDOWN +
+    TIME_STOP) is **evaluable** (its input is present) and **not broken**. A
+    silently-skipped condition (e.g. holding-days missing → TIME_STOP unevaluable)
+    DISQUALIFIES the code: the exemption removes sell pressure, so the fail-safe
+    direction is "do not exempt unless confirmed intact" (codex P2 cycle-3) — the
+    mirror image of ``evaluate_thesis_breaks``'s "never fabricate a SELL".
+
+    SCORE_DECAY (a fresh Line-1 score, daily cadence only) is deliberately NOT an
+    intraday exemption criterion — it is enforced on the daily path. Pure +
+    deterministic; zero LLM.
+    """
+    days = holding_trade_days_by_code or {}
+    intact: list[str] = []
+    for code, thesis in theses_by_code.items():
+        price = price_by_code.get(code)
+        if price is None:
+            continue  # no fresh quote → cannot confirm intact
+        obs = ThesisObservation(
+            current_price=price,
+            holding_trade_days=days.get(code),
+            current_score=None,  # no intraday Line-1 score (daily-only)
+        )
+        # Track which REQUIRED templates were confirmed intact: a thesis missing
+        # ANCHOR_DRAWDOWN or TIME_STOP (the model allows an arbitrary 1–8
+        # condition set) must NOT be exempted on the conditions it happens to
+        # carry — every required template has to be seen, evaluable and intact
+        # (codex P2 cycle-4).
+        confirmed_templates: set[InvalidationTemplate] = set()
+        disqualified = False
+        for cond in thesis.invalidation_conditions:
+            if cond.template not in _INTRADAY_OBSERVABLE_TEMPLATES:
+                continue  # SCORE_DECAY etc. — daily path owns it
+            verdict = evaluate_condition(cond, obs)
+            # None = unevaluable (missing input) → cannot confirm intact;
+            # True = broken. Either disqualifies the exemption.
+            if verdict is None or verdict is True:
+                disqualified = True
+                break
+            confirmed_templates.add(cond.template)
+        if not disqualified and _INTRADAY_OBSERVABLE_TEMPLATES <= confirmed_templates:
+            intact.append(code)
+    return frozenset(intact)
+
+
 __all__ = [
     "ThesisBreak",
     "evaluate_thesis_breaks",
+    "intraday_intact_codes",
 ]

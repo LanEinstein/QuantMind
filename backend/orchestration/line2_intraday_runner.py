@@ -89,7 +89,10 @@ from backend.monitoring.intraday_triggers import (
     filter_fresh_quotes,
     serialize_intraday_quotes,
 )
-from backend.monitoring.thesis_break import evaluate_thesis_breaks
+from backend.monitoring.thesis_break import (
+    evaluate_thesis_breaks,
+    intraday_intact_codes,
+)
 from backend.orchestration.instruction_dispatcher import OutboundSignal
 from backend.orchestration.intraday_manifest import (
     IntradayTriggerManifest,
@@ -390,6 +393,7 @@ class Line2IntradayRunner:
             # no thesis exits, behaviour unchanged). Zero LLM: the break is a
             # pure quant evaluation of the buy-time whitelist thresholds.
             thesis_break_by_code = self._thesis_breaks(provider, fresh_spots)
+            long_term_hold_codes = self._intact_thesis_codes(provider, fresh_spots)
             sell_intents = evaluate_intraday_sell_intents(
                 fresh_spots,
                 closes_by_code,
@@ -404,6 +408,7 @@ class Line2IntradayRunner:
                 account=account,
                 max_single_stock_pct=self._add_cfg.max_single_stock_pct,
                 thesis_break_by_code=thesis_break_by_code,
+                long_term_hold_codes=long_term_hold_codes,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
@@ -743,6 +748,44 @@ class Line2IntradayRunner:
         except Exception as exc:  # noqa: BLE001 — thesis break never breaks a tick
             log.warning("thesis_break_eval_failed", error=str(exc))
             return {}
+
+    @staticmethod
+    def _intact_thesis_codes(
+        provider: Line2IntradayContextProvider,
+        fresh_spots: Mapping[str, Any],
+    ) -> frozenset[str]:
+        """Codes whose PositionThesis is present AND intact = long-term holds.
+
+        P0-10-amendment-line2-2026-06-03 (take-profit exemption). Reads the
+        provider's SEPARATE ``exempt_theses_by_code`` (own env gate; empty unless
+        the exemption is enabled — keeps THESIS_QUANT_BREAK wiring untouched).
+        A code is exempt only when it has a fresh spot this tick AND no
+        invalidation template is broken over that PIT price. Pure quant, zero
+        LLM. **Fail-open**: any read / eval error degrades to the empty set so
+        take-profit fires normally (the conservative default = lock gains),
+        never crashing the tick.
+        """
+        theses_attr = getattr(provider, "exempt_theses_by_code", None)
+        if theses_attr is None:
+            return frozenset()
+        try:
+            theses = theses_attr() if callable(theses_attr) else theses_attr
+            if not theses:
+                return frozenset()
+            price_by_code = {c: s.price for c, s in fresh_spots.items()}
+            days_attr = getattr(provider, "holding_trade_days_by_code", None)
+            days = (days_attr() if callable(days_attr) else days_attr) or {}
+            # CONFIRMED intact on every intraday-observable condition (price +
+            # time), not merely "not in the break map" — a silently-skipped
+            # condition must NOT grant the exemption (codex P2 cycle-3).
+            return intraday_intact_codes(
+                theses,
+                price_by_code=price_by_code,
+                holding_trade_days_by_code=days,
+            )
+        except Exception as exc:  # noqa: BLE001 — exemption never breaks a tick
+            log.warning("thesis_exempt_eval_failed", error=str(exc))
+            return frozenset()
 
     @staticmethod
     def _kind_of(intent: Any, side: InstructionSide) -> str:
