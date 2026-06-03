@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -200,6 +201,51 @@ def _fetch_stock_list_adata(codes: list[str]) -> pd.DataFrame:
     return m.list_market_current(code_list=codes)
 
 
+# Max ts_codes per ts.realtime_quote(src='sina') call. Sina serves multi-code
+# in one round-trip, but chunking bounds the URL length for a large watchlist.
+_SINA_BATCH = 50
+
+
+def _fetch_stock_list_tushare_sina(codes: list[str]) -> pd.DataFrame:
+    """Primary watchlist leg: Tushare ``realtime_quote(src='sina')`` batched.
+
+    Maps each bare 6-digit code to a ts_code via :func:`_to_tushare_ts_code`
+    (fail-closed). A universe-blocked / malformed code is **skipped** (logged
+    at debug) rather than failing the whole batch, so one bad code never
+    starves the rest of the watchlist. Valid ts_codes are comma-joined and
+    fetched in chunks of :data:`_SINA_BATCH`; the concatenated raw frame
+    (sina English-uppercase columns) is returned, or an empty frame when no
+    code could be fetched. Row→:class:`StockQuote` mapping lives in
+    :func:`_tushare_sina_row_to_quote` (P0-8-amendment-2026-06-03).
+
+    Lazy-imports tushare to mirror the file's lazy-import discipline (akshare /
+    adata also lazy) and spare every module-load site the Tushare stack when
+    the sina path is never taken.
+    """
+    import tushare as ts  # lazy: see docstring
+
+    ts_codes: list[str] = []
+    for code in codes:
+        try:
+            ts_codes.append(_to_tushare_ts_code(code))
+        except ValueError:
+            # universe-blocked / malformed — skip this one code (fail-closed
+            # for the code, not the batch); it simply gets no fresh quote.
+            log.debug("watchlist_sina_skip_unmappable_code", code=code)
+    if not ts_codes:
+        return pd.DataFrame()
+
+    frames: list[pd.DataFrame] = []
+    for i in range(0, len(ts_codes), _SINA_BATCH):
+        chunk = ts_codes[i : i + _SINA_BATCH]
+        df = ts.realtime_quote(ts_code=",".join(chunk), src="sina")
+        if df is not None and not df.empty:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def _fetch_orderbook_adata(code: str) -> pd.DataFrame:
     """Fetch the five-level orderbook (五档) from adata (primary).
 
@@ -357,6 +403,30 @@ def _tushare_sina_row_to_quote(row: pd.Series) -> StockQuote:
         turnover_rate=0.0,
         timestamp=datetime.now(tz=UTC),
     )
+
+
+def _rows_to_quotes(
+    df: pd.DataFrame | None,
+    mapper: Callable[[pd.Series], StockQuote],
+) -> list[StockQuote]:
+    """Map each frame row to a :class:`StockQuote` via ``mapper``, skipping any
+    row whose mapper raises.
+
+    On the sina leg :func:`_tushare_sina_row_to_quote` raises ``ValueError`` for
+    a halted / non-positive-PRICE symbol; skipping that one row degrades
+    fail-closed for that code (it gets no fresh quote → its MTM degrades) WITHOUT
+    starving the rest of the watchlist batch (P0-8-amendment-2026-06-03). An
+    empty / None frame yields ``[]``.
+    """
+    if df is None or df.empty:
+        return []
+    quotes: list[StockQuote] = []
+    for _, row in df.iterrows():
+        try:
+            quotes.append(mapper(row))
+        except Exception as exc:  # halted / non-positive price → skip this code
+            log.debug("watchlist_row_skipped", error=str(exc))
+    return quotes
 
 
 def _positive_or_none(value: object) -> float | None:
@@ -644,71 +714,59 @@ class MarketDataService:
     ) -> list[WatchlistMarketSnapshot]:
         """Return per-stock 30s snapshot for the active watchlist (C-003).
 
-        Mirrors :meth:`get_stock_list_realtime` but tags each row with the
-        leg that actually produced it (``adata`` primary or ``akshare``
-        fallback) so DataQualityProvider's divergence / staleness checks
-        can distinguish data origin. Empty ``codes`` short-circuits to
-        ``[]`` so the scheduler does not call the upstream fetchers when
-        the watchlist is briefly empty (e.g. boot before seed).
+        Primary leg = Tushare ``realtime_quote(src='sina')`` (the canonical
+        Sina realtime source — reachable + full OHLC/prev_close); fallback =
+        adata ``list_market_current`` (P0-8-amendment-2026-06-03). The dead
+        eastmoney akshare batch leg was removed: it is unreachable from the
+        host, and adata's batch returned empty during trading-hours
+        collection, which starved MTM + Line-2 monitoring since go-live. Each
+        row is tagged with the leg that produced it (``tushare_sina`` /
+        ``adata``) for provenance.
 
-        Treats *both* an exception **and** an empty frame from the
-        primary leg as a primary failure so the akshare fallback fires
-        whenever adata cannot keep the watchlist alive (Codex review
-        Cycle 1 [P2]). Only when both legs return empty does the method
-        return ``[]``; only when both legs raise does it surface
-        :class:`DataFetchError`.
+        Empty ``codes`` short-circuits to ``[]``. *Both* an exception **and**
+        an empty / all-rows-skipped frame from the primary leg count as a
+        primary failure (fall through to adata). Only when both legs yield no
+        quotes does the method return ``[]``; only when both legs raise does it
+        surface :class:`DataFetchError`. Per-row halted symbols are skipped,
+        not fatal (see :func:`_rows_to_quotes`).
         """
         if not codes:
             return []
 
-        source: QuoteSource = "adata"
+        actual_source: QuoteSource = "tushare_sina"
         primary_exc: Exception | None = None
         try:
-            df = await asyncio.to_thread(_fetch_stock_list_adata, codes)
+            df = await asyncio.to_thread(_fetch_stock_list_tushare_sina, codes)
+            quotes = _rows_to_quotes(df, _tushare_sina_row_to_quote)
         except Exception as exc:
-            self._log.warning("watchlist_snapshot_adata_failed", error=str(exc))
-            df = None
+            self._log.warning(
+                "watchlist_snapshot_tushare_sina_failed", error=str(exc)
+            )
             primary_exc = exc
+            quotes = []
 
-        # An empty adata frame during trading hours is also a primary
-        # failure — the watchlist is non-empty here, so fall through to
-        # akshare instead of returning [] and starving DataQualityProvider.
-        if df is None or df.empty:
-            source = "akshare"
+        # An empty (or all-rows-skipped) primary frame during trading hours is
+        # also a primary failure — fall through to adata rather than returning
+        # [] and starving DataQualityProvider / MTM / Line-2.
+        if not quotes:
+            actual_source = "adata"
             try:
-                df = await asyncio.to_thread(_fetch_stock_list_akshare, codes)
+                df = await asyncio.to_thread(_fetch_stock_list_adata, codes)
+                quotes = _rows_to_quotes(df, _adata_stock_row_to_quote)
             except Exception as exc:
-                # Only raise when BOTH legs failed exceptionally — a
-                # primary empty + fallback exception still counts as an
-                # outage because no rows can be produced this tick.
+                # Raise only when BOTH legs failed exceptionally — a primary
+                # empty + fallback exception is still an outage (no rows).
                 self._log.error(
                     "watchlist_snapshot_both_failed",
                     primary_error=str(primary_exc) if primary_exc else "empty",
                     fallback_error=str(exc),
                 )
                 raise DataFetchError(
-                    "Both adata and akshare failed for watchlist snapshot"
+                    "Both tushare-sina and adata failed for watchlist snapshot"
                 ) from exc
 
-        if df is None or df.empty:
+        if not quotes:
             return []
-
-        # Trust the column shape over the source flag for tagging — an
-        # adata-shape frame after the fallback fired (vendor edge case)
-        # should still be tagged ``adata`` for traceability.
-        if "stock_code" in df.columns:
-            quotes = [_adata_stock_row_to_quote(row) for _, row in df.iterrows()]
-            actual_source: QuoteSource = "adata"
-        else:
-            quotes = [_akshare_stock_row_to_quote(row) for _, row in df.iterrows()]
-            actual_source = "akshare"
-
-        # When we explicitly took the akshare branch above the column
-        # shape will already be akshare-shape; the override below is a
-        # safety net for the (rare) case where a partial frame slips
-        # through with mixed shape.
-        if source == "akshare":
-            actual_source = "akshare"
 
         return [
             WatchlistMarketSnapshot(

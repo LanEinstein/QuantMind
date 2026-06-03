@@ -41,7 +41,12 @@ class StockQuote(BaseModel):
     timestamp: datetime
 
 
-QuoteSource = Literal["adata", "akshare", "unknown"]
+# "tushare_sina" added by P0-8-amendment-2026-06-03: get_watchlist_snapshot's
+# primary leg is ts.realtime_quote(src='sina'). Additive — no downstream branch
+# keys on the watchlist source value (staleness tag is provenance-only; MTM
+# reads price/timestamp; data_quality_probes' source=="adata" is the decoupled
+# single-stock dual-leg selector).
+QuoteSource = Literal["adata", "akshare", "tushare_sina", "unknown"]
 
 
 class StockOrderbook(BaseModel):

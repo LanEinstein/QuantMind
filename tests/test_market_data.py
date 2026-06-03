@@ -257,7 +257,8 @@ class TestGetStockListRealtime:
 
 
 class TestGetWatchlistSnapshot:
-    """C-003: per-stock 30s watchlist snapshot with adata→akshare fallback."""
+    """C-003 watchlist 30s snapshot — Tushare-Sina primary, adata fallback
+    (P0-8-amendment-2026-06-03; the dead eastmoney akshare batch leg removed)."""
 
     @pytest.fixture
     def snap_at(self) -> datetime:
@@ -267,105 +268,102 @@ class TestGetWatchlistSnapshot:
     async def test_empty_codes_short_circuits(
         self, service: MarketDataService, snap_at: datetime
     ) -> None:
-        with patch("backend.data.market_data._fetch_stock_list_adata") as adata_mock:
+        with patch(
+            "backend.data.market_data._fetch_stock_list_tushare_sina"
+        ) as sina_mock:
             result = await service.get_watchlist_snapshot([], snap_at)
         assert result == []
-        adata_mock.assert_not_called()
+        sina_mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_primary_adata_tags_source(
+    async def test_primary_sina_tags_source(
         self, service: MarketDataService, snap_at: datetime
     ) -> None:
         with patch(
-            "backend.data.market_data._fetch_stock_list_adata",
-            return_value=_adata_stock_df(),
+            "backend.data.market_data._fetch_stock_list_tushare_sina",
+            return_value=_tushare_sina_df(),
         ):
             result = await service.get_watchlist_snapshot(["600519"], snap_at)
         assert len(result) == 1
         assert isinstance(result[0], WatchlistMarketSnapshot)
-        assert result[0].source == "adata"
+        assert result[0].code == "600519"
+        assert result[0].source == "tushare_sina"
+        assert result[0].price == 1800.0
+        # sina carries full OHLC/prev_close (adata batch only gives price)
+        assert result[0].prev_close == 1795.0
+        assert result[0].open == 1790.0
         assert result[0].snapshot_at == snap_at
 
     @pytest.mark.asyncio
-    async def test_adata_exception_falls_back_to_akshare_multi_code(
+    async def test_sina_exception_falls_back_to_adata(
         self, service: MarketDataService, snap_at: datetime
     ) -> None:
-        """Codex Cycle 1 [P1]: multi-code akshare fallback must filter via isin()."""
-        # Frame contains 2 watchlist codes (600519, 000001) + 1 noise row (300750).
-        # The akshare helper must return only the requested codes.
-        noisy_df = pd.DataFrame(
-            [
-                _akshare_spot_df().iloc[0].to_dict(),  # 600519
-                {
-                    "代码": "000001",
-                    "名称": "平安银行",
-                    "最新价": 12.5,
-                    "今开": 12.4,
-                    "最高": 12.6,
-                    "最低": 12.3,
-                    "昨收": 12.45,
-                    "涨跌幅": 0.4,
-                    "成交量": 1_000_000.0,
-                    "成交额": 12_500_000.0,
-                    "换手率": 0.1,
-                },
-                {
-                    "代码": "300750",
-                    "名称": "宁德时代",
-                    "最新价": 250.0,
-                    "今开": 248.0,
-                    "最高": 252.0,
-                    "最低": 245.0,
-                    "昨收": 247.5,
-                    "涨跌幅": 1.0,
-                    "成交量": 500_000.0,
-                    "成交额": 125_000_000.0,
-                    "换手率": 0.5,
-                },
-            ]
-        )
-
-        # Filter the noisy frame the way the real akshare helper does so
-        # the test asserts the multi-code isin() filter at the helper
-        # level (proves callers don't have to pre-filter).
-        def _fake_list_akshare(codes_arg: list[str]) -> pd.DataFrame:
-            return noisy_df[noisy_df["代码"].isin(codes_arg)]
-
         with (
             patch(
-                "backend.data.market_data._fetch_stock_list_adata",
-                side_effect=RuntimeError("adata down"),
+                "backend.data.market_data._fetch_stock_list_tushare_sina",
+                side_effect=RuntimeError("sina down"),
             ),
-            patch(
-                "backend.data.market_data._fetch_stock_list_akshare",
-                side_effect=_fake_list_akshare,
-            ),
-        ):
-            result = await service.get_watchlist_snapshot(["600519", "000001"], snap_at)
-
-        assert len(result) == 2
-        codes = {r.code for r in result}
-        assert codes == {"600519", "000001"}
-        assert all(r.source == "akshare" for r in result)
-
-    @pytest.mark.asyncio
-    async def test_empty_adata_frame_falls_back(
-        self, service: MarketDataService, snap_at: datetime
-    ) -> None:
-        """Codex Cycle 1 [P2]: empty primary frame must fall back to akshare."""
-        with (
             patch(
                 "backend.data.market_data._fetch_stock_list_adata",
-                return_value=pd.DataFrame(),
-            ),
-            patch(
-                "backend.data.market_data._fetch_stock_list_akshare",
-                return_value=_akshare_spot_df(),
+                return_value=_adata_stock_df(),
             ),
         ):
             result = await service.get_watchlist_snapshot(["600519"], snap_at)
         assert len(result) == 1
-        assert result[0].source == "akshare"
+        assert result[0].code == "600519"
+        assert result[0].source == "adata"
+
+    @pytest.mark.asyncio
+    async def test_empty_sina_frame_falls_back_to_adata(
+        self, service: MarketDataService, snap_at: datetime
+    ) -> None:
+        """Empty primary frame during trading hours must fall back to adata."""
+        with (
+            patch(
+                "backend.data.market_data._fetch_stock_list_tushare_sina",
+                return_value=pd.DataFrame(),
+            ),
+            patch(
+                "backend.data.market_data._fetch_stock_list_adata",
+                return_value=_adata_stock_df(),
+            ),
+        ):
+            result = await service.get_watchlist_snapshot(["600519"], snap_at)
+        assert len(result) == 1
+        assert result[0].source == "adata"
+
+    @pytest.mark.asyncio
+    async def test_halted_row_skipped_not_batch_fatal(
+        self, service: MarketDataService, snap_at: datetime
+    ) -> None:
+        # A non-positive-PRICE sina row (halted symbol) is skipped per-row;
+        # the healthy row still yields a snapshot (fail-closed for the one
+        # code, not the whole batch). Primary stays tushare_sina.
+        df = pd.DataFrame(
+            [
+                _tushare_sina_df().iloc[0].to_dict(),  # 600519 healthy
+                {
+                    "TS_CODE": "000001.SZ",
+                    "NAME": "平安银行",
+                    "PRICE": 0.0,  # halted / pre-open → skipped
+                    "OPEN": 0.0,
+                    "HIGH": 0.0,
+                    "LOW": 0.0,
+                    "PRE_CLOSE": 12.0,
+                    "VOLUME": 0,
+                    "AMOUNT": 0.0,
+                },
+            ]
+        )
+        with patch(
+            "backend.data.market_data._fetch_stock_list_tushare_sina",
+            return_value=df,
+        ):
+            result = await service.get_watchlist_snapshot(
+                ["600519", "000001"], snap_at
+            )
+        assert {r.code for r in result} == {"600519"}
+        assert result[0].source == "tushare_sina"
 
     @pytest.mark.asyncio
     async def test_both_legs_fail_raises(
@@ -373,12 +371,12 @@ class TestGetWatchlistSnapshot:
     ) -> None:
         with (
             patch(
-                "backend.data.market_data._fetch_stock_list_adata",
-                side_effect=RuntimeError("adata down"),
+                "backend.data.market_data._fetch_stock_list_tushare_sina",
+                side_effect=RuntimeError("sina down"),
             ),
             patch(
-                "backend.data.market_data._fetch_stock_list_akshare",
-                side_effect=RuntimeError("akshare down"),
+                "backend.data.market_data._fetch_stock_list_adata",
+                side_effect=RuntimeError("adata down"),
             ),
         ):
             with pytest.raises(DataFetchError):
@@ -390,16 +388,51 @@ class TestGetWatchlistSnapshot:
     ) -> None:
         with (
             patch(
-                "backend.data.market_data._fetch_stock_list_adata",
+                "backend.data.market_data._fetch_stock_list_tushare_sina",
                 return_value=pd.DataFrame(),
             ),
             patch(
-                "backend.data.market_data._fetch_stock_list_akshare",
+                "backend.data.market_data._fetch_stock_list_adata",
                 return_value=pd.DataFrame(),
             ),
         ):
             result = await service.get_watchlist_snapshot(["600519"], snap_at)
         assert result == []
+
+
+class TestFetchStockListTushareSina:
+    """P0-8-amendment-2026-06-03 — the batched sina primary fetch."""
+
+    def test_batches_and_skips_unmappable_codes(self) -> None:
+        # 688981 = STAR board → _to_tushare_ts_code raises ForbiddenCodeError;
+        # it must be SKIPPED (not fail the batch), and the valid codes still
+        # fetched with correct ts_code suffixes.
+        seen: dict[str, str] = {}
+
+        def _fake_rt(ts_code: str, src: str) -> pd.DataFrame:
+            seen["ts_code"] = ts_code
+            seen["src"] = src
+            return _tushare_sina_df()
+
+        with patch("tushare.realtime_quote", side_effect=_fake_rt):
+            from backend.data.market_data import _fetch_stock_list_tushare_sina
+
+            df = _fetch_stock_list_tushare_sina(["600519", "688981", "000001"])
+
+        assert seen["src"] == "sina"
+        # forbidden STAR code dropped; valid codes mapped to ts_codes
+        assert "688981" not in seen["ts_code"]
+        assert "600519.SH" in seen["ts_code"]
+        assert "000001.SZ" in seen["ts_code"]
+        assert not df.empty
+
+    def test_all_unmappable_returns_empty_without_sdk_call(self) -> None:
+        with patch("tushare.realtime_quote") as rt_mock:
+            from backend.data.market_data import _fetch_stock_list_tushare_sina
+
+            df = _fetch_stock_list_tushare_sina(["688981"])  # STAR → forbidden
+        assert df.empty
+        rt_mock.assert_not_called()
 
 
 class TestGetSectorOverview:
