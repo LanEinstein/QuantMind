@@ -80,6 +80,10 @@ from backend.monitoring.add_position import (
     parse_held_series,
 )
 from backend.monitoring.degrade import partition_by_suspension
+from backend.monitoring.intraday_calibration import (
+    FEATURE_CODE_VERSION as CALIBRATION_FEATURE_VERSION,
+)
+from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
 from backend.monitoring.intraday_triggers import (
     FEATURE_CODE_VERSION,
     IntradaySellIntent,
@@ -252,6 +256,7 @@ class Line2IntradayRunner:
         manifest_store: IntradayTriggerManifestStore,
         trigger_config: IntradayTriggerConfig | None = None,
         add_config: AddConfig | None = None,
+        drawdown_calibration: DrawdownCalibrationConfig | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -263,6 +268,10 @@ class Line2IntradayRunner:
         self._manifest_store = manifest_store
         self._trigger_cfg = trigger_config or IntradayTriggerConfig()
         self._add_cfg = add_config or AddConfig()
+        # Per-stock adaptive DRAWDOWN_STOP threshold (D1-a). ``None`` keeps the
+        # static fixed threshold (default-OFF; env-gated in main.py). Folded into
+        # the config hash below so the manifest pins the calibration for replay.
+        self._drawdown_calib = drawdown_calibration
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -286,6 +295,21 @@ class Line2IntradayRunner:
             "feature_code_version": FEATURE_CODE_VERSION,
             "trigger": dataclasses.asdict(self._trigger_cfg),
             "add": dataclasses.asdict(self._add_cfg),
+            # Pin the per-stock drawdown calibration (incl. its absence) so a
+            # replay reproduces the exact thresholds; a recalibration changes the
+            # hash and fails a stale manifest closed (PIT, R0 §3).
+            "drawdown_calibration": (
+                {
+                    # Pin the derivation maths VERSION too, not just the param
+                    # values: a maths change that bumps only the calibration
+                    # module version must shift this hash so stale manifests fail
+                    # closed (codex P2 — PIT, R0 §3).
+                    "version": CALIBRATION_FEATURE_VERSION,
+                    "config": dataclasses.asdict(self._drawdown_calib),
+                }
+                if self._drawdown_calib is not None
+                else None
+            ),
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
@@ -409,6 +433,7 @@ class Line2IntradayRunner:
                 max_single_stock_pct=self._add_cfg.max_single_stock_pct,
                 thesis_break_by_code=thesis_break_by_code,
                 long_term_hold_codes=long_term_hold_codes,
+                drawdown_calibration=self._drawdown_calib,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
@@ -607,7 +632,16 @@ class Line2IntradayRunner:
             stop_level=intent.stop_level or None,
             available_volume=intent.available_volume,
             threshold_params={
-                "drawdown_threshold": self._trigger_cfg.drawdown_threshold,
+                # Record the threshold that ACTUALLY fired: the per-stock adaptive
+                # value when calibration tightened/widened it, else the static
+                # config — so audit / offline replay reproduce the decision
+                # (P0-7-amendment-2026-06-03, codex P2).
+                "drawdown_threshold": (
+                    intent.effective_drawdown_threshold
+                    if getattr(intent, "effective_drawdown_threshold", None)
+                    is not None
+                    else self._trigger_cfg.drawdown_threshold
+                ),
                 "atr_stop_mult": self._trigger_cfg.atr_stop_mult,
                 "recent_high_window": float(self._trigger_cfg.recent_high_window),
             },

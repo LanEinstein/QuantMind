@@ -740,6 +740,20 @@ async def _init_line2_runners(
         ledger=ledger,
         pilot=pilot,
     )
+    # D1-a — per-stock adaptive DRAWDOWN_STOP threshold (|daily return| percentile).
+    # GATED default-OFF (QUANTMIND_LINE2_ADAPTIVE_DRAWDOWN_ENABLED=1) per the
+    # shadow-then-enable posture: shipped + wired + tested, INERT until the owner
+    # enables after shadow. None → the static fixed 5% (prior behaviour exactly).
+    from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
+
+    _adaptive_dd = (
+        DrawdownCalibrationConfig()
+        if os.environ.get(
+            "QUANTMIND_LINE2_ADAPTIVE_DRAWDOWN_ENABLED", "0"
+        ).strip()
+        == "1"
+        else None
+    )
     intraday_runner = Line2IntradayRunner(
         builder=builder,
         renderer=renderer,
@@ -747,6 +761,7 @@ async def _init_line2_runners(
         ledger=ledger,
         snapshot_store=snapshot_store,
         manifest_store=manifest_store,
+        drawdown_calibration=_adaptive_dd,
         pilot=pilot,
     )
 

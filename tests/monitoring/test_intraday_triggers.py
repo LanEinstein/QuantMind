@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from backend.broker.models import AccountInfo, Position
 from backend.models.market import WatchlistMarketSnapshot
 from backend.monitoring.add_position import AddConfig, AddRejectReason
+from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
 from backend.monitoring.intraday_triggers import (
     INTRADAY_QUOTE_HEADER,
     IntradaySellIntent,
@@ -353,6 +354,98 @@ def test_no_account_skips_take_profit_and_trim() -> None:
     pos = _position("510300", volume=5000, available=5000, cost=4.0)
     intents = evaluate_intraday_sell_intents(spots, closes, (pos,))  # no account
     assert intents == ()
+
+
+# ---------------------------------------------------------------------------
+# drawdown_calibration — per-stock adaptive DRAWDOWN_STOP threshold (D1-a)
+# (P0-7-amendment-2026-06-03)
+# ---------------------------------------------------------------------------
+
+
+def _dd_closes(low: float, high: float, n: int = 70) -> tuple[float, ...]:
+    return tuple(low if i % 2 else high for i in range(n))
+
+
+def test_drawdown_calibration_none_is_fixed_baseline() -> None:
+    # No calibration → the static 5% threshold: a −6% drawdown fires (v4 parity).
+    spots = {"510300": _spot("510300", price=9.4, prev_close=10.0)}  # -6%
+    closes = {"510300": _dd_closes(8.0, 8.4)}  # ATR stop 7.6 ≪ 9.4 → no ATR exit
+    pos = _position("510300", volume=300, available=300, cost=12.0)  # underwater
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+    # The effective threshold (= static 5% with no calibration) is carried so the
+    # persisted record reproduces the decision on replay (codex P2).
+    assert intents[0].effective_drawdown_threshold == 0.05
+
+
+def test_drawdown_calibration_widens_for_volatile_stock() -> None:
+    # Same −6% drawdown, but the stock's ~5% daily volatility derives a ~7.5%
+    # adaptive threshold → the −6% move is NOT abnormal for it → no stop.
+    spots = {"510300": _spot("510300", price=9.4, prev_close=10.0)}  # -6%
+    closes = {"510300": _dd_closes(8.0, 8.4)}
+    pos = _position("510300", volume=300, available=300, cost=12.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        drawdown_calibration=DrawdownCalibrationConfig(),
+    )
+    assert intents == ()
+
+
+def test_drawdown_calibration_tightens_for_calm_stock() -> None:
+    # A calm stock: the fixed 5% would not stop a −4% drop, but its ~0.25%
+    # volatility derives the 3% floor → the −4% move IS abnormal → stop fires.
+    spots = {"510300": _spot("510300", price=9.6, prev_close=10.0)}  # -4%
+    closes = {"510300": _dd_closes(8.00, 8.02)}  # ATR stop 7.98 ≪ 9.6 → no ATR
+    pos = _position("510300", volume=300, available=300, cost=12.0)
+
+    base = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
+    assert base == ()  # fixed 5% → -4% does not fire
+
+    adaptive = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        drawdown_calibration=DrawdownCalibrationConfig(),
+    )
+    assert len(adaptive) == 1
+    assert adaptive[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+    # Fired on the adaptive 3% floor → the record carries 3%, NOT the static 5%
+    # (else replay would recompute -4% vs 5% → not fired → reject a real signal).
+    assert adaptive[0].effective_drawdown_threshold == 0.03
+
+
+def test_drawdown_calibration_insufficient_history_uses_fixed() -> None:
+    # Too few daily closes → derive returns None → fall back to the fixed 5%,
+    # never a looser-than-intended stop. The −6% drawdown still fires.
+    spots = {"510300": _spot("510300", price=9.4, prev_close=10.0)}  # -6%
+    closes = {"510300": _dd_closes(8.0, 8.4, n=10)}  # < min_history+1 → None
+    pos = _position("510300", volume=300, available=300, cost=12.0)
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        drawdown_calibration=DrawdownCalibrationConfig(),
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+
+
+def test_drawdown_calibration_recorded_on_lower_priority_sell() -> None:
+    # codex P2: under a WIDENED adaptive threshold (~7.5%), a −6% move does NOT
+    # trip the drawdown stop, but a WEIGHT_TRIM fires — and it must carry the
+    # adaptive threshold (not the static 5%), else the manifest would imply a
+    # drawdown stop should have fired and replay/audit would reject the trim.
+    spots = {"510300": _spot("510300", price=9.4, prev_close=10.0)}  # -6%
+    closes = {"510300": _dd_closes(8.0, 8.4)}  # ATR stop 7.6 ≪ 9.4; adaptive ~7.5%
+    pos = _position("510300", volume=5000, available=5000, cost=12.0)  # 47% wt
+    intents = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(100_000.0),
+        max_single_stock_pct=0.15,
+        drawdown_calibration=DrawdownCalibrationConfig(),
+    )
+    assert len(intents) == 1
+    assert intents[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
+    assert intents[0].effective_drawdown_threshold is not None
+    assert 0.07 <= intents[0].effective_drawdown_threshold <= 0.08
 
 
 # ---------------------------------------------------------------------------

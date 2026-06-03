@@ -365,6 +365,7 @@ def _make_runner(
     tick_timeout_seconds: float = 10.0,
     sim_executor=None,  # noqa: ANN001
     dry_sink=None,  # noqa: ANN001
+    drawdown_calibration=None,  # noqa: ANN001
 ) -> tuple[Line2IntradayRunner, SnapshotStore, IntradayTriggerManifestStore]:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -392,6 +393,7 @@ def _make_runner(
         ledger=ledger,
         snapshot_store=snapshot_store,
         manifest_store=manifest_store,
+        drawdown_calibration=drawdown_calibration,
         tick_timeout_seconds=tick_timeout_seconds,
     )
     return runner, snapshot_store, manifest_store
@@ -1065,3 +1067,33 @@ def test_intact_thesis_codes_excludes_when_holding_days_missing() -> None:
         _Provider(), {"600519": SimpleNamespace(price=9.5)}
     )
     assert out == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# drawdown_calibration — PIT config-hash pinning (P0-7-amendment-2026-06-03)
+# ---------------------------------------------------------------------------
+
+
+async def test_config_hash_includes_drawdown_calibration(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
+
+    sender = FakeFeishuSender()
+    r_none, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "none",
+    )
+    r_cal, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "cal",
+        drawdown_calibration=DrawdownCalibrationConfig(),
+    )
+    # The calibration (including its absence) is folded into the manifest config
+    # hash → a replay reproduces the exact thresholds; enabling it (or changing a
+    # meta-param) shifts the hash and fails a stale manifest closed (PIT).
+    assert r_none._config_hash != r_cal._config_hash  # noqa: SLF001

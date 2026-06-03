@@ -62,6 +62,10 @@ from backend.monitoring.add_position import (
     moving_average,
     vanthorp_size,
 )
+from backend.monitoring.intraday_calibration import (
+    DrawdownCalibrationConfig,
+    derive_drawdown_threshold,
+)
 from backend.monitoring.sell_signal import normalize_position_codes
 from backend.risk.circuit_breaker import CircuitBreaker  # noqa: TID251
 from backend.risk.daily_state import DailyTradingState  # noqa: TID251
@@ -87,8 +91,12 @@ _LOT = 100
 # long-term-hold (intact PositionThesis) exemption — such holds skip TAKE_PROFIT
 # + the soft WEIGHT_TRIM but are still trimmed at the single-stock hard cap; an
 # empty long_term_hold_codes set reproduces v3 outputs bit-for-bit
-# (P0-10-amendment-line2-2026-06-03-thesis-gated-takeprofit-exemption).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v4"
+# (P0-10-amendment-line2-2026-06-03-thesis-gated-takeprofit-exemption). v5: the
+# DRAWDOWN_STOP threshold may be derived per-stock from its |daily return|
+# percentile when a DrawdownCalibrationConfig is supplied; a None calibration
+# reproduces v4 outputs bit-for-bit
+# (P0-7-amendment-2026-06-03-adaptive-intraday-thresholds).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v5"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -171,6 +179,14 @@ class IntradaySellIntent:
     atr: float
     recent_high: float
     stop_level: float
+    # The drawdown threshold actually applied this tick (per-stock adaptive value
+    # when calibration is on, else the static config). Carried so the persisted
+    # IntradayTriggerRecord records the threshold that FIRED — not the static
+    # config — so audit / offline replay reproduce the decision
+    # (P0-7-amendment-2026-06-03). ``None`` on non-drawdown triggers → the
+    # recorder falls back to the static config (drawdown threshold is not their
+    # firing criterion).
+    effective_drawdown_threshold: float | None = None
 
 
 def _bare(code: str) -> str:
@@ -287,6 +303,7 @@ def _take_profit_intent(
     atr: float | None,
     cfg: IntradayTriggerConfig,
     already_taken: frozenset[str],
+    effective_drawdown_threshold: float,
 ) -> IntradaySellIntent | None:
     """Lock a tranche of gains at ``cost + r_multiple × R`` (R = k×ATR).
 
@@ -323,6 +340,7 @@ def _take_profit_intent(
         atr=round(atr, 4),
         recent_high=0.0,
         stop_level=round(target, 4),
+        effective_drawdown_threshold=effective_drawdown_threshold,
     )
 
 
@@ -335,6 +353,7 @@ def _weight_trim_intent(
     account: AccountInfo,
     cfg: IntradayTriggerConfig,
     max_single_stock_pct: float,
+    effective_drawdown_threshold: float,
     hard_cap_only: bool = False,
     max_single_instruction_amount: float = 50_000.0,
 ) -> IntradaySellIntent | None:
@@ -413,6 +432,7 @@ def _weight_trim_intent(
         atr=0.0,
         recent_high=0.0,
         stop_level=0.0,
+        effective_drawdown_threshold=effective_drawdown_threshold,
     )
 
 
@@ -426,6 +446,7 @@ def _thesis_break_intent(
     reason: str,
     max_single_instruction_amount: float,
     atr: float | None,
+    effective_drawdown_threshold: float,
 ) -> IntradaySellIntent | None:
     """Full-exit SELL for a broken thesis, clamped to the single-instruction cap.
 
@@ -456,6 +477,7 @@ def _thesis_break_intent(
         atr=round(atr, 4) if atr else 0.0,
         recent_high=0.0,
         stop_level=0.0,
+        effective_drawdown_threshold=effective_drawdown_threshold,
     )
 
 
@@ -472,6 +494,7 @@ def evaluate_intraday_sell_intents(
     thesis_break_by_code: Mapping[str, str] | None = None,
     max_single_instruction_amount: float = 50_000.0,
     long_term_hold_codes: frozenset[str] = frozenset(),
+    drawdown_calibration: DrawdownCalibrationConfig | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -539,6 +562,21 @@ def evaluate_intraday_sell_intents(
 
         drawdown = (price - prev_close) / prev_close
         closes = closes_by_code.get(code)
+        # Per-stock adaptive DRAWDOWN_STOP threshold (P0-7-amendment-2026-06-03):
+        # derived from this code's own |daily return| percentile when a
+        # calibration is supplied; falls back to the static default when no
+        # calibration is wired OR there is not enough clean history. A None
+        # calibration reproduces the v4 fixed-threshold behaviour exactly.
+        dd_threshold = cfg.drawdown_threshold
+        if drawdown_calibration is not None and closes:
+            derived = derive_drawdown_threshold(closes, drawdown_calibration)
+            if derived is not None:
+                dd_threshold = derived
+        # Carried onto EVERY intent this code produces (not just DRAWDOWN_STOP):
+        # a lower-priority SELL firing under a widened adaptive threshold must
+        # still record the threshold in effect, else the manifest would imply a
+        # drawdown stop should have fired (codex P2 — audit/replay consistency).
+        dd_thr = round(dd_threshold, 6)
         atr = close_atr(closes, cfg.atr_window) if closes else None
         # The ATR trailing stop self-gates on a COMPLETE recent-high window:
         # a partial window would understate the true recent high and fire the
@@ -555,7 +593,7 @@ def evaluate_intraday_sell_intents(
             and recent_high is not None
             and price < recent_high - cfg.atr_stop_mult * atr
         )
-        drawdown_fired = drawdown <= -cfg.drawdown_threshold
+        drawdown_fired = drawdown <= -dd_threshold
 
         if atr_fired:
             stop_level = recent_high - cfg.atr_stop_mult * atr  # type: ignore[operator]
@@ -576,12 +614,13 @@ def evaluate_intraday_sell_intents(
                     atr=round(atr, 4),  # type: ignore[arg-type]
                     recent_high=round(recent_high, 4),  # type: ignore[arg-type]
                     stop_level=round(stop_level, 4),
+                    effective_drawdown_threshold=dd_thr,
                 )
             )
         elif drawdown_fired:
             detail = (
                 f"intraday drawdown {drawdown:.2%} vs prev_close "
-                f"{prev_close:.3f} ≤ -{cfg.drawdown_threshold:.0%}"
+                f"{prev_close:.3f} ≤ -{dd_threshold:.1%}"
             )
             intents.append(
                 IntradaySellIntent(
@@ -595,6 +634,7 @@ def evaluate_intraday_sell_intents(
                     atr=round(atr, 4) if atr else 0.0,
                     recent_high=round(recent_high, 4) if recent_high else 0.0,
                     stop_level=0.0,
+                    effective_drawdown_threshold=dd_thr,
                 )
             )
         else:
@@ -617,6 +657,7 @@ def evaluate_intraday_sell_intents(
                     reason=thesis_breaks[code],
                     max_single_instruction_amount=max_single_instruction_amount,
                     atr=atr,
+                    effective_drawdown_threshold=dd_thr,
                 )
                 if code in thesis_breaks
                 else None
@@ -642,6 +683,7 @@ def evaluate_intraday_sell_intents(
                         atr=atr,
                         cfg=cfg,
                         already_taken=take_profit_already_taken,
+                        effective_drawdown_threshold=dd_thr,
                     )
                 )
                 trim = (
@@ -655,6 +697,7 @@ def evaluate_intraday_sell_intents(
                         account=account,
                         cfg=cfg,
                         max_single_stock_pct=max_single_stock_pct,
+                        effective_drawdown_threshold=dd_thr,
                         hard_cap_only=is_long_term,
                         max_single_instruction_amount=max_single_instruction_amount,
                     )

@@ -1,0 +1,83 @@
+"""Unit tests for the per-stock drawdown calibration (D1-a).
+
+P0-7-amendment-2026-06-03-adaptive-intraday-thresholds: the intraday
+DRAWDOWN_STOP threshold is derived from the stock's |daily return| percentile,
+clamped to ``[floor, ceiling]``. Pure + deterministic.
+"""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from backend.monitoring.intraday_calibration import (
+    DrawdownCalibrationConfig,
+    derive_drawdown_threshold,
+)
+
+
+def _alternating(low: float, high: float, n: int = 70) -> tuple[float, ...]:
+    return tuple(low if i % 2 else high for i in range(n))
+
+
+def test_volatile_stock_widens_threshold() -> None:
+    # ~5% daily moves → 90th pct |return| ≈ 0.05 × 1.5 = 0.075 (between bounds).
+    out = derive_drawdown_threshold(_alternating(8.0, 8.4))
+    assert out is not None
+    assert 0.07 <= out <= 0.08
+
+
+def test_calm_stock_clamps_to_floor() -> None:
+    # ~0.25% daily moves → 0.0025 × 1.5 = 0.00375 → clamped up to the 3% floor.
+    out = derive_drawdown_threshold(_alternating(8.00, 8.02))
+    assert out == pytest.approx(0.03)
+
+
+def test_extreme_stock_clamps_to_ceiling() -> None:
+    # ~20% daily moves → 0.2 × 1.5 = 0.3 → clamped down to the 12% ceiling.
+    out = derive_drawdown_threshold(_alternating(10.0, 12.0))
+    assert out == pytest.approx(0.12)
+
+
+def test_insufficient_history_returns_none() -> None:
+    # < min_history + 1 closes → None (caller falls back to the static default).
+    assert derive_drawdown_threshold(_alternating(8.0, 8.4, n=20)) is None
+
+
+def test_non_finite_and_non_positive_closes_filtered() -> None:
+    # NaN / 0 / negative closes are dropped; if too few clean closes remain → None.
+    dirty = (10.0, float("nan"), 0.0, -5.0, 10.2)
+    assert derive_drawdown_threshold(dirty) is None
+
+
+def test_deterministic() -> None:
+    series = _alternating(8.0, 8.4)
+    assert derive_drawdown_threshold(series) == derive_drawdown_threshold(series)
+
+
+def test_window_truncates_to_recent_history() -> None:
+    # A long calm tail then a volatile recent window: only the recent window
+    # (cfg.window) drives the threshold → reflects current volatility.
+    calm = list(_alternating(8.00, 8.02, n=200))
+    cfg = DrawdownCalibrationConfig(window=60)
+    out = derive_drawdown_threshold(tuple(calm), cfg)
+    assert out == pytest.approx(0.03)  # calm tail → floor
+
+
+def test_custom_config_changes_result() -> None:
+    series = _alternating(8.0, 8.4)
+    tight = DrawdownCalibrationConfig(multiplier=1.0)
+    wide = DrawdownCalibrationConfig(multiplier=2.0)
+    t = derive_drawdown_threshold(series, tight)
+    w = derive_drawdown_threshold(series, wide)
+    assert t is not None and w is not None
+    assert w > t  # a larger multiplier → wider threshold
+
+
+def test_all_flat_closes_floor() -> None:
+    # Zero volatility → percentile 0 → clamped to the floor (never 0 threshold).
+    flat = tuple(10.0 for _ in range(70))
+    out = derive_drawdown_threshold(flat)
+    assert out == pytest.approx(0.03)
+    assert out is not None and math.isfinite(out)
