@@ -29,8 +29,11 @@ from dataclasses import dataclass
 
 # Pinned feature-code version — bump when the derivation maths changes so a stale
 # replay manifest fails closed. The runner folds this + the config values into its
-# config hash, so a recalibration is captured for PIT replay.
-FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v1"
+# config hash, so a recalibration is captured for PIT replay. v2: optional bear-
+# regime tightening of the drawdown threshold (D1-b,
+# P0-7-amendment-2026-06-03-regime-conditioned-drawdown); is_bear=False reproduces
+# v1 outputs bit-for-bit.
+FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v2"
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,11 @@ class DrawdownCalibrationConfig:
     multiplier: float = 1.5  # widen beyond the typical move (fire only on abnormal)
     floor: float = 0.03  # never tighter than 3% (avoid noise stop-outs / churn)
     ceiling: float = 0.12  # never wider than 12% (still a real protective stop)
+    # Regime conditioning (D1-b): in a BEAR regime, tighten the drawdown stop to
+    # de-risk / preserve capital faster. Applied (× threshold, then re-clamped) only
+    # when the caller passes ``is_bear=True``; inert otherwise. Recalibrated only
+    # offline (P2-2 shadow + human gate).
+    bear_multiplier: float = 0.8  # BEAR regime → 0.8× (tighten 20%, clamped ≥ floor)
 
 
 def _nearest_rank_percentile(sorted_values: Sequence[float], p: float) -> float:
@@ -65,6 +73,8 @@ def _nearest_rank_percentile(sorted_values: Sequence[float], p: float) -> float:
 def derive_drawdown_threshold(
     closes: Sequence[float],
     config: DrawdownCalibrationConfig | None = None,
+    *,
+    is_bear: bool = False,
 ) -> float | None:
     """Per-stock intraday drawdown threshold from the |daily return| percentile.
 
@@ -72,6 +82,12 @@ def derive_drawdown_threshold(
     daily history (the caller then falls back to the static default — never a
     looser-than-intended stop). Deterministic + replayable: only the persisted
     closes and the pinned config influence the result; zero external / LLM input.
+
+    ``is_bear`` (D1-b regime conditioning): in a BEAR market regime, the threshold
+    is tightened by ``config.bear_multiplier`` before the clamp — a faster
+    protective exit when the market itself is weak. The regime verdict is the
+    caller's, derived deterministically from the persisted benchmark index (never
+    an LLM / off-market input). ``is_bear=False`` reproduces the prior behaviour.
     """
     cfg = config or DrawdownCalibrationConfig()
     series = [
@@ -91,6 +107,8 @@ def derive_drawdown_threshold(
         return None
     scale = _nearest_rank_percentile(sorted(returns), cfg.percentile)
     raw = scale * cfg.multiplier
+    if is_bear:
+        raw *= cfg.bear_multiplier
     return max(cfg.floor, min(cfg.ceiling, raw))
 
 

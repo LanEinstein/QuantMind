@@ -257,6 +257,7 @@ class Line2IntradayRunner:
         trigger_config: IntradayTriggerConfig | None = None,
         add_config: AddConfig | None = None,
         drawdown_calibration: DrawdownCalibrationConfig | None = None,
+        regime_drawdown_enabled: bool = False,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -272,6 +273,11 @@ class Line2IntradayRunner:
         # static fixed threshold (default-OFF; env-gated in main.py). Folded into
         # the config hash below so the manifest pins the calibration for replay.
         self._drawdown_calib = drawdown_calibration
+        # D1-b regime conditioning: when on, a BEAR regime (derived from the
+        # benchmark index) tightens the adaptive drawdown stop. Refines the
+        # adaptive threshold, so it only has effect when ``_drawdown_calib`` is
+        # also set. Folded into the config hash below (PIT).
+        self._regime_dd_enabled = regime_drawdown_enabled
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -310,6 +316,11 @@ class Line2IntradayRunner:
                 if self._drawdown_calib is not None
                 else None
             ),
+            # Whether a BEAR regime tightens the adaptive drawdown stop (D1-b):
+            # the bear_multiplier lives in the calibration config above, but the
+            # decision to APPLY it is a separate flag → pin it so a replay with
+            # the feature off does not reproduce a tightened threshold.
+            "regime_drawdown_enabled": self._regime_dd_enabled,
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
@@ -418,6 +429,14 @@ class Line2IntradayRunner:
             # pure quant evaluation of the buy-time whitelist thresholds.
             thesis_break_by_code = self._thesis_breaks(provider, fresh_spots)
             long_term_hold_codes = self._intact_thesis_codes(provider, fresh_spots)
+            # D1-b: classify the market regime (deterministic, from the benchmark
+            # index) only when the feature is on — a BEAR regime tightens the
+            # adaptive drawdown stop. None when off → no conditioning.
+            sell_regime = (
+                classify_regime(index_closes)
+                if self._regime_dd_enabled
+                else None
+            )
             sell_intents = evaluate_intraday_sell_intents(
                 fresh_spots,
                 closes_by_code,
@@ -434,6 +453,7 @@ class Line2IntradayRunner:
                 thesis_break_by_code=thesis_break_by_code,
                 long_term_hold_codes=long_term_hold_codes,
                 drawdown_calibration=self._drawdown_calib,
+                regime=sell_regime,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,

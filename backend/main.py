@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -214,6 +215,60 @@ async def _read_held_position_codes(application: FastAPI) -> list[str]:
         log.warning("held_position_codes_read_failed", error=str(exc))
         return []
     return [p.code for p in positions if getattr(p, "volume", 0) > 0]
+
+
+_MAX_REGIME_STALENESS_DAYS = 15
+
+
+def _observable_index_closes(
+    rows: list[dict[str, object]],
+    *,
+    cutoff: date,
+    max_staleness_days: int = _MAX_REGIME_STALENESS_DAYS,
+) -> tuple[float, ...]:
+    """Finite-positive benchmark closes observable as of ``cutoff`` (PIT).
+
+    Feeds ``classify_regime``, which (once wired) drives the live ADD bear-ban and
+    the D1-b drawdown tightening — so the series must be point-in-time clean
+    (codex P2):
+
+    * **finite + positive** — ``get_index_history`` coerces a missing close to 0;
+      a stray 0 would drag the MA down and mis-classify a tick as BEAR.
+    * **observable** — only rows dated on/before ``cutoff`` (a backfilled / shadow
+      Mongo can hold future-dated rows; an undated / unparseable row is dropped).
+    * **fresh** — returns ``()`` (caller → NEUTRAL) when no valid close exists or
+      the latest one is staler than ``max_staleness_days`` before ``cutoff`` (a
+      long index-cron outage must not drive decisions off a weeks-old regime).
+
+    ``rows`` is expected sorted by date ASC (``get_index_prices``).
+    """
+    closes: list[float] = []
+    last_date: date | None = None
+    for r in rows:
+        c = r.get("close")
+        if not (
+            isinstance(c, (int, float))
+            and not isinstance(c, bool)
+            and math.isfinite(c)
+            and c > 0
+        ):
+            continue
+        d = r.get("date")
+        if not isinstance(d, str):
+            continue
+        try:
+            dt = date.fromisoformat(d)
+        except ValueError:
+            continue
+        if dt > cutoff:  # not observable as of this tick
+            continue
+        closes.append(float(c))
+        last_date = dt  # rows are ASC → the last kept is the latest observable
+    if not closes or last_date is None:
+        return ()
+    if (cutoff - last_date).days > max_staleness_days:
+        return ()  # stale regime → fail open to NEUTRAL
+    return tuple(closes)
 
 
 async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
@@ -754,6 +809,16 @@ async def _init_line2_runners(
         == "1"
         else None
     )
+    # D1-b — a BEAR regime tightens the adaptive drawdown stop. GATED default-OFF;
+    # refines the adaptive threshold, so it only has effect when the adaptive
+    # drawdown above is also enabled (P0-7-amendment-2026-06-03-regime-conditioned-
+    # drawdown).
+    _regime_dd_enabled = (
+        os.environ.get(
+            "QUANTMIND_LINE2_REGIME_DRAWDOWN_ENABLED", "0"
+        ).strip()
+        == "1"
+    )
     intraday_runner = Line2IntradayRunner(
         builder=builder,
         renderer=renderer,
@@ -762,6 +827,7 @@ async def _init_line2_runners(
         snapshot_store=snapshot_store,
         manifest_store=manifest_store,
         drawdown_calibration=_adaptive_dd,
+        regime_drawdown_enabled=_regime_dd_enabled,
         pilot=pilot,
     )
 
@@ -1042,9 +1108,30 @@ async def _init_line2_runners(
             now=now,
         )
         market_data = getattr(application.state, "market_data", None)
-        # Benchmark index closes (bear-regime ADD ban) source = U-D3; empty →
-        # classify_regime returns NEUTRAL (no bear ban) conservatively.
+        # Benchmark index daily closes for classify_regime (U-D3 wiring): drives
+        # the bear-regime ADD ban AND the D1-b drawdown tightening. Read from the
+        # persisted index_prices (the 15:30 daily cron). FAIL-OPEN: any read error
+        # or too-few closes → () → classify_regime returns NEUTRAL (no bear gate),
+        # so a Mongo hiccup never blocks the tick. Without this the regime was
+        # always NEUTRAL, leaving both regime features inert
+        # (P0-7-amendment-2026-06-03-regime-conditioned-drawdown).
         index_closes: tuple[float, ...] = ()
+        _mongodb = getattr(application.state, "mongodb", None)
+        if _mongodb is not None:
+            from backend.data.scheduler import BENCHMARK_INDEX_CODE
+
+            # PIT cutoff = T-1: only fully-closed sessions are observable intraday
+            # (today's index close isn't persisted until the 15:30 cron). The 1-day
+            # buffer also absorbs any UTC↔Shanghai date skew on ``now``.
+            _cutoff = (now - timedelta(days=1)).date()
+            try:
+                _idx_rows = await _mongodb.get_index_prices(
+                    BENCHMARK_INDEX_CODE, end_date=_cutoff.isoformat()
+                )
+                index_closes = _observable_index_closes(_idx_rows, cutoff=_cutoff)
+            except Exception as exc:  # noqa: BLE001 — never break the tick
+                log.warning("intraday_index_closes_failed", error=str(exc))
+                index_closes = ()
 
         async def _fetch_spots(codes: object) -> dict[str, object]:
             if market_data is None:

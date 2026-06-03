@@ -81,3 +81,27 @@ def test_all_flat_closes_floor() -> None:
     out = derive_drawdown_threshold(flat)
     assert out == pytest.approx(0.03)
     assert out is not None and math.isfinite(out)
+
+
+def test_bear_regime_tightens_threshold() -> None:
+    # D1-b: a BEAR regime tightens the threshold by bear_multiplier (0.8).
+    series = _alternating(8.0, 8.4)  # base ≈ 0.075 (well within bounds)
+    base = derive_drawdown_threshold(series)
+    bear = derive_drawdown_threshold(series, is_bear=True)
+    assert base is not None and bear is not None
+    assert bear < base
+    assert bear == pytest.approx(base * 0.8)
+
+
+def test_bear_tightening_clamped_to_floor() -> None:
+    # Tightening must not push the stop below the floor (still a real stop).
+    series = _alternating(8.00, 8.05)  # tiny vol → base already near the floor
+    out = derive_drawdown_threshold(series, is_bear=True)
+    assert out == pytest.approx(0.03)
+
+
+def test_is_bear_false_reproduces_base() -> None:
+    series = _alternating(8.0, 8.4)
+    assert derive_drawdown_threshold(
+        series, is_bear=False
+    ) == derive_drawdown_threshold(series)

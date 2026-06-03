@@ -95,8 +95,10 @@ _LOT = 100
 # DRAWDOWN_STOP threshold may be derived per-stock from its |daily return|
 # percentile when a DrawdownCalibrationConfig is supplied; a None calibration
 # reproduces v4 outputs bit-for-bit
-# (P0-7-amendment-2026-06-03-adaptive-intraday-thresholds).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v5"
+# (P0-7-amendment-2026-06-03-adaptive-intraday-thresholds). v6: that adaptive
+# threshold may be tightened in a BEAR regime; a None regime reproduces v5
+# (P0-7-amendment-2026-06-03-regime-conditioned-drawdown).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v6"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -495,6 +497,7 @@ def evaluate_intraday_sell_intents(
     max_single_instruction_amount: float = 50_000.0,
     long_term_hold_codes: frozenset[str] = frozenset(),
     drawdown_calibration: DrawdownCalibrationConfig | None = None,
+    regime: MarketRegime | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -545,6 +548,10 @@ def evaluate_intraday_sell_intents(
     names = name_by_code or {}
     pos_by_code = {_bare(p.code): p for p in positions}
     thesis_breaks = thesis_break_by_code or {}
+    # D1-b regime conditioning: a BEAR market regime tightens the adaptive
+    # drawdown stop (passed through to the per-stock derivation). ``None`` regime
+    # (feature off / not supplied) leaves the threshold unconditioned.
+    is_bear = regime is MarketRegime.BEAR
 
     intents: list[IntradaySellIntent] = []
     for code in sorted(spots):
@@ -569,7 +576,9 @@ def evaluate_intraday_sell_intents(
         # calibration reproduces the v4 fixed-threshold behaviour exactly.
         dd_threshold = cfg.drawdown_threshold
         if drawdown_calibration is not None and closes:
-            derived = derive_drawdown_threshold(closes, drawdown_calibration)
+            derived = derive_drawdown_threshold(
+                closes, drawdown_calibration, is_bear=is_bear
+            )
             if derived is not None:
                 dd_threshold = derived
         # Carried onto EVERY intent this code produces (not just DRAWDOWN_STOP):

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from backend.broker.models import AccountInfo, Position
 from backend.models.market import WatchlistMarketSnapshot
-from backend.monitoring.add_position import AddConfig, AddRejectReason
+from backend.monitoring.add_position import AddConfig, AddRejectReason, MarketRegime
 from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
 from backend.monitoring.intraday_triggers import (
     INTRADAY_QUOTE_HEADER,
@@ -446,6 +446,43 @@ def test_drawdown_calibration_recorded_on_lower_priority_sell() -> None:
     assert intents[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
     assert intents[0].effective_drawdown_threshold is not None
     assert 0.07 <= intents[0].effective_drawdown_threshold <= 0.08
+
+
+def test_regime_bear_tightens_adaptive_drawdown() -> None:
+    # D1-b: a −6.5% move does not breach the volatile stock's ~7.5% adaptive
+    # threshold, but a BEAR regime tightens it to 7.5%×0.8 = 6% → it now fires.
+    spots = {"510300": _spot("510300", price=9.35, prev_close=10.0)}  # -6.5%
+    closes = {"510300": _dd_closes(8.0, 8.4)}  # adaptive ~7.5%; ATR stop 7.6 ≪ 9.35
+    pos = _position("510300", volume=300, available=300, cost=12.0)
+
+    non_bear = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        drawdown_calibration=DrawdownCalibrationConfig(),
+    )
+    assert non_bear == ()  # 7.5% threshold not breached by -6.5%
+
+    bear = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        drawdown_calibration=DrawdownCalibrationConfig(),
+        regime=MarketRegime.BEAR,
+    )
+    assert len(bear) == 1
+    assert bear[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
+    # The tightened threshold is recorded (replay reproduces the bear decision).
+    assert bear[0].effective_drawdown_threshold == 0.06
+
+
+def test_regime_non_bear_does_not_tighten() -> None:
+    # A NEUTRAL/BULL regime leaves the adaptive threshold unconditioned.
+    spots = {"510300": _spot("510300", price=9.35, prev_close=10.0)}  # -6.5%
+    closes = {"510300": _dd_closes(8.0, 8.4)}
+    pos = _position("510300", volume=300, available=300, cost=12.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        drawdown_calibration=DrawdownCalibrationConfig(),
+        regime=MarketRegime.NEUTRAL,
+    )
+    assert out == ()
 
 
 # ---------------------------------------------------------------------------

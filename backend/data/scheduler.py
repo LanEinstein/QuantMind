@@ -29,7 +29,13 @@ from backend.llm.cost_tracker import flush_to_mongodb
 from backend.utils.trading_hours import is_trading_hours
 
 BENCHMARK_INDEX_CODE = "000300"
-BENCHMARK_BACKFILL_DAYS = 5
+# Calendar-day lookback for the 15:30 index backfill. Sized so a single cron run
+# (e.g. on a fresh / reset index_prices collection) persists ≥21 trading closes —
+# the minimum classify_regime needs for a non-NEUTRAL verdict that drives the
+# Line-2 bear-regime ADD ban + D1-b drawdown tightening. 60 calendar days ≈ 40
+# trading days, leaving ample headroom even across the Spring-Festival break
+# (codex P2; P0-7-amendment-2026-06-03-regime-conditioned-drawdown).
+BENCHMARK_BACKFILL_DAYS = 60
 
 # Redis quote-cache TTL — P1-2.B §1.2 first fallback tier (≤60s freshness
 # requirement on read, doubled for headroom against scheduler missfires).
