@@ -457,12 +457,69 @@ class TestReconciliation:
             "  510300 1000 股\n"
             "  600519 100 股\n"
             "系统总权益: 275000.00 CNY\n"
-            "—— 请按以下格式回复 ——\n"
-            "1. 采纳系统镜像 → 回复『采纳镜像』\n"
-            "2. 采纳用户回报 → 回复『采纳回报 现金 <数额> 持仓 <code> <股数> ...』\n"
-            "3. 对账更正 → 回复『更正 现金 <数额> 持仓 <code> <股数> ...』"
+            "—— 请按以下格式之一回复(编号 RECON-20260516-001 原样带上)——\n"
+            "· 无误: 对账无误 RECON-20260516-001\n"
+            "· 差异(回报实际持仓): 对账差异 RECON-20260516-001 现金 <数额> "
+            "持仓 <code> <股数>股 成本 <成本>; …(无持仓填: 无)\n"
+            "· 更正(改上次回报): 对账更正 RECON-20260516-001 现金 <数额> "
+            "持仓 <code> <股数>股 成本 <成本>; …(无持仓填: 无)\n"
+            "· 采纳用户回报: 对账采纳：用户回报 RECON-20260516-001\n"
+            "· 采纳系统镜像: 对账采纳：系统镜像 RECON-20260516-001"
         )
         assert rendered == expected
+
+    def test_request_instructions_match_active_parser(self) -> None:
+        # P0-5-amendment-2026-06-03 follow-up: the rendered reply instructions
+        # MUST match the active parse_reconciliation_reply grammar. They had
+        # drifted (采纳镜像 / 采纳回报) — never caught because the initiate path
+        # was never wired. Round-trip concrete instances of each instructed form.
+        from backend.services.reconciliation_parser import (
+            ReconciliationReplyKind,
+            parse_reconciliation_reply,
+        )
+
+        tid = "RECON-20260516-001"
+        rendered = MessageRenderer().render_reconciliation_request(
+            ticket_id=tid,
+            trade_date="2026-05-16",
+            expected_cash_cny=100000.0,
+            expected_positions={},
+            expected_total_equity_cny=100000.0,
+        )
+        # Instructed command prefixes appear verbatim in the prompt...
+        assert f"对账无误 {tid}" in rendered
+        assert f"对账差异 {tid}" in rendered
+        assert f"对账更正 {tid}" in rendered
+        assert f"对账采纳：用户回报 {tid}" in rendered
+        assert f"对账采纳：系统镜像 {tid}" in rendered
+        # ...and concrete instances of each parse to the expected kind.
+        assert (
+            parse_reconciliation_reply(f"对账无误 {tid}").kind
+            is ReconciliationReplyKind.OK
+        )
+        assert (
+            parse_reconciliation_reply(
+                f"对账差异 {tid} 现金 65123.86 持仓 605111 200股 成本 63.035"
+            ).kind
+            is ReconciliationReplyKind.MISMATCH
+        )
+        assert (
+            parse_reconciliation_reply(
+                f"对账更正 {tid} 现金 65123.86 持仓 605111 200股 成本 63.035"
+            ).kind
+            is ReconciliationReplyKind.AMEND
+        )
+        assert (
+            parse_reconciliation_reply(f"对账采纳：用户回报 {tid}").kind
+            is ReconciliationReplyKind.RESOLVE_USER
+        )
+        assert (
+            parse_reconciliation_reply(f"对账采纳：系统镜像 {tid}").kind
+            is ReconciliationReplyKind.RESOLVE_SYSTEM
+        )
+        # The stale (parser-rejected) forms must be gone.
+        assert "采纳镜像" not in rendered
+        assert "采纳回报" not in rendered
 
     def test_request_empty_positions(self) -> None:
         rendered = MessageRenderer().render_reconciliation_request(

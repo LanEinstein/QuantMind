@@ -378,13 +378,16 @@ class ReconciliationOrchestrator:
         log.info(
             "reconciliation_reply_ok ticket_id=%s", reply.ticket_id
         )
-        return ReplyOutcome(
-            handled=True,
-            kind=reply.kind,
-            ticket_id=reply.ticket_id,
-            ticket_status=None,
-            deviation_report=None,
-            parse_error=None,
+        # "对账无误" = the owner confirms the system mirror matches reality →
+        # adopt the system mirror and CLOSE the ticket. With a pre-created OPEN
+        # ticket (on-demand initiate, P0-5-amendment-2026-06-03) a bare ack
+        # would leave the ticket OPEN and freeze BUY/SELL routing forever
+        # (codex P2). Delegate to the resolution path as RESOLVED_SYSTEM_AS_TRUTH
+        # (no mirror change — it resets to the expected/system snapshot — and the
+        # freeze clears). When no ticket exists, _handle_resolution returns a
+        # benign unknown_ticket_id outcome (the original no-op semantics).
+        return await self._handle_resolution(
+            reply, ReconciliationTicketStatus.RESOLVED_SYSTEM_AS_TRUTH
         )
 
     async def _handle_mismatch(

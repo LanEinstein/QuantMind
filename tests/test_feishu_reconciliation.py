@@ -416,6 +416,22 @@ class TestReplyHandling:
         )
         assert len(applier.calls) == 1
 
+    @pytest.mark.asyncio
+    async def test_ok_reply_resolves_open_ticket_system_as_truth(self) -> None:
+        # P0-5-amendment-2026-06-03 (codex P2): 对账无误 against a pre-created
+        # OPEN ticket must RESOLVE it (system-as-truth) + clear the freeze —
+        # NOT leave it OPEN (which would freeze BUY/SELL routing forever).
+        tickets = _InMemoryTicketRepo()
+        tickets.tickets[_TICKET_ID] = _open_ticket()
+        orchestrator, _, _, _, applier = _build_orchestrator(tickets=tickets)
+        outcome = await orchestrator.handle_reply(f"对账无误 {_TICKET_ID}")
+        assert outcome.kind == ReconciliationReplyKind.OK
+        assert (
+            outcome.ticket_status
+            == ReconciliationTicketStatus.RESOLVED_SYSTEM_AS_TRUTH
+        )
+        assert len(applier.calls) == 1
+
 
 # -----------------------------------------------------------------------------
 # 3. decide_ticket — write endpoint surface
