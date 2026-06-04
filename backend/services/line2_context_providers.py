@@ -39,6 +39,7 @@ recorded so they are not silently shipped half-wired:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -482,21 +483,17 @@ async def build_line2_run_state(
     )
 
 
-def _watchlist_signal_from_frame(
-    frame: MarketDataSnapshot | None, code: str
-) -> WatchlistMarketSignal:
-    """Derive a per-code :class:`WatchlistMarketSignal` from the daily frame.
+_HeldSeries = tuple[tuple[float, ...], tuple[float, ...]]
 
-    Uses the frame's closes (→ last price) + amounts (→ 20-day average CNY
+
+def _watchlist_signal_from_series(parsed: _HeldSeries | None) -> WatchlistMarketSignal:
+    """Derive a per-code :class:`WatchlistMarketSignal` from a parsed frame row.
+
+    Uses the row's closes (→ last price) + amounts (→ 20-day average CNY
     turnover). The IPO-age (``listed_at_trading_days``) column is not parsed by
     ``parse_held_series``; it defaults permissive here and is wired from the
     frame's ``listed_trading_days`` column in U-D3 (real ADD entries).
     """
-    if frame is None:
-        return _PERMISSIVE_WATCHLIST_SIGNAL
-    bare = _bare_code(code)
-    series = parse_held_series(frame, [bare])
-    parsed = series.get(bare)
     if not parsed:
         return _PERMISSIVE_WATCHLIST_SIGNAL
     closes, amounts = parsed
@@ -510,6 +507,33 @@ def _watchlist_signal_from_frame(
     )
 
 
+def _prev_close_from_series(parsed: _HeldSeries | None) -> float | None:
+    """A parsed frame row's latest close — the prev_close fallback value.
+
+    WHY: production ``kline_daily`` was never fed, so the MarketMetaProvider's
+    ``get_prev_close`` returned ``None`` for every code and RiskEngine's
+    limit-band check rejected every Line-2 order (2026-06-04 incident: two live
+    ATR trailing stops swallowed). The frame is the same pinned PIT snapshot
+    the triggers derive from (manifest lineage already records it), and its
+    latest CLOSED bar is exactly the close the exchange limit bands are built
+    on (the daily/rotation 09:35 crons and the 30s intraday tick all run with
+    the T-1 frame). Any shape problem degrades this fallback to ``None``
+    (fail-closed rejection stands), never aborts the run.
+    """
+    if not parsed:
+        return None
+    closes, _amounts = parsed
+    if not closes:
+        return None
+    try:
+        value = float(closes[-1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
 async def build_line2_code_contexts(
     *,
     codes: Sequence[str],
@@ -518,26 +542,64 @@ async def build_line2_code_contexts(
     frame: MarketDataSnapshot | None = None,
     data_quality_provider: Any | None = None,
     now: datetime,
+    expected_trade_date: str | None = None,
 ) -> dict[str, Line2CodeContext]:
     """Assemble the per-held-code :class:`Line2CodeContext` map.
 
-    For each (bare) code: prev_close via the MarketMetaProvider, board-derived
-    stock_meta, per-code data quality (clean fallback when no provider), and a
-    frame-derived watchlist signal. A prev_close lookup failure degrades to
-    ``None`` (RiskEngine handles a missing prev_close conservatively) rather than
-    aborting the whole run.
+    For each (bare) code: prev_close via the MarketMetaProvider with the pinned
+    daily frame's latest close as fallback (P0-8-amendment-2026-06-04-line2-
+    prev-close-frame-fallback), board-derived stock_meta, per-code data quality
+    (clean fallback when no provider), and a frame-derived watchlist signal. A
+    prev_close lookup failing on BOTH sources degrades to ``None`` (RiskEngine
+    handles a missing prev_close conservatively) rather than aborting the run.
+
+    ``expected_trade_date`` (compact ``YYYYMMDD``) pins the prev_close fallback
+    to a frame of exactly that trade date: ``_ensure_daily_frame``'s fail-open
+    keeps yesterday's cached frame alive when today's assembly fails (good for
+    monitoring continuity), but a stale close would silently shift the exchange
+    limit bands — so a mismatched frame disables ONLY the fallback (review
+    finding). ``None`` (tests / non-pinned callers) trusts the frame as given.
+    The frame is parsed ONCE for all codes (it can be the full-market CSV).
     """
+    series_by_code: Mapping[str, _HeldSeries] = {}
+    if frame is not None:
+        try:
+            series_by_code = parse_held_series(
+                frame, [_bare_code(c) for c in codes]
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade, never abort
+            log.warning("line2_frame_parse_failed", error=str(exc))
+            series_by_code = {}
+    frame_ok_for_prev_close = frame is not None and (
+        expected_trade_date is None or frame.trade_date == expected_trade_date
+    )
+    if frame is not None and not frame_ok_for_prev_close:
+        log.warning(
+            "line2_stale_frame_prev_close_fallback_disabled",
+            frame_trade_date=frame.trade_date,
+            expected_trade_date=expected_trade_date,
+        )
     out: dict[str, Line2CodeContext] = {}
     for raw_code in codes:
         bare = _bare_code(raw_code)
         if bare in out:
             continue
         name = name_by_code.get(raw_code) or name_by_code.get(bare) or bare
+        parsed = series_by_code.get(bare)
         try:
             prev_close = await market_meta.get_prev_close(bare)
         except Exception as exc:  # noqa: BLE001 — degrade per-code, never abort
             log.warning("line2_prev_close_failed", code=bare, error=str(exc))
             prev_close = None
+        if prev_close is None and frame_ok_for_prev_close:
+            # P0-8-amendment-2026-06-04: the pinned frame's T-1 close stands in
+            # when the meta source has nothing (empty kline_daily), so the
+            # limit-band check can actually run instead of dead-rejecting.
+            prev_close = _prev_close_from_series(parsed)
+            if prev_close is not None:
+                log.info(
+                    "line2_prev_close_frame_fallback", code=bare, prev_close=prev_close
+                )
         if data_quality_provider is not None:
             try:
                 dq = await data_quality_provider.evaluate(bare, now)
@@ -552,7 +614,7 @@ async def build_line2_code_contexts(
             prev_close=prev_close,
             stock_meta=risk_meta_for(bare, name),
             data_quality=dq,
-            watchlist_signal=_watchlist_signal_from_frame(frame, bare),
+            watchlist_signal=_watchlist_signal_from_series(parsed),
         )
     return out
 

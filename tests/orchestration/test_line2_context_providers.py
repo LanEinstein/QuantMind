@@ -266,7 +266,7 @@ async def test_build_code_contexts_assembles_per_code() -> None:
     assert sell_ctx.watchlist_signal.avg_amount_20d_yuan == pytest.approx(3e8)
 
 
-async def test_build_code_contexts_prev_close_failure_degrades() -> None:
+async def test_build_code_contexts_prev_close_failure_falls_back_to_frame() -> None:
     class _BoomMeta:
         async def get_prev_close(self, code: str) -> float | None:
             raise RuntimeError("quote provider down")
@@ -275,7 +275,100 @@ async def test_build_code_contexts_prev_close_failure_degrades() -> None:
         codes=[_SELL], name_by_code=_NAMES, market_meta=_BoomMeta(),
         frame=_daily_frame(), data_quality_provider=None, now=_NOW,
     )
-    # A prev_close failure degrades to None (RiskEngine handles it), never aborts.
+    # A meta failure degrades to the pinned frame's T-1 close — never aborts,
+    # never goes dead (P0-8-amendment-2026-06-04-line2-prev-close-frame-fallback).
+    assert contexts[_SELL].prev_close == pytest.approx(_crash()[-1])
+
+
+async def test_build_code_contexts_prev_close_none_falls_back_to_frame() -> None:
+    # The production incident shape (2026-06-04): kline_daily is EMPTY so the
+    # meta provider returns None for every code — the pinned daily frame's
+    # latest close must stand in (it IS the T-1 close the limit bands need).
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL, _CALM], name_by_code=_NAMES, market_meta=_FakeMarketMeta({}),
+        frame=_daily_frame(), data_quality_provider=None, now=_NOW,
+    )
+    assert contexts[_SELL].prev_close == pytest.approx(_crash()[-1])
+    assert contexts[_CALM].prev_close == pytest.approx(_flat()[-1])
+
+
+async def test_build_code_contexts_prev_close_meta_wins_over_frame() -> None:
+    # kline_daily (authoritative EOD close) keeps precedence when present.
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL], name_by_code=_NAMES, market_meta=_FakeMarketMeta({_SELL: 4.501}),
+        frame=_daily_frame(), data_quality_provider=None, now=_NOW,
+    )
+    assert contexts[_SELL].prev_close == 4.501
+
+
+async def test_build_code_contexts_prev_close_none_without_frame() -> None:
+    # Both sources absent → None → RiskEngine keeps rejecting (fail-closed).
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL], name_by_code=_NAMES, market_meta=_FakeMarketMeta({}),
+        frame=None, data_quality_provider=None, now=_NOW,
+    )
+    assert contexts[_SELL].prev_close is None
+
+
+async def test_build_code_contexts_prev_close_none_when_code_not_in_frame() -> None:
+    # Held code missing from the frame rows → fallback yields nothing → None.
+    contexts = await build_line2_code_contexts(
+        codes=["600999"], name_by_code={"600999": "某股"},
+        market_meta=_FakeMarketMeta({}),
+        frame=_daily_frame(), data_quality_provider=None, now=_NOW,
+    )
+    assert contexts["600999"].prev_close is None
+
+
+async def test_build_code_contexts_stale_frame_disables_fallback() -> None:
+    # _ensure_daily_frame's fail-open can keep YESTERDAY's cached frame alive
+    # when today's assembly fails; a stale close must never become the limit
+    # band base — the trade-date pin disables ONLY the fallback (review
+    # finding on P0-8-amendment-2026-06-04).
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL], name_by_code=_NAMES, market_meta=_FakeMarketMeta({}),
+        frame=_daily_frame(), data_quality_provider=None, now=_NOW,
+        expected_trade_date="20260515",  # frame pins 20260514 → stale
+    )
+    assert contexts[_SELL].prev_close is None
+
+
+async def test_build_code_contexts_matching_pin_keeps_fallback() -> None:
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL], name_by_code=_NAMES, market_meta=_FakeMarketMeta({}),
+        frame=_daily_frame(), data_quality_provider=None, now=_NOW,
+        expected_trade_date="20260514",  # matches the frame's trade_date
+    )
+    assert contexts[_SELL].prev_close == pytest.approx(_crash()[-1])
+
+
+async def test_build_code_contexts_stale_frame_keeps_watchlist_signal() -> None:
+    # The pin gates ONLY the prev_close fallback: a stale frame still feeds
+    # the watchlist signal (monitoring continuity, pre-existing semantics).
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL], name_by_code=_NAMES, market_meta=_FakeMarketMeta({}),
+        frame=_daily_frame(), data_quality_provider=None, now=_NOW,
+        expected_trade_date="20260515",
+    )
+    assert contexts[_SELL].watchlist_signal.avg_amount_20d_yuan == pytest.approx(3e8)
+
+
+async def test_build_code_contexts_prev_close_malformed_row_degrades() -> None:
+    # A structurally dropped row (wrong column count → parse_held_series drops
+    # it) must degrade the FALLBACK only (None), never abort the run — mirrors
+    # the meta-failure degradation contract.
+    raw = "\n".join([_HEADER, f"{_SELL},{_NAMES[_SELL]},400,4.5"]).encode("utf-8")
+    bad = MarketDataSnapshot(
+        vendor="quantmind", endpoint="line1_screener_frame",
+        params={"as_of": "20260514"}, trade_date="20260514",
+        raw_payload=raw, size=len(raw), encoding="csv", compression="none",
+        raw_payload_sha256=hashlib.sha256(raw).hexdigest(),
+        fetch_time_utc=datetime(2026, 5, 14, 9, 0, 0, tzinfo=UTC),
+    )
+    contexts = await build_line2_code_contexts(
+        codes=[_SELL], name_by_code=_NAMES, market_meta=_FakeMarketMeta({}),
+        frame=bad, data_quality_provider=None, now=_NOW,
+    )
     assert contexts[_SELL].prev_close is None
 
 

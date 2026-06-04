@@ -15,6 +15,7 @@ The class is dependency-injected: the production deployment passes a
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
@@ -168,6 +169,19 @@ class MongoBackedMarketMetaProvider:
             close = doc.get("close")
             if close is not None:
                 return float(close)
+        # P0-8-amendment-2026-06-04-line2-prev-close-frame-fallback: production
+        # ``kline_daily`` has no feeder yet, so without a fallback this returned
+        # None for every code — which silently no-ops MockBroker's at-fill
+        # price-limit recheck (review P1) on top of dead-rejecting Line-2
+        # orders. A FRESH Redis quote blob carries the vendor's official
+        # prev_close for the LIVE session; the freshness window rejects a prior
+        # session's blob, whose prev_close would be one day off.
+        if self._redis is not None:
+            raw = await self._redis.get(f"quote:{code}")
+            if raw is not None:
+                return _parse_redis_prev_close(
+                    raw, datetime.now(UTC), self._redis_window
+                )
         return None
 
     async def get_current_price(
@@ -236,6 +250,37 @@ def _parse_redis_quote(
     if age < 0 or age > window_seconds:
         return None
     return price
+
+
+def _parse_redis_prev_close(
+    raw: str | bytes,
+    ref: datetime,
+    window_seconds: int,
+) -> float | None:
+    """Decode a Redis ``quote:{code}`` blob and return its prev_close if fresh.
+
+    Mirrors :func:`_parse_redis_quote` but reads the ``prev_close`` field. The
+    freshness window is NOT about prev_close changing intraday (it is constant
+    all session) — it guards against reading a blob persisted in a PRIOR
+    session, whose prev_close is the prior session's reference and would shift
+    today's exchange limit bands by one day. Returns ``None`` on parse error,
+    stale timestamp, or a non-finite/non-positive value (fail-closed).
+    """
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        payload = json.loads(raw)
+        value = float(payload["prev_close"])
+        ts = _to_utc(datetime.fromisoformat(payload["timestamp"]))
+    except (ValueError, KeyError, TypeError) as exc:
+        log.warning("redis_prev_close_parse_failed", error=str(exc))
+        return None
+    age = (_to_utc(ref) - ts).total_seconds()
+    if age < 0 or age > window_seconds:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
 
 
 def _to_utc(value: datetime) -> datetime:

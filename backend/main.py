@@ -597,6 +597,19 @@ async def _ensure_daily_frame(
                     )
 
 
+def _expected_frame_trade_date(now: datetime) -> str:
+    """The trade date (compact) a FRESH daily frame must pin — T-1 vs ``now``.
+
+    Mirrors ``_ensure_daily_frame``'s ``as_of`` derivation. Passed to
+    ``build_line2_code_contexts`` so the prev_close frame fallback refuses a
+    stale cached frame that the fail-open seam kept alive
+    (P0-8-amendment-2026-06-04-line2-prev-close-frame-fallback).
+    """
+    from backend.data.trading_calendar import prev_trading_day
+
+    return prev_trading_day(now.astimezone(SHANGHAI_TZ).date()).strftime("%Y%m%d")
+
+
 def _count_trading_days(trade_date_str: str, now: datetime) -> int | None:
     """Trading days from a buy date (exclusive) to ``now`` (inclusive) — W-004.
 
@@ -1117,6 +1130,7 @@ async def _init_line2_runners(
                 application.state, "data_quality_provider", None
             ),
             now=now,
+            expected_trade_date=_expected_frame_trade_date(now),
         )
         provider = Line2DailyProvider(
             run_state=run_state,
@@ -1158,6 +1172,7 @@ async def _init_line2_runners(
                 application.state, "data_quality_provider", None
             ),
             now=now,
+            expected_trade_date=_expected_frame_trade_date(now),
         )
         market_data = getattr(application.state, "market_data", None)
         # Benchmark index daily closes for classify_regime (U-D3 wiring): drives
@@ -1366,6 +1381,7 @@ async def _init_line2_runners(
                 application.state, "data_quality_provider", None
             ),
             now=now,
+            expected_trade_date=_expected_frame_trade_date(now),
         )
         line2_provider = Line2DailyProvider(
             run_state=run_state, code_contexts=contexts, name_by_code=names,

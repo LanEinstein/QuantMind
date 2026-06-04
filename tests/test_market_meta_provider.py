@@ -184,3 +184,120 @@ class TestMongoBackedProvider:
         )
         out = await provider.get_current_price("600519", now=ref)
         assert out == 100.5
+
+
+def _empty_kline_db() -> MagicMock:
+    """A db whose kline_daily has NO rows (the production 2026-06-04 reality)."""
+
+    async def _empty_iter() -> object:
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+    kline_cursor = MagicMock()
+    kline_cursor.sort = MagicMock(return_value=kline_cursor)
+    kline_cursor.limit = MagicMock(return_value=kline_cursor)
+    kline_cursor.__aiter__ = lambda self: _empty_iter()
+    kline_coll = MagicMock()
+    kline_coll.find = MagicMock(return_value=kline_cursor)
+    db = MagicMock()
+    db._db = {"kline_daily": kline_coll, "market_realtime": MagicMock()}
+    return db
+
+
+class TestPrevCloseRedisFallback:
+    """P0-8-amendment-2026-06-04: empty kline_daily → fresh Redis blob prev_close.
+
+    Keeps MockBroker's at-fill limit recheck alive (review P1): without this,
+    an unfed kline_daily silently no-ops the recheck for every fill.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_kline_falls_back_to_fresh_redis_blob(self) -> None:
+        from datetime import UTC
+
+        now = datetime.now(UTC)
+        redis = AsyncMock()
+        redis.get = AsyncMock(
+            return_value=json.dumps(
+                {"price": 8.76, "prev_close": 9.13, "timestamp": now.isoformat()}
+            )
+        )
+        provider = MongoBackedMarketMetaProvider(
+            mongodb=_empty_kline_db(), redis_client=redis
+        )
+        assert await provider.get_prev_close("600011") == 9.13
+
+    @pytest.mark.asyncio
+    async def test_stale_redis_blob_yields_none(self) -> None:
+        # A prior session's blob carries the PRIOR session's prev_close —
+        # one day off for today's limit bands → must be refused (fail-closed).
+        from datetime import UTC
+
+        old = datetime.now(UTC) - timedelta(seconds=REDIS_FRESHNESS_SECONDS + 60)
+        redis = AsyncMock()
+        redis.get = AsyncMock(
+            return_value=json.dumps(
+                {"price": 8.76, "prev_close": 9.13, "timestamp": old.isoformat()}
+            )
+        )
+        provider = MongoBackedMarketMetaProvider(
+            mongodb=_empty_kline_db(), redis_client=redis
+        )
+        assert await provider.get_prev_close("600011") is None
+
+    @pytest.mark.asyncio
+    async def test_blob_without_prev_close_yields_none(self) -> None:
+        from datetime import UTC
+
+        now = datetime.now(UTC)
+        redis = AsyncMock()
+        redis.get = AsyncMock(
+            return_value=json.dumps({"price": 8.76, "timestamp": now.isoformat()})
+        )
+        provider = MongoBackedMarketMetaProvider(
+            mongodb=_empty_kline_db(), redis_client=redis
+        )
+        assert await provider.get_prev_close("600011") is None
+
+    @pytest.mark.asyncio
+    async def test_non_positive_prev_close_yields_none(self) -> None:
+        # Sina pre-open quirk: PRICE/prev_close can be 0 — never a band base.
+        from datetime import UTC
+
+        now = datetime.now(UTC)
+        redis = AsyncMock()
+        redis.get = AsyncMock(
+            return_value=json.dumps(
+                {"price": 8.76, "prev_close": 0.0, "timestamp": now.isoformat()}
+            )
+        )
+        provider = MongoBackedMarketMetaProvider(
+            mongodb=_empty_kline_db(), redis_client=redis
+        )
+        assert await provider.get_prev_close("600011") is None
+
+    @pytest.mark.asyncio
+    async def test_kline_row_wins_over_redis(self) -> None:
+        async def _kline_iter() -> object:
+            for doc in [{"close": 9.20}]:
+                yield doc
+
+        kline_cursor = MagicMock()
+        kline_cursor.sort = MagicMock(return_value=kline_cursor)
+        kline_cursor.limit = MagicMock(return_value=kline_cursor)
+        kline_cursor.__aiter__ = lambda self: _kline_iter()
+        kline_coll = MagicMock()
+        kline_coll.find = MagicMock(return_value=kline_cursor)
+        db = MagicMock()
+        db._db = {"kline_daily": kline_coll, "market_realtime": MagicMock()}
+        redis = AsyncMock()
+        provider = MongoBackedMarketMetaProvider(mongodb=db, redis_client=redis)
+        assert await provider.get_prev_close("600011") == 9.20
+        redis.get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_redis_client_yields_none(self) -> None:
+        provider = MongoBackedMarketMetaProvider(
+            mongodb=_empty_kline_db(), redis_client=None
+        )
+        assert await provider.get_prev_close("600011") is None
