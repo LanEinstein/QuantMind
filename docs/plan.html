@@ -796,6 +796,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-04 session #70 — <strong>phase-Q full(知识图谱 4/4:store 双时态 append-only / 811 因子冷启动 / 人工 gate ingest + 离线检索 / 隔离收口)+ ops 端口迁移 8001 + Line-2 prev_close 死路径事故修复</strong>(amendment `P0-8-amendment-2026-06-04-line2-prev-close-frame-fallback`;ops `44840b1`+`7c69fa4` / Q `ad85279`+`f7574ca`+`aba7259`+`3eebfd1`,全部已 push)。事故:kline_daily 恒空 → RiskEngine 恒拒 Line-2 单 + dedup 吞当日重试 → 600011/605111 真实 ATR 止损被吞;修复后 14:27 实证 3 SELL dispatched 飞书。4786 passed/90.82%。下一站 Phase Y(Y-001 已解锁)。</li>
         <li>2026-06-04 session #69 — <strong>D1-c 止盈 regime 三档(牛1.3/中1.0/熊0.6,独立 regime 通道)+ T+1 查实与外部回报守卫链(BrokerSnapshot v1→v2,codex 7 轮)+ D1-d 分级止盈(+1R 半仓→+2R 再一档→余仓 trailing,append-only tier ledger)+ SELL 决策树文档</strong>(amendment ×3:<code>P0-7-…-regime-conditioned-takeprofit</code> / <code>P0-4-…-external-fill-sell-t1-guard</code> / <code>P0-10-line2-…-tiered-takeprofit</code>〔部分推翻 05-31 WON'T-DO〕;feature <code>f3471b6</code>+<code>a3404b5</code>+<code>ede3206</code>+docs <code>d62b511</code>,本地未 push)。B.3 查实:**资金语义本就正确**(SELL 当日贷记可再买 = A 股,复利闭环无需新机制);scheduler 快照 today_bought 恒 0 既有潜在 bug 顺带修复。4721 passed/90.67%。激活均需 shadow+env+重启。</li>
         <li>2026-06-04 session #68 ops — <strong>盘前重启上线最新代码 + cond9 金丝雀探针本质修复</strong>(amendment-first <code>P0-6-amendment-2026-06-04-cond9-preopen-vendor-reachability</code>;feature <code>1bf6e22</code> 本地未 push)。盘前 09:08 重启被 PILOT gate fail-closed 拒启:cond9 复用交易路径 <code>get_stock_realtime_dual</code>,盘前 adata 空 frame + sina PRICE=0 被严格校验拒 → 两腿 None 误判 vendor 全宕,击穿 05-29 amendment『可盘前启动』意图(05-29 后首次盘前启动)。修复 = 新纯模块 <code>vendor_reachability.py</code> 探针专用口径(腿可达=非空 frame,row presence 不验价;异常/空 fail-closed);交易路径零改动,booleans-only 不可能泄漏。09:25 金丝雀恢复后拉起服务:镜像 5 仓保留 + 今日首个 MTM 点 mv=¥35,321/positions=5(<strong><code>ff78877</code> 生产实证闭环</strong>)。codex 无 P0/P1,1 P2(运行时账本 .gitignore)。4667 passed/90.59%。</li>
         <li>2026-06-03 session #67 D1-b — <strong>盘中止损 regime 条件化(熊市 ×0.8 收紧)+ 接通基准指数(U-D3)</strong>(amendment-first <code>P0-7-amendment-2026-06-03-regime-conditioned-drawdown</code>;feature <code>7445f5d</code> 本地未 push)。在 D1-a 个股自适应上加市场 regime 维度:熊市 `is_bear`→×`bear_multiplier`(0.8)再 clamp;`intraday_calibration` 仍 import-clean(收 bool)。env <code>QUANTMIND_LINE2_REGIME_DRAWDOWN_ENABLED</code> 默认 OFF(None=D1-a bit-for-bit);triggers v5→v6/calibration v1→v2;config_hash 纳 regime flag。regime=确定性『对未来推测』红线安全代理(纯指数派生,严禁 LLM/新闻进阈值)。<strong>codex 5 轮(4 P2+verify COMMIT-SAFE)</strong>:<code>index_closes</code> 原硬编码 `()`(U-D3 未接)→ regime 恒 NEUTRAL → D1-b 及既有 ADD 熊市禁补恒失效 → 接 <code>index_prices</code>(顺带激活既有 ADD 熊市禁补,严格保守);缺失收盘 coerce 0 误判 BEAR → 只取 finite-positive;PIT/freshness → 纯函数 <code>_observable_index_closes</code>(≤T-1 可观测 + >15 日陈旧→NEUTRAL);fresh deploy 回填不足 → <code>BENCHMARK_BACKFILL_DAYS</code> 5→60。门禁 <strong>4659 passed/90.68%</strong>+ruff+redline 全绿,安全地基一条未破(零 LLM/config 不可改/PIT 三重守门/止损只更紧不更松)。<strong>下一站 D1 后续系数</strong>;全本地未 push 待授权。</li>
@@ -883,6 +884,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-04",
+        session: "#70 phase-Q full + ops(端口迁移 8001 + prev_close 死路径事故修复)",
+        owner: "Claude Opus 4.8 (1M ctx)",
+        state_in: "owner『读 plan.html 建 todo 稳步推进』+ AskUserQuestion 三拍板:① 服务 13:27 停/8000 被 smartcourse 容器占 → 换端口重启;② 活动 Phase = Q 知识图谱(推荐项,解锁 Y);③ 授权 push。",
+        actions: "**A. ops(盘中,时间敏感先行)**:① 端口 8000→8001(`44840b1`,12 文件字面量:vite 代理/systemd×2/nginx/scripts/runbooks;127.0.0.1-only 不变;config-only 豁免 codex)+ 14:04 重启上线 `205f8f6`(T+1 守卫+快照 v2 生效;镜像 5 仓保留)。② **事故:Line-2 止损建议被吞** — 14:05 首个路由 tick 600011/605111 ATR_TRAILING_STOP(600011 当日 -4.2%)+ 605020 ADD 全被 RiskEngine `limit_up_down_block`『prev_close unavailable』拒 → 当日 dedup 吞掉重试;14:14 二次重启(清内存 dedup + Redis 已 warm)**同样三拒** → 查实根因 = **`kline_daily` 集合 0 文档无喂数方,`get_prev_close` 恒 None → Line-2 盘中/日线路由自上线起从未可能过 limit 检查**(与 #64 provider 缺口同族;首批真实止损触发才暴露)。③ **修复(`7c69fa4` + amendment `P0-8-amendment-2026-06-04-line2-prev-close-frame-fallback`)**:`build_line2_code_contexts` prev_close 回退 = pinned 日线 frame T-1 close(同触发派生快照,PIT 不破;两缺仍 None fail-closed);codex 撞额度→按 fallback `/code-review high`(7 finder+3 verifier)抓 3 CONFIRMED 全修:**P1 = MockBroker at-fill 涨跌停复核同死**(provider 加 fresh Redis blob prev_close 回退,§2.7 第二防线复活)/ P2 = 陈旧 frame 泄漏(`expected_trade_date` 钉死,fail-open 缓存 frame 不再当 limit 基准)/ P2 = 全市场 frame 逐 code 重解析(tick 13s→20s;改一次解析全 codes);PIT 前置约束写入 amendment §5(**喂 kline_daily 前必须先给 trigger record 加 risk_prev_close+source 字段**)。④ 14:26 部署 → **14:27:14 tick 实证闭环:frame 回退 5/5 命中 → 3 条 SELL `dispatched` 飞书**(`QM-20260604-142714-*`);14:45 进程重启后再发一组(内存 dedup 清空,owner 已知悉只执行一份)+ 14:50 605020 ADD(whipsaw)。门禁 4735 passed/90.66%。**B. Phase Q 全套 4 任务**:Q-001 `ad85279`(KG store:9节点/12边 frozen strict + EDGE_ENDPOINTS 写时校验 + 双时态版本行/as_of 回放 + supersede_strategy append-only + SQLite authorizer 物理拒 UPDATE/DELETE + NetworkX 派生视图;codex 2P2 修)/ Q-002 `f7574ca`(**811 因子**:A158 159+A360 360 程序化、WQ-101 101 条 agent 抓 arXiv:1601.00991 原文转写、GTJA-191 191 条公开复现双源对照转写,**未抄 NOASSERTION 仓库代码**;+15 启发式 6 playbook;全节点 provenance_ref+DERIVED_FROM 双哈希锚;scripts/seed_kg.py 离线物化;codex 4P2 修)/ Q-003 `aba7259`(ingest:注入式 extractor/verifier(LLM 只在 orchestration 接线)→ append-only PENDING ledger → **具名人工 decide 才写图**;provenance.jsonl 只读复用 latest-wins+rejection 拒锚+doc_text 必须哈希到锚;retrieval = LightRAG **取形不取库**(lightrag-hku insert 自带未 gate LLM 抽取撞红线)dense top-k+一跳扩展零 LLM;codex 2P1+1P2 修)/ Q-004 `3eebfd1`(AST 三形态隔离扫描+自检 + 零 HTTP 写面 + CLAUDE.md 收口;模块覆盖率 98%)。每任务 1 commit + codex(撞额度时段按 [[feedback_codex_rate_limit_fallback]] 用 /code-review)。终态门禁 **4786 passed / 90.82%** + ruff + redline ALL PASS。",
+        commit: "ops `44840b1`+`7c69fa4`;Phase Q `ad85279`+`f7574ca`+`aba7259`+`3eebfd1`;本 docs-only 收尾。全部已 push origin/main(本 session 授权;另 #63-#69 进场时已在远端)。",
+        next: "**Phase Q 4/4 done → Phase Y(①产业链倒推)解锁,起步 Y-001(depends Q-001✓/Q-002✓)**;Y-004 还需 R-001。**⚠️ 接手必读**:① **同仓有并行 session 在途未提交工作**(ops hardening §1.3:`line2_intraday_runner.py` FiredTriggerStore 持久 dedup + SELL→ADD 当日互斥 + alerter/alert_dispatcher 改动)— codex 已对其报 **1×P1:持久 dedup 记录 `send_failed` 未送达路由 → 飞书发送失败的保护性 SELL 当日被吞不重试**(修法:delivered(simulation_routed/dispatched)或 REJECTED 才记 dedup),须由该工作线收口,本 session 未碰其文件;② 服务运行中(127.0.0.1:**8001**,PID 3554131,代码 `7c69fa4`;**后续 KG 提交不需重启**,KG 无运行时接线);③ kline_daily 喂数 follow-up 的 PIT 硬前置见 amendment §5;④ 今日飞书 2×3 SELL + 1 ADD(605020 whipsaw),owner 只执行一份、回报一次。",
+      },
       {
         date: "2026-06-04",
         session: "#69 handoff 任务 A+B:D1-c 止盈 regime 条件化 + T+1 查实与回报守卫链(快照 v2)+ D1-d 分级止盈 + SELL 决策树",
@@ -3335,7 +3345,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: "辩论用场外信息作 evidence,不据其直接写决策字段。"
       },
       {
-        id: "Q-001", phase: "Q 知识图谱", status: "todo", priority: "P1",
+        id: "Q-001", phase: "Q 知识图谱", status: "done", priority: "P1",
         title: "KG store(SQLite+NetworkX,9 节点/12 边,双时态 + SUPERSEDES)",
         summary: "本地知识图谱:SQLite+NetworkX 起步(LadybugDB 推迟,Kùzu 被 Apple 收购归档);9 节点(策略/因子/概念/板块/标的/启发式/回测结果…)/12 边;Graphiti 式双时态(t_valid/t_ingest)+ SUPERSEDES 边建模策略晋升/退役;append-only,退役节点留图。",
         scope: "backend/knowledge_graph/store.py, backend/knowledge_graph/schema.py",
@@ -3343,10 +3353,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "KG store 本地(无 hosted)+ 9 节点/12 边 schema + 双时态 + SUPERSEDES + append-only;存储接口可换(便于将来 LadybugDB)。",
         tests: "节点/边往返 + 双时态查询 + SUPERSEDES 晋升/退役 + append-only。",
         sources: "P2-2-amendment-2026-05-24, 知识图谱调研 dossier",
-        commit: "", session_date: "", notes: "Codex/调研:NetworkX(已装)+SQLite 起步;Neo4j(GPL+JVM)/Memgraph(BSL)/ArangoDB(非OSI)排除。"
+        commit: "ad85279", session_date: "2026-06-04", notes: "DONE #70:frozen Pydantic strict 9节点/12边 + EDGE_ENDPOINTS 合法性写时校验 + 双时态版本行(t_ingest store 时钟)+ as_of 回放 + supersede_strategy append-only 退役 + SQLite authorizer 物理拒 UPDATE/DELETE;codex 2 P2 修(networkx 依赖声明/attrs splat 撞保留键)。Why:P2-2 演化回滚要求历史不可改写。"
       },
       {
-        id: "Q-002", phase: "Q 知识图谱", status: "todo", priority: "P1",
+        id: "Q-002", phase: "Q 知识图谱", status: "done", priority: "P1",
         title: "冷启动 seed(Alpha158/360 + GTJA-191/WQ-101 + 操盘启发式)",
         summary: "冷启动预装:qlib Alpha158+Alpha360(~600 因子)+ GTJA-191/WorldQuant-101(按论文重写,仓库无 license)+ 编码的操盘手启发式(双动量/海龟/CAN SLIM/Minervini/缠论/板块轮动)→ KG 节点。",
         scope: "backend/knowledge_graph/seed/, data/kg_seed/",
@@ -3354,10 +3364,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "~600+ 因子 + 启发式入 KG;GTJA-191/WQ-101 按公开论文重写(非抄无 license 仓库);provenance 记录。",
         tests: "seed 入图 + 因子可被 screening/回测引用 + provenance 完整。",
         sources: "冷启动调研 dossier, P2-2-amendment-2026-05-24",
-        commit: "", session_date: "", notes: "调研:GTJA-191/WQ-101 GitHub 仓库 NOASSERTION,按 Kakushadze 2016 arXiv:1601.00991 + GTJA 报告论文重写。"
+        commit: "f7574ca", session_date: "2026-06-04", notes: "DONE #70:811 因子(A158 159 程序化 + A360 360 程序化 + WQ101 101 论文转写 + GTJA191 191 公开复现双源对照)+ 15 启发式 + 4 SourceDoc;全节点 provenance_ref+DERIVED_FROM;双哈希锚(SourceDoc 原始字节/factor canonical 记录);scripts/seed_kg.py 离线物化;codex 4 P2 修。Why:KB 冷启动给 R/Y 阶段策略发现可引用的因子语料。"
       },
       {
-        id: "Q-003", phase: "Q 知识图谱", status: "todo", priority: "P2",
+        id: "Q-003", phase: "Q 知识图谱", status: "done", priority: "P2",
         title: "KG 构建(实体/关系抽取 + 二次校验 + 人工 gate)+ LightRAG 离线检索",
         summary: "从文档(论文/策略码/新闻)LLM 抽取实体/关系 + FinReflectKG 式二次 agent 三元组校验 + 人工/飞书 gate 入图;LightRAG(MIT)检索离线只读先行(碰实时辩论须快照 retrieval+index 版本+doc 哈希入 audit)。",
         scope: "backend/knowledge_graph/ingest.py, backend/knowledge_graph/retrieval.py",
@@ -3365,10 +3375,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "抽取 + 二次校验 + 人工 gate + LightRAG 离线只读;provenance 写 data/rag/provenance.jsonl(复用)。",
         tests: "抽取校验 + 人工 gate 拒未批准 + LightRAG 离线 + provenance 落地。",
         sources: "知识图谱调研 dossier, P2-2-amendment-2026-05-24",
-        commit: "", session_date: "", notes: "Codex:LightRAG 离线只读先行;微软 GraphRAG 批量 Leiden 重算 token 贵、进化不友好,排除主选。"
+        commit: "aba7259", session_date: "2026-06-04", notes: "DONE #70:注入式 extractor/verifier Protocol(LLM 只在 orchestration 层接线)→ append-only PENDING ledger → 具名人工 decide 才写图;provenance.jsonl 只读复用 latest-wins+rejection 拒锚;检索取 LightRAG 形不取库(其 insert 自带未 gate LLM 抽取撞红线)= 自有 store 上 dense top-k+一跳扩展、零 LLM 注入式 embedder。codex 2P1+1P2 修。Why:LLM 永不写图 + 图事实全锚定。"
       },
       {
-        id: "Q-004", phase: "Q 知识图谱", status: "todo", priority: "P1",
+        id: "Q-004", phase: "Q 知识图谱", status: "done", priority: "P1",
         title: "backend/knowledge_graph/ 模块 + CLAUDE.md + 隔离测试",
         summary: "KG 子任务 CLAUDE.md + import 隔离(严禁 backend.{api,broker,risk,llm,agents,mirofish,data},防反向绕过守门)。",
         scope: "backend/knowledge_graph/CLAUDE.md, tests/knowledge_graph/",
@@ -3376,7 +3386,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "import 隔离 + CLAUDE.md 锁红线 + 覆盖率 ≥80%。",
         tests: "AST 隔离 + 模块契约。",
         sources: "P2-2-amendment-2026-05-24, 用户子任务 CLAUDE.md 指令",
-        commit: "", session_date: "", notes: "继承 P2-2 自进化模块 import 隔离。"
+        commit: "3eebfd1", session_date: "2026-06-04", notes: "DONE #70:AST 三形态隔离扫描(绝对/相对/from backend import)+ 植入自检 + 零 HTTP 写面契约 + CLAUDE.md 收口;模块覆盖率 98%。Why:KG 是纯本地工件,严禁反向进交易栈绕过守门。"
       },
       {
         id: "R-001", phase: "R 自进化v2", status: "todo", priority: "P0",
