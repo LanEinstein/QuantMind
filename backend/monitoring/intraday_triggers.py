@@ -64,7 +64,9 @@ from backend.monitoring.add_position import (
 )
 from backend.monitoring.intraday_calibration import (
     DrawdownCalibrationConfig,
+    TakeProfitCalibrationConfig,
     derive_drawdown_threshold,
+    effective_r_multiple,
 )
 from backend.monitoring.sell_signal import normalize_position_codes
 from backend.risk.circuit_breaker import CircuitBreaker  # noqa: TID251
@@ -97,8 +99,12 @@ _LOT = 100
 # reproduces v4 outputs bit-for-bit
 # (P0-7-amendment-2026-06-03-adaptive-intraday-thresholds). v6: that adaptive
 # threshold may be tightened in a BEAR regime; a None regime reproduces v5
-# (P0-7-amendment-2026-06-03-regime-conditioned-drawdown).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v6"
+# (P0-7-amendment-2026-06-03-regime-conditioned-drawdown). v7: the TAKE_PROFIT
+# r_multiple may be regime-conditioned (BULL later / BEAR earlier) when a
+# TakeProfitCalibrationConfig is supplied via its own independent regime
+# channel; a None calibration reproduces v6 outputs bit-for-bit
+# (P0-7-amendment-2026-06-04-regime-conditioned-takeprofit).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v7"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -189,6 +195,14 @@ class IntradaySellIntent:
     # recorder falls back to the static config (drawdown threshold is not their
     # firing criterion).
     effective_drawdown_threshold: float | None = None
+    # The take-profit r_multiple in force this tick (regime-conditioned tier
+    # when the D1-c calibration is on, else the static config). Carried on
+    # EVERY intent — a lower-priority trigger's record must reproduce "why
+    # TAKE_PROFIT did not fire first" under the conditioned target
+    # (P0-7-amendment-2026-06-04, mirroring the drawdown precedent above).
+    # ``None`` only on legacy constructions → the recorder falls back to the
+    # static config.
+    effective_r_multiple: float | None = None
 
 
 def _bare(code: str) -> str:
@@ -306,12 +320,16 @@ def _take_profit_intent(
     cfg: IntradayTriggerConfig,
     already_taken: frozenset[str],
     effective_drawdown_threshold: float,
+    effective_r: float,
 ) -> IntradaySellIntent | None:
-    """Lock a tranche of gains at ``cost + r_multiple × R`` (R = k×ATR).
+    """Lock a tranche of gains at ``cost + effective_r × R`` (R = k×ATR).
 
-    Returns ``None`` (no take-profit) when this episode already took profit,
-    the ATR/cost is unusable, the price is not yet at the +R target, the
-    position is not net-profitable, or the tranche floors below one lot.
+    ``effective_r`` is the r_multiple in force this tick — the regime-
+    conditioned tier when the D1-c calibration is on, else the static
+    ``cfg.r_multiple`` (P0-7-amendment-2026-06-04). Returns ``None`` (no
+    take-profit) when this episode already took profit, the ATR/cost is
+    unusable, the price is not yet at the target, the position is not
+    net-profitable, or the tranche floors below one lot.
     """
     if code in already_taken or atr is None or atr <= 0:
         return None
@@ -320,16 +338,16 @@ def _take_profit_intent(
     if cost <= 0:
         return None
     r_unit = cfg.atr_stop_mult * atr
-    target = cost + cfg.r_multiple * r_unit
-    if price < target or price <= cost:  # not at +R target, or not net profit
+    target = cost + effective_r * r_unit
+    if price < target or price <= cost:  # not at target, or not net profit
         return None
     settled = (pos.available_volume // _LOT) * _LOT
     sell_vol = int((settled * cfg.tranche_fraction) // _LOT) * _LOT
     if sell_vol <= 0:  # sub-1-lot tranche → skip (never sell 0)
         return None
     detail = (
-        f"止盈 +{cfg.r_multiple:.0f}R: 实时价 {price:.3f} ≥ 成本 {cost:.3f} + "
-        f"{cfg.r_multiple:.0f}×R({r_unit:.3f}); 减 {sell_vol} 股锁盈,余仓续交移动止损"
+        f"止盈 +{effective_r:g}R: 实时价 {price:.3f} ≥ 成本 {cost:.3f} + "
+        f"{effective_r:g}×R({r_unit:.3f}); 减 {sell_vol} 股锁盈,余仓续交移动止损"
     )
     return IntradaySellIntent(
         code=code,
@@ -343,6 +361,7 @@ def _take_profit_intent(
         recent_high=0.0,
         stop_level=round(target, 4),
         effective_drawdown_threshold=effective_drawdown_threshold,
+        effective_r_multiple=effective_r,
     )
 
 
@@ -356,6 +375,7 @@ def _weight_trim_intent(
     cfg: IntradayTriggerConfig,
     max_single_stock_pct: float,
     effective_drawdown_threshold: float,
+    effective_r: float,
     hard_cap_only: bool = False,
     max_single_instruction_amount: float = 50_000.0,
 ) -> IntradaySellIntent | None:
@@ -402,9 +422,7 @@ def _weight_trim_intent(
         # now and re-fires on the next session until it converges ≤ cap (codex
         # P2 cycle-2; mirrors the thesis-break exit clamp).
         if max_single_instruction_amount > 0:
-            cap_lots = (
-                int(max_single_instruction_amount // (price * _LOT)) * _LOT
-            )
+            cap_lots = int(max_single_instruction_amount // (price * _LOT)) * _LOT
             trim_shares = min(trim_shares, cap_lots)
     else:
         # Soft re-balance toward trim_target_pct (13%) has ample buffer below
@@ -435,6 +453,7 @@ def _weight_trim_intent(
         recent_high=0.0,
         stop_level=0.0,
         effective_drawdown_threshold=effective_drawdown_threshold,
+        effective_r_multiple=effective_r,
     )
 
 
@@ -449,6 +468,7 @@ def _thesis_break_intent(
     max_single_instruction_amount: float,
     atr: float | None,
     effective_drawdown_threshold: float,
+    effective_r: float,
 ) -> IntradaySellIntent | None:
     """Full-exit SELL for a broken thesis, clamped to the single-instruction cap.
 
@@ -480,6 +500,7 @@ def _thesis_break_intent(
         recent_high=0.0,
         stop_level=0.0,
         effective_drawdown_threshold=effective_drawdown_threshold,
+        effective_r_multiple=effective_r,
     )
 
 
@@ -498,6 +519,8 @@ def evaluate_intraday_sell_intents(
     long_term_hold_codes: frozenset[str] = frozenset(),
     drawdown_calibration: DrawdownCalibrationConfig | None = None,
     regime: MarketRegime | None = None,
+    takeprofit_calibration: TakeProfitCalibrationConfig | None = None,
+    takeprofit_regime: MarketRegime | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -543,6 +566,17 @@ def evaluate_intraday_sell_intents(
     the persisted T-1 frame by ``add_position.parse_held_series``); a code
     without enough daily history cannot fire the ATR trigger or take-profit (R
     needs the ATR); the drawdown trigger needs only the live spot.
+
+    ``takeprofit_calibration`` + ``takeprofit_regime`` (D1-c, P0-7-amendment-
+    2026-06-04): regime-conditioned take-profit multiple — BEAR locks gains
+    earlier, BULL lets winners run; NEUTRAL equals the static default. The
+    regime rides its OWN channel (not the D1-b ``regime`` param) so each
+    env-gated feature conditions only its own maths: enabling the take-profit
+    tiers must never tighten the D1-a drawdown stop while
+    QUANTMIND_LINE2_REGIME_DRAWDOWN_ENABLED is off (and vice versa). A None
+    calibration reproduces v6 outputs bit-for-bit (the regime channel alone is
+    inert). Only the discretionary TAKE_PROFIT target moves — protective
+    stops, the thesis-break exit and the hard cap are untouched.
     """
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
@@ -552,6 +586,18 @@ def evaluate_intraday_sell_intents(
     # drawdown stop (passed through to the per-stock derivation). ``None`` regime
     # (feature off / not supplied) leaves the threshold unconditioned.
     is_bear = regime is MarketRegime.BEAR
+    # D1-c: the take-profit multiple in force this tick — one global value (the
+    # regime is market-wide, not per-stock). Static config when the calibration
+    # is off; recorded on every intent for PIT replay (mirrors dd_thr below).
+    eff_r = (
+        effective_r_multiple(
+            takeprofit_calibration,
+            is_bull=takeprofit_regime is MarketRegime.BULL,
+            is_bear=takeprofit_regime is MarketRegime.BEAR,
+        )
+        if takeprofit_calibration is not None
+        else cfg.r_multiple
+    )
 
     intents: list[IntradaySellIntent] = []
     for code in sorted(spots):
@@ -592,7 +638,7 @@ def evaluate_intraday_sell_intents(
         # stop early (precision over recall — codex U-C3 P2). The drawdown
         # trigger needs no history (it reads the live quote alone).
         recent_high = (
-            max(closes[-cfg.recent_high_window:])
+            max(closes[-cfg.recent_high_window :])
             if closes and len(closes) >= cfg.recent_high_window
             else None
         )
@@ -624,6 +670,7 @@ def evaluate_intraday_sell_intents(
                     recent_high=round(recent_high, 4),  # type: ignore[arg-type]
                     stop_level=round(stop_level, 4),
                     effective_drawdown_threshold=dd_thr,
+                    effective_r_multiple=eff_r,
                 )
             )
         elif drawdown_fired:
@@ -644,6 +691,7 @@ def evaluate_intraday_sell_intents(
                     recent_high=round(recent_high, 4) if recent_high else 0.0,
                     stop_level=0.0,
                     effective_drawdown_threshold=dd_thr,
+                    effective_r_multiple=eff_r,
                 )
             )
         else:
@@ -667,6 +715,7 @@ def evaluate_intraday_sell_intents(
                     max_single_instruction_amount=max_single_instruction_amount,
                     atr=atr,
                     effective_drawdown_threshold=dd_thr,
+                    effective_r=eff_r,
                 )
                 if code in thesis_breaks
                 else None
@@ -693,6 +742,7 @@ def evaluate_intraday_sell_intents(
                         cfg=cfg,
                         already_taken=take_profit_already_taken,
                         effective_drawdown_threshold=dd_thr,
+                        effective_r=eff_r,
                     )
                 )
                 trim = (
@@ -707,6 +757,7 @@ def evaluate_intraday_sell_intents(
                         cfg=cfg,
                         max_single_stock_pct=max_single_stock_pct,
                         effective_drawdown_threshold=dd_thr,
+                        effective_r=eff_r,
                         hard_cap_only=is_long_term,
                         max_single_instruction_amount=max_single_instruction_amount,
                     )
@@ -881,12 +932,8 @@ def _evaluate_one_add(
     vt_shares = vanthorp_size(
         equity=account.total_assets, atr=atr, price=live_price, config=config
     )
-    headroom_value = (
-        config.max_single_stock_pct * account.total_assets - position_value
-    )
-    headroom_shares = (
-        int(max(0.0, headroom_value) // (live_price * _LOT)) * _LOT
-    )
+    headroom_value = config.max_single_stock_pct * account.total_assets - position_value
+    headroom_shares = int(max(0.0, headroom_value) // (live_price * _LOT)) * _LOT
     add_shares = min(vt_shares, headroom_shares)
     if add_shares <= 0:
         return AddRejection(

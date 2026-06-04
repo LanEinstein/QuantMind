@@ -367,6 +367,7 @@ def _make_runner(
     dry_sink=None,  # noqa: ANN001
     drawdown_calibration=None,  # noqa: ANN001
     regime_drawdown_enabled: bool = False,
+    takeprofit_calibration=None,  # noqa: ANN001
 ) -> tuple[Line2IntradayRunner, SnapshotStore, IntradayTriggerManifestStore]:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -396,6 +397,7 @@ def _make_runner(
         manifest_store=manifest_store,
         drawdown_calibration=drawdown_calibration,
         regime_drawdown_enabled=regime_drawdown_enabled,
+        takeprofit_calibration=takeprofit_calibration,
         tick_timeout_seconds=tick_timeout_seconds,
     )
     return runner, snapshot_store, manifest_store
@@ -1125,3 +1127,62 @@ async def test_config_hash_includes_regime_drawdown_flag(
     # The decision to APPLY bear-regime tightening (D1-b) is pinned, so a replay
     # with the feature off never reproduces a tightened threshold (PIT).
     assert r_off._config_hash != r_on._config_hash  # noqa: SLF001
+async def test_config_hash_includes_takeprofit_calibration(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from backend.monitoring.intraday_calibration import TakeProfitCalibrationConfig
+
+    sender = FakeFeishuSender()
+    r_none, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "none",
+    )
+    r_cal, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "cal",
+        takeprofit_calibration=TakeProfitCalibrationConfig(),
+    )
+    # The regime-conditioned r_multiple tiers are pinned (incl. their absence):
+    # a replay with the feature off never reproduces a tier-shifted target, and
+    # a recalibration shifts the hash so a stale manifest fails closed (PIT,
+    # P0-7-amendment-2026-06-04-regime-conditioned-takeprofit).
+    assert r_none._config_hash != r_cal._config_hash  # noqa: SLF001
+
+
+async def test_sell_record_writes_effective_r_multiple(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from backend.monitoring.intraday_triggers import IntradayTriggerKind
+
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    spot = SimpleNamespace(prev_close=4.0)
+    fired = IntradaySellIntent(
+        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.03,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
+        drawdown_pct=0.0075, atr=0.02, recent_high=0.0, stop_level=4.024,
+        effective_r_multiple=0.6,
+    )
+    rec = runner._sell_record(fired, spot)  # noqa: SLF001
+    # The multiple that ACTUALLY set the target is recorded (PIT replay).
+    assert rec.threshold_params["r_multiple"] == 0.6
+
+    legacy = IntradaySellIntent(
+        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
+        drawdown_pct=0.0125, atr=0.02, recent_high=0.0, stop_level=4.04,
+    )
+    rec2 = runner._sell_record(legacy, spot)  # noqa: SLF001
+    # Absent on the intent → fall back to the static config (never guess).
+    assert rec2.threshold_params["r_multiple"] == 1.0

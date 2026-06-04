@@ -83,7 +83,10 @@ from backend.monitoring.degrade import partition_by_suspension
 from backend.monitoring.intraday_calibration import (
     FEATURE_CODE_VERSION as CALIBRATION_FEATURE_VERSION,
 )
-from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
+from backend.monitoring.intraday_calibration import (
+    DrawdownCalibrationConfig,
+    TakeProfitCalibrationConfig,
+)
 from backend.monitoring.intraday_triggers import (
     FEATURE_CODE_VERSION,
     IntradaySellIntent,
@@ -258,6 +261,7 @@ class Line2IntradayRunner:
         add_config: AddConfig | None = None,
         drawdown_calibration: DrawdownCalibrationConfig | None = None,
         regime_drawdown_enabled: bool = False,
+        takeprofit_calibration: TakeProfitCalibrationConfig | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -278,6 +282,12 @@ class Line2IntradayRunner:
         # adaptive threshold, so it only has effect when ``_drawdown_calib`` is
         # also set. Folded into the config hash below (PIT).
         self._regime_dd_enabled = regime_drawdown_enabled
+        # D1-c regime-conditioned take-profit multiple. ``None`` keeps the
+        # static r_multiple (default-OFF; env-gated in main.py). The config IS
+        # the switch (the tiers are its whole content). Independent of the
+        # D1-b flag above — each feature conditions only its own maths.
+        # Folded into the config hash below (PIT).
+        self._takeprofit_calib = takeprofit_calibration
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -321,6 +331,18 @@ class Line2IntradayRunner:
             # decision to APPLY it is a separate flag → pin it so a replay with
             # the feature off does not reproduce a tightened threshold.
             "regime_drawdown_enabled": self._regime_dd_enabled,
+            # D1-c regime-conditioned take-profit tiers (incl. their absence) —
+            # same {version, config} pinning as the drawdown calibration: a
+            # tier recalibration or a derivation-maths bump shifts the hash so
+            # a stale manifest fails closed (PIT, R0 §3).
+            "takeprofit_calibration": (
+                {
+                    "version": CALIBRATION_FEATURE_VERSION,
+                    "config": dataclasses.asdict(self._takeprofit_calib),
+                }
+                if self._takeprofit_calib is not None
+                else None
+            ),
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
@@ -433,8 +455,15 @@ class Line2IntradayRunner:
             # index) only when the feature is on — a BEAR regime tightens the
             # adaptive drawdown stop. None when off → no conditioning.
             sell_regime = (
+                classify_regime(index_closes) if self._regime_dd_enabled else None
+            )
+            # D1-c: the take-profit tiers ride their OWN regime channel so each
+            # env-gated feature conditions only its own maths (enabling one
+            # never activates the other). Same deterministic benchmark-index
+            # derivation; None when off.
+            tp_regime = (
                 classify_regime(index_closes)
-                if self._regime_dd_enabled
+                if self._takeprofit_calib is not None
                 else None
             )
             sell_intents = evaluate_intraday_sell_intents(
@@ -454,6 +483,8 @@ class Line2IntradayRunner:
                 long_term_hold_codes=long_term_hold_codes,
                 drawdown_calibration=self._drawdown_calib,
                 regime=sell_regime,
+                takeprofit_calibration=self._takeprofit_calib,
+                takeprofit_regime=tp_regime,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
@@ -469,9 +500,7 @@ class Line2IntradayRunner:
             # drawdown can satisfy both the SELL trigger and the dip-vs-cost ADD
             # gate). The exit wins (codex U-C3 P1).
             sell_codes = {i.code for i in sell_intents}
-            add_intents = tuple(
-                i for i in add_eval.intents if i.code not in sell_codes
-            )
+            add_intents = tuple(i for i in add_eval.intents if i.code not in sell_codes)
 
         candidates: list[tuple[Any, InstructionSide]] = [
             (i, InstructionSide.SELL) for i in sell_intents
@@ -506,13 +535,20 @@ class Line2IntradayRunner:
             # bloat storage with redundant snapshots).
             fired_codes = sorted({intent.code for intent, _ in to_route})
             triggers = self._build_trigger_records(
-                to_route, spots=spots, account=account,
-                held=held, closes_by_code=closes_by_code,
+                to_route,
+                spots=spots,
+                account=account,
+                held=held,
+                closes_by_code=closes_by_code,
                 index_closes=index_closes,
             )
             quote_snapshot_id = self._persist_tick(
-                sid=sid, now=now, spots=spots, fired_codes=fired_codes,
-                triggers=triggers, daily_frame=daily_frame,
+                sid=sid,
+                now=now,
+                spots=spots,
+                fired_codes=fired_codes,
+                triggers=triggers,
+                daily_frame=daily_frame,
             )
             for seq, (intent, side) in enumerate(to_route, start=1):
                 route = await self._route_one(
@@ -532,9 +568,7 @@ class Line2IntradayRunner:
             active=len(partition.active_codes),
             degraded=len(partition.degrades),
             stale=len(stale),
-            routed=sum(
-                1 for r in routes if r.outcome is TriggerRouteOutcome.ROUTED
-            ),
+            routed=sum(1 for r in routes if r.outcome is TriggerRouteOutcome.ROUTED),
         )
         return Line2IntradayRunResult(
             signal_id=sid,
@@ -630,9 +664,12 @@ class Line2IntradayRunner:
                 )
                 records.append(
                     self._add_record(
-                        intent, spot,
+                        intent,
+                        spot,
                         position=pos_by_code.get(intent.code),
-                        total_assets=total_assets, regime=regime, ma_long=ma_long,
+                        total_assets=total_assets,
+                        regime=regime,
+                        ma_long=ma_long,
                     )
                 )
             else:
@@ -658,12 +695,21 @@ class Line2IntradayRunner:
                 # (P0-7-amendment-2026-06-03, codex P2).
                 "drawdown_threshold": (
                     intent.effective_drawdown_threshold
-                    if getattr(intent, "effective_drawdown_threshold", None)
-                    is not None
+                    if getattr(intent, "effective_drawdown_threshold", None) is not None
                     else self._trigger_cfg.drawdown_threshold
                 ),
                 "atr_stop_mult": self._trigger_cfg.atr_stop_mult,
                 "recent_high_window": float(self._trigger_cfg.recent_high_window),
+                # The take-profit multiple in force when this intent fired (the
+                # regime-conditioned tier when D1-c is on, else the static
+                # config) — recorded on every SELL so replay reproduces why
+                # TAKE_PROFIT did or did not fire first
+                # (P0-7-amendment-2026-06-04).
+                "r_multiple": (
+                    intent.effective_r_multiple
+                    if getattr(intent, "effective_r_multiple", None) is not None
+                    else self._trigger_cfg.r_multiple
+                ),
             },
         )
 
@@ -728,7 +774,9 @@ class Line2IntradayRunner:
             # A freeze early-return (mode switch / ticket / data quality).
             log.info("intraday_early_return", signal_id=signal_id, code=intent.code)
             return TriggerRoute(
-                code=intent.code, side=side, kind=kind,
+                code=intent.code,
+                side=side,
+                kind=kind,
                 outcome=TriggerRouteOutcome.EARLY_RETURN,
             )
 
@@ -736,8 +784,11 @@ class Line2IntradayRunner:
         await self._ledger.open_for_plan(plan, at=now)
         if plan.status is not InstructionStatus.VALIDATED:
             return TriggerRoute(
-                code=intent.code, side=side, kind=kind,
-                outcome=TriggerRouteOutcome.REJECTED, plan=plan,
+                code=intent.code,
+                side=side,
+                kind=kind,
+                outcome=TriggerRouteOutcome.REJECTED,
+                plan=plan,
             )
 
         if side is InstructionSide.SELL:
@@ -763,8 +814,12 @@ class Line2IntradayRunner:
             mode=outcome.mode.value,
         )
         return TriggerRoute(
-            code=intent.code, side=side, kind=kind,
-            outcome=TriggerRouteOutcome.ROUTED, route_outcome=outcome, plan=plan,
+            code=intent.code,
+            side=side,
+            kind=kind,
+            outcome=TriggerRouteOutcome.ROUTED,
+            route_outcome=outcome,
+            plan=plan,
         )
 
     @staticmethod

@@ -799,7 +799,10 @@ async def _init_line2_runners(
     # GATED default-OFF (QUANTMIND_LINE2_ADAPTIVE_DRAWDOWN_ENABLED=1) per the
     # shadow-then-enable posture: shipped + wired + tested, INERT until the owner
     # enables after shadow. None → the static fixed 5% (prior behaviour exactly).
-    from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
+    from backend.monitoring.intraday_calibration import (
+        DrawdownCalibrationConfig,
+        TakeProfitCalibrationConfig,
+    )
 
     _adaptive_dd = (
         DrawdownCalibrationConfig()
@@ -819,6 +822,19 @@ async def _init_line2_runners(
         ).strip()
         == "1"
     )
+    # D1-c — regime-conditioned take-profit r_multiple (BEAR locks earlier /
+    # BULL lets winners run). GATED default-OFF; independent of the two gates
+    # above — each feature conditions only its own maths. None → the static
+    # r_multiple exactly (P0-7-amendment-2026-06-04-regime-conditioned-
+    # takeprofit).
+    _regime_tp = (
+        TakeProfitCalibrationConfig()
+        if os.environ.get(
+            "QUANTMIND_LINE2_REGIME_TAKEPROFIT_ENABLED", "0"
+        ).strip()
+        == "1"
+        else None
+    )
     intraday_runner = Line2IntradayRunner(
         builder=builder,
         renderer=renderer,
@@ -828,6 +844,7 @@ async def _init_line2_runners(
         manifest_store=manifest_store,
         drawdown_calibration=_adaptive_dd,
         regime_drawdown_enabled=_regime_dd_enabled,
+        takeprofit_calibration=_regime_tp,
         pilot=pilot,
     )
 

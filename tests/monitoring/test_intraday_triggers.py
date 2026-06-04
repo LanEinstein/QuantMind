@@ -15,7 +15,10 @@ from datetime import UTC, datetime, timedelta
 from backend.broker.models import AccountInfo, Position
 from backend.models.market import WatchlistMarketSnapshot
 from backend.monitoring.add_position import AddConfig, AddRejectReason, MarketRegime
-from backend.monitoring.intraday_calibration import DrawdownCalibrationConfig
+from backend.monitoring.intraday_calibration import (
+    DrawdownCalibrationConfig,
+    TakeProfitCalibrationConfig,
+)
 from backend.monitoring.intraday_triggers import (
     INTRADAY_QUOTE_HEADER,
     IntradaySellIntent,
@@ -483,6 +486,123 @@ def test_regime_non_bear_does_not_tighten() -> None:
         regime=MarketRegime.NEUTRAL,
     )
     assert out == ()
+
+
+# ---------------------------------------------------------------------------
+# takeprofit_calibration / takeprofit_regime — D1-c regime-conditioned
+# r_multiple (P0-7-amendment-2026-06-04-regime-conditioned-takeprofit)
+# ---------------------------------------------------------------------------
+
+
+def _tp_closes(n: int = 25) -> tuple[float, ...]:
+    # Alternating 4.02/4.00 → close_atr(14) = 0.02 exactly, recent_high(20) =
+    # 4.02, ATR stop = 4.02 − 2×0.02 = 3.98. With cost 4.0, R = 0.04:
+    # bear target 4.024 / static 4.04 / bull target 4.052 — prices in
+    # (3.98, 4.052] isolate the TAKE_PROFIT tier maths from every other trigger.
+    return tuple(4.0 + 0.02 * ((i + 1) % 2) for i in range(n))
+
+
+def test_regime_bear_takes_profit_earlier() -> None:
+    # Price 4.03 sits between the bear target (4.024) and the static one
+    # (4.04): the bear-conditioned multiple locks the tranche earlier.
+    spots = {"510300": _spot("510300", price=4.03, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    static = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert static == ()  # 4.03 < static target 4.04
+    bear = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        takeprofit_calibration=TakeProfitCalibrationConfig(),
+        takeprofit_regime=MarketRegime.BEAR,
+    )
+    assert len(bear) == 1
+    assert bear[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+    assert bear[0].effective_r_multiple == 0.6
+    assert bear[0].stop_level == 4.024  # cost + 0.6×R — recorded target (PIT)
+
+
+def test_regime_bull_lets_profit_run() -> None:
+    # Price 4.045 ≥ static target 4.04 → static fires; the bull multiple
+    # raises the target to 4.052 → no fire (let the winner run; the position
+    # still rides the ATR trailing stop — protection is untouched).
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    static = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert len(static) == 1
+    assert static[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+    bull = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        takeprofit_calibration=TakeProfitCalibrationConfig(),
+        takeprofit_regime=MarketRegime.BULL,
+    )
+    assert bull == ()
+
+
+def test_takeprofit_regime_without_calibration_is_inert() -> None:
+    # The regime channel alone (calibration None) must not change the static
+    # maths — v6 bit-for-bit (feature truly env-gated by the config).
+    spots = {"510300": _spot("510300", price=4.03, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        takeprofit_regime=MarketRegime.BEAR,
+    )
+    assert out == ()  # static target 4.04 still in force
+
+
+def test_takeprofit_neutral_matches_static() -> None:
+    # NEUTRAL tier (1.0) = the static default: same firing, same target.
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    neutral = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        takeprofit_calibration=TakeProfitCalibrationConfig(),
+        takeprofit_regime=MarketRegime.NEUTRAL,
+    )
+    assert len(neutral) == 1
+    assert neutral[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+    assert neutral[0].effective_r_multiple == 1.0
+    assert neutral[0].stop_level == 4.04
+
+
+def test_effective_r_multiple_recorded_on_other_intents() -> None:
+    # A non-TAKE_PROFIT intent still records the multiple in effect: replaying
+    # a tick under the bull tier must reproduce "take-profit did NOT fire
+    # first" (mirror of the effective_drawdown_threshold precedent, D1-a P2).
+    spots = {"510300": _spot("510300", price=3.7, prev_close=4.0)}  # stop fires
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        takeprofit_calibration=TakeProfitCalibrationConfig(),
+        takeprofit_regime=MarketRegime.BULL,
+    )
+    assert len(out) == 1
+    assert out[0].trigger_kind in (
+        IntradayTriggerKind.ATR_TRAILING_STOP,
+        IntradayTriggerKind.DRAWDOWN_STOP,
+    )
+    assert out[0].effective_r_multiple == 1.3
+
+
+def test_effective_r_multiple_static_when_calibration_off() -> None:
+    # Calibration off → the static config value is still recorded (the record
+    # never needs to guess which maths was in force).
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert len(out) == 1
+    assert out[0].effective_r_multiple == 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -32,8 +32,10 @@ from dataclasses import dataclass
 # config hash, so a recalibration is captured for PIT replay. v2: optional bear-
 # regime tightening of the drawdown threshold (D1-b,
 # P0-7-amendment-2026-06-03-regime-conditioned-drawdown); is_bear=False reproduces
-# v1 outputs bit-for-bit.
-FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v2"
+# v1 outputs bit-for-bit. v3: regime-conditioned take-profit multiple (D1-c,
+# P0-7-amendment-2026-06-04-regime-conditioned-takeprofit) — a new, separate
+# derivation; the drawdown maths is untouched (v2-identical).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v3"
 
 
 @dataclass(frozen=True)
@@ -91,18 +93,14 @@ def derive_drawdown_threshold(
     """
     cfg = config or DrawdownCalibrationConfig()
     series = [
-        c
-        for c in closes
-        if isinstance(c, (int, float)) and math.isfinite(c) and c > 0
+        c for c in closes if isinstance(c, (int, float)) and math.isfinite(c) and c > 0
     ]
     # Need min_history+1 closes to form min_history returns.
     if len(series) < cfg.min_history + 1:
         return None
     if len(series) > cfg.window + 1:
-        series = series[-(cfg.window + 1):]
-    returns = [
-        abs(series[i] / series[i - 1] - 1.0) for i in range(1, len(series))
-    ]
+        series = series[-(cfg.window + 1) :]
+    returns = [abs(series[i] / series[i - 1] - 1.0) for i in range(1, len(series))]
     if len(returns) < cfg.min_history:
         return None
     scale = _nearest_rank_percentile(sorted(returns), cfg.percentile)
@@ -112,8 +110,59 @@ def derive_drawdown_threshold(
     return max(cfg.floor, min(cfg.ceiling, raw))
 
 
+@dataclass(frozen=True)
+class TakeProfitCalibrationConfig:
+    """Runtime-immutable regime tiers for the take-profit ``r_multiple`` (D1-c).
+
+    The intraday TAKE_PROFIT trigger locks a tranche at ``cost + r_multiple×R``;
+    these tiers condition WHEN that target sits by market regime — earlier in a
+    BEAR / unchanged in NEUTRAL / later in a BULL ("let winners run"). The tiers
+    only move the discretionary profit-taking target: protective stops (ATR /
+    drawdown) and the hard concentration cap are untouched, so delaying the
+    take-profit never removes protection. Recalibrated only offline (P2-2
+    shadow + human gate + git + restart) — never at runtime, never by an LLM
+    (P0-7-amendment-2026-06-04-regime-conditioned-takeprofit).
+    """
+
+    bull_r_multiple: float = 1.3  # BULL → later target (ride the trend)
+    neutral_r_multiple: float = 1.0  # NEUTRAL → the static default exactly
+    bear_r_multiple: float = 0.6  # BEAR → earlier lock-in (preserve gains)
+    # The clamp guards a (mis)recalibration: ``floor`` stops the target landing
+    # so close to cost that noise triggers churn sells; ``ceiling`` stops it
+    # drifting so far the take-profit never fires (lock-in in name only).
+    floor: float = 0.5
+    ceiling: float = 2.0
+
+
+def effective_r_multiple(
+    config: TakeProfitCalibrationConfig,
+    *,
+    is_bull: bool,
+    is_bear: bool,
+) -> float:
+    """Regime-conditioned take-profit multiple (pure, deterministic).
+
+    The regime verdict is the caller's, derived deterministically from the
+    persisted benchmark index (never an LLM / off-market input) and passed as
+    two booleans so this module stays import-clean (zero ``backend.*`` sub-
+    package imports — the D1-b convention). ``is_bear`` wins over ``is_bull``
+    defensively (``classify_regime`` can never emit both; if a caller ever
+    does, the conservative earlier-lock tier applies). Both ``False`` =
+    NEUTRAL. The result is clamped to ``[floor, ceiling]``.
+    """
+    if is_bear:
+        raw = config.bear_r_multiple
+    elif is_bull:
+        raw = config.bull_r_multiple
+    else:
+        raw = config.neutral_r_multiple
+    return max(config.floor, min(config.ceiling, raw))
+
+
 __all__ = [
     "FEATURE_CODE_VERSION",
     "DrawdownCalibrationConfig",
+    "TakeProfitCalibrationConfig",
     "derive_drawdown_threshold",
+    "effective_r_multiple",
 ]

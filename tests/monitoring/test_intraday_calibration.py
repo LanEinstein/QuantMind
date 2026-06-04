@@ -13,7 +13,9 @@ import pytest
 
 from backend.monitoring.intraday_calibration import (
     DrawdownCalibrationConfig,
+    TakeProfitCalibrationConfig,
     derive_drawdown_threshold,
+    effective_r_multiple,
 )
 
 
@@ -105,3 +107,48 @@ def test_is_bear_false_reproduces_base() -> None:
     assert derive_drawdown_threshold(
         series, is_bear=False
     ) == derive_drawdown_threshold(series)
+
+
+# ---------------------------------------------------------------------------
+# D1-c — regime-conditioned take-profit multiple
+# (P0-7-amendment-2026-06-04-regime-conditioned-takeprofit)
+# ---------------------------------------------------------------------------
+
+
+def test_effective_r_multiple_three_tiers() -> None:
+    cfg = TakeProfitCalibrationConfig()
+    assert effective_r_multiple(cfg, is_bull=True, is_bear=False) == 1.3
+    assert effective_r_multiple(cfg, is_bull=False, is_bear=False) == 1.0
+    assert effective_r_multiple(cfg, is_bull=False, is_bear=True) == 0.6
+
+
+def test_effective_r_multiple_clamps_floor_and_ceiling() -> None:
+    # The clamp guards a (mis)recalibration: never take profit earlier than
+    # +floor·R (noise churn) nor push the target past +ceiling·R (a target so
+    # far the take-profit never fires).
+    cfg = TakeProfitCalibrationConfig(bear_r_multiple=0.1, bull_r_multiple=5.0)
+    assert effective_r_multiple(cfg, is_bull=False, is_bear=True) == 0.5
+    assert effective_r_multiple(cfg, is_bull=True, is_bear=False) == 2.0
+
+
+def test_effective_r_multiple_bear_wins_over_bull() -> None:
+    # Defensive precedence: classify_regime can never emit both, but if a
+    # caller ever passes both flags the conservative (earlier-lock) tier wins.
+    cfg = TakeProfitCalibrationConfig()
+    assert effective_r_multiple(cfg, is_bull=True, is_bear=True) == 0.6
+
+
+def test_effective_r_multiple_deterministic() -> None:
+    cfg = TakeProfitCalibrationConfig()
+    assert effective_r_multiple(cfg, is_bull=False, is_bear=True) == (
+        effective_r_multiple(cfg, is_bull=False, is_bear=True)
+    )
+
+
+def test_takeprofit_calibration_config_frozen() -> None:
+    # Runtime-immutable meta-parameters (recalibrated only offline, P2-2).
+    import dataclasses
+
+    cfg = TakeProfitCalibrationConfig()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.bear_r_multiple = 0.9  # type: ignore[misc]
