@@ -36,8 +36,10 @@ from dataclasses import dataclass
 # P0-7-amendment-2026-06-04-regime-conditioned-takeprofit) — a new, separate
 # derivation; the drawdown maths is untouched (v2-identical). v4: tiered
 # take-profit ladder config (D1-d, P0-10-amendment-line2-2026-06-04) — a new
-# config type only; prior derivations untouched (v3-identical).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v4"
+# config type only; prior derivations untouched (v3-identical). v5: entry-
+# anchored chandelier stop (E1, P0-7-amendment-2026-06-04-entry-anchored-
+# chandelier) — a new derivation; prior maths untouched (v4-identical).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v5"
 
 
 @dataclass(frozen=True)
@@ -194,11 +196,101 @@ class TieredTakeProfitConfig:
             prev = t
 
 
+@dataclass(frozen=True)
+class ChandelierConfig:
+    """Runtime-immutable entry-anchored chandelier stop parameters (E1+E2).
+
+    LeBeau's canonical structure (P0-7-amendment-2026-06-04-entry-anchored-
+    chandelier): a fresh position is guarded by an initial money-management
+    stop at ``cost − initial_atr_mult×ATR``; the chandelier hangs from the
+    highest close SINCE ENTRY at ``anchor − chandelier_atr_mult×ATR`` and
+    governs once it ratchets above the initial stop. The 3.0× multiplier is
+    the canonical default (owner decision 2026-06-04; the prior 2.0× over a
+    pre-entry window was the whipsaw-prone simplification). The E2 depth
+    tier: a breach deeper than ``deep_band_atr×ATR`` below the stop exits
+    immediately; a shallow breach routes only inside the late-session
+    confirmation window (A-share "weak open / strong close" structure —
+    sell into the strong window, dodge the morning whipsaw). Recalibrated
+    only offline (P2-2 shadow + human gate + git + restart).
+    """
+
+    chandelier_atr_mult: float = 3.0  # canonical LeBeau band 2.5–4
+    initial_atr_mult: float = 2.0  # money-management stop for fresh entries
+    deep_band_atr: float = 0.5  # breach deeper than this ×ATR → immediate
+    confirm_start_minute: int = 14 * 60 + 30  # 14:30 Asia/Shanghai
+    confirm_end_minute: int = 14 * 60 + 55  # 14:55 (exclusive)
+
+
+@dataclass(frozen=True)
+class EntryAnchoredStop:
+    """The derived two-layer stop for one held code (pure output)."""
+
+    stop_level: float
+    anchor: float  # highest close since entry, floored at cost
+    initial_stop: float
+    chandelier_stop: float
+    governing: str  # "initial" | "chandelier" (which layer sets stop_level)
+
+
+def derive_entry_anchored_stop(
+    closes_since_entry: Sequence[float],
+    *,
+    cost: float,
+    atr: float,
+    config: ChandelierConfig,
+) -> EntryAnchoredStop | None:
+    """Two-layer entry-anchored stop (pure, deterministic, PIT-replayable).
+
+    ``closes_since_entry`` is the daily-close slice covering the holding
+    episode (the caller slices by trading-day count from the persisted
+    episode date — an empty slice is a fresh entry whose anchor is the
+    cost itself). Returns ``None`` when ``cost``/``atr`` are unusable (the
+    caller falls back to the window-anchored stop — protection never
+    disappears). The anchor is floored at ``cost`` so a position that never
+    rallied cannot anchor below its own entry.
+    """
+    if not (
+        isinstance(cost, (int, float))
+        and math.isfinite(cost)
+        and cost > 0
+        and isinstance(atr, (int, float))
+        and math.isfinite(atr)
+        and atr > 0
+    ):
+        return None
+    clean = [
+        c
+        for c in closes_since_entry
+        if isinstance(c, (int, float)) and math.isfinite(c) and c > 0
+    ]
+    anchor = max(max(clean, default=0.0), cost)
+    initial_stop = cost - config.initial_atr_mult * atr
+    chandelier_stop = anchor - config.chandelier_atr_mult * atr
+    if chandelier_stop >= initial_stop:
+        return EntryAnchoredStop(
+            stop_level=round(chandelier_stop, 4),
+            anchor=round(anchor, 4),
+            initial_stop=round(initial_stop, 4),
+            chandelier_stop=round(chandelier_stop, 4),
+            governing="chandelier",
+        )
+    return EntryAnchoredStop(
+        stop_level=round(initial_stop, 4),
+        anchor=round(anchor, 4),
+        initial_stop=round(initial_stop, 4),
+        chandelier_stop=round(chandelier_stop, 4),
+        governing="initial",
+    )
+
+
 __all__ = [
     "FEATURE_CODE_VERSION",
+    "ChandelierConfig",
     "DrawdownCalibrationConfig",
+    "EntryAnchoredStop",
     "TakeProfitCalibrationConfig",
     "TieredTakeProfitConfig",
     "derive_drawdown_threshold",
+    "derive_entry_anchored_stop",
     "effective_r_multiple",
 ]

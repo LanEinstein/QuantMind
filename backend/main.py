@@ -947,6 +947,48 @@ async def _init_line2_runners(
     else:
         _tiered_tp = None
         _tp_ledger = None
+    # E1+E2 — entry-anchored chandelier stop (3×ATR since-entry anchor +
+    # initial cost−2×ATR stop + depth-tiered late-session confirmation).
+    # GATED default-OFF; the SHADOW flag (independently switchable) logs a
+    # once-per-day-per-code old-vs-new comparison while the feature is off —
+    # the 10-15 trading-day shadow the owner mandated
+    # (P0-7-amendment-2026-06-04-entry-anchored-chandelier).
+    _chand_on = (
+        os.environ.get(
+            "QUANTMIND_LINE2_ENTRY_ANCHORED_STOP_ENABLED", "0"
+        ).strip()
+        == "1"
+    )
+    _chand_shadow = (
+        os.environ.get(
+            "QUANTMIND_LINE2_ENTRY_ANCHORED_STOP_SHADOW", "0"
+        ).strip()
+        == "1"
+    )
+    # The episode store is ALWAYS built + synced (decision-inert, append-only,
+    # one membership reconcile per tick) so entry dates accumulate from deploy
+    # day regardless of when the owner flips the env — first activation must
+    # not start every anchor at the activation date (review P1 finding).
+    from backend.orchestration.position_episode_store import (
+        PositionEpisodeStore,
+    )
+
+    _episode_store = PositionEpisodeStore(
+        _FiredPath(
+            os.environ.get(
+                "QUANTMIND_LINE2_FIRED_STORE_ROOT",
+                "data/line2_intraday_state",
+            )
+        )
+        / "position_episodes.jsonl"
+    )
+    if _chand_on:
+        from backend.monitoring.intraday_calibration import ChandelierConfig
+
+        _chandelier = ChandelierConfig()
+    else:
+        _chandelier = None
+
     intraday_runner = Line2IntradayRunner(
         builder=builder,
         renderer=renderer,
@@ -961,6 +1003,9 @@ async def _init_line2_runners(
         takeprofit_ledger=_tp_ledger,
         fired_store=_fired_store,
         reject_alert_hook=_line2_reject_alert,
+        chandelier=_chandelier,
+        episode_store=_episode_store,
+        chandelier_shadow=_chand_shadow,
         pilot=pilot,
     )
 

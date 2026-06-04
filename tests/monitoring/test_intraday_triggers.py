@@ -11,11 +11,13 @@ to end; here we cover the pure logic.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from backend.broker.models import AccountInfo, Position
 from backend.models.market import WatchlistMarketSnapshot
 from backend.monitoring.add_position import AddConfig, AddRejectReason, MarketRegime
 from backend.monitoring.intraday_calibration import (
+    ChandelierConfig,
     DrawdownCalibrationConfig,
     TakeProfitCalibrationConfig,
     TieredTakeProfitConfig,
@@ -1120,3 +1122,190 @@ def test_tiers_taken_none_when_ladder_off() -> None:
     )
     assert len(out) == 1
     assert out[0].take_profit_tiers_taken is None
+
+
+# ---------------------------------------------------------------------------
+# E1+E2 — entry-anchored chandelier + depth-tiered confirmation
+# (P0-7-amendment-2026-06-04-entry-anchored-chandelier)
+# ---------------------------------------------------------------------------
+
+# _volatile_closes alternates 4.2/4.8 → close-ATR = 0.6, 20-day window high
+# = 4.8 → v8 window stop = 4.8 − 2×0.6 = 3.6. With cost 4.0 the anchored
+# layers are: initial = 4.0 − 2×0.6 = 2.8; fresh-entry chandelier = 4.0 −
+# 3×0.6 = 2.2 → initial governs at 2.8.
+
+_CHAND = ChandelierConfig()
+# The confirmation window is Asia/Shanghai wall-clock; build explicit SH
+# times (the module normalizes any tz — a UTC 14:40 is SH 22:40, NOT in
+# window, which the tz-normalization fix below guarantees).
+_SH_TZ = ZoneInfo("Asia/Shanghai")
+_MORNING = datetime(2026, 5, 15, 10, 30, 0, tzinfo=_SH_TZ)
+_CONFIRM = datetime(2026, 5, 15, 14, 40, 0, tzinfo=_SH_TZ)
+_CONFIRM_AS_UTC = _CONFIRM.astimezone(UTC)  # same instant, UTC-aware
+
+
+def _chand_kwargs(entry_closes: tuple[float, ...] | None, tick):  # noqa: ANN001, ANN202
+    return {
+        "chandelier": _CHAND,
+        "entry_closes_by_code": (
+            {"510500": entry_closes} if entry_closes is not None else {}
+        ),
+        "tick_time": tick,
+    }
+
+
+def test_chandelier_fresh_entry_morning_dip_does_not_fire() -> None:
+    """The 2026-06-03 whipsaw class: the v8 window stop (3.6, anchored to a
+    PRE-ENTRY high) fires at 3.5; the entry-anchored stop (initial 2.8) does
+    not — the morning dip is left to recover."""
+    spots = {"510500": _spot("510500", price=3.5, prev_close=3.6)}  # -2.8%
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    old = evaluate_intraday_sell_intents(spots, closes, pos)
+    assert [i.trigger_kind for i in old] == [IntradayTriggerKind.ATR_TRAILING_STOP]
+    new = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _MORNING)
+    )
+    assert new == ()
+
+
+def test_chandelier_deep_breach_fires_immediately() -> None:
+    """price ≤ stop − 0.5×ATR (2.8 − 0.3 = 2.5) → exits THIS tick, morning
+    included (gap/crash protection is not delayed by the confirm window)."""
+    spots = {"510500": _spot("510500", price=2.45, prev_close=2.5)}  # -2%
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _MORNING)
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.ATR_TRAILING_STOP]
+    intent = out[0]
+    assert intent.stop_level == 2.8
+    assert intent.stop_governing == "initial"
+    assert intent.effective_atr_stop_mult == 2.0
+    assert intent.stop_anchor == 4.0
+    assert "止损" in intent.anomaly_reason
+    assert "深破即时" in intent.anomaly_reason
+
+
+def test_chandelier_shallow_breach_waits_for_confirm_window() -> None:
+    """2.5 < price < 2.8 (shallow) → no intent in the morning, fires inside
+    the 14:30–14:55 confirmation window (the A-share weak-open structure)."""
+    spots = {"510500": _spot("510500", price=2.7, prev_close=2.75)}  # -1.8%
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    morning = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _MORNING)
+    )
+    assert morning == ()
+    confirmed = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _CONFIRM)
+    )
+    assert [i.trigger_kind for i in confirmed] == [
+        IntradayTriggerKind.ATR_TRAILING_STOP
+    ]
+    assert "尾盘确认" in confirmed[0].anomaly_reason
+
+
+def test_chandelier_governs_after_rally_and_labels_lock_in() -> None:
+    """A post-entry high of 6.0 ratchets the chandelier (6.0 − 1.8 = 4.2)
+    above the initial stop (2.8) → it governs, labelled 回撤锁盈."""
+    spots = {"510500": _spot("510500", price=4.1, prev_close=4.2)}  # -2.4%
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((4.5, 6.0, 5.2), _CONFIRM)
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.ATR_TRAILING_STOP]
+    intent = out[0]
+    assert intent.stop_level == 4.2
+    assert intent.stop_governing == "chandelier"
+    assert intent.effective_atr_stop_mult == 3.0
+    assert intent.stop_anchor == 6.0
+    # recent_high keeps its v8 meaning (window high) — the anchor lives only
+    # in stop_anchor so cross-kind record semantics never diverge.
+    assert intent.recent_high == 4.8
+    assert "回撤锁盈" in intent.anomaly_reason
+
+
+def test_chandelier_missing_episode_falls_back_to_v8_window_stop() -> None:
+    """Feature on but no entry data for the code → the v8 window stop fires
+    immediately (protection never disappears; fail-open per amendment §1.2)."""
+    spots = {"510500": _spot("510500", price=3.5, prev_close=3.6)}
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs(None, _MORNING)
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.ATR_TRAILING_STOP]
+    assert out[0].stop_level == 3.6
+    assert out[0].stop_governing is None
+    assert out[0].effective_atr_stop_mult is None
+
+
+def test_chandelier_drawdown_stop_unaffected_all_session() -> None:
+    """The −5% disaster stop stays immediate even in the morning with the
+    chandelier on (E2 only conditions the trailing stop)."""
+    spots = {"510500": _spot("510500", price=4.2, prev_close=4.5)}  # -6.7%
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.5),)
+    # price 4.2 > anchored stop max(4.5−1.2, 4.5−1.8)=3.3 → no ATR fire;
+    # drawdown −6.7% ≤ −5% fires immediately at 10:30.
+    out = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _MORNING)
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.DRAWDOWN_STOP]
+
+
+def test_chandelier_confirm_window_normalizes_timezone() -> None:
+    """A UTC-aware tick_time at the same instant as SH 14:40 must be IN the
+    window (review P1: no silent 8h shift for non-SH-aware callers)."""
+    spots = {"510500": _spot("510500", price=2.7, prev_close=2.75)}
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _CONFIRM_AS_UTC)
+    )
+    assert [i.trigger_kind for i in out] == [
+        IntradayTriggerKind.ATR_TRAILING_STOP
+    ]
+
+
+def test_chandelier_fires_on_short_history_position() -> None:
+    """A position too new for the 20-day window (v8 could never fire its
+    trailing stop — recent_high was None) IS protected by the anchored stop
+    (review P1: the newly-reachable state must stay covered by a test)."""
+    closes = {"510500": tuple(4.2 if i % 2 else 4.8 for i in range(16))}
+    # 16 closes ≥ atr_window+1 (15) → ATR=0.6; < recent_high_window (20) →
+    # v8 recent_high is None → old maths cannot fire.
+    spots = {"510500": _spot("510500", price=2.4, prev_close=2.45)}  # deep
+    pos = (_position("510500", cost=4.0),)
+    old = evaluate_intraday_sell_intents(spots, closes, pos)
+    assert all(
+        i.trigger_kind is not IntradayTriggerKind.ATR_TRAILING_STOP
+        for i in old
+    )
+    new = evaluate_intraday_sell_intents(
+        spots, closes, pos, **_chand_kwargs((), _MORNING)
+    )
+    assert [i.trigger_kind for i in new] == [
+        IntradayTriggerKind.ATR_TRAILING_STOP
+    ]
+    assert new[0].recent_high == 0.0  # v8 field meaning kept: no window high
+
+
+def test_chandelier_none_config_reproduces_v8() -> None:
+    """None config = v8 bit-for-bit even when entry closes are supplied."""
+    spots = {"510500": _spot("510500", price=3.5, prev_close=3.6)}
+    closes = {"510500": _volatile_closes()}
+    pos = (_position("510500", cost=4.0),)
+    base = evaluate_intraday_sell_intents(spots, closes, pos)
+    same = evaluate_intraday_sell_intents(
+        spots,
+        closes,
+        pos,
+        chandelier=None,
+        entry_closes_by_code={"510500": ()},
+        tick_time=_CONFIRM,
+    )
+    assert same == base

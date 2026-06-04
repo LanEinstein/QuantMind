@@ -39,6 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -63,10 +64,12 @@ from backend.monitoring.add_position import (
     vanthorp_size,
 )
 from backend.monitoring.intraday_calibration import (
+    ChandelierConfig,
     DrawdownCalibrationConfig,
     TakeProfitCalibrationConfig,
     TieredTakeProfitConfig,
     derive_drawdown_threshold,
+    derive_entry_anchored_stop,
     effective_r_multiple,
 )
 from backend.monitoring.sell_signal import normalize_position_codes
@@ -84,6 +87,11 @@ from backend.services.universe_policy import UniversePolicy
 log = structlog.get_logger(component="monitoring.intraday_triggers")
 
 _LOT = 100
+# The E2 confirmation window is defined in Asia/Shanghai wall-clock minutes;
+# tick_time is normalized exactly like utils.trading_hours.is_trading_hours
+# (naive → assume Shanghai; aware → convert) so a UTC-aware caller cannot
+# silently shift the window by 8h (review P1 finding).
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # Pinned feature-code version — bump when the trigger maths changes so a stale
 # replay manifest fails closed instead of silently recomputing. v2: added the
@@ -108,8 +116,15 @@ _LOT = 100
 # may run a tiered ladder (+1R half → +2R another tranche → residual rides
 # the trailing stop) gated by the episode's ledger-folded tiers-taken count;
 # a None tiered config reproduces v7 outputs bit-for-bit
-# (P0-10-amendment-line2-2026-06-04-tiered-takeprofit).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v8"
+# (P0-10-amendment-line2-2026-06-04-tiered-takeprofit). v9: the trailing stop
+# may be ENTRY-ANCHORED (max(cost−2×ATR, max-close-since-entry−3×ATR)) with
+# depth-tiered confirmation (deep breach immediate; shallow breach only in
+# the late-session window) when a ChandelierConfig is supplied; a None config
+# reproduces v8 outputs bit-for-bit. The take-profit R-unit deliberately
+# stays ``cfg.atr_stop_mult×ATR`` (the D1-c/D1-d ladders are calibrated in
+# those units — the chandelier multiplier conditions ONLY the trailing stop)
+# (P0-7-amendment-2026-06-04-entry-anchored-chandelier).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v9"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -218,6 +233,19 @@ class IntradaySellIntent:
     # tier; mirrors the effective_drawdown_threshold precedent — codex P2).
     # ``None`` when the tiered ladder is off.
     take_profit_tiers_taken: int | None = None
+    # Entry-anchored chandelier (E1, P0-7-amendment-2026-06-04-entry-
+    # anchored-chandelier). ``effective_atr_stop_mult`` = the trailing-stop
+    # multiplier actually in force (3.0 when the chandelier layer governs /
+    # 2.0 for the initial money-management layer / None on legacy v8 maths →
+    # the recorder falls back to the static config). ``stop_anchor`` = the
+    # highest-close-since-entry anchor (floored at cost). Both carried on
+    # EVERY intent when the feature is on (replay must reproduce why the
+    # trailing stop did or did not fire first — the dd_thr precedent).
+    # ``stop_governing`` ("initial" | "chandelier") only on the
+    # ATR_TRAILING_STOP intent itself (message wording: 止损 vs 回撤锁盈).
+    effective_atr_stop_mult: float | None = None
+    stop_anchor: float | None = None
+    stop_governing: str | None = None
 
 
 def _bare(code: str) -> str:
@@ -338,6 +366,8 @@ def _take_profit_intent(
     effective_r: float,
     tier_ladder: tuple[float, ...] | None = None,
     tiers_taken: int = 0,
+    effective_atr_stop_mult: float | None = None,
+    stop_anchor: float | None = None,
 ) -> IntradaySellIntent | None:
     """Lock a tranche of gains at the (possibly tiered) take-profit target.
 
@@ -398,6 +428,8 @@ def _take_profit_intent(
         take_profit_tiers_taken=(
             tiers_taken if tier_ladder is not None else None
         ),
+        effective_atr_stop_mult=effective_atr_stop_mult,
+        stop_anchor=stop_anchor,
     )
 
 
@@ -415,6 +447,8 @@ def _weight_trim_intent(
     take_profit_tiers_taken: int | None = None,
     hard_cap_only: bool = False,
     max_single_instruction_amount: float = 50_000.0,
+    effective_atr_stop_mult: float | None = None,
+    stop_anchor: float | None = None,
 ) -> IntradaySellIntent | None:
     """Trim an over-allocated position back toward ``trim_target_pct``.
 
@@ -492,6 +526,8 @@ def _weight_trim_intent(
         effective_drawdown_threshold=effective_drawdown_threshold,
         effective_r_multiple=effective_r,
         take_profit_tiers_taken=take_profit_tiers_taken,
+        effective_atr_stop_mult=effective_atr_stop_mult,
+        stop_anchor=stop_anchor,
     )
 
 
@@ -508,6 +544,8 @@ def _thesis_break_intent(
     effective_drawdown_threshold: float,
     effective_r: float,
     take_profit_tiers_taken: int | None = None,
+    effective_atr_stop_mult: float | None = None,
+    stop_anchor: float | None = None,
 ) -> IntradaySellIntent | None:
     """Full-exit SELL for a broken thesis, clamped to the single-instruction cap.
 
@@ -541,6 +579,8 @@ def _thesis_break_intent(
         effective_drawdown_threshold=effective_drawdown_threshold,
         effective_r_multiple=effective_r,
         take_profit_tiers_taken=take_profit_tiers_taken,
+        effective_atr_stop_mult=effective_atr_stop_mult,
+        stop_anchor=stop_anchor,
     )
 
 
@@ -563,6 +603,9 @@ def evaluate_intraday_sell_intents(
     takeprofit_regime: MarketRegime | None = None,
     tiered_takeprofit: TieredTakeProfitConfig | None = None,
     take_profit_tiers_taken: Mapping[str, int] | None = None,
+    chandelier: ChandelierConfig | None = None,
+    entry_closes_by_code: Mapping[str, tuple[float, ...]] | None = None,
+    tick_time: datetime | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -627,6 +670,20 @@ def evaluate_intraday_sell_intents(
     residual rides the trailing stop). Composes with the D1-c multiple (a
     BEAR regime shifts the whole ladder earlier). ``None`` reproduces v7
     outputs bit-for-bit (single target, cross-day scale-out semantics).
+
+    ``chandelier`` + ``entry_closes_by_code`` + ``tick_time`` (E1+E2,
+    P0-7-amendment-2026-06-04-entry-anchored-chandelier): the trailing stop
+    becomes ENTRY-ANCHORED — ``max(cost − 2×ATR, max(close since entry) −
+    3×ATR)`` (LeBeau's canonical two-layer structure; the absolute-window
+    high that parked stops at cost on fresh positions is gone) — with
+    depth-tiered confirmation: a breach deeper than ``deep_band_atr×ATR``
+    exits THIS tick, a shallow breach routes only inside the late-session
+    confirmation window (the A-share weak-open/strong-close structure made
+    morning intraday-touch stops systematically sell the low). A code
+    missing from ``entry_closes_by_code`` (no episode data) falls back to
+    the v8 window stop — protection never disappears. DRAWDOWN_STOP is
+    untouched (the immediate disaster stop, all session). ``None`` config
+    reproduces v8 outputs bit-for-bit.
     """
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
@@ -700,21 +757,86 @@ def evaluate_intraday_sell_intents(
             if closes and len(closes) >= cfg.recent_high_window
             else None
         )
-        atr_fired = (
-            atr is not None
-            and atr > 0
-            and recent_high is not None
-            and price < recent_high - cfg.atr_stop_mult * atr
-        )
+        # E1+E2 — entry-anchored chandelier with depth-tiered confirmation
+        # (None config / no episode data → the v8 window stop bit-for-bit).
+        anchored = None
+        if chandelier is not None and atr is not None and atr > 0:
+            entry_closes = (entry_closes_by_code or {}).get(code)
+            if entry_closes is not None:
+                anchored = derive_entry_anchored_stop(
+                    entry_closes,
+                    cost=pos.cost_price,
+                    atr=atr,
+                    config=chandelier,
+                )
+        eff_mult: float | None = None
+        anchor_val: float | None = None
+        deep_breach = False
+        if anchored is not None:
+            eff_mult = (
+                chandelier.chandelier_atr_mult  # type: ignore[union-attr]
+                if anchored.governing == "chandelier"
+                else chandelier.initial_atr_mult  # type: ignore[union-attr]
+            )
+            anchor_val = anchored.anchor
+            breached = price < anchored.stop_level
+            deep_breach = price <= (
+                anchored.stop_level
+                - chandelier.deep_band_atr * atr  # type: ignore[union-attr, operator]
+            )
+            if tick_time is None:
+                minute = None
+            else:
+                local = (
+                    tick_time.replace(tzinfo=_SHANGHAI)
+                    if tick_time.tzinfo is None
+                    else tick_time.astimezone(_SHANGHAI)
+                )
+                minute = local.hour * 60 + local.minute
+            in_confirm_window = (
+                minute is not None
+                and chandelier.confirm_start_minute  # type: ignore[union-attr]
+                <= minute
+                < chandelier.confirm_end_minute  # type: ignore[union-attr]
+            )
+            # Deep breach → exit NOW (gap/crash protection). Shallow breach →
+            # only inside the late-session confirmation window (a morning
+            # touch that recovers by 14:30 never sells the low).
+            atr_fired = breached and (deep_breach or in_confirm_window)
+        else:
+            atr_fired = (
+                atr is not None
+                and atr > 0
+                and recent_high is not None
+                and price < recent_high - cfg.atr_stop_mult * atr
+            )
         drawdown_fired = drawdown <= -dd_threshold
 
         if atr_fired:
-            stop_level = recent_high - cfg.atr_stop_mult * atr  # type: ignore[operator]
-            detail = (
-                f"intraday price {price:.3f} < trailing stop "
-                f"{stop_level:.3f} (recent high {recent_high:.3f} − "
-                f"{cfg.atr_stop_mult:.0f}×ATR {atr:.3f})"
-            )
+            if anchored is not None:
+                stop_level = anchored.stop_level
+                label = (
+                    "回撤锁盈" if anchored.governing == "chandelier" else "止损"
+                )
+                mode_label = "深破即时" if deep_breach else "尾盘确认"
+                detail = (
+                    f"{label}: 实时价 {price:.3f} < 止损线 {stop_level:.3f} "
+                    f"(入场锚 {anchored.anchor:.3f} − {eff_mult:g}×ATR "
+                    f"{atr:.3f}; {mode_label})"
+                )
+                # recent_high keeps its v8 meaning (window high; 0.0 when
+                # unavailable) on EVERY record — the E1 anchor lives uniformly
+                # in stop_anchor so cross-kind provenance never diverges
+                # (review P1 finding).
+                rh_field = recent_high if recent_high is not None else 0.0
+            else:
+                stop_level = recent_high - cfg.atr_stop_mult * atr  # type: ignore[operator]
+                detail = (
+                    f"intraday price {price:.3f} < trailing stop "
+                    f"{stop_level:.3f} (recent high {recent_high:.3f} − "
+                    f"{cfg.atr_stop_mult:.0f}×ATR {atr:.3f})"
+                )
+                rh_field = recent_high
             intents.append(
                 IntradaySellIntent(
                     code=code,
@@ -725,11 +847,16 @@ def evaluate_intraday_sell_intents(
                     anomaly_reason=detail,
                     drawdown_pct=round(drawdown, 6),
                     atr=round(atr, 4),  # type: ignore[arg-type]
-                    recent_high=round(recent_high, 4),  # type: ignore[arg-type]
+                    recent_high=round(rh_field, 4),  # type: ignore[arg-type]
                     stop_level=round(stop_level, 4),
                     effective_drawdown_threshold=dd_thr,
                     effective_r_multiple=eff_r,
                     take_profit_tiers_taken=tp_taken,
+                    effective_atr_stop_mult=eff_mult,
+                    stop_anchor=anchor_val,
+                    stop_governing=(
+                        anchored.governing if anchored is not None else None
+                    ),
                 )
             )
         elif drawdown_fired:
@@ -752,6 +879,8 @@ def evaluate_intraday_sell_intents(
                     effective_drawdown_threshold=dd_thr,
                     effective_r_multiple=eff_r,
                     take_profit_tiers_taken=tp_taken,
+                    effective_atr_stop_mult=eff_mult,
+                    stop_anchor=anchor_val,
                 )
             )
         else:
@@ -777,6 +906,8 @@ def evaluate_intraday_sell_intents(
                     effective_drawdown_threshold=dd_thr,
                     effective_r=eff_r,
                     take_profit_tiers_taken=tp_taken,
+                    effective_atr_stop_mult=eff_mult,
+                    stop_anchor=anchor_val,
                 )
                 if code in thesis_breaks
                 else None
@@ -812,6 +943,8 @@ def evaluate_intraday_sell_intents(
                         tiers_taken=(take_profit_tiers_taken or {}).get(
                             code, 0
                         ),
+                        effective_atr_stop_mult=eff_mult,
+                        stop_anchor=anchor_val,
                     )
                 )
                 trim = (
@@ -830,6 +963,8 @@ def evaluate_intraday_sell_intents(
                         take_profit_tiers_taken=tp_taken,
                         hard_cap_only=is_long_term,
                         max_single_instruction_amount=max_single_instruction_amount,
+                        effective_atr_stop_mult=eff_mult,
+                        stop_anchor=anchor_val,
                     )
                 )
                 if tp is not None:

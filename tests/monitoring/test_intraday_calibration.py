@@ -152,3 +152,77 @@ def test_takeprofit_calibration_config_frozen() -> None:
     cfg = TakeProfitCalibrationConfig()
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.bear_r_multiple = 0.9  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# E1 — derive_entry_anchored_stop (P0-7-amendment-2026-06-04)
+# ---------------------------------------------------------------------------
+
+
+def test_entry_anchored_fresh_entry_initial_governs() -> None:
+    from backend.monitoring.intraday_calibration import (
+        ChandelierConfig,
+        derive_entry_anchored_stop,
+    )
+
+    out = derive_entry_anchored_stop(
+        (), cost=10.0, atr=0.5, config=ChandelierConfig()
+    )
+    assert out is not None
+    assert out.anchor == 10.0  # no closes since entry → anchor = cost
+    assert out.initial_stop == 9.0  # 10 − 2×0.5
+    assert out.chandelier_stop == 8.5  # 10 − 3×0.5
+    assert out.governing == "initial"
+    assert out.stop_level == 9.0
+
+
+def test_entry_anchored_chandelier_takes_over_after_rally() -> None:
+    from backend.monitoring.intraday_calibration import (
+        ChandelierConfig,
+        derive_entry_anchored_stop,
+    )
+
+    out = derive_entry_anchored_stop(
+        (10.5, 12.0, 11.2), cost=10.0, atr=0.5, config=ChandelierConfig()
+    )
+    assert out is not None
+    assert out.anchor == 12.0
+    assert out.chandelier_stop == 10.5  # 12 − 1.5 > initial 9.0
+    assert out.governing == "chandelier"
+    assert out.stop_level == 10.5
+
+
+def test_entry_anchored_anchor_floored_at_cost() -> None:
+    from backend.monitoring.intraday_calibration import (
+        ChandelierConfig,
+        derive_entry_anchored_stop,
+    )
+
+    # Closes all below cost (a position that only fell) → anchor = cost,
+    # never below the entry itself.
+    out = derive_entry_anchored_stop(
+        (9.5, 9.2), cost=10.0, atr=0.5, config=ChandelierConfig()
+    )
+    assert out is not None
+    assert out.anchor == 10.0
+    assert out.governing == "initial"
+
+
+def test_entry_anchored_filters_non_finite_and_rejects_bad_inputs() -> None:
+    from backend.monitoring.intraday_calibration import (
+        ChandelierConfig,
+        derive_entry_anchored_stop,
+    )
+
+    cfg = ChandelierConfig()
+    out = derive_entry_anchored_stop(
+        (float("nan"), float("inf"), -3.0, 11.0), cost=10.0, atr=0.5, config=cfg
+    )
+    assert out is not None
+    assert out.anchor == 11.0  # only the finite positive close survives
+    assert derive_entry_anchored_stop((), cost=0.0, atr=0.5, config=cfg) is None
+    assert derive_entry_anchored_stop((), cost=10.0, atr=0.0, config=cfg) is None
+    assert (
+        derive_entry_anchored_stop((), cost=10.0, atr=float("nan"), config=cfg)
+        is None
+    )

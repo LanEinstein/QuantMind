@@ -82,6 +82,7 @@ from backend.monitoring.add_position import (
     AddConfig,
     AddIntent,
     classify_regime,
+    close_atr,
     moving_average,
     parse_held_series,
 )
@@ -90,9 +91,11 @@ from backend.monitoring.intraday_calibration import (
     FEATURE_CODE_VERSION as CALIBRATION_FEATURE_VERSION,
 )
 from backend.monitoring.intraday_calibration import (
+    ChandelierConfig,
     DrawdownCalibrationConfig,
     TakeProfitCalibrationConfig,
     TieredTakeProfitConfig,
+    derive_entry_anchored_stop,
 )
 from backend.monitoring.intraday_triggers import (
     FEATURE_CODE_VERSION,
@@ -114,6 +117,7 @@ from backend.orchestration.intraday_manifest import (
     IntradayTriggerManifestStore,
     IntradayTriggerRecord,
 )
+from backend.orchestration.position_episode_store import PositionEpisodeStore
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteOutcome
 from backend.orchestration.takeprofit_ledger import (
     TakeProfitLedgerError,
@@ -304,6 +308,9 @@ class Line2IntradayRunner:
         takeprofit_ledger: TakeProfitLedgerStore | None = None,
         fired_store: FiredTriggerStore | None = None,
         reject_alert_hook: RejectAlertHook | None = None,
+        chandelier: ChandelierConfig | None = None,
+        episode_store: PositionEpisodeStore | None = None,
+        chandelier_shadow: bool = False,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -348,6 +355,19 @@ class Line2IntradayRunner:
         # Per-day undelivered-send attempt counter (reset on day rollover):
         # bounds the send_failed retry loop (§1.1, review angle B).
         self._send_failures: dict[tuple[str, str], int] = {}
+        # E1+E2 entry-anchored chandelier (P0-7-amendment-2026-06-04-entry-
+        # anchored-chandelier). ``chandelier`` None keeps the v8 window stop
+        # bit-for-bit (default-OFF; env-gated in main.py). The episode store
+        # supplies each holding's entry date (synced per tick); without it
+        # every code falls back to the window stop. ``chandelier_shadow``
+        # logs a once-per-day-per-code old-vs-new stop comparison while the
+        # feature is OFF (decision-inert; the 10-15 trading-day shadow the
+        # owner mandated). Folded into the config hash below (PIT) — the
+        # shadow flag is NOT (it never changes a decision).
+        self._chandelier = chandelier
+        self._episode_store = episode_store
+        self._chandelier_shadow = chandelier_shadow
+        self._shadow_logged: dict[date, set[str]] = {}
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -412,6 +432,17 @@ class Line2IntradayRunner:
                     "config": dataclasses.asdict(self._tiered_takeprofit),
                 }
                 if self._tiered_takeprofit is not None
+                else None
+            ),
+            # E1+E2 entry-anchored chandelier (incl. its absence) — pinned so
+            # a replay with the feature off never reproduces an anchored stop
+            # (PIT, P0-7-amendment-2026-06-04-entry-anchored-chandelier).
+            "chandelier": (
+                {
+                    "version": CALIBRATION_FEATURE_VERSION,
+                    "config": dataclasses.asdict(self._chandelier),
+                }
+                if self._chandelier is not None
                 else None
             ),
         }
@@ -590,6 +621,24 @@ class Line2IntradayRunner:
                         )
                         tp_tiers_taken = {}
                         tp_suppress = bare_held
+            # E1 — entry-anchored chandelier inputs: sync the episode store
+            # (entry dates, first-seen/closed per tick) and slice each code's
+            # closes down to its holding window. Computed when the feature OR
+            # its shadow is on; fed into the evaluator ONLY when the feature
+            # itself is on (shadow stays decision-inert, v8 bit-for-bit).
+            entry_closes_by_code: dict[str, tuple[float, ...]] = {}
+            if self._episode_store is not None:
+                bare_held_all = frozenset(
+                    p.code.split(".")[0].strip() for p in held if p.volume > 0
+                )
+                episodes = self._episode_store.sync(
+                    bare_held_all, trade_date=today.isoformat()
+                )
+                entry_closes_by_code = self._slice_entry_closes(
+                    episodes=episodes,
+                    closes_by_code=closes_by_code,
+                    frame_trade_date=daily_frame.trade_date,
+                )
             sell_intents = evaluate_intraday_sell_intents(
                 fresh_spots,
                 closes_by_code,
@@ -612,7 +661,25 @@ class Line2IntradayRunner:
                 tiered_takeprofit=self._tiered_takeprofit,
                 take_profit_tiers_taken=tp_tiers_taken,
                 take_profit_already_taken=tp_suppress,
+                chandelier=self._chandelier,
+                entry_closes_by_code=(
+                    entry_closes_by_code
+                    if self._chandelier is not None
+                    else None
+                ),
+                tick_time=now,
             )
+            # E2 shadow (feature OFF): once-per-day-per-code old-vs-new stop
+            # comparison log — the daily counterfactual report the owner
+            # mandated for the 10-15 trading-day shadow. Decision-inert.
+            if self._chandelier is None and self._chandelier_shadow:
+                self._log_shadow_compare(
+                    today=today,
+                    fresh_spots=fresh_spots,
+                    closes_by_code=closes_by_code,
+                    entry_closes_by_code=entry_closes_by_code,
+                    held=held,
+                )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
                 closes_by_code,
@@ -936,8 +1003,54 @@ class Line2IntradayRunner:
                     if getattr(intent, "effective_drawdown_threshold", None) is not None
                     else self._trigger_cfg.drawdown_threshold
                 ),
+                # ALWAYS the static config multiplier: it is the take-profit
+                # R-UNIT (target = cost + r_multiple × atr_stop_mult × ATR)
+                # and the v8 window-stop multiplier. The E1 trailing layer's
+                # multiplier is a DIFFERENT quantity and rides its own
+                # trailing_stop_mult key below — recording it here would make
+                # a TAKE_PROFIT replay recompute a wrong target (review P1).
                 "atr_stop_mult": self._trigger_cfg.atr_stop_mult,
                 "recent_high_window": float(self._trigger_cfg.recent_high_window),
+                # E1+E2 — the entry anchor + the trailing layer's multiplier +
+                # depth/confirm parameters in force (absent on v8 maths;
+                # governing: 1.0=chandelier layer, 0.0=initial layer).
+                **(
+                    {"stop_anchor": float(intent.stop_anchor)}
+                    if getattr(intent, "stop_anchor", None) is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "trailing_stop_mult": float(
+                            intent.effective_atr_stop_mult
+                        )
+                    }
+                    if getattr(intent, "effective_atr_stop_mult", None)
+                    is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "chandelier_governing": (
+                            1.0 if intent.stop_governing == "chandelier" else 0.0
+                        )
+                    }
+                    if getattr(intent, "stop_governing", None) is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "deep_band_atr": float(self._chandelier.deep_band_atr),
+                        "confirm_start_minute": float(
+                            self._chandelier.confirm_start_minute
+                        ),
+                        "confirm_end_minute": float(
+                            self._chandelier.confirm_end_minute
+                        ),
+                    }
+                    if self._chandelier is not None
+                    else {}
+                ),
                 # The take-profit multiple in force when this intent fired (the
                 # regime-conditioned tier when D1-c is on, else the static
                 # config) — recorded on every SELL so replay reproduces why
@@ -1175,6 +1288,133 @@ class Line2IntradayRunner:
         except Exception as exc:  # noqa: BLE001 — exemption never breaks a tick
             log.warning("thesis_exempt_eval_failed", error=str(exc))
             return frozenset()
+
+    @staticmethod
+    def _trading_days_between(start: date, end: date) -> int:
+        """Trading days in [start, end] inclusive (static holidays.yaml)."""
+        if start > end:
+            return 0
+        n = 0
+        d = start
+        while d <= end:
+            if is_trading_day(d):
+                n += 1
+            d += timedelta(days=1)
+        return n
+
+    def _slice_entry_closes(
+        self,
+        *,
+        episodes: Mapping[str, str],
+        closes_by_code: Mapping[str, tuple[float, ...]],
+        frame_trade_date: str,
+    ) -> dict[str, tuple[float, ...]]:
+        """Per-code closes sliced to the holding episode (E1, amendment §1.1).
+
+        ``n`` = trading days in [entry_date, frame_trade_date]; the slice is
+        ``closes[-n:]`` (n == 0 → an entry newer than the frame → empty slice
+        → the anchor is the cost itself). Suspension gaps make ``n`` an upper
+        bound — the window may then include pre-entry closes near the
+        boundary, INFLATING the anchor → a higher stop → an EARLIER exit
+        (capital-conservative direction, but it can give back less profit
+        room than intended; the human gate reviews every order — review P1
+        finding, accepted residual). A code with no episode / an unparseable
+        date is OMITTED → the evaluator falls back to the v8 window stop for
+        it (fail-open, protection never disappears).
+        """
+        try:
+            frame_d = datetime.strptime(frame_trade_date, "%Y%m%d").date()
+        except ValueError:
+            log.error(
+                "chandelier_frame_date_unparseable", trade_date=frame_trade_date
+            )
+            return {}
+        out: dict[str, tuple[float, ...]] = {}
+        for code, closes in closes_by_code.items():
+            opened = episodes.get(code)
+            if not opened:
+                continue
+            try:
+                entry_d = date.fromisoformat(opened)
+            except ValueError:
+                log.error(
+                    "chandelier_entry_date_unparseable", code=code, date=opened
+                )
+                continue
+            n = self._trading_days_between(entry_d, frame_d)
+            out[code] = tuple(closes[-n:]) if n > 0 else ()
+        return out
+
+    def _log_shadow_compare(
+        self,
+        *,
+        today: date,
+        fresh_spots: Mapping[str, Any],
+        closes_by_code: Mapping[str, tuple[float, ...]],
+        entry_closes_by_code: Mapping[str, tuple[float, ...]],
+        held: Sequence[Any],
+    ) -> None:
+        """Once-per-day-per-code v8-vs-v9 stop comparison (decision-inert).
+
+        The daily counterfactual report for the chandelier shadow period
+        (amendment §1.4): logs the old window stop, the new entry-anchored
+        stop and the raw would-fire booleans at the current price. Aggregated
+        by ``scripts/line2_chandelier_shadow_report.py``.
+        """
+        logged = self._shadow_logged.setdefault(today, set())
+        for day in [d for d in self._shadow_logged if d != today]:
+            del self._shadow_logged[day]
+        shadow_cfg = ChandelierConfig()
+        cfg = self._trigger_cfg
+        pos_by_code = {p.code.split(".")[0].strip(): p for p in held}
+        for code in sorted(fresh_spots):
+            if code in logged:
+                continue
+            pos = pos_by_code.get(code)
+            closes = closes_by_code.get(code)
+            if pos is None or not closes:
+                continue
+            atr = close_atr(closes, cfg.atr_window)
+            if atr is None or atr <= 0:
+                continue
+            price = fresh_spots[code].price
+            old_stop = (
+                max(closes[-cfg.recent_high_window :]) - cfg.atr_stop_mult * atr
+                if len(closes) >= cfg.recent_high_window
+                else None
+            )
+            anchored = derive_entry_anchored_stop(
+                entry_closes_by_code.get(code, ()),
+                cost=pos.cost_price,
+                atr=atr,
+                config=shadow_cfg,
+            )
+            logged.add(code)
+            breach_new = anchored is not None and price < anchored.stop_level
+            deep_new = (
+                anchored is not None
+                and price
+                <= anchored.stop_level - shadow_cfg.deep_band_atr * atr
+            )
+            log.info(
+                "chandelier_shadow_compare",
+                code=code,
+                price=round(float(price), 4),
+                old_stop=round(old_stop, 4) if old_stop is not None else None,
+                new_stop=anchored.stop_level if anchored else None,
+                anchor=anchored.anchor if anchored else None,
+                governing=anchored.governing if anchored else None,
+                has_episode=code in entry_closes_by_code,
+                would_fire_old=(old_stop is not None and price < old_stop),
+                # RAW breach at this (first) tick of the day — NOT the full
+                # E2 verdict: a shallow breach only routes inside the
+                # 14:30-14:55 confirm window, which a single morning sample
+                # cannot adjudicate. deep_breach_new=True means the live
+                # feature WOULD have fired at this tick (review P1 finding;
+                # the report script surfaces the distinction).
+                would_breach_new=breach_new,
+                deep_breach_new=deep_new,
+            )
 
     @staticmethod
     def _kind_of(intent: Any, side: InstructionSide) -> str:

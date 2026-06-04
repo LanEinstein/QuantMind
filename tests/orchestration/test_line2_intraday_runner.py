@@ -373,6 +373,9 @@ def _make_runner(
     takeprofit_ledger=None,  # noqa: ANN001
     fired_store=None,  # noqa: ANN001
     reject_alert_hook=None,  # noqa: ANN001
+    chandelier=None,  # noqa: ANN001
+    episode_store=None,  # noqa: ANN001
+    chandelier_shadow: bool = False,
 ) -> tuple[Line2IntradayRunner, SnapshotStore, IntradayTriggerManifestStore]:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -407,6 +410,9 @@ def _make_runner(
         takeprofit_ledger=takeprofit_ledger,
         fired_store=fired_store,
         reject_alert_hook=reject_alert_hook,
+        chandelier=chandelier,
+        episode_store=episode_store,
+        chandelier_shadow=chandelier_shadow,
         tick_timeout_seconds=tick_timeout_seconds,
     )
     return runner, snapshot_store, manifest_store
@@ -1571,3 +1577,80 @@ async def test_sell_record_writes_tiers_taken_on_gated_intent(
     )
     rec = runner._sell_record(gated, spot)  # noqa: SLF001
     assert rec.threshold_params["take_profit_tiers_taken"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# E1+E2 — entry-anchored chandelier wiring
+# (P0-7-amendment-2026-06-04-entry-anchored-chandelier)
+# ---------------------------------------------------------------------------
+
+
+async def test_config_hash_includes_chandelier(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from backend.monitoring.intraday_calibration import ChandelierConfig
+
+    sender = FakeFeishuSender()
+    r_none, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path / "none",
+    )
+    r_chand, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path / "chand", chandelier=ChandelierConfig(),
+    )
+    # The entry-anchored stop config is pinned (incl. its absence) so a
+    # replay with the feature off never reproduces an anchored stop and a
+    # recalibration fails a stale manifest closed (PIT).
+    assert r_none._config_hash != r_chand._config_hash  # noqa: SLF001
+
+
+async def test_chandelier_episode_store_synced_per_tick(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from backend.monitoring.intraday_calibration import ChandelierConfig
+    from backend.orchestration.position_episode_store import (
+        PositionEpisodeStore,
+    )
+
+    episodes = PositionEpisodeStore(tmp_path / "state" / "episodes.jsonl")
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, chandelier=ChandelierConfig(),
+        episode_store=episodes,
+    )
+    # The fresh-entry anchored stop (cost 4.0, ATR 0.6 → initial 2.8) does
+    # NOT fire at 4.185 — but the episode must be OPENED by the tick.
+    result = await runner.run(provider=_drawdown_provider(), now=_NOW)
+    assert result.tick_outcome is IntradayTickOutcome.SCANNED
+    assert episodes.open_episodes() == {"510300": _NOW.date().isoformat()}
+
+
+async def test_chandelier_shadow_logs_compare_and_stays_inert(
+    builder: InstructionPlanBuilder, tmp_path: Path, capsys
+) -> None:
+    from backend.orchestration.position_episode_store import (
+        PositionEpisodeStore,
+    )
+
+    episodes = PositionEpisodeStore(tmp_path / "state" / "episodes.jsonl")
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, chandelier=None,  # feature OFF
+        episode_store=episodes, chandelier_shadow=True,
+    )
+    result = await runner.run(provider=_drawdown_provider(), now=_NOW)
+    # Decision-inert: the v8 drawdown SELL routes exactly as without shadow.
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1
+    assert routed[0].kind == "drawdown_stop"
+    out = capsys.readouterr().out
+    assert "chandelier_shadow_compare" in out
+    # Once per code per day: a second tick logs no second compare line.
+    second = await runner.run(
+        provider=_drawdown_provider(), now=_NOW + timedelta(seconds=30)
+    )
+    assert second.tick_outcome is IntradayTickOutcome.SCANNED
+    assert "chandelier_shadow_compare" not in capsys.readouterr().out
