@@ -44,6 +44,10 @@ data/dry_run/
 # Downloaded via `hf download Qwen/Qwen3-Embedding-0.6B --local-dir
 # data/models/Qwen3-Embedding-0.6B` outside of git.
 data/models/
+# Phase V — slot-rotation runtime ledger (EntryRankStore append-only state
+# written by the live service); committing it would seed production-specific
+# entry baselines into fresh checkouts — codex P2 2026-06-04.
+data/slot_rotation/
 
 # Secrets & config
 .env

@@ -709,6 +709,29 @@ class MarketDataService:
 
         return primary, fallback
 
+    async def probe_quote_vendor_reachability(self, code: str) -> tuple[bool, bool]:
+        """Boot-gate probe: did each dual-source vendor SERVE data for ``code``?
+
+        cond9 (P0-6-amendment-2026-05-29 §1) wants *infra reachability*, but
+        the trading-path legs above fail-close on pre-open rows (sina
+        ``PRICE == 0``, adata empty frame), which made "not yet open"
+        indistinguishable from "vendor outage" and refused pre-open boots
+        (P0-6-amendment-2026-06-04). A leg is reachable iff its fetch
+        returned a non-empty frame for ``code`` — no quote validation, and
+        only booleans leave the probe, so the relaxed semantics cannot leak
+        into MTM / divergence / decision paths (those still use
+        :meth:`get_stock_realtime_dual`).
+        """
+        from backend.data.vendor_reachability import (
+            probe_dual_vendor_reachability,
+        )
+
+        return await probe_dual_vendor_reachability(
+            code,
+            primary_fetch=_fetch_stock_adata,
+            fallback_fetch=_fetch_stock_tushare_sina,
+        )
+
     async def get_watchlist_snapshot(
         self, codes: list[str], snapshot_at: datetime
     ) -> list[WatchlistMarketSnapshot]:
@@ -739,9 +762,7 @@ class MarketDataService:
             df = await asyncio.to_thread(_fetch_stock_list_tushare_sina, codes)
             quotes = _rows_to_quotes(df, _tushare_sina_row_to_quote)
         except Exception as exc:
-            self._log.warning(
-                "watchlist_snapshot_tushare_sina_failed", error=str(exc)
-            )
+            self._log.warning("watchlist_snapshot_tushare_sina_failed", error=str(exc))
             primary_exc = exc
             quotes = []
 

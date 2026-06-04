@@ -69,9 +69,7 @@ class _FakeRedis:
         return _FakePipe(self)
 
     async def mget(self, *keys: str) -> list[str | None]:
-        return [
-            None if (v := self.store.get(k)) is None else str(v) for k in keys
-        ]
+        return [None if (v := self.store.get(k)) is None else str(v) for k in keys]
 
     async def get(self, key: str) -> str | None:
         val = self.store.get(key)
@@ -153,18 +151,17 @@ class TestRouterTimeoutCounting:
 
         router = _bare_router()
         client = MagicMock()
-        client.chat.completions.create = AsyncMock(
-            return_value=MagicMock(usage=None)
-        )
-        with patch.object(
-            router, "_get_client", return_value=client
-        ), patch.object(
-            router, "_normalize_provider_kwargs", return_value={}
-        ), patch(
-            "backend.llm.router.track_llm_call", new_callable=AsyncMock
-        ) as call_ctr, patch(
-            "backend.llm.router.track_llm_timeout", new_callable=AsyncMock
-        ) as to_ctr:
+        client.chat.completions.create = AsyncMock(return_value=MagicMock(usage=None))
+        with (
+            patch.object(router, "_get_client", return_value=client),
+            patch.object(router, "_normalize_provider_kwargs", return_value={}),
+            patch(
+                "backend.llm.router.track_llm_call", new_callable=AsyncMock
+            ) as call_ctr,
+            patch(
+                "backend.llm.router.track_llm_timeout", new_callable=AsyncMock
+            ) as to_ctr,
+        ):
             await router._call_provider(
                 provider_name="qwen",
                 model="qwen3.6-plus",
@@ -185,15 +182,16 @@ class TestRouterTimeoutCounting:
                 request=httpx.Request("POST", "https://example.test")
             )
         )
-        with patch.object(
-            router, "_get_client", return_value=client
-        ), patch.object(
-            router, "_normalize_provider_kwargs", return_value={}
-        ), patch(
-            "backend.llm.router.track_llm_call", new_callable=AsyncMock
-        ) as call_ctr, patch(
-            "backend.llm.router.track_llm_timeout", new_callable=AsyncMock
-        ) as to_ctr:
+        with (
+            patch.object(router, "_get_client", return_value=client),
+            patch.object(router, "_normalize_provider_kwargs", return_value={}),
+            patch(
+                "backend.llm.router.track_llm_call", new_callable=AsyncMock
+            ) as call_ctr,
+            patch(
+                "backend.llm.router.track_llm_timeout", new_callable=AsyncMock
+            ) as to_ctr,
+        ):
             with pytest.raises(APITimeoutError):
                 await router._call_provider(
                     provider_name="qwen",
@@ -211,32 +209,35 @@ class TestRouterTimeoutCounting:
 # --------------------------------------------------------------------------- #
 
 
-def _market_data(dual_results: dict[str, tuple[object | None, object | None]]):
+def _market_data(leg_results: dict[str, tuple[bool, bool]]):
     md = MagicMock()
-    md.get_stock_realtime_dual = AsyncMock(
-        side_effect=lambda code: dual_results[code]
+    md.probe_quote_vendor_reachability = AsyncMock(
+        side_effect=lambda code: leg_results[code]
     )
     return md
 
 
 class TestCanaryReachable:
-    async def test_all_legs_present_is_reachable(self) -> None:
-        md = _market_data(
-            {c: (object(), object()) for c in MANDATORY_ETF_CANARIES}
-        )
+    async def test_all_legs_serving_is_reachable(self) -> None:
+        md = _market_data({c: (True, True) for c in MANDATORY_ETF_CANARIES})
         assert await canary_quotes_reachable(md, MANDATORY_ETF_CANARIES) is True
 
-    async def test_single_leg_present_is_reachable(self) -> None:
+    async def test_single_leg_serving_is_reachable(self) -> None:
         # infra reachability only needs ONE leg (staleness/divergence are not
         # gated at boot — amendment §1.1).
-        md = _market_data(
-            {c: (object(), None) for c in MANDATORY_ETF_CANARIES}
-        )
+        md = _market_data({c: (True, False) for c in MANDATORY_ETF_CANARIES})
         assert await canary_quotes_reachable(md, MANDATORY_ETF_CANARIES) is True
 
-    async def test_both_legs_none_is_unreachable(self) -> None:
-        results = {c: (object(), object()) for c in MANDATORY_ETF_CANARIES}
-        results[MANDATORY_ETF_CANARIES[1]] = (None, None)
+    async def test_preopen_fallback_only_leg_is_reachable(self) -> None:
+        # P0-6-amendment-2026-06-04 regression: pre-open only the sina leg
+        # serves a row (PRICE==0, rejected by the trading-path parser) —
+        # that must read as reachable, never as a vendor outage.
+        md = _market_data({c: (False, True) for c in MANDATORY_ETF_CANARIES})
+        assert await canary_quotes_reachable(md, MANDATORY_ETF_CANARIES) is True
+
+    async def test_both_legs_down_is_unreachable(self) -> None:
+        results = {c: (True, True) for c in MANDATORY_ETF_CANARIES}
+        results[MANDATORY_ETF_CANARIES[1]] = (False, False)
         md = _market_data(results)
         assert await canary_quotes_reachable(md, MANDATORY_ETF_CANARIES) is False
 
@@ -249,7 +250,7 @@ class TestCanaryReachable:
 
     async def test_probe_exception_is_unreachable(self) -> None:
         md = MagicMock()
-        md.get_stock_realtime_dual = AsyncMock(
+        md.probe_quote_vendor_reachability = AsyncMock(
             side_effect=RuntimeError("vendor blew up")
         )
         assert await canary_quotes_reachable(md, ("510300",)) is False
@@ -266,9 +267,7 @@ class TestCanaryReachable:
         # human rather than silently drifting.
         from backend.broker.models import ConcentrationExceptionConfig
 
-        assert (
-            MANDATORY_ETF_CANARIES == ConcentrationExceptionConfig().etf_whitelist
-        )
+        assert MANDATORY_ETF_CANARIES == ConcentrationExceptionConfig().etf_whitelist
 
 
 # --------------------------------------------------------------------------- #
@@ -292,28 +291,20 @@ class TestBuildPilotProbeWiring:
     async def test_cond9_clear_when_canaries_reachable(self) -> None:
         from backend.main import _build_pilot_probe
 
-        md = _market_data(
-            {c: (object(), None) for c in MANDATORY_ETF_CANARIES}
-        )
-        probe = _build_pilot_probe(
-            _app(redis=_FakeRedis(), market_data=md), object()
-        )
+        md = _market_data({c: (True, False) for c in MANDATORY_ETF_CANARIES})
+        probe = _build_pilot_probe(_app(redis=_FakeRedis(), market_data=md), object())
         assert await probe.data_quality_clear() is True
 
     async def test_cond9_unmet_when_market_data_unwired(self) -> None:
         from backend.main import _build_pilot_probe
 
-        probe = _build_pilot_probe(
-            _app(redis=_FakeRedis(), market_data=None), object()
-        )
+        probe = _build_pilot_probe(_app(redis=_FakeRedis(), market_data=None), object())
         assert await probe.data_quality_clear() is False
 
     async def test_cond10a_met_on_cold_start(self) -> None:
         from backend.main import _build_pilot_probe
 
-        probe = _build_pilot_probe(
-            _app(redis=_FakeRedis(), market_data=None), object()
-        )
+        probe = _build_pilot_probe(_app(redis=_FakeRedis(), market_data=None), object())
         assert await probe.llm_timeout_within_ceiling() is True
 
     async def test_cond10a_unmet_above_ceiling(self) -> None:
@@ -367,9 +358,7 @@ class TestBuildPilotProbeWiring:
     async def test_cond10a_unmet_when_redis_none(self) -> None:
         from backend.main import _build_pilot_probe
 
-        probe = _build_pilot_probe(
-            _app(redis=None, market_data=None), object()
-        )
+        probe = _build_pilot_probe(_app(redis=None, market_data=None), object())
         # Fail-closed on unwired Redis (same convention as cost_guard probe).
         assert await probe.llm_timeout_within_ceiling() is False
 
@@ -402,7 +391,5 @@ class TestBuildPilotProbeWiring:
     async def test_cond10b_unmet_when_redis_none(self) -> None:
         from backend.main import _build_pilot_probe
 
-        probe = _build_pilot_probe(
-            _app(redis=None, market_data=None), object()
-        )
+        probe = _build_pilot_probe(_app(redis=None, market_data=None), object())
         assert await probe.cost_guard_hard_reserve_active() is False
