@@ -102,3 +102,34 @@ def test_write_failure_fails_open(tmp_path: Path) -> None:
     # Must not raise (fail-open; the in-memory dedup still protects this
     # process — only restart durability is degraded, loudly logged).
     store.record_fired("2026-06-04", "605020", "take_profit", signal_id="s1")
+
+
+def test_delivered_sales_roundtrip_and_eligibility(tmp_path: Path) -> None:
+    store = FiredTriggerStore(tmp_path / "fired.jsonl")
+    store.record_fired(
+        "2026-06-04",
+        "605020",
+        "take_profit",
+        signal_id="s1",
+        sold_price=36.36,
+        sold_volume=100,
+    )
+    # A row without a price (older code / protective stop) grants nothing.
+    store.record_fired("2026-06-04", "600011", "atr_trailing_stop", signal_id="s1")
+    sales = store.delivered_sales("2026-06-04")
+    assert sales == {
+        "605020": {"kind": "take_profit", "sold_price": 36.36, "sold_volume": 100.0}
+    }
+    assert store.delivered_sales("2026-06-03") == {}
+    # Multi-tranche same day: the LAST qualifying row wins.
+    store.record_fired(
+        "2026-06-04",
+        "605020",
+        "surge_fade",
+        signal_id="s2",
+        sold_price=35.80,
+        sold_volume=100,
+    )
+    assert store.delivered_sales("2026-06-04")["605020"]["sold_price"] == 35.80
+    # Back-compat: load_fired still sees both kinds.
+    assert ("605020", "take_profit") in store.load_fired("2026-06-04")

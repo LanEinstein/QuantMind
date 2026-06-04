@@ -988,6 +988,20 @@ async def _init_line2_runners(
         _chandelier = ChandelierConfig()
     else:
         _chandelier = None
+    # E3 — sell-into-strength family (炸板/冲高回落/放量滞涨/乖离超买 + 封死
+    # 涨停豁免). GATED default-OFF
+    # (P0-10-amendment-line2-2026-06-04-sell-into-strength).
+    if (
+        os.environ.get(
+            "QUANTMIND_LINE2_SELL_INTO_STRENGTH_ENABLED", "0"
+        ).strip()
+        == "1"
+    ):
+        from backend.monitoring.intraday_triggers import StrengthSellConfig
+
+        _strength = StrengthSellConfig()
+    else:
+        _strength = None
 
     intraday_runner = Line2IntradayRunner(
         builder=builder,
@@ -1006,6 +1020,7 @@ async def _init_line2_runners(
         chandelier=_chandelier,
         episode_store=_episode_store,
         chandelier_shadow=_chand_shadow,
+        strength=_strength,
         pilot=pilot,
     )
 

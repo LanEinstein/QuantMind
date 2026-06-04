@@ -123,8 +123,14 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 # reproduces v8 outputs bit-for-bit. The take-profit R-unit deliberately
 # stays ``cfg.atr_stop_mult×ATR`` (the D1-c/D1-d ladders are calibrated in
 # those units — the chandelier multiplier conditions ONLY the trailing stop)
-# (P0-7-amendment-2026-06-04-entry-anchored-chandelier).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v9"
+# (P0-7-amendment-2026-06-04-entry-anchored-chandelier). v10: the
+# sell-into-strength family (LIMIT_BREAK / SURGE_FADE / VOLUME_CLIMAX /
+# OVERBOUGHT_BIAS, each a 1/3-tranche discretionary sell) + the
+# SEALED_LIMIT_HOLD suppression (a sealed limit-up rides — TP + strength
+# sells are suppressed that tick) when a StrengthSellConfig is supplied; a
+# None config reproduces v9 outputs bit-for-bit
+# (P0-10-amendment-line2-2026-06-04-sell-into-strength).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v10"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -163,6 +169,20 @@ class IntradayTriggerKind(StrEnum):
     (ATR / drawdown) and is never evaluated when one of them fired, so it can
     never relax / suppress an existing stop — only add an exit a thesis break
     justifies."""
+    LIMIT_BREAK = "limit_break"
+    """炸板 — touched limit-up intraday then fell back ≥``break_pullback``:
+    the strongest A-share distribution signal (next-day premium negative);
+    sells a 1/3 tranche (P0-10-amendment-line2-2026-06-04-sell-into-strength)."""
+    SURGE_FADE = "surge_fade"
+    """冲高回落 — intraday gain ≥``surge_min`` at the day high, then a fade
+    ≥``fade_min`` from that high; profit-gated 1/3 tranche."""
+    VOLUME_CLIMAX = "volume_climax"
+    """放量滞涨 — cumulative amount ≥``climax_mult``× the 5-day average while
+    the price stalls (<``stall_max``) at an extended level (≥``extension_min``
+    above MA20); profit-gated 1/3 tranche."""
+    OVERBOUGHT_BIAS = "overbought_bias"
+    """乖离超买 — (price−MA20)/MA20 ≥ ``bias_threshold`` (classic A-share
+    BIAS sell band); profit-gated 1/3 tranche."""
 
 
 @dataclass(frozen=True)
@@ -185,6 +205,58 @@ class IntradayTriggerConfig:
     tranche_fraction: float = 0.5  # sell this fraction of settled volume on +1R
     trim_band: float = 0.10  # trigger trim above cap × (1 + trim_band) = 16.5%
     trim_target_pct: float = 0.13  # trim the position back toward this weight
+
+
+@dataclass(frozen=True)
+class StrengthSellConfig:
+    """Locked sell-into-strength thresholds (runtime-immutable, E3).
+
+    Each trigger sells ``tranche_fraction`` of the settled volume (rounded
+    to lots, skipped when it rounds to zero, clamped to the ¥50k single-
+    instruction cap). Evidence anchors per threshold: see
+    P0-10-amendment-line2-2026-06-04-sell-into-strength §1.1 (Wan 2015 炸板 /
+    华安 2026 放量首板 / 民生 2025 盘中过强反转 / BIAS 经典带). Recalibrated
+    only offline (P2-2 shadow + human gate + git + restart).
+    """
+
+    break_pullback: float = 0.02  # 炸板: fell ≥2% back from the limit price
+    surge_min: float = 0.06  # 冲高: day-high gain ≥ +6% vs prev_close
+    fade_min: float = 0.03  # 回落: ≥3% down from the day high
+    climax_mult: float = 3.0  # 放量: cumulative amount ≥ 3× 5-day average
+    stall_max: float = 0.03  # 滞涨: intraday gain < +3%
+    extension_min: float = 0.10  # 高位: price ≥ MA20 × 1.10
+    bias_threshold: float = 0.15  # 乖离: (price−MA20)/MA20 ≥ +15%
+    tranche_fraction: float = 1 / 3  # sell this slice per fired signal
+    ma_window: int = 20
+    amount_window: int = 5
+    limit_epsilon: float = 0.005  # price-grid tolerance for limit touch/seal
+
+
+def limit_up_price(code: str, name: str, prev_close: float) -> float | None:
+    """Deterministic limit-up price approximation (E3 trigger input ONLY).
+
+    Prefix rules: ``30*``/``688*`` → 20%, name contains ``ST`` → 5%, else
+    10% (main board / ETF). Known residual (amendment §1.3): a few
+    cross-border/创业板 ETFs trade at 20% — the error direction is
+    conservative (a 10% assumption flags "sealed" early → holds longer;
+    a false LIMIT_BREAK is impossible since the true limit sits higher).
+    The RiskEngine's limit_up_down_block stays the sole order-legality
+    authority. ``None`` when prev_close is unusable.
+    """
+    if not (
+        isinstance(prev_close, (int, float))
+        and math.isfinite(prev_close)
+        and prev_close > 0
+    ):
+        return None
+    bare = _bare(code)
+    if "ST" in name.upper():
+        ratio = 0.05
+    elif bare.startswith(("30", "688")):
+        ratio = 0.20
+    else:
+        ratio = 0.10
+    return round(prev_close * (1.0 + ratio), 2)
 
 
 @dataclass(frozen=True)
@@ -584,6 +656,141 @@ def _thesis_break_intent(
     )
 
 
+def _strength_sell_intent(
+    *,
+    code: str,
+    name: str,
+    spot: WatchlistMarketSnapshot,
+    pos: Position,
+    closes: tuple[float, ...] | None,
+    amounts: tuple[float, ...] | None,
+    cfg: StrengthSellConfig,
+    limit_up: float | None,
+    max_single_instruction_amount: float,
+    effective_drawdown_threshold: float,
+    effective_r: float,
+    take_profit_tiers_taken: int | None,
+    effective_atr_stop_mult: float | None,
+    stop_anchor: float | None,
+) -> IntradaySellIntent | None:
+    """First matching sell-into-strength trigger for one held code (E3).
+
+    Family priority (evidence strength): LIMIT_BREAK > SURGE_FADE >
+    VOLUME_CLIMAX > OVERBOUGHT_BIAS. LIMIT_BREAK has no profit gate (炸板
+    is a de-risk signal regardless of P&L); the other three only harvest a
+    NET-PROFITABLE position (a loser's bounce-and-fade is not收割 material —
+    it would churn against the oversold ADD). Returns ``None`` when nothing
+    matches or the 1/3 tranche rounds to zero lots.
+    """
+    price = spot.price
+    prev = spot.prev_close
+    high = spot.high
+    cost = pos.cost_price
+    if price <= 0 or prev <= 0:
+        return None
+    high_ok = isinstance(high, (int, float)) and math.isfinite(high) and high > 0
+    profitable = cost > 0 and price > cost
+    ma = moving_average(closes or (), cfg.ma_window)
+    avg_amount = None
+    if amounts and len(amounts) >= cfg.amount_window:
+        tail = [
+            a
+            for a in amounts[-cfg.amount_window :]
+            if isinstance(a, (int, float)) and math.isfinite(a) and a > 0
+        ]
+        if len(tail) == cfg.amount_window:
+            avg_amount = sum(tail) / len(tail)
+    spot_amount = (
+        spot.amount
+        if isinstance(spot.amount, (int, float))
+        and math.isfinite(spot.amount)
+        and spot.amount > 0
+        else None
+    )
+
+    kind: IntradayTriggerKind | None = None
+    detail = ""
+    if (
+        limit_up is not None
+        and high_ok
+        and high >= limit_up - cfg.limit_epsilon
+        and price <= limit_up * (1.0 - cfg.break_pullback)
+    ):
+        kind = IntradayTriggerKind.LIMIT_BREAK
+        detail = (
+            f"炸板回落: 日内触涨停 {limit_up:.2f} 后回落至 {price:.3f} "
+            f"(≥{cfg.break_pullback:.0%}); 减仓 1/3 落袋"
+        )
+    elif (
+        profitable
+        and high_ok
+        and high / prev - 1.0 >= cfg.surge_min
+        and price / high - 1.0 <= -cfg.fade_min
+    ):
+        kind = IntradayTriggerKind.SURGE_FADE
+        detail = (
+            f"冲高回落: 日内最高 +{high / prev - 1.0:.1%} 后自高点回落 "
+            f"{1.0 - price / high:.1%}; 减仓 1/3 落袋"
+        )
+    elif (
+        profitable
+        and avg_amount is not None
+        and spot_amount is not None
+        and spot_amount >= cfg.climax_mult * avg_amount
+        and price / prev - 1.0 < cfg.stall_max
+        and ma is not None
+        and ma > 0
+        and price >= ma * (1.0 + cfg.extension_min)
+    ):
+        kind = IntradayTriggerKind.VOLUME_CLIMAX
+        detail = (
+            f"放量滞涨: 成交额 {spot_amount / avg_amount:.1f}× 于5日均额而日内仅 "
+            f"{price / prev - 1.0:+.1%}, 价位高于 MA{cfg.ma_window} "
+            f"{(price - ma) / ma:.0%}; 减仓 1/3 落袋"
+        )
+    elif (
+        profitable
+        and ma is not None
+        and ma > 0
+        and (price - ma) / ma >= cfg.bias_threshold
+    ):
+        kind = IntradayTriggerKind.OVERBOUGHT_BIAS
+        detail = (
+            f"乖离超买: 价格高于 MA{cfg.ma_window} "
+            f"{(price - ma) / ma:.0%} (≥{cfg.bias_threshold:.0%}); 减仓 1/3 落袋"
+        )
+    if kind is None:
+        return None
+
+    settled = (pos.available_volume // _LOT) * _LOT
+    lots = round(settled * cfg.tranche_fraction / _LOT)
+    if lots <= 0:
+        return None  # a 1-lot position has no sub-tranche — TP still covers it
+    if max_single_instruction_amount > 0:
+        cap_lots = int(max_single_instruction_amount // (price * _LOT))
+        lots = min(lots, cap_lots)
+    sell_vol = min(lots * _LOT, settled)
+    if sell_vol <= 0:
+        return None
+    return IntradaySellIntent(
+        code=code,
+        name=name,
+        available_volume=sell_vol,
+        limit_price=price,
+        trigger_kind=kind,
+        anomaly_reason=detail,
+        drawdown_pct=round((price - prev) / prev, 6),
+        atr=0.0,
+        recent_high=0.0,
+        stop_level=0.0,
+        effective_drawdown_threshold=effective_drawdown_threshold,
+        effective_r_multiple=effective_r,
+        take_profit_tiers_taken=take_profit_tiers_taken,
+        effective_atr_stop_mult=effective_atr_stop_mult,
+        stop_anchor=stop_anchor,
+    )
+
+
 def evaluate_intraday_sell_intents(
     spots: Mapping[str, WatchlistMarketSnapshot],
     closes_by_code: Mapping[str, tuple[float, ...]],
@@ -606,6 +813,8 @@ def evaluate_intraday_sell_intents(
     chandelier: ChandelierConfig | None = None,
     entry_closes_by_code: Mapping[str, tuple[float, ...]] | None = None,
     tick_time: datetime | None = None,
+    strength: StrengthSellConfig | None = None,
+    amounts_by_code: Mapping[str, tuple[float, ...]] | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -684,6 +893,18 @@ def evaluate_intraday_sell_intents(
     the v8 window stop — protection never disappears. DRAWDOWN_STOP is
     untouched (the immediate disaster stop, all session). ``None`` config
     reproduces v8 outputs bit-for-bit.
+
+    ``strength`` + ``amounts_by_code`` (E3,
+    P0-10-amendment-line2-2026-06-04-sell-into-strength): the
+    sell-into-strength family — LIMIT_BREAK / SURGE_FADE / VOLUME_CLIMAX /
+    OVERBOUGHT_BIAS, each a 1/3-tranche discretionary sell ranked between
+    THESIS_QUANT_BREAK and TAKE_PROFIT — plus the SEALED_LIMIT_HOLD
+    suppression: a price sealed AT the (deterministically approximated)
+    limit-up suppresses TAKE_PROFIT + the strength family this tick (79.4%
+    next-day continuation — ride the board; the hard-cap WEIGHT_TRIM and
+    every protective exit stay live). Long-term holds (D2) skip the
+    strength family exactly as they skip TAKE_PROFIT. ``None`` config
+    reproduces v9 outputs bit-for-bit.
     """
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
@@ -914,6 +1135,46 @@ def evaluate_intraday_sell_intents(
             )
             if thesis_intent is not None:
                 intents.append(thesis_intent)
+                continue
+            is_long_term = code in long_term_hold_codes
+            # E3 — sealed-limit hold + the sell-into-strength family
+            # (P0-10-amendment-line2-2026-06-04-sell-into-strength). A price
+            # sealed at the approximated limit-up rides the board: TP + the
+            # strength family are suppressed this tick (protective exits and
+            # the hard-cap trim below stay live). Long-term holds (D2) skip
+            # the discretionary strength sells exactly like TAKE_PROFIT.
+            limit_up = (
+                limit_up_price(code, names.get(code, code), prev_close)
+                if strength is not None
+                else None
+            )
+            sealed = (
+                strength is not None
+                and limit_up is not None
+                and price >= limit_up - strength.limit_epsilon
+            )
+            strength_intent = (
+                _strength_sell_intent(
+                    code=code,
+                    name=names.get(code, code),
+                    spot=spot,
+                    pos=pos,
+                    closes=closes,
+                    amounts=(amounts_by_code or {}).get(code),
+                    cfg=strength,
+                    limit_up=limit_up,
+                    max_single_instruction_amount=max_single_instruction_amount,
+                    effective_drawdown_threshold=dd_thr,
+                    effective_r=eff_r,
+                    take_profit_tiers_taken=tp_taken,
+                    effective_atr_stop_mult=eff_mult,
+                    stop_anchor=anchor_val,
+                )
+                if strength is not None and not sealed and not is_long_term
+                else None
+            )
+            if strength_intent is not None:
+                intents.append(strength_intent)
             elif account is not None:
                 # The lower-priority profit-taking / rebalance triggers (only
                 # when an account is supplied). Take-profit outranks weight-trim;
@@ -921,10 +1182,9 @@ def evaluate_intraday_sell_intents(
                 # from take-profit + the soft trim, but the hard-cap trim still
                 # bounds it (P0-10-amendment-line2-2026-06-03) — never relaxing
                 # the protective stops, which already fired above if applicable.
-                is_long_term = code in long_term_hold_codes
                 tp = (
                     None
-                    if is_long_term
+                    if (is_long_term or sealed)
                     else _take_profit_intent(
                         code=code,
                         name=names.get(code, code),
@@ -1227,6 +1487,8 @@ __all__ = [
     "IntradaySellIntent",
     "IntradayTriggerConfig",
     "IntradayTriggerKind",
+    "StrengthSellConfig",
+    "limit_up_price",
     "evaluate_intraday_add_intents",
     "evaluate_intraday_sell_intents",
     "filter_fresh_quotes",

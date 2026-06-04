@@ -27,9 +27,11 @@ from backend.monitoring.intraday_triggers import (
     IntradaySellIntent,
     IntradayTriggerConfig,
     IntradayTriggerKind,
+    StrengthSellConfig,
     evaluate_intraday_add_intents,
     evaluate_intraday_sell_intents,
     filter_fresh_quotes,
+    limit_up_price,
     make_intraday_sell_context,
     serialize_intraday_quotes,
 )
@@ -100,7 +102,9 @@ def test_filter_fresh_quotes_partitions_fresh_and_stale() -> None:
         "510300": _spot("510300", price=4.2, prev_close=4.5),  # fresh
         "510500": _spot("510500", price=0.0, prev_close=6.0),  # no price → stale
         "159949": _spot(
-            "159949", price=3.0, prev_close=3.1,
+            "159949",
+            price=3.0,
+            prev_close=3.1,
             snapshot_at=_NOW - timedelta(seconds=120),  # too old → stale
         ),
     }
@@ -125,7 +129,9 @@ def test_filter_fresh_quotes_same_instant_is_stale() -> None:
 def test_filter_fresh_quotes_missing_and_future_dated_are_stale() -> None:
     spots = {
         "510300": _spot(
-            "510300", price=4.2, prev_close=4.5,
+            "510300",
+            price=4.2,
+            prev_close=4.5,
             snapshot_at=_NOW + timedelta(seconds=30),  # future-dated → stale
         ),
     }
@@ -175,9 +181,7 @@ def _rising_closes(n: int = 21) -> tuple[float, ...]:
 def test_sell_drawdown_trigger_fires_alone() -> None:
     spots = {"510300": _spot("510300", price=4.185, prev_close=4.5)}  # -7%
     closes = {"510300": _volatile_closes()}  # wide ATR band (stop ≈ 3.6)
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (_position("510300"),)
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (_position("510300"),))
     assert len(intents) == 1
     assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
     assert intents[0].available_volume == 300
@@ -187,9 +191,7 @@ def test_sell_drawdown_trigger_fires_alone() -> None:
 def test_sell_atr_trailing_stop_fires_alone() -> None:
     spots = {"510500": _spot("510500", price=4.85, prev_close=5.0)}  # -3% (no dd)
     closes = {"510500": _rising_closes()}  # recent_high 5.0, atr .05, stop 4.9
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (_position("510500"),)
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (_position("510500"),))
     assert len(intents) == 1
     assert intents[0].trigger_kind is IntradayTriggerKind.ATR_TRAILING_STOP
     assert intents[0].limit_price < intents[0].stop_level  # price below the stop
@@ -199,9 +201,7 @@ def test_sell_both_triggers_prefer_atr_priority() -> None:
     # -8% drawdown AND below the ATR stop → structural ATR_TRAILING_STOP wins.
     spots = {"510500": _spot("510500", price=4.6, prev_close=5.0)}
     closes = {"510500": _rising_closes()}
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (_position("510500"),)
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (_position("510500"),))
     assert len(intents) == 1
     assert intents[0].trigger_kind is IntradayTriggerKind.ATR_TRAILING_STOP
 
@@ -231,9 +231,7 @@ def test_sell_skips_when_nothing_settled() -> None:
 def test_sell_no_trigger_on_calm_quote() -> None:
     spots = {"510300": _spot("510300", price=4.49, prev_close=4.5)}  # -0.2%
     closes = {"510300": _volatile_closes()}  # stop ≈ 3.6, price well above
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (_position("510300"),)
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (_position("510300"),))
     assert intents == ()
 
 
@@ -254,9 +252,7 @@ def test_take_profit_fires_and_sells_tranche() -> None:
     spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}  # -1% calm
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert len(intents) == 1
     assert intents[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
     assert intents[0].available_volume == 100  # floor(300 × 0.5 / 100) × 100
@@ -269,7 +265,10 @@ def test_take_profit_suppressed_when_already_taken() -> None:
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         take_profit_already_taken=frozenset({"510300"}),
     )
     assert intents == ()
@@ -280,9 +279,7 @@ def test_take_profit_sub_one_lot_tranche_skips() -> None:
     spots = {"510300": _spot("510300", price=4.95, prev_close=5.0)}
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=100, available=100, cost=4.0)
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert intents == ()
 
 
@@ -304,7 +301,10 @@ def test_weight_trim_fires_and_trims_to_target() -> None:
     closes = {"510300": _volatile_closes()}  # ATR stop 3.6 (well below 4.0)
     pos = _position("510300", volume=5000, available=5000, cost=4.5)  # below cost
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
     )
     assert len(intents) == 1
@@ -320,7 +320,10 @@ def test_weight_trim_within_band_does_not_fire() -> None:
     closes = {"510300": _volatile_closes()}
     pos = _position("510300", volume=4000, available=4000, cost=4.5)
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
     )
     assert intents == ()
@@ -332,7 +335,10 @@ def test_priority_take_profit_over_weight_trim() -> None:
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=5000, available=5000, cost=4.0)  # 24.75% wt
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
     )
     assert len(intents) == 1
@@ -377,9 +383,7 @@ def test_drawdown_calibration_none_is_fixed_baseline() -> None:
     spots = {"510300": _spot("510300", price=9.4, prev_close=10.0)}  # -6%
     closes = {"510300": _dd_closes(8.0, 8.4)}  # ATR stop 7.6 ≪ 9.4 → no ATR exit
     pos = _position("510300", volume=300, available=300, cost=12.0)  # underwater
-    intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    intents = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert len(intents) == 1
     assert intents[0].trigger_kind is IntradayTriggerKind.DRAWDOWN_STOP
     # The effective threshold (= static 5% with no calibration) is carried so the
@@ -394,7 +398,10 @@ def test_drawdown_calibration_widens_for_volatile_stock() -> None:
     closes = {"510300": _dd_closes(8.0, 8.4)}
     pos = _position("510300", volume=300, available=300, cost=12.0)
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         drawdown_calibration=DrawdownCalibrationConfig(),
     )
     assert intents == ()
@@ -411,7 +418,10 @@ def test_drawdown_calibration_tightens_for_calm_stock() -> None:
     assert base == ()  # fixed 5% → -4% does not fire
 
     adaptive = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         drawdown_calibration=DrawdownCalibrationConfig(),
     )
     assert len(adaptive) == 1
@@ -428,7 +438,10 @@ def test_drawdown_calibration_insufficient_history_uses_fixed() -> None:
     closes = {"510300": _dd_closes(8.0, 8.4, n=10)}  # < min_history+1 → None
     pos = _position("510300", volume=300, available=300, cost=12.0)
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         drawdown_calibration=DrawdownCalibrationConfig(),
     )
     assert len(intents) == 1
@@ -444,7 +457,10 @@ def test_drawdown_calibration_recorded_on_lower_priority_sell() -> None:
     closes = {"510300": _dd_closes(8.0, 8.4)}  # ATR stop 7.6 ≪ 9.4; adaptive ~7.5%
     pos = _position("510300", volume=5000, available=5000, cost=12.0)  # 47% wt
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
         drawdown_calibration=DrawdownCalibrationConfig(),
     )
@@ -462,13 +478,19 @@ def test_regime_bear_tightens_adaptive_drawdown() -> None:
     pos = _position("510300", volume=300, available=300, cost=12.0)
 
     non_bear = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         drawdown_calibration=DrawdownCalibrationConfig(),
     )
     assert non_bear == ()  # 7.5% threshold not breached by -6.5%
 
     bear = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         drawdown_calibration=DrawdownCalibrationConfig(),
         regime=MarketRegime.BEAR,
     )
@@ -484,7 +506,10 @@ def test_regime_non_bear_does_not_tighten() -> None:
     closes = {"510300": _dd_closes(8.0, 8.4)}
     pos = _position("510300", volume=300, available=300, cost=12.0)
     out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         drawdown_calibration=DrawdownCalibrationConfig(),
         regime=MarketRegime.NEUTRAL,
     )
@@ -511,12 +536,13 @@ def test_regime_bear_takes_profit_earlier() -> None:
     spots = {"510300": _spot("510300", price=4.03, prev_close=4.0)}
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
-    static = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    static = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert static == ()  # 4.03 < static target 4.04
     bear = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         takeprofit_calibration=TakeProfitCalibrationConfig(),
         takeprofit_regime=MarketRegime.BEAR,
     )
@@ -533,13 +559,14 @@ def test_regime_bull_lets_profit_run() -> None:
     spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
-    static = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    static = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert len(static) == 1
     assert static[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
     bull = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         takeprofit_calibration=TakeProfitCalibrationConfig(),
         takeprofit_regime=MarketRegime.BULL,
     )
@@ -553,7 +580,10 @@ def test_takeprofit_regime_without_calibration_is_inert() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         takeprofit_regime=MarketRegime.BEAR,
     )
     assert out == ()  # static target 4.04 still in force
@@ -565,7 +595,10 @@ def test_takeprofit_neutral_matches_static() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     neutral = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         takeprofit_calibration=TakeProfitCalibrationConfig(),
         takeprofit_regime=MarketRegime.NEUTRAL,
     )
@@ -583,7 +616,10 @@ def test_effective_r_multiple_recorded_on_other_intents() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         takeprofit_calibration=TakeProfitCalibrationConfig(),
         takeprofit_regime=MarketRegime.BULL,
     )
@@ -601,9 +637,7 @@ def test_effective_r_multiple_static_when_calibration_off() -> None:
     spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
-    out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    out = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert len(out) == 1
     assert out[0].effective_r_multiple == 1.0
 
@@ -621,7 +655,10 @@ def test_long_term_hold_exempt_from_take_profit() -> None:
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         long_term_hold_codes=frozenset({"510300"}),
     )
     assert intents == ()
@@ -633,7 +670,10 @@ def test_non_long_term_code_takes_profit_normally() -> None:
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         long_term_hold_codes=frozenset({"600519"}),  # a different code
     )
     assert len(intents) == 1
@@ -647,7 +687,10 @@ def test_empty_long_term_hold_reproduces_baseline() -> None:
     pos = _position("510300", volume=300, available=300, cost=4.0)
     base = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     exempt_empty = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         long_term_hold_codes=frozenset(),
     )
     assert base == exempt_empty
@@ -661,7 +704,10 @@ def test_long_term_hold_hard_cap_trims_back_to_cap() -> None:
     closes = {"510300": _volatile_closes()}  # ATR stop 3.6 (well below 4.0)
     pos = _position("510300", volume=5000, available=5000, cost=4.5)  # 20% wt
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
         long_term_hold_codes=frozenset({"510300"}),
     )
@@ -681,12 +727,18 @@ def test_long_term_hold_trims_inside_soft_band_at_hard_cap() -> None:
     closes = {"510300": _volatile_closes()}
     pos = _position("510300", volume=4000, available=4000, cost=4.5)  # 16% wt
     normal = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
     )
     assert normal == ()  # within the soft band
     long_term = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
         long_term_hold_codes=frozenset({"510300"}),
     )
@@ -707,7 +759,10 @@ def test_long_term_hold_hard_cap_trim_clamped_to_single_instruction_cap() -> Non
     closes = {"510300": _volatile_closes()}  # recent high 4.8 ≪ 10 → no ATR exit
     pos = _position("510300", volume=25000, available=25000, cost=8.0)  # 25% wt
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(1_000_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(1_000_000.0),
         max_single_stock_pct=0.15,
         long_term_hold_codes=frozenset({"510300"}),
     )
@@ -725,7 +780,10 @@ def test_long_term_hold_below_hard_cap_rides_free() -> None:
     closes = {"510300": _near_high_closes()}
     pos = _position("510300", volume=2800, available=2800, cost=4.0)  # ~13.9% wt
     intents = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(100_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(100_000.0),
         max_single_stock_pct=0.15,
         long_term_hold_codes=frozenset({"510300"}),
     )
@@ -739,7 +797,10 @@ def test_long_term_hold_still_stops_out_on_drawdown() -> None:
     spots = {"510300": _spot("510300", price=4.6, prev_close=5.0)}  # -8% dd
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {"510300": closes_series}, (pos,), account=_account(),
+        spots,
+        {"510300": closes_series},
+        (pos,),
+        account=_account(),
         long_term_hold_codes=frozenset({"510300"}),
     )
     assert len(intents) == 1
@@ -753,7 +814,10 @@ def test_long_term_hold_still_stops_out_on_atr() -> None:
     spots = {"510300": _spot("510300", price=3.5, prev_close=3.55)}  # < stop
     pos = _position("510300", volume=300, available=300, cost=3.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {"510300": closes}, (pos,), account=_account(),
+        spots,
+        {"510300": closes},
+        (pos,),
+        account=_account(),
         long_term_hold_codes=frozenset({"510300"}),
     )
     assert len(intents) == 1
@@ -767,17 +831,35 @@ def test_long_term_hold_still_stops_out_on_atr() -> None:
 
 def test_make_intraday_sell_context_rejects_non_line2_signal_id() -> None:
     intent = IntradaySellIntent(
-        code="510300", name="沪深300ETF", available_volume=300, limit_price=4.185,
-        trigger_kind=IntradayTriggerKind.DRAWDOWN_STOP, anomaly_reason="x",
-        drawdown_pct=-0.07, atr=0.0, recent_high=0.0, stop_level=0.0,
+        code="510300",
+        name="沪深300ETF",
+        available_volume=300,
+        limit_price=4.185,
+        trigger_kind=IntradayTriggerKind.DRAWDOWN_STOP,
+        anomaly_reason="x",
+        drawdown_pct=-0.07,
+        atr=0.0,
+        recent_high=0.0,
+        stop_level=0.0,
     )
     # The prefix guard fires before any heavy object is touched.
     try:
         make_intraday_sell_context(
-            intent, now=_NOW, signal_id="SIG-bad", seq=1, snapshot_at=_NOW,
-            account=None, positions=(), prev_close=None, daily_state=None,
-            stock_meta=None, risk_engine=None, open_tickets=(),
-            circuit_breaker=None, data_quality=None, watchlist_policy=None,
+            intent,
+            now=_NOW,
+            signal_id="SIG-bad",
+            seq=1,
+            snapshot_at=_NOW,
+            account=None,
+            positions=(),
+            prev_close=None,
+            daily_state=None,
+            stock_meta=None,
+            risk_engine=None,
+            open_tickets=(),
+            circuit_breaker=None,
+            data_quality=None,
+            watchlist_policy=None,
             watchlist_signal=None,
         )
     except ValueError as exc:
@@ -887,7 +969,10 @@ def test_thesis_break_fires_full_volume_sell_when_no_risk_exit() -> None:
     spots = {"510300": _spot("510300", price=4.0, prev_close=4.0)}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {}, (pos,), account=_account(),
+        spots,
+        {},
+        (pos,),
+        account=_account(),
         thesis_break_by_code={"510300": "买入逻辑失效(确定性)"},
     )
     assert len(intents) == 1
@@ -913,7 +998,10 @@ def test_drawdown_stop_outranks_thesis_break() -> None:
     spots = {"510300": _spot("510300", price=3.7, prev_close=4.0)}  # -7.5% drawdown
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {}, (pos,), account=_account(),
+        spots,
+        {},
+        (pos,),
+        account=_account(),
         thesis_break_by_code={"510300": "thesis broke"},
     )
     assert len(intents) == 1
@@ -927,7 +1015,10 @@ def test_atr_trailing_stop_outranks_thesis_break() -> None:
     closes = tuple([5.0] * 19 + [3.6])
     pos = _position("510300", volume=300, available=300, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {"510300": closes}, (pos,), account=_account(),
+        spots,
+        {"510300": closes},
+        (pos,),
+        account=_account(),
         thesis_break_by_code={"510300": "thesis broke"},
     )
     assert len(intents) == 1
@@ -941,7 +1032,10 @@ def test_thesis_break_outranks_take_profit_full_exit_not_tranche() -> None:
     closes = tuple([3.9 + 0.01 * i for i in range(20)])  # gives a small ATR
     pos = _position("510300", volume=400, available=400, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {"510300": closes}, (pos,), account=_account(),
+        spots,
+        {"510300": closes},
+        (pos,),
+        account=_account(),
         thesis_break_by_code={"510300": "thesis broke"},
     )
     assert len(intents) == 1
@@ -959,7 +1053,10 @@ def test_thesis_break_does_not_widen_take_profit_when_intact() -> None:
         spots, {"510300": closes}, (pos,), account=_account()
     )
     with_intact = evaluate_intraday_sell_intents(
-        spots, {"510300": closes}, (pos,), account=_account(),
+        spots,
+        {"510300": closes},
+        (pos,),
+        account=_account(),
         thesis_break_by_code={"000001": "other code broke"},  # not this code
     )
     assert without == with_intact  # identical → take-profit not widened
@@ -973,7 +1070,10 @@ def test_thesis_break_clamps_to_single_instruction_cap() -> None:
     spots = {"510300": _spot("510300", price=4.0, prev_close=4.0)}
     pos = _position("510300", volume=30_000, available=30_000, cost=4.0)
     intents = evaluate_intraday_sell_intents(
-        spots, {}, (pos,), account=_account(total=500_000.0),
+        spots,
+        {},
+        (pos,),
+        account=_account(total=500_000.0),
         thesis_break_by_code={"510300": "thesis broke"},
         max_single_instruction_amount=50_000.0,
     )
@@ -995,7 +1095,10 @@ def test_tiered_first_tier_fires_at_one_r() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         tiered_takeprofit=TieredTakeProfitConfig(),
         take_profit_tiers_taken={},
     )
@@ -1013,14 +1116,20 @@ def test_tiered_second_tier_requires_two_r() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     not_yet = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         tiered_takeprofit=TieredTakeProfitConfig(),
         take_profit_tiers_taken={"510300": 1},
     )
     assert not_yet == ()
     spots2 = {"510300": _spot("510300", price=4.085, prev_close=4.0)}
     fires = evaluate_intraday_sell_intents(
-        spots2, closes, (pos,), account=_account(),
+        spots2,
+        closes,
+        (pos,),
+        account=_account(),
         tiered_takeprofit=TieredTakeProfitConfig(),
         take_profit_tiers_taken={"510300": 1},
     )
@@ -1036,13 +1145,14 @@ def test_tiered_ladder_exhausted_rides_trailing() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         tiered_takeprofit=TieredTakeProfitConfig(),
         take_profit_tiers_taken={"510300": 2},
     )
-    assert all(
-        i.trigger_kind is not IntradayTriggerKind.TAKE_PROFIT for i in out
-    )
+    assert all(i.trigger_kind is not IntradayTriggerKind.TAKE_PROFIT for i in out)
 
 
 def test_tiered_none_reproduces_v7_single_target() -> None:
@@ -1050,9 +1160,7 @@ def test_tiered_none_reproduces_v7_single_target() -> None:
     spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
-    out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    out = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert len(out) == 1
     assert out[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
     assert out[0].take_profit_tier is None
@@ -1066,13 +1174,19 @@ def test_tiered_composes_with_bear_regime() -> None:
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
     static = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         tiered_takeprofit=TieredTakeProfitConfig(),
         take_profit_tiers_taken={},
     )
     assert static == ()
     bear = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(),
+        spots,
+        closes,
+        (pos,),
+        account=_account(),
         takeprofit_calibration=TakeProfitCalibrationConfig(),
         takeprofit_regime=MarketRegime.BEAR,
         tiered_takeprofit=TieredTakeProfitConfig(),
@@ -1104,7 +1218,10 @@ def test_tiers_taken_recorded_on_gated_lower_priority_intent() -> None:
     # Oversized position → the soft WEIGHT_TRIM fires (weight ≈ 40.5%).
     pos = _position("510300", volume=1000, available=1000, cost=4.0)
     out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account(10_000.0),
+        spots,
+        closes,
+        (pos,),
+        account=_account(10_000.0),
         tiered_takeprofit=TieredTakeProfitConfig(),
         take_profit_tiers_taken={"510300": 1},
     )
@@ -1117,9 +1234,7 @@ def test_tiers_taken_none_when_ladder_off() -> None:
     spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
     closes = {"510300": _tp_closes()}
     pos = _position("510300", volume=300, available=300, cost=4.0)
-    out = evaluate_intraday_sell_intents(
-        spots, closes, (pos,), account=_account()
-    )
+    out = evaluate_intraday_sell_intents(spots, closes, (pos,), account=_account())
     assert len(out) == 1
     assert out[0].take_profit_tiers_taken is None
 
@@ -1266,9 +1381,7 @@ def test_chandelier_confirm_window_normalizes_timezone() -> None:
     out = evaluate_intraday_sell_intents(
         spots, closes, pos, **_chand_kwargs((), _CONFIRM_AS_UTC)
     )
-    assert [i.trigger_kind for i in out] == [
-        IntradayTriggerKind.ATR_TRAILING_STOP
-    ]
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.ATR_TRAILING_STOP]
 
 
 def test_chandelier_fires_on_short_history_position() -> None:
@@ -1281,16 +1394,11 @@ def test_chandelier_fires_on_short_history_position() -> None:
     spots = {"510500": _spot("510500", price=2.4, prev_close=2.45)}  # deep
     pos = (_position("510500", cost=4.0),)
     old = evaluate_intraday_sell_intents(spots, closes, pos)
-    assert all(
-        i.trigger_kind is not IntradayTriggerKind.ATR_TRAILING_STOP
-        for i in old
-    )
+    assert all(i.trigger_kind is not IntradayTriggerKind.ATR_TRAILING_STOP for i in old)
     new = evaluate_intraday_sell_intents(
         spots, closes, pos, **_chand_kwargs((), _MORNING)
     )
-    assert [i.trigger_kind for i in new] == [
-        IntradayTriggerKind.ATR_TRAILING_STOP
-    ]
+    assert [i.trigger_kind for i in new] == [IntradayTriggerKind.ATR_TRAILING_STOP]
     assert new[0].recent_high == 0.0  # v8 field meaning kept: no window high
 
 
@@ -1309,3 +1417,180 @@ def test_chandelier_none_config_reproduces_v8() -> None:
         tick_time=_CONFIRM,
     )
     assert same == base
+
+
+# ---------------------------------------------------------------------------
+# E3 — sell-into-strength family + sealed-limit hold
+# (P0-10-amendment-line2-2026-06-04-sell-into-strength)
+# ---------------------------------------------------------------------------
+
+_STRENGTH = StrengthSellConfig()
+
+
+def _strength_spot(
+    code: str,
+    *,
+    price: float,
+    prev_close: float,
+    high: float,
+    amount: float = 3.0e8,
+    name: str = "测试ETF",
+) -> WatchlistMarketSnapshot:
+    return WatchlistMarketSnapshot(
+        code=code,
+        name=name,
+        price=price,
+        open=prev_close,
+        high=high,
+        low=min(price, prev_close),
+        prev_close=prev_close,
+        change_pct=(price - prev_close) / prev_close * 100,
+        volume=1_000_000.0,
+        amount=amount,
+        turnover_rate=1.0,
+        source="adata",
+        snapshot_at=_NOW - timedelta(seconds=2),
+    )
+
+
+def _flat_closes(level: float = 10.0, n: int = 30) -> tuple[float, ...]:
+    # Flat series: MA20 = level, ATR small but positive (tiny alternation).
+    return tuple(level + (0.01 if i % 2 else -0.01) for i in range(n))
+
+
+def test_limit_up_price_prefix_rules() -> None:
+    assert limit_up_price("600011", "华能国际", 10.0) == 11.0
+    assert limit_up_price("300433", "蓝思科技", 10.0) == 12.0
+    assert limit_up_price("600011", "ST华能", 10.0) == 10.5
+    assert limit_up_price("600011", "华能国际", 0.0) is None
+
+
+def test_limit_break_fires_without_profit_gate() -> None:
+    # prev 10 → limit 11; high touched 11; price fell to 10.7 (−2.7% off the
+    # board). Cost 11.5 (position at a LOSS) — 炸板 has no profit gate.
+    spots = {"600011": _strength_spot("600011", price=10.7, prev_close=10.0, high=11.0)}
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=600, available=600, cost=11.5),)
+    out = evaluate_intraday_sell_intents(spots, closes, pos, strength=_STRENGTH)
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.LIMIT_BREAK]
+    assert out[0].available_volume == 200  # round(600/3)
+    assert "炸板" in out[0].anomaly_reason
+
+
+def test_surge_fade_requires_profit() -> None:
+    # high +8% vs prev, faded 3.6% off the high; price 10.4 vs prev 10.0.
+    spots = {
+        "600011": _strength_spot("600011", price=10.41, prev_close=10.0, high=10.8)
+    }
+    closes = {"600011": _flat_closes()}
+    profitable = (_position("600011", volume=300, available=300, cost=9.0),)
+    losing = (_position("600011", volume=300, available=300, cost=12.0),)
+    hit = evaluate_intraday_sell_intents(spots, closes, profitable, strength=_STRENGTH)
+    assert [i.trigger_kind for i in hit] == [IntradayTriggerKind.SURGE_FADE]
+    assert hit[0].available_volume == 100
+    miss = evaluate_intraday_sell_intents(spots, closes, losing, strength=_STRENGTH)
+    assert miss == ()
+
+
+def test_volume_climax_fires_on_stall_with_extension() -> None:
+    # MA20 = 10, price 11.2 (+12% above MA, ≥10% extension), intraday +1%
+    # (< +3% stall), amount 3× the 5-day average; profitable.
+    spots = {
+        "600011": _strength_spot(
+            "600011", price=11.2, prev_close=11.09, high=11.3, amount=9.0e8
+        )
+    }
+    closes = {"600011": _flat_closes()}
+    amounts = {"600011": tuple(3.0e8 for _ in range(30))}
+    pos = (_position("600011", volume=300, available=300, cost=9.0),)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, pos, strength=_STRENGTH, amounts_by_code=amounts
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.VOLUME_CLIMAX]
+
+
+def test_overbought_bias_fires_at_threshold() -> None:
+    # MA20 = 10, price 11.5 → BIAS +15% ≥ threshold; intraday +2% (no dd).
+    spots = {
+        "600011": _strength_spot("600011", price=11.5, prev_close=11.28, high=11.55)
+    }
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=300, available=300, cost=9.0),)
+    out = evaluate_intraday_sell_intents(spots, closes, pos, strength=_STRENGTH)
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.OVERBOUGHT_BIAS]
+
+
+def test_sealed_limit_suppresses_tp_and_strength_not_trim() -> None:
+    # Sealed AT the board (price = limit 11.0): BIAS/TP suppressed; the
+    # hard-cap WEIGHT_TRIM still fires (concentration red line wins).
+    spots = {"600011": _strength_spot("600011", price=11.0, prev_close=10.0, high=11.0)}
+    closes = {"600011": _flat_closes()}
+    # Big position: weight 600×11 / 30_000 = 22% > 16.5% trim band.
+    pos = (_position("600011", volume=600, available=600, cost=5.0),)
+    out = evaluate_intraday_sell_intents(
+        spots,
+        closes,
+        pos,
+        account=_account(30_000.0),
+        strength=_STRENGTH,
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.WEIGHT_TRIM]
+    # Same position NOT sealed (price below the board) → strength fires
+    # first (limit-break: touched 11.0, fell to 10.7).
+    spots2 = {
+        "600011": _strength_spot("600011", price=10.7, prev_close=10.0, high=11.0)
+    }
+    out2 = evaluate_intraday_sell_intents(
+        spots2, closes, pos, account=_account(30_000.0), strength=_STRENGTH
+    )
+    assert [i.trigger_kind for i in out2] == [IntradayTriggerKind.LIMIT_BREAK]
+
+
+def test_strength_skipped_for_long_term_holds() -> None:
+    spots = {
+        "600011": _strength_spot("600011", price=11.5, prev_close=11.28, high=11.55)
+    }
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=300, available=300, cost=9.0),)
+    out = evaluate_intraday_sell_intents(
+        spots,
+        closes,
+        pos,
+        strength=_STRENGTH,
+        long_term_hold_codes=frozenset({"600011"}),
+    )
+    assert out == ()
+
+
+def test_strength_protective_stop_still_outranks() -> None:
+    # Drawdown −7% AND a limit-break pattern in the same tick → the
+    # protective DRAWDOWN_STOP wins (strength never masks protection).
+    spots = {"600011": _strength_spot("600011", price=9.3, prev_close=10.0, high=11.0)}
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=300, available=300, cost=8.0),)
+    out = evaluate_intraday_sell_intents(spots, closes, pos, strength=_STRENGTH)
+    assert len(out) == 1
+    assert out[0].trigger_kind in (
+        IntradayTriggerKind.ATR_TRAILING_STOP,  # priority 1 wins here
+        IntradayTriggerKind.DRAWDOWN_STOP,
+    )
+
+
+def test_strength_one_lot_position_skips() -> None:
+    spots = {"600011": _strength_spot("600011", price=10.7, prev_close=10.0, high=11.0)}
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=100, available=100, cost=9.0),)
+    out = evaluate_intraday_sell_intents(spots, closes, pos, strength=_STRENGTH)
+    assert out == ()  # round(100/3 lots) = 0 → no sub-tranche
+
+
+def test_strength_none_config_reproduces_v9() -> None:
+    spots = {"600011": _strength_spot("600011", price=10.7, prev_close=10.0, high=11.0)}
+    closes = {"600011": _flat_closes()}
+    amounts = {"600011": tuple(3.0e8 for _ in range(30))}
+    pos = (_position("600011", volume=600, available=600, cost=11.5),)
+    base = evaluate_intraday_sell_intents(spots, closes, pos)
+    same = evaluate_intraday_sell_intents(
+        spots, closes, pos, strength=None, amounts_by_code=amounts
+    )
+    assert same == base == ()

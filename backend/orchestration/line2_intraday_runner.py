@@ -101,9 +101,12 @@ from backend.monitoring.intraday_triggers import (
     FEATURE_CODE_VERSION,
     IntradaySellIntent,
     IntradayTriggerConfig,
+    IntradayTriggerKind,
+    StrengthSellConfig,
     evaluate_intraday_add_intents,
     evaluate_intraday_sell_intents,
     filter_fresh_quotes,
+    limit_up_price,
     serialize_intraday_quotes,
 )
 from backend.monitoring.thesis_break import (
@@ -311,6 +314,7 @@ class Line2IntradayRunner:
         chandelier: ChandelierConfig | None = None,
         episode_store: PositionEpisodeStore | None = None,
         chandelier_shadow: bool = False,
+        strength: StrengthSellConfig | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -368,6 +372,11 @@ class Line2IntradayRunner:
         self._episode_store = episode_store
         self._chandelier_shadow = chandelier_shadow
         self._shadow_logged: dict[date, set[str]] = {}
+        # E3 sell-into-strength family (P0-10-amendment-line2-2026-06-04-
+        # sell-into-strength). None keeps the v9 trigger set bit-for-bit
+        # (default-OFF; env-gated in main.py). Folded into the config hash
+        # below (PIT).
+        self._strength = strength
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -443,6 +452,13 @@ class Line2IntradayRunner:
                     "config": dataclasses.asdict(self._chandelier),
                 }
                 if self._chandelier is not None
+                else None
+            ),
+            # E3 sell-into-strength thresholds (incl. their absence) — the
+            # maths version rides the top-level feature_code_version (v10).
+            "strength_sell": (
+                dataclasses.asdict(self._strength)
+                if self._strength is not None
                 else None
             ),
         }
@@ -572,6 +588,9 @@ class Line2IntradayRunner:
             fresh_spots = {c: spots[c] for c in fresh}
             series = parse_held_series(daily_frame, sorted(fresh))
             closes_by_code = {c: closes for c, (closes, _amounts) in series.items()}
+            amounts_by_code = {
+                c: amounts for c, (_closes, amounts) in series.items()
+            }
             # W-004: deterministic THESIS_QUANT_BREAK over the fresh prices. The
             # theses + holding days come from the provider (absent → empty map →
             # no thesis exits, behaviour unchanged). Zero LLM: the break is a
@@ -668,6 +687,8 @@ class Line2IntradayRunner:
                     else None
                 ),
                 tick_time=now,
+                strength=self._strength,
+                amounts_by_code=amounts_by_code,
             )
             # E2 shadow (feature OFF): once-per-day-per-code old-vs-new stop
             # comparison log — the daily counterfactual report the owner
@@ -981,6 +1002,47 @@ class Line2IntradayRunner:
                 records.append(self._sell_record(intent, spot))
         return tuple(records)
 
+    _STRENGTH_KINDS = (
+        IntradayTriggerKind.LIMIT_BREAK,
+        IntradayTriggerKind.SURGE_FADE,
+        IntradayTriggerKind.VOLUME_CLIMAX,
+        IntradayTriggerKind.OVERBOUGHT_BIAS,
+    )
+
+    def _strength_record_params(
+        self, intent: Any, spot: Any
+    ) -> dict[str, float]:
+        """E3 record inputs: every fired strength threshold + the observed
+        day high / approximated limit-up, so replay recomputes the verdict
+        (P0-10-amendment-line2-2026-06-04-sell-into-strength §1.4)."""
+        if (
+            self._strength is None
+            or intent.trigger_kind not in self._STRENGTH_KINDS
+        ):
+            return {}
+        cfg = self._strength
+        out: dict[str, float] = {
+            "break_pullback": float(cfg.break_pullback),
+            "surge_min": float(cfg.surge_min),
+            "fade_min": float(cfg.fade_min),
+            "climax_mult": float(cfg.climax_mult),
+            "stall_max": float(cfg.stall_max),
+            "extension_min": float(cfg.extension_min),
+            "bias_threshold": float(cfg.bias_threshold),
+            "tranche_fraction": float(cfg.tranche_fraction),
+        }
+        high = getattr(spot, "high", None)
+        if isinstance(high, (int, float)) and high > 0:
+            out["day_high"] = float(high)
+        # INVARIANT (review P2): this recompute reproduces the evaluator's
+        # value only because the SAME spot object (same prev_close) and the
+        # same intent.name thread through from the firing tick — never hand
+        # _sell_record a re-fetched quote.
+        limit = limit_up_price(intent.code, intent.name, spot.prev_close)
+        if limit is not None:
+            out["limit_up_price"] = float(limit)
+        return out
+
     def _sell_record(self, intent: Any, spot: Any) -> IntradayTriggerRecord:
         return IntradayTriggerRecord(
             code=intent.code,
@@ -1051,6 +1113,7 @@ class Line2IntradayRunner:
                     if self._chandelier is not None
                     else {}
                 ),
+                **self._strength_record_params(intent, spot),
                 # The take-profit multiple in force when this intent fired (the
                 # regime-conditioned tier when D1-c is on, else the static
                 # config) — recorded on every SELL so replay reproduces why

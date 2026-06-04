@@ -88,15 +88,35 @@ class FiredTriggerStore:
         return frozenset(keys)
 
     def record_fired(
-        self, trade_date: str, code: str, kind: str, *, signal_id: str
+        self,
+        trade_date: str,
+        code: str,
+        kind: str,
+        *,
+        signal_id: str,
+        sold_price: float | None = None,
+        sold_volume: int | None = None,
     ) -> None:
-        """Append one fired key. FAIL-OPEN: an I/O error logs and returns."""
-        row = {
+        """Append one fired key. FAIL-OPEN: an I/O error logs and returns.
+
+        ``sold_price``/``sold_volume`` (E5 re-entry,
+        P0-10-amendment-line2-2026-06-04-reentry-and-time-stop §1.2): a
+        DELIVERED SELL may carry its limit price + volume so the next-day
+        re-entry gate can compare the open against yesterday's sale. Both
+        optional — rows written by older code simply lack them, and a code
+        without a recorded sale price is NOT re-entry-eligible (fail-closed
+        toward not trading).
+        """
+        row: dict[str, object] = {
             "trade_date": trade_date,
             "code": code,
             "kind": kind,
             "signal_id": signal_id,
         }
+        if sold_price is not None:
+            row["sold_price"] = float(sold_price)
+        if sold_volume is not None:
+            row["sold_volume"] = int(sold_volume)
         try:
             with self._lock:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +138,55 @@ class FiredTriggerStore:
                 kind=kind,
                 error=str(exc),
             )
+
+    def delivered_sales(self, trade_date: str) -> dict[str, dict[str, float]]:
+        """code → {kind, sold_price, sold_volume} for ``trade_date`` rows that
+        carry a sale price (E5 re-entry eligibility input).
+
+        Only rows with BOTH a finite positive ``sold_price`` and a positive
+        ``sold_volume`` qualify; the LAST qualifying row per code wins (a
+        same-day multi-tranche exit re-enters against the latest sale).
+        FAIL-OPEN like :meth:`load_fired` — a broken store yields no
+        eligibility (toward not trading), never an exception.
+        """
+        out: dict[str, dict[str, float]] = {}
+        try:
+            if not self._path.exists():
+                return {}
+            for line in self._path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    if str(row.get("trade_date")) != trade_date:
+                        continue
+                    code = str(row.get("code", "")).strip()
+                    kind = str(row.get("kind", "")).strip()
+                    price = row.get("sold_price")
+                    volume = row.get("sold_volume")
+                    if (
+                        code
+                        and kind
+                        and isinstance(price, (int, float))
+                        and price > 0
+                        and isinstance(volume, int)
+                        and volume > 0
+                    ):
+                        out[code] = {
+                            "kind": kind,
+                            "sold_price": float(price),
+                            "sold_volume": float(volume),
+                        }
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue  # fail-open: unreadable rows grant no eligibility
+        except OSError as exc:
+            log.error(
+                "fired_trigger_store_read_failed",
+                path=str(self._path),
+                error=str(exc),
+            )
+        return out
 
     def prune_before(self, trade_date: str) -> None:
         """Drop rows with ``trade_date`` older than the given ISO date.
