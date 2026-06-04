@@ -1463,9 +1463,55 @@ def _flat_closes(level: float = 10.0, n: int = 30) -> tuple[float, ...]:
 
 def test_limit_up_price_prefix_rules() -> None:
     assert limit_up_price("600011", "华能国际", 10.0) == 11.0
+    assert limit_up_price("000001", "平安银行", 10.0) == 11.0
     assert limit_up_price("300433", "蓝思科技", 10.0) == 12.0
     assert limit_up_price("600011", "ST华能", 10.0) == 10.5
     assert limit_up_price("600011", "华能国际", 0.0) is None
+    # Unknown limit regimes (ETFs: mixed 10%/20%) FAIL CLOSED — a 10% guess
+    # would fire a false LIMIT_BREAK on a 20% ETF (codex P2).
+    assert limit_up_price("510300", "沪深300ETF", 4.0) is None
+    assert limit_up_price("159949", "创业板50ETF", 4.0) is None
+    # Exchange HALF-UP rounding, not Python banker's: 1.65×1.1=1.815 → 1.82
+    # (codex P2 cycle-3).
+    assert limit_up_price("600011", "华能国际", 1.65) == 1.82
+
+
+def test_limit_break_fails_closed_for_etf() -> None:
+    # An ETF that rallied +10% and pulled back 3% must NOT fire LIMIT_BREAK
+    # (its real limit regime may be 20% — the board was never touched).
+    spots = {"510300": _strength_spot("510300", price=4.27, prev_close=4.0, high=4.4)}
+    closes = {"510300": _flat_closes(4.0)}
+    pos = (_position("510300", volume=600, available=600, cost=5.0),)
+    out = evaluate_intraday_sell_intents(spots, closes, pos, strength=_STRENGTH)
+    assert all(
+        i.trigger_kind is not IntradayTriggerKind.LIMIT_BREAK for i in out
+    )
+
+
+def test_stale_only_activation_does_not_touch_tp_at_board() -> None:
+    """codex P2 — enabling ONLY the stale time-stop must not suppress an
+    older TAKE_PROFIT at a sealed board (sealed-hold belongs to the
+    STRENGTH gate)."""
+    # 600011 sealed at limit 11.0 (prev 10.0); cost 4.0 → far past +1R.
+    spots = {"600011": _strength_spot("600011", price=11.0, prev_close=10.0, high=11.0)}
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=300, available=300, cost=4.0),)
+    base = evaluate_intraday_sell_intents(
+        spots, closes, pos, account=_account(1_000_000.0)
+    )
+    with_stale = evaluate_intraday_sell_intents(
+        spots, closes, pos, account=_account(1_000_000.0),
+        stale=_STALE, entry_closes_by_code={"600011": _stale_entry_closes()},
+    )
+    assert [i.trigger_kind for i in base] == [IntradayTriggerKind.TAKE_PROFIT]
+    assert [i.trigger_kind for i in with_stale] == [
+        IntradayTriggerKind.TAKE_PROFIT
+    ]
+    # With STRENGTH on, the sealed board DOES suppress TP (intended).
+    with_strength = evaluate_intraday_sell_intents(
+        spots, closes, pos, account=_account(1_000_000.0), strength=_STRENGTH
+    )
+    assert with_strength == ()
 
 
 def test_limit_break_fires_without_profit_gate() -> None:

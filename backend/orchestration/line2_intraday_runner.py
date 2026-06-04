@@ -102,6 +102,7 @@ from backend.monitoring.intraday_triggers import (
     IntradaySellIntent,
     IntradayTriggerConfig,
     IntradayTriggerKind,
+    ReentryAddIntent,
     ReentryConfig,
     StaleExitConfig,
     StrengthSellConfig,
@@ -544,6 +545,19 @@ class Line2IntradayRunner:
             )
 
         held = tuple(provider.held_positions)
+        # E1/E4 — reconcile holding episodes on EVERY tick (including an
+        # EMPTY portfolio): a full exit must append its `closed` event even
+        # when no quotes will be fetched, else a later re-buy inherits the
+        # OLD episode's entry date and the chandelier/stale maths anchor on
+        # a prior holding (codex P2). Decision-inert, fail-open.
+        episodes: dict[str, str] = {}
+        if self._episode_store is not None:
+            bare_held_all = frozenset(
+                p.code.split(".")[0].strip() for p in held if p.volume > 0
+            )
+            episodes = self._episode_store.sync(
+                bare_held_all, trade_date=now.date().isoformat()
+            )
         if not held:
             return Line2IntradayRunResult(
                 signal_id=sid, tick_outcome=IntradayTickOutcome.EMPTY_PORTFOLIO
@@ -589,13 +603,11 @@ class Line2IntradayRunner:
         # in-memory afterwards (the store is append-through on every fire).
         today = now.date()
         fired_today = self._fired.get(today)
+        first_tick_of_day = fired_today is None
         if fired_today is None:
-            fired_today = set(
-                self._fired_store.load_fired(today.isoformat())
-                if self._fired_store is not None
-                else ()
-            )
+            fired_today = set()
             self._fired[today] = fired_today
+        if first_tick_of_day:
             # Day rollover housekeeping: reset the undelivered-send counters
             # and prune store rows older than the retention window (the
             # append-only file must not grow + be re-scanned unboundedly —
@@ -626,6 +638,13 @@ class Line2IntradayRunner:
                     cutoff = min(cutoff, prev_trading.isoformat())
                 self._fired_store.prune_before(cutoff)
         self._prune_fired(today)
+        # Merge the persisted keys EVERY tick, not only on the first one:
+        # the 09:35 daily runner appends its delivered SELLs to the SHARED
+        # store mid-session, and the same-day SELL→ADD mutex must see them
+        # (codex P2). In-memory-only keys (REJECTED / retry-capped) survive
+        # the merge — it is a union, never a replace.
+        if self._fired_store is not None:
+            fired_today |= self._fired_store.load_fired(today.isoformat())
 
         closes_by_code: dict[str, tuple[float, ...]] = {}
         sell_intents: tuple[IntradaySellIntent, ...] = ()
@@ -693,12 +712,6 @@ class Line2IntradayRunner:
             # itself is on (shadow stays decision-inert, v8 bit-for-bit).
             entry_closes_by_code: dict[str, tuple[float, ...]] = {}
             if self._episode_store is not None:
-                bare_held_all = frozenset(
-                    p.code.split(".")[0].strip() for p in held if p.volume > 0
-                )
-                episodes = self._episode_store.sync(
-                    bare_held_all, trade_date=today.isoformat()
-                )
                 entry_closes_by_code = self._slice_entry_closes(
                     episodes=episodes,
                     closes_by_code=closes_by_code,
@@ -791,7 +804,10 @@ class Line2IntradayRunner:
             # contradicting ADD for the rest of the day (2026-06-04: SELL
             # 605020 at 14:27, ADD 605020 at 14:50). One-way only: an earlier
             # ADD never suppresses a protective SELL.
-            sell_fired_codes = {c for (c, k) in fired_today if k != "add"}
+            _buy_kinds = ("add", "reentry")
+            sell_fired_codes = {
+                c for (c, k) in fired_today if k not in _buy_kinds
+            }
             suppressed = sorted(
                 {i.code for i in add_eval.intents} & sell_fired_codes
             )
@@ -919,21 +935,31 @@ class Line2IntradayRunner:
                     # rejection whose cause clears intra-day must stay
                     # recoverable). Fail-open inside the store.
                     if delivered and self._fired_store is not None:
-                        is_sell = side is InstructionSide.SELL
+                        # E5: only an action that can correspond to a REAL
+                        # sale (dispatched to the owner / simulation-filled)
+                        # earns sale metadata — a dry_run render or an
+                        # already-sent duplicate must never seed a next-day
+                        # re-entry BUY (codex P2). The dedup key itself is
+                        # still recorded for every delivered route.
+                        salable = (
+                            side is InstructionSide.SELL
+                            and route.route_outcome is not None
+                            and route.route_outcome.action
+                            in ("dispatched", "simulation_routed")
+                        )
                         self._fired_store.record_fired(
                             today.isoformat(),
                             intent.code,
                             fired_kind,
                             signal_id=sid,
-                            # E5: a delivered SELL carries its suggested
-                            # price/volume so tomorrow's re-entry gate can
-                            # compare the open against the sale.
                             sold_price=(
-                                float(intent.limit_price) if is_sell else None
+                                float(intent.limit_price)
+                                if salable
+                                else None
                             ),
                             sold_volume=(
                                 int(intent.available_volume)
-                                if is_sell
+                                if salable
                                 else None
                             ),
                         )
@@ -1074,6 +1100,75 @@ class Line2IntradayRunner:
                 ma_long = moving_average(
                     closes_by_code.get(intent.code, ()), self._add_cfg.ma_long_window
                 )
+                if isinstance(intent, ReentryAddIntent):
+                    # E5 — persist the gate's ACTUAL decision inputs
+                    # (yesterday's sale + discount + window + MA), not the
+                    # regular-ADD thresholds it never used (codex P2). The
+                    # MA is recomputed with the RE-ENTRY window — the gate
+                    # checked reentry.ma_window, not the ADD long window
+                    # (codex P3 cycle-2).
+                    reentry_ma = (
+                        moving_average(
+                            closes_by_code.get(intent.code, ()),
+                            self._reentry.ma_window,
+                        )
+                        if self._reentry is not None
+                        else None
+                    )
+                    records.append(
+                        IntradayTriggerRecord(
+                            code=intent.code,
+                            side="buy",
+                            kind="reentry",
+                            live_price=intent.limit_price,
+                            prev_close=(
+                                float(spot.prev_close)
+                                if spot.prev_close
+                                else None
+                            ),
+                            atr=intent.atr or None,
+                            stop_level=intent.stop_price or None,
+                            available_volume=intent.add_volume,
+                            cost_price=(
+                                float(pos_by_code[intent.code].cost_price)
+                                if intent.code in pos_by_code
+                                else None
+                            ),
+                            position_volume=(
+                                int(pos_by_code[intent.code].volume)
+                                if intent.code in pos_by_code
+                                else None
+                            ),
+                            total_assets=total_assets,
+                            ma_long=(
+                                round(reentry_ma, 4)
+                                if reentry_ma is not None
+                                else None
+                            ),
+                            threshold_params={
+                                "sold_price": float(intent.sold_price),
+                                "reentry_discount": float(
+                                    intent.reentry_discount
+                                ),
+                                "window_start_minute": float(
+                                    self._reentry.window_start_minute
+                                    if self._reentry is not None
+                                    else 0
+                                ),
+                                "window_end_minute": float(
+                                    self._reentry.window_end_minute
+                                    if self._reentry is not None
+                                    else 0
+                                ),
+                                "ma_window": float(
+                                    self._reentry.ma_window
+                                    if self._reentry is not None
+                                    else 0
+                                ),
+                            },
+                        )
+                    )
+                    continue
                 records.append(
                     self._add_record(
                         intent,
@@ -1591,6 +1686,11 @@ class Line2IntradayRunner:
     def _kind_of(intent: Any, side: InstructionSide) -> str:
         if side is InstructionSide.SELL:
             return intent.trigger_kind.value
+        # E5 re-entry BUYs dedup under their own kind so a regular
+        # dip-vs-cost ADD later the same day is not silently suppressed
+        # (and vice versa); both are BUY kinds for the one-way mutex.
+        if isinstance(intent, ReentryAddIntent):
+            return "reentry"
         return "add"
 
     def _prune_fired(self, today: date) -> None:

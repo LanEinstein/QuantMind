@@ -38,6 +38,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -144,6 +145,7 @@ INTRADAY_QUOTE_HEADER: tuple[str, ...] = (
     "name",
     "price",
     "prev_close",
+    "high",
     "volume",
     "amount",
     "change_pct",
@@ -278,6 +280,18 @@ class ReentryConfig:
     ma_window: int = 20  # structure gate: price must hold above this MA
 
 
+@dataclass(frozen=True)
+class ReentryAddIntent(AddIntent):
+    """An E5 re-entry BUY — same wire shape as :class:`AddIntent` (it rides
+    the unchanged ADD pipeline) but a DISTINCT type so the runner can give
+    it its own dedup kind (``reentry``) and persist the gate's actual
+    decision inputs (yesterday's sale + discount) into the trigger manifest
+    instead of a misleading plain-ADD record (codex P2)."""
+
+    sold_price: float = 0.0
+    reentry_discount: float = 0.0
+
+
 # The sell kinds whose DELIVERED sale makes a code re-entry-eligible the
 # next day: discretionary harvests only — a protective-stop / thesis /
 # stale exit means the trend is falsified and is never bought back.
@@ -293,15 +307,16 @@ REENTRY_ELIGIBLE_KINDS: frozenset[str] = frozenset(
 
 
 def limit_up_price(code: str, name: str, prev_close: float) -> float | None:
-    """Deterministic limit-up price approximation (E3 trigger input ONLY).
+    """Deterministic limit-up price for KNOWN regimes (E3 trigger input ONLY).
 
-    Prefix rules: ``30*``/``688*`` → 20%, name contains ``ST`` → 5%, else
-    10% (main board / ETF). Known residual (amendment §1.3): a few
-    cross-border/创业板 ETFs trade at 20% — the error direction is
-    conservative (a 10% assumption flags "sealed" early → holds longer;
-    a false LIMIT_BREAK is impossible since the true limit sits higher).
-    The RiskEngine's limit_up_down_block stays the sole order-legality
-    authority. ``None`` when prev_close is unusable.
+    Exact prefix rules: ``60*``/``00*`` main board → 10% (5% when the name
+    carries ``ST``), ``30*`` 创业板 / ``688*`` 科创 → 20%. Everything else —
+    notably ETFs, whose limit regime is mixed (most 10%, 创业板/科创/跨境
+    ETFs 20%) — returns ``None`` = FAIL CLOSED: no LIMIT_BREAK and no
+    sealed-board hold for codes whose board we cannot derive exactly (a 10%
+    guess would fire a FALSE limit-break on a 20% ETF after a normal +10%
+    day — codex P2). The RiskEngine's limit_up_down_block stays the sole
+    order-legality authority. ``None`` also when prev_close is unusable.
     """
     if not (
         isinstance(prev_close, (int, float))
@@ -310,13 +325,20 @@ def limit_up_price(code: str, name: str, prev_close: float) -> float | None:
     ):
         return None
     bare = _bare(code)
-    if "ST" in name.upper():
-        ratio = 0.05
+    if bare.startswith(("60", "00")):
+        ratio = "0.05" if "ST" in name.upper() else "0.10"
     elif bare.startswith(("30", "688")):
-        ratio = 0.20
+        ratio = "0.20"
     else:
-        ratio = 0.10
-    return round(prev_close * (1.0 + ratio), 2)
+        return None  # unknown limit regime (ETF etc.) → fail closed
+    # Exchange half-up rounding (SSE/SZSE convention, mirrors
+    # backend.data.stock_metadata) — Python round() is banker's/binary and
+    # rounds e.g. 1.65×1.1=1.815 DOWN to 1.81 vs the exchange's 1.82,
+    # which would misclassify touches/seals (codex P2 cycle-3).
+    limit = (
+        Decimal(str(prev_close)) * (Decimal("1") + Decimal(ratio))
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(limit)
 
 
 @dataclass(frozen=True)
@@ -468,6 +490,10 @@ def serialize_intraday_quotes(
                 _sanitise_field(spot.name),
                 repr(spot.price),
                 repr(spot.prev_close),
+                # The day high is a DECISION input for LIMIT_BREAK /
+                # SURGE_FADE (codex P2) — replay must recompute the touch /
+                # fade from the persisted row alone.
+                repr(spot.high),
                 repr(spot.volume),
                 repr(spot.amount),
                 repr(spot.change_pct),
@@ -1288,9 +1314,14 @@ def evaluate_intraday_sell_intents(
             _limit_eps = (
                 strength.limit_epsilon if strength is not None else 0.005
             )
-            sealed = (
+            at_board = (
                 limit_up is not None and price >= limit_up - _limit_eps
             )
+            # The sealed-board TP suppression belongs to the STRENGTH gate:
+            # enabling only the stale time-stop must not change TAKE_PROFIT
+            # behaviour (codex P2). The stale trigger itself still skips a
+            # sealed board via ``at_board`` (a board is not a zombie).
+            sealed = strength is not None and at_board
             strength_intent = (
                 _strength_sell_intent(
                     code=code,
@@ -1308,7 +1339,7 @@ def evaluate_intraday_sell_intents(
                     effective_atr_stop_mult=eff_mult,
                     stop_anchor=anchor_val,
                 )
-                if strength is not None and not sealed and not is_long_term
+                if strength is not None and not at_board and not is_long_term
                 else None
             )
             stale_intent = (
@@ -1329,7 +1360,7 @@ def evaluate_intraday_sell_intents(
                 if (
                     stale is not None
                     and strength_intent is None
-                    and not sealed
+                    and not at_board
                     and not is_long_term
                 )
                 else None
@@ -1488,7 +1519,7 @@ def evaluate_reentry_add_intents(
             f"{vol} 股;结构完好 (>MA{config.ma_window})"
         )
         intents.append(
-            AddIntent(
+            ReentryAddIntent(
                 code=code,
                 name=names.get(code, code),
                 add_volume=vol,
@@ -1497,6 +1528,8 @@ def evaluate_reentry_add_intents(
                 stop_price=stop_price,
                 rsi=0.0,  # re-entry is discount-vs-sale driven, not RSI-gated
                 rationale=rationale,
+                sold_price=sold_price,
+                reentry_discount=config.discount,
             )
         )
     if intents:
@@ -1757,6 +1790,7 @@ __all__ = [
     "IntradayTriggerConfig",
     "IntradayTriggerKind",
     "REENTRY_ELIGIBLE_KINDS",
+    "ReentryAddIntent",
     "ReentryConfig",
     "StaleExitConfig",
     "StrengthSellConfig",

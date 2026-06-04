@@ -1986,3 +1986,65 @@ async def test_reentry_survives_long_holiday_prune(builder, tmp_path) -> None:
     assert routed[0].side is InstructionSide.BUY
     # The pre-holiday row survived the prune (cutoff floored at the lookback).
     assert store.delivered_sales(long_ago.isoformat()) != {}
+
+
+async def test_dry_run_sell_records_no_sale_metadata(builder, tmp_path) -> None:
+    """codex P2 — a dry_run render is deduped but must NOT seed a next-day
+    re-entry (no sold_price/volume row)."""
+
+    rendered: list[str] = []
+    store = _fired_store(tmp_path)
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.DRY_RUN, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store, dry_sink=rendered.append,
+    )
+    result = await runner.run(provider=_take_profit_provider(), now=_NOW)
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1
+    assert routed[0].route_outcome.action == "dry_run_rendered"
+    # Deduped for the day...
+    assert store.load_fired(_NOW.date().isoformat()) == frozenset(
+        {("510300", "take_profit")}
+    )
+    # ...but never re-entry-eligible.
+    assert store.delivered_sales(_NOW.date().isoformat()) == {}
+
+
+async def test_reentry_manifest_records_decision_inputs(
+    builder, tmp_path
+) -> None:
+    """codex P2 — the re-entry BUY persists its OWN gate inputs (sale price,
+    discount, window) under kind='reentry', not a plain-ADD record."""
+    from backend.monitoring.intraday_triggers import ReentryConfig
+
+    store = _fired_store(tmp_path)
+    yesterday = (_NOW - timedelta(days=1)).date().isoformat()
+    store.record_fired(
+        yesterday, "510300", "take_profit", signal_id="s0",
+        sold_price=5.2, sold_volume=100,
+    )
+    sender = FakeFeishuSender()
+    runner, _, manifests = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store, reentry=ReentryConfig(),
+    )
+    morning = _NOW.replace(hour=9, minute=45)
+    provider = FakeIntradayProvider(
+        positions=(_position("510300", volume=200, available=200, cost=4.0),),
+        spots={
+            "510300": _spot(
+                "510300", price=5.0, prev_close=5.15,
+                snapshot_at=morning - timedelta(seconds=2),
+            )
+        },
+        closes_by_code={"510300": _volatile_closes()},
+    )
+    result = await runner.run(provider=provider, now=morning)
+    assert any(r.kind == "reentry" for r in result.routes)
+    stored = manifests.get(result.signal_id)
+    assert stored is not None
+    record = stored.triggers[0]
+    assert record.kind == "reentry"
+    assert record.threshold_params["sold_price"] == 5.2
+    assert record.threshold_params["reentry_discount"] == 0.02
