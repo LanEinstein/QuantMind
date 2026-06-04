@@ -94,3 +94,6 @@ docs/next-session-prompt-feishu-inbound-websockets-fix.md
 docs/next-session-prompt-feishu-receiver-fix.md
 docs/next-session-prompt-phase-p.md
 scripts/e2e_interactive_test.py
+
+# Q-002: materialised KG db is a runtime artifact (seed data files in data/kg_seed/ ARE tracked)
+data/knowledge_graph/
