@@ -38,6 +38,12 @@ A per-day ``(code, trigger_kind)`` dedup stops a still-breached trigger from
 re-routing every 30s (it would spam the decision group); distinct trigger kinds
 are distinct keys (P-005) so a morning ADD does not suppress an afternoon SELL,
 and a drawdown-stop does not suppress a later take-profit on the same code.
+Only DELIVERED routes (dispatched / simulation_routed / dry_run_rendered) and
+REJECTED plans enter the dedup — a definitive Feishu ``send_failed`` reached
+nobody and must retry on the next tick (codex P2, ops hardening §1.1). The
+dedup is persisted per day (``FiredTriggerStore``) so a restart cannot re-send
+an already-delivered batch, and a code whose SELL fired earlier today gets no
+contradicting same-day ADD (one-way mutex — an ADD never suppresses a SELL).
 
 LLM red line (orchestration isolation + Line-2 zero-LLM): imports NO
 ``backend.{api,broker,risk,llm,agents,agents_team,mirofish,data}``. The
@@ -55,7 +61,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -101,6 +107,7 @@ from backend.monitoring.thesis_break import (
     evaluate_thesis_breaks,
     intraday_intact_codes,
 )
+from backend.orchestration.fired_trigger_store import FiredTriggerStore
 from backend.orchestration.instruction_dispatcher import OutboundSignal
 from backend.orchestration.intraday_manifest import (
     IntradayTriggerManifest,
@@ -122,6 +129,12 @@ from backend.services.ledger import DecisionLedgerService
 from backend.utils.trading_hours import is_trading_day, is_trading_hours
 
 log = structlog.get_logger(component="orchestration.line2_intraday_runner")
+
+# Bounded retry for undelivered (send_failed) routes: after this many failed
+# delivery attempts in one day the (code, kind) key enters the dedup anyway —
+# a sustained Feishu outage must not re-build/re-persist/re-send every 30s
+# for the whole session (ops hardening §1.1, review angle B).
+_MAX_UNDELIVERED_ATTEMPTS_PER_DAY = 5
 
 
 class IntradayTickOutcome(StrEnum):
@@ -250,6 +263,26 @@ class Line2IntradayContextProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class RejectAlertHook(Protocol):
+    """Caller-supplied async hook fired when a SELL route is REJECTED.
+
+    P0-10-amendment-line2-2026-06-04-intraday-ops-hardening §1.2: a
+    RiskEngine-rejected protective SELL used to die silently (audit/log
+    only) — the prev_close data gap swallowed every Line-2 exit for two
+    trading days before a human noticed. The hook (main.py routes it to
+    the AlertDispatcher → Feishu alert chat, dedup 15min) makes the next
+    such swallow visible within minutes. Injected so the runner keeps its
+    orchestration import isolation (no backend.monitoring.alert_dispatcher
+    import); any hook exception is swallowed by the caller (fail-open —
+    alerting must never break a tick).
+    """
+
+    async def __call__(
+        self, *, code: str, kind: str, instruction_id: str
+    ) -> None: ...
+
+
 class Line2IntradayRunner:
     """Compose the Line-2 30s intraday trigger chain into one production tick."""
 
@@ -269,6 +302,8 @@ class Line2IntradayRunner:
         takeprofit_calibration: TakeProfitCalibrationConfig | None = None,
         tiered_takeprofit: TieredTakeProfitConfig | None = None,
         takeprofit_ledger: TakeProfitLedgerStore | None = None,
+        fired_store: FiredTriggerStore | None = None,
+        reject_alert_hook: RejectAlertHook | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -303,6 +338,16 @@ class Line2IntradayRunner:
         # never double-taken). Folded into the config hash below (PIT).
         self._tiered_takeprofit = tiered_takeprofit
         self._takeprofit_ledger = takeprofit_ledger
+        # Ops hardening (P0-10-amendment-line2-2026-06-04-intraday-ops-
+        # hardening): durable per-day dedup (survives restarts — §1.1) + the
+        # REJECTED-SELL alert hook (§1.2). Both optional and fail-open: a
+        # missing/broken store degrades to the in-memory dedup (worst case a
+        # duplicate Feishu message), and a failing hook never breaks a tick.
+        self._fired_store = fired_store
+        self._reject_alert_hook = reject_alert_hook
+        # Per-day undelivered-send attempt counter (reset on day rollover):
+        # bounds the send_failed retry loop (§1.1, review angle B).
+        self._send_failures: dict[tuple[str, str], int] = {}
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -464,6 +509,31 @@ class Line2IntradayRunner:
             max_staleness_seconds=self._trigger_cfg.max_quote_staleness_seconds,
         )
 
+        # Per-day (code, kind) dedup — resolved BEFORE intent evaluation so
+        # the same-day SELL→ADD mutex below can read it. On the first tick of
+        # a day the persisted keys are loaded once (ops hardening §1.1) so a
+        # restart cannot re-route an already-fired trigger; the set lives
+        # in-memory afterwards (the store is append-through on every fire).
+        today = now.date()
+        fired_today = self._fired.get(today)
+        if fired_today is None:
+            fired_today = set(
+                self._fired_store.load_fired(today.isoformat())
+                if self._fired_store is not None
+                else ()
+            )
+            self._fired[today] = fired_today
+            # Day rollover housekeeping: reset the undelivered-send counters
+            # and prune store rows older than the retention window (the
+            # append-only file must not grow + be re-scanned unboundedly —
+            # review angle A). Both fail-open.
+            self._send_failures = {}
+            if self._fired_store is not None:
+                self._fired_store.prune_before(
+                    (today - timedelta(days=7)).isoformat()
+                )
+        self._prune_fired(today)
+
         closes_by_code: dict[str, tuple[float, ...]] = {}
         sell_intents: tuple[IntradaySellIntent, ...] = ()
         add_intents: tuple[AddIntent, ...] = ()
@@ -557,15 +627,29 @@ class Line2IntradayRunner:
             # drawdown can satisfy both the SELL trigger and the dip-vs-cost ADD
             # gate). The exit wins (codex U-C3 P1).
             sell_codes = {i.code for i in sell_intents}
-            add_intents = tuple(i for i in add_eval.intents if i.code not in sell_codes)
+            # Same-day SELL→ADD one-way mutex (ops hardening §1.3): a code
+            # whose SELL trigger fired earlier TODAY (any sell kind, ROUTED or
+            # REJECTED — either way the quant said "exit") gets no
+            # contradicting ADD for the rest of the day (2026-06-04: SELL
+            # 605020 at 14:27, ADD 605020 at 14:50). One-way only: an earlier
+            # ADD never suppresses a protective SELL.
+            sell_fired_codes = {c for (c, k) in fired_today if k != "add"}
+            suppressed = sorted(
+                {i.code for i in add_eval.intents} & sell_fired_codes
+            )
+            if suppressed:
+                log.info(
+                    "intraday_add_suppressed_same_day_sell", codes=suppressed
+                )
+            add_intents = tuple(
+                i
+                for i in add_eval.intents
+                if i.code not in sell_codes and i.code not in sell_fired_codes
+            )
 
         candidates: list[tuple[Any, InstructionSide]] = [
             (i, InstructionSide.SELL) for i in sell_intents
         ] + [(i, InstructionSide.BUY) for i in add_intents]
-
-        today = now.date()
-        fired_today = self._fired.setdefault(today, set())
-        self._prune_fired(today)
 
         routes: list[TriggerRoute] = []
         to_route: list[tuple[Any, InstructionSide]] = []
@@ -612,11 +696,73 @@ class Line2IntradayRunner:
                     intent, side, provider, sid, seq, now, spots
                 )
                 routes.append(route)
-                if route.outcome in (
-                    TriggerRouteOutcome.ROUTED,
-                    TriggerRouteOutcome.REJECTED,
+                # Dedup only what the owner can actually act on: a REJECTED
+                # plan (re-offering the same rejected order every 30s is
+                # spam) or a route that REACHED its sink (dispatched /
+                # simulation_routed / dry_run_rendered / skipped_duplicate —
+                # the last means the outbox already SENT this instruction, so
+                # the owner has the card). A definitive Feishu ``send_failed``
+                # reaches nobody and the dispatcher releases the outbox
+                # precisely so it can retry — marking it fired (in-memory or
+                # durable) would hide the protective SELL for the rest of the
+                # day (codex P2, ops hardening §1.1). ``skipped_in_flight``
+                # is unreachable here (per-tick ids never share an outbox
+                # claim) and stays retryable by the same conservative logic.
+                fired_kind = self._kind_of(intent, side)
+                delivered = (
+                    route.outcome is TriggerRouteOutcome.ROUTED
+                    and route.route_outcome is not None
+                    and route.route_outcome.action
+                    in (
+                        "dispatched",
+                        "simulation_routed",
+                        "dry_run_rendered",
+                        "skipped_duplicate",
+                    )
+                )
+                # Bounded retry for undelivered sends: a sustained Feishu
+                # outage must not re-build + re-persist + re-send every 30s
+                # for the rest of the session (review angle B). After the cap
+                # the key enters the dedup with a loud error — the owner is
+                # unreachable on this channel anyway; the audit trail +
+                # alert channel carry the evidence.
+                send_capped = False
+                if (
+                    route.outcome is TriggerRouteOutcome.ROUTED
+                    and not delivered
                 ):
-                    fired_today.add((intent.code, self._kind_of(intent, side)))
+                    key = (intent.code, fired_kind)
+                    attempts = self._send_failures.get(key, 0) + 1
+                    self._send_failures[key] = attempts
+                    if attempts >= _MAX_UNDELIVERED_ATTEMPTS_PER_DAY:
+                        send_capped = True
+                        log.error(
+                            "intraday_send_retries_exhausted",
+                            code=intent.code,
+                            kind=fired_kind,
+                            attempts=attempts,
+                        )
+                if (
+                    route.outcome is TriggerRouteOutcome.REJECTED
+                    or delivered
+                    or send_capped
+                ):
+                    fired_today.add((intent.code, fired_kind))
+                    # Durable = DELIVERED only. A REJECTED or retry-capped key
+                    # dedups in-memory (no 30s spam this process) but is NOT
+                    # persisted: a deliberate operator restart — the recovery
+                    # playbook after fixing the rejecting data gap or a Feishu
+                    # outage — re-attempts the protective exit instead of
+                    # finding it durably suppressed (review angle A: a
+                    # rejection whose cause clears intra-day must stay
+                    # recoverable). Fail-open inside the store.
+                    if delivered and self._fired_store is not None:
+                        self._fired_store.record_fired(
+                            today.isoformat(),
+                            intent.code,
+                            fired_kind,
+                            signal_id=sid,
+                        )
                 # D1-d: a DELIVERED tiered take-profit advances the episode's
                 # ladder (REJECTED does not — the same tier retries next
                 # day). ROUTED alone is not delivery: a Feishu send_failed or
@@ -897,6 +1043,26 @@ class Line2IntradayRunner:
         plan = built.plan
         await self._ledger.open_for_plan(plan, at=now)
         if plan.status is not InstructionStatus.VALIDATED:
+            # A REJECTED SELL is a swallowed exit — surface it to the alert
+            # channel (ops hardening §1.2; the prev_close gap of 2026-06-03
+            # silently killed every Line-2 exit for two trading days). BUY
+            # rejections stay quiet: a rejected ADD is normal fallthrough.
+            if (
+                side is InstructionSide.SELL
+                and self._reject_alert_hook is not None
+            ):
+                try:
+                    await self._reject_alert_hook(
+                        code=intent.code,
+                        kind=kind,
+                        instruction_id=plan.instruction_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 — alert never breaks a tick
+                    log.warning(
+                        "line2_reject_alert_failed",
+                        code=intent.code,
+                        error=str(exc),
+                    )
             return TriggerRoute(
                 code=intent.code,
                 side=side,
@@ -1027,6 +1193,7 @@ __all__ = [
     "Line2IntradayContextProvider",
     "Line2IntradayRunResult",
     "Line2IntradayRunner",
+    "RejectAlertHook",
     "TriggerRoute",
     "TriggerRouteOutcome",
 ]

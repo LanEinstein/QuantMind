@@ -800,12 +800,78 @@ async def _init_line2_runners(
     snapshot_store = SnapshotStore(root=snapshot_root)
     manifest_store = IntradayTriggerManifestStore(manifest_root)
 
+    # Ops hardening (P0-10-amendment-line2-2026-06-04-intraday-ops-
+    # hardening): durable per-day dedup (a restart must not re-send an
+    # already-fired trigger batch — 2026-06-04 incident) + the REJECTED-SELL
+    # alert hook (a swallowed protective exit must reach the alert chat, not
+    # die in audit/logs — 2026-06-03 incident). Shared by BOTH Line-2 runners
+    # (daily + intraday — same incident classes, review altitude angle).
+    # Always on (infrastructure fix, no strategy semantics); the store path
+    # is overridable for tests.
+    from pathlib import Path as _FiredPath
+
+    from backend.orchestration.fired_trigger_store import FiredTriggerStore
+
+    _fired_store = FiredTriggerStore(
+        _FiredPath(
+            os.environ.get(
+                "QUANTMIND_LINE2_FIRED_STORE_ROOT",
+                "data/line2_intraday_state",
+            )
+        )
+        / "fired_triggers.jsonl"
+    )
+
+    async def _line2_reject_alert(
+        *, code: str, kind: str, instruction_id: str
+    ) -> None:
+        """Surface a RiskEngine-REJECTED Line-2 SELL on the alert channel.
+
+        Resolved lazily off app.state because the AlertDispatcher is built
+        in a later startup section; before it exists the alert degrades to
+        the loud warning below (fail-open — both runners already guard this
+        hook with try/except).
+        """
+        alert_dispatcher = getattr(application.state, "alert_dispatcher", None)
+        if alert_dispatcher is None:
+            # Must never be silent (review angle A): a missing dispatcher
+            # degrades the protective-SELL alert to log-only — exactly the
+            # blindness §1.2 exists to prevent — so say so loudly.
+            log.warning(
+                "line2_reject_alert_dispatcher_missing",
+                code=code,
+                kind=kind,
+                instruction_id=instruction_id,
+            )
+            return
+        from backend.audit.models import AuditOutcome
+
+        await alert_dispatcher.fire(
+            alert_type="line2_protective_sell_rejected",
+            message=(
+                f"Line-2 SELL {code} ({kind}) REJECTED by RiskEngine — "
+                f"a protective exit was swallowed; investigate the "
+                f"rejecting check (data gap / limits). plan={instruction_id}"
+            ),
+            payload={
+                "code": code,
+                "kind": kind,
+                "instruction_id": instruction_id,
+            },
+            dedup_key=f"{code}:{kind}",
+            outcome=AuditOutcome.BLOCKED,
+            resource_type="instruction_plan",
+            resource_id=instruction_id,
+        )
+
     daily_runner = Line2DailyRunner(
         anomaly_detector=AnomalyDetector(),
         builder=builder,
         renderer=renderer,
         coordinator=coordinator,
         ledger=ledger,
+        fired_store=_fired_store,
+        reject_alert_hook=_line2_reject_alert,
         pilot=pilot,
     )
     # D1-a — per-stock adaptive DRAWDOWN_STOP threshold (|daily return| percentile).
@@ -893,6 +959,8 @@ async def _init_line2_runners(
         takeprofit_calibration=_regime_tp,
         tiered_takeprofit=_tiered_tp,
         takeprofit_ledger=_tp_ledger,
+        fired_store=_fired_store,
+        reject_alert_hook=_line2_reject_alert,
         pilot=pilot,
     )
 

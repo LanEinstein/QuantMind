@@ -43,6 +43,7 @@ from backend.models.instruction import InstructionPlan, InstructionStatus
 from backend.monitoring.anomaly import AnomalyDetector
 from backend.monitoring.degrade import partition_by_suspension
 from backend.monitoring.sell_signal import SellIntent, evaluate_sell_intents
+from backend.orchestration.fired_trigger_store import FiredTriggerStore
 from backend.orchestration.instruction_dispatcher import OutboundSignal
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteOutcome
 from backend.services.instruction_plan_builder import (
@@ -67,6 +68,11 @@ class SellRouteOutcome(StrEnum):
     """The RiskEngine 14-check rejected the SELL — no signal sent."""
     EARLY_RETURN = "early_return"
     """A freeze early-return blocked the SELL (mode switch / ticket / data)."""
+    DEDUP_SKIPPED = "dedup_skipped"
+    """Already delivered today per the durable dedup (restart re-run guard,
+    P0-10-amendment-line2-2026-06-04-intraday-ops-hardening §1.1 — the 09:35
+    cron's misfire_grace re-fires after a restart and would otherwise re-send
+    the whole daily SELL batch under fresh instruction ids)."""
 
 
 @dataclass(frozen=True)
@@ -143,6 +149,8 @@ class Line2DailyRunner:
         renderer: MessageRenderer,
         coordinator: RouteCoordinator,
         ledger: DecisionLedgerService,
+        fired_store: FiredTriggerStore | None = None,
+        reject_alert_hook: Any | None = None,
         pilot: bool = False,
     ) -> None:
         self._detector = anomaly_detector
@@ -150,6 +158,17 @@ class Line2DailyRunner:
         self._renderer = renderer
         self._coordinator = coordinator
         self._ledger = ledger
+        # Ops hardening (P0-10-amendment-line2-2026-06-04-intraday-ops-
+        # hardening, review altitude angle): the SAME durable dedup + reject
+        # alert the intraday runner gets — the daily 09:35 SELL batch has the
+        # identical restart-resend and silent-REJECTED incident classes (the
+        # cron's misfire_grace re-runs after a restart with fresh instruction
+        # ids the outbox cannot dedup). Both optional and fail-open. The
+        # store is SHARED with the intraday runner: daily kinds (AnomalyKind
+        # values) and intraday kinds never collide, and a daily SELL fire
+        # also feeds the intraday same-day SELL→ADD mutex for free.
+        self._fired_store = fired_store
+        self._reject_alert_hook = reject_alert_hook
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
         self._pilot = pilot
@@ -191,9 +210,48 @@ class Line2DailyRunner:
             scan, held, name_by_code=dict(provider.name_by_code)
         )
 
+        # Durable per-day dedup (§1.1): a restart re-runs the 09:35 cron
+        # (misfire_grace) with fresh instruction ids — without this load the
+        # whole daily SELL batch re-sends (the 2026-06-04 intraday incident,
+        # daily flavour). Fail-open: a broken store degrades to no dedup.
+        fired_today: set[tuple[str, str]] = set(
+            self._fired_store.load_fired(now.date().isoformat())
+            if self._fired_store is not None
+            else ()
+        )
+
         routes: list[SellRoute] = []
         for seq, intent in enumerate(intents, start=1):
-            routes.append(await self._route_sell(intent, provider, sid, seq, now))
+            kind = intent.trigger_kind.value
+            if (intent.code, kind) in fired_today:
+                routes.append(
+                    SellRoute(
+                        code=intent.code,
+                        outcome=SellRouteOutcome.DEDUP_SKIPPED,
+                        anomaly_reason=intent.anomaly_reason,
+                    )
+                )
+                continue
+            route = await self._route_sell(intent, provider, sid, seq, now)
+            routes.append(route)
+            # Durable = DELIVERED only (mirrors the intraday runner): a
+            # REJECTED daily SELL stays retryable after an operator restart
+            # (the recovery playbook once the rejecting cause is fixed).
+            delivered = (
+                route.outcome is SellRouteOutcome.ROUTED
+                and route.route_outcome is not None
+                and route.route_outcome.action
+                in (
+                    "dispatched",
+                    "simulation_routed",
+                    "dry_run_rendered",
+                    "skipped_duplicate",
+                )
+            )
+            if delivered and self._fired_store is not None:
+                self._fired_store.record_fired(
+                    now.date().isoformat(), intent.code, kind, signal_id=sid
+                )
 
         log.info(
             "line2_daily_complete",
@@ -237,6 +295,22 @@ class Line2DailyRunner:
         plan = built.plan
         await self._ledger.open_for_plan(plan, at=now)
         if plan.status is not InstructionStatus.VALIDATED:
+            # A REJECTED daily SELL is a swallowed protective exit — surface
+            # it on the alert channel exactly like the intraday runner (§1.2;
+            # the 2026-06-03 prev_close gap killed BOTH Line-2 paths).
+            if self._reject_alert_hook is not None:
+                try:
+                    await self._reject_alert_hook(
+                        code=intent.code,
+                        kind=intent.trigger_kind.value,
+                        instruction_id=plan.instruction_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 — alert never breaks the run
+                    log.warning(
+                        "line2_daily_reject_alert_failed",
+                        code=intent.code,
+                        error=str(exc),
+                    )
             return SellRoute(outcome=SellRouteOutcome.REJECTED, plan=plan, **common)
 
         wire = self._renderer.render_monitoring_sell(

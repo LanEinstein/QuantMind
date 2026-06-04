@@ -51,6 +51,8 @@ data/slot_rotation/
 # D1-d — take-profit tier ledger (append-only episode state written by the
 # live service); never committed (P0-10-amendment-line2-2026-06-04).
 data/takeprofit_ledger/
+# Line-2 intraday runner durable dedup state (ops hardening 2026-06-04)
+data/line2_intraday_state/
 
 # Secrets & config
 .env

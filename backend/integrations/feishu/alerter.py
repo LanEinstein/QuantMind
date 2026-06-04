@@ -64,6 +64,11 @@ ALERT_TYPES: frozenset[str] = frozenset(
         # J-004 — P0-6 §1 acceptance-window reset triggers (5 sub-types
         # share this single alert vocabulary entry).
         "acceptance_reset_triggered",
+        # P0-10-amendment-line2-2026-06-04-intraday-ops-hardening §1.2 — a
+        # RiskEngine-REJECTED Line-2 SELL is a swallowed protective exit;
+        # surface it (the 2026-06-03 prev_close gap killed every exit for
+        # two trading days before a human noticed).
+        "line2_protective_sell_rejected",
     }
 )
 """Locked alert-type vocabulary. Adding a new entry needs an amendment +

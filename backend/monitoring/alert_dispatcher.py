@@ -184,6 +184,23 @@ ALERT_MATRIX: dict[str, AlertSpec] = {
         description="One of the 5 P0-6 §1 system-level interruptions reset "
         "the 45-trading-day acceptance window.",
     ),
+    # P0-10-amendment-line2-2026-06-04-intraday-ops-hardening §1.2 — a
+    # REJECTED Line-2 SELL is a swallowed protective exit (NOT a trade
+    # instruction: the alert asks the operator to investigate a data /
+    # limit malfunction, it carries no actionable price/volume order
+    # semantics — the decision-path red line below is untouched). Reuses
+    # the existing RISK_ENGINE_CHECK_REJECTED audit type (34-type
+    # vocabulary unchanged).
+    "line2_protective_sell_rejected": AlertSpec(
+        alert_type="line2_protective_sell_rejected",
+        audit_event_type=AuditEventType.RISK_ENGINE_CHECK_REJECTED,
+        fire_to_feishu=True,
+        severity="critical",
+        reason_namespace="line2_protective_sell_rejected",
+        description="A Line-2 monitoring SELL (protective exit / "
+        "profit-take) was REJECTED by the RiskEngine — investigate the "
+        "rejecting check (data gap / limits) before the next session.",
+    ),
 }
 """Locked alert vocabulary. Adding a new entry needs an amendment +
 audit-type addition + FeishuAlerter.ALERT_TYPES inclusion. Buy/sell/

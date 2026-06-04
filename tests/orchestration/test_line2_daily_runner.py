@@ -176,6 +176,9 @@ class FakeLine2Provider:
 
     positions: tuple[Position, ...] = field(default_factory=_held)
     spots: dict[str, Any] = field(default_factory=dict)
+    # Force a RiskEngine REJECTION: the context's positions report zero
+    # settled available volume, so the 14-check refuses the SELL size.
+    reject_sell: bool = False
 
     @property
     def held_positions(self) -> tuple[Position, ...]:
@@ -202,6 +205,22 @@ class FakeLine2Provider:
             initial_capital=100_000.0,
         )
         prev_close = round(intent.limit_price / 0.96, 3)  # the pre-crash bar
+        context_positions = (
+            tuple(
+                Position(
+                    code=p.code,
+                    volume=p.volume,
+                    available_volume=0,  # nothing settled → SELL rejected
+                    cost_price=p.cost_price,
+                    market_value=p.market_value,
+                    unrealized_pnl=p.unrealized_pnl,
+                    unrealized_pnl_pct=p.unrealized_pnl_pct,
+                )
+                for p in self.positions
+            )
+            if self.reject_sell
+            else self.positions
+        )
         return make_sell_context(
             intent,
             now=now,
@@ -209,7 +228,7 @@ class FakeLine2Provider:
             seq=seq,
             snapshot_at=_SNAP_AT,
             account=account,
-            positions=self.positions,
+            positions=context_positions,
             prev_close=prev_close,
             daily_state=DailyTradingState(
                 today_new_instruction_count=0,
@@ -250,6 +269,8 @@ def _make_runner(
     sender: FakeFeishuSender,
     builder: InstructionPlanBuilder,
     tmp_path: Path,
+    fired_store=None,  # noqa: ANN001
+    reject_alert_hook=None,  # noqa: ANN001
 ) -> Line2DailyRunner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -273,6 +294,8 @@ def _make_runner(
         renderer=MessageRenderer(),
         coordinator=coordinator,
         ledger=ledger,
+        fired_store=fired_store,
+        reject_alert_hook=reject_alert_hook,
     )
 
 
@@ -428,6 +451,74 @@ async def test_simulation_mode_auto_fills_no_feishu(builder, tmp_path) -> None:
     assert len(routed) == 1
     assert routed[0].route_outcome.action == "simulation_routed"
     assert sender.calls == []  # no Feishu send in simulation_auto
+
+
+async def test_daily_dedup_skips_already_delivered(builder, tmp_path) -> None:
+    """Ops hardening §1.1 (daily flavour) — a restarted 09:35 re-run must not
+    re-send the already-delivered daily SELL batch (misfire_grace re-fire)."""
+    from backend.orchestration.fired_trigger_store import FiredTriggerStore
+
+    store = FiredTriggerStore(tmp_path / "state" / "fired.jsonl")
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    first = await runner.run(
+        frame=_snapshot(), provider=FakeLine2Provider(), now=_NOW
+    )
+    routed = [
+        r for r in first.sell_routes if r.outcome is SellRouteOutcome.ROUTED
+    ]
+    assert len(routed) == 1
+    assert len(sender.calls) == 1
+
+    # "Restart re-run": a brand-new runner sharing only the store.
+    runner2 = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path / "second", fired_store=store,
+    )
+    second = await runner2.run(
+        frame=_snapshot(), provider=FakeLine2Provider(), now=_NOW
+    )
+    skipped = [
+        r
+        for r in second.sell_routes
+        if r.outcome is SellRouteOutcome.DEDUP_SKIPPED
+    ]
+    assert len(skipped) == 1
+    assert len(sender.calls) == 1  # no duplicate Feishu send
+
+
+async def test_daily_rejected_sell_fires_alert_hook(builder, tmp_path) -> None:
+    """Ops hardening §1.2 (daily flavour) — a REJECTED daily SELL surfaces
+    through the alert hook and is NOT persisted (stays retryable after a
+    restart once the rejecting cause is fixed)."""
+    from backend.orchestration.fired_trigger_store import FiredTriggerStore
+
+    calls: list[dict] = []
+
+    async def hook(*, code: str, kind: str, instruction_id: str) -> None:
+        calls.append({"code": code, "kind": kind})
+
+    store = FiredTriggerStore(tmp_path / "state" / "fired.jsonl")
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store, reject_alert_hook=hook,
+    )
+    # Context positions report zero settled volume → the RiskEngine 14-check
+    # REJECTS the SELL size (T+1 availability).
+    provider = FakeLine2Provider(reject_sell=True)
+    result = await runner.run(frame=_snapshot(), provider=provider, now=_NOW)
+    rejected = [
+        r for r in result.sell_routes if r.outcome is SellRouteOutcome.REJECTED
+    ]
+    assert len(rejected) == 1
+    assert len(calls) == 1
+    assert calls[0]["code"] == _SELL
+    # REJECTED is not durable — the store stays empty.
+    assert store.load_fired(_NOW.date().isoformat()) == frozenset()
 
 
 def test_runner_is_import_clean() -> None:

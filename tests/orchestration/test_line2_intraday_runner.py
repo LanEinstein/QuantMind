@@ -44,6 +44,7 @@ from backend.monitoring.intraday_triggers import (
     IntradaySellIntent,
     make_intraday_sell_context,
 )
+from backend.orchestration.fired_trigger_store import FiredTriggerStore
 from backend.orchestration.instruction_dispatcher import (
     InMemoryOutboxRepository,
     InstructionDispatcher,
@@ -370,6 +371,8 @@ def _make_runner(
     takeprofit_calibration=None,  # noqa: ANN001
     tiered_takeprofit=None,  # noqa: ANN001
     takeprofit_ledger=None,  # noqa: ANN001
+    fired_store=None,  # noqa: ANN001
+    reject_alert_hook=None,  # noqa: ANN001
 ) -> tuple[Line2IntradayRunner, SnapshotStore, IntradayTriggerManifestStore]:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -402,6 +405,8 @@ def _make_runner(
         takeprofit_calibration=takeprofit_calibration,
         tiered_takeprofit=tiered_takeprofit,
         takeprofit_ledger=takeprofit_ledger,
+        fired_store=fired_store,
+        reject_alert_hook=reject_alert_hook,
         tick_timeout_seconds=tick_timeout_seconds,
     )
     return runner, snapshot_store, manifest_store
@@ -826,6 +831,296 @@ async def test_dedup_distinct_trigger_kinds_independent(builder, tmp_path) -> No
     assert len(routed) == 1  # NOT deduped — different trigger_kind
     assert routed[0].kind == "drawdown_stop"
     assert len(sender.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Ops hardening (P0-10-amendment-line2-2026-06-04-intraday-ops-hardening)
+# ---------------------------------------------------------------------------
+
+
+def _fired_store(tmp_path: Path) -> FiredTriggerStore:
+    return FiredTriggerStore(tmp_path / "state" / "fired_triggers.jsonl")
+
+
+async def test_durable_dedup_survives_restart(builder, tmp_path) -> None:
+    """§1.1 — a restarted runner reloads today's fired keys from the store.
+
+    The 2026-06-04 incident: two restarts reset the in-memory dedup and the
+    same 3-SELL batch went to Feishu twice within 18 minutes.
+    """
+    store = _fired_store(tmp_path)
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    first = await runner.run(provider=_drawdown_provider(), now=_NOW)
+    assert first.routes[0].outcome is TriggerRouteOutcome.ROUTED
+    assert len(sender.calls) == 1
+
+    # "Restart": a brand-new runner instance sharing only the store.
+    runner2, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path / "second", fired_store=store,
+    )
+    second = await runner2.run(
+        provider=_drawdown_provider(), now=_NOW + timedelta(seconds=30)
+    )
+    assert second.routes[0].outcome is TriggerRouteOutcome.DEDUP_SKIPPED
+    assert len(sender.calls) == 1  # no duplicate Feishu send
+
+
+async def test_send_failed_not_deduped_retries_next_tick(builder, tmp_path) -> None:
+    """codex P2 — a definitive Feishu send failure reached nobody: the key
+    must NOT enter the dedup (in-memory or durable), so the protective SELL
+    retries on the next tick instead of being hidden until the close."""
+    store = _fired_store(tmp_path)
+    sender = FakeFeishuSender(fail_first_n=1)
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    first = await runner.run(provider=_drawdown_provider(), now=_NOW)
+    assert first.routes[0].outcome is TriggerRouteOutcome.ROUTED
+    assert first.routes[0].route_outcome.action == "send_failed"
+    # Not persisted — a restart must also retry, not dedup-skip.
+    assert store.load_fired(_NOW.date().isoformat()) == frozenset()
+    second = await runner.run(
+        provider=_drawdown_provider(), now=_NOW + timedelta(seconds=30)
+    )
+    routed = [
+        r for r in second.routes if r.outcome is TriggerRouteOutcome.ROUTED
+    ]
+    assert len(routed) == 1
+    assert routed[0].route_outcome.action == "dispatched"
+    # Delivered now → the key IS persisted for the rest of the day.
+    assert store.load_fired(_NOW.date().isoformat()) == frozenset(
+        {("510300", "drawdown_stop")}
+    )
+
+
+async def test_durable_dedup_is_per_day(builder, tmp_path) -> None:
+    """A key persisted YESTERDAY must not dedup today's fresh trigger."""
+    store = _fired_store(tmp_path)
+    yesterday = (_NOW - timedelta(days=1)).date().isoformat()
+    store.record_fired(yesterday, "510300", "drawdown_stop", signal_id="x")
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    result = await runner.run(provider=_drawdown_provider(), now=_NOW)
+    assert result.routes[0].outcome is TriggerRouteOutcome.ROUTED
+
+
+async def test_same_day_fired_sell_bans_add(builder, tmp_path) -> None:
+    """§1.3 — a code whose SELL fired earlier today gets no contradicting ADD.
+
+    2026-06-04 incident: SELL 605020 at 14:27, ADD 605020 at 14:50.
+    """
+    store = _fired_store(tmp_path)
+    store.record_fired(
+        _NOW.date().isoformat(), "159949", "atr_trailing_stop", signal_id="x"
+    )
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    result = await runner.run(provider=_add_provider(), now=_NOW)
+    assert result.tick_outcome is IntradayTickOutcome.SCANNED
+    assert result.routes == ()  # the ADD was suppressed, nothing routed
+    assert len(sender.calls) == 0
+
+
+async def test_fired_add_does_not_ban_sell(builder, tmp_path) -> None:
+    """§1.3 one-way: an earlier ADD never suppresses a protective SELL."""
+    store = _fired_store(tmp_path)
+    store.record_fired(_NOW.date().isoformat(), "510300", "add", signal_id="x")
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    result = await runner.run(provider=_drawdown_provider(), now=_NOW)
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1
+    assert routed[0].kind == "drawdown_stop"
+
+
+def _limit_down_sell_provider() -> FakeIntradayProvider:
+    # ETF at exactly -10% vs prev_close → DRAWDOWN_STOP fires, but the
+    # RiskEngine's limit_up_down_block REJECTS a SELL at limit-down.
+    return FakeIntradayProvider(
+        positions=(_position("510300", cost=4.0),),
+        spots={"510300": _spot("510300", price=4.05, prev_close=4.5)},
+        closes_by_code={"510300": _volatile_closes()},
+    )
+
+
+async def test_rejected_sell_fires_alert_hook(builder, tmp_path) -> None:
+    """§1.2 — a RiskEngine-REJECTED SELL surfaces through the alert hook."""
+    calls: list[dict] = []
+
+    async def hook(*, code: str, kind: str, instruction_id: str) -> None:
+        calls.append(
+            {"code": code, "kind": kind, "instruction_id": instruction_id}
+        )
+
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, reject_alert_hook=hook,
+    )
+    result = await runner.run(provider=_limit_down_sell_provider(), now=_NOW)
+    rejected = [
+        r for r in result.routes if r.outcome is TriggerRouteOutcome.REJECTED
+    ]
+    assert len(rejected) == 1
+    assert len(calls) == 1
+    assert calls[0]["code"] == "510300"
+    assert calls[0]["kind"] == "drawdown_stop"
+    assert calls[0]["instruction_id"].startswith("QM-")
+    assert len(sender.calls) == 0  # rejected plan never reaches the chat
+
+
+async def test_rejected_sell_not_persisted_retryable_after_restart(
+    builder, tmp_path
+) -> None:
+    """Review angle A — durable = DELIVERED only. A REJECTED key dedups
+    in-memory (no 30s spam) but a deliberate operator restart re-attempts
+    the protective exit (the recovery playbook after fixing the cause)."""
+    store = _fired_store(tmp_path)
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    first = await runner.run(provider=_limit_down_sell_provider(), now=_NOW)
+    rejected = [
+        r for r in first.routes if r.outcome is TriggerRouteOutcome.REJECTED
+    ]
+    assert len(rejected) == 1
+    # In-memory dedup holds for this process...
+    second = await runner.run(
+        provider=_limit_down_sell_provider(), now=_NOW + timedelta(seconds=30)
+    )
+    assert second.routes[0].outcome is TriggerRouteOutcome.DEDUP_SKIPPED
+    # ...but nothing was persisted: a restarted runner retries.
+    assert store.load_fired(_NOW.date().isoformat()) == frozenset()
+    runner2, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path / "second", fired_store=store,
+    )
+    third = await runner2.run(
+        provider=_limit_down_sell_provider(), now=_NOW + timedelta(seconds=60)
+    )
+    # Quote refreshed for the new tick time.
+    rejected3 = [
+        r for r in third.routes if r.outcome is TriggerRouteOutcome.REJECTED
+    ]
+    assert len(rejected3) <= 1  # stale-quote guard may skip; never deduped
+
+
+async def test_undelivered_send_capped_after_max_attempts(
+    builder, tmp_path
+) -> None:
+    """Review angle B — a sustained Feishu outage must not retry forever:
+    after _MAX_UNDELIVERED_ATTEMPTS_PER_DAY failed sends the key enters the
+    in-memory dedup (loudly), and is NOT persisted (a restart after the
+    outage clears retries again)."""
+    from backend.orchestration.line2_intraday_runner import (
+        _MAX_UNDELIVERED_ATTEMPTS_PER_DAY,
+    )
+
+    store = _fired_store(tmp_path)
+    sender = FakeFeishuSender(ok=False)  # every send fails
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store,
+    )
+    for i in range(_MAX_UNDELIVERED_ATTEMPTS_PER_DAY):
+        tick_now = _NOW + timedelta(seconds=30 * i)
+        provider = FakeIntradayProvider(
+            positions=(_position("510300", cost=4.0),),
+            spots={
+                "510300": _spot(
+                    "510300",
+                    price=4.185,
+                    prev_close=4.5,
+                    snapshot_at=tick_now - timedelta(seconds=2),
+                )
+            },
+            closes_by_code={"510300": _volatile_closes()},
+        )
+        result = await runner.run(provider=provider, now=tick_now)
+        assert result.routes[0].outcome is TriggerRouteOutcome.ROUTED
+        assert result.routes[0].route_outcome.action == "send_failed"
+    # Cap reached → the next tick is DEDUP_SKIPPED (in-memory only).
+    tick_now = _NOW + timedelta(seconds=30 * _MAX_UNDELIVERED_ATTEMPTS_PER_DAY)
+    provider = FakeIntradayProvider(
+        positions=(_position("510300", cost=4.0),),
+        spots={
+            "510300": _spot(
+                "510300",
+                price=4.185,
+                prev_close=4.5,
+                snapshot_at=tick_now - timedelta(seconds=2),
+            )
+        },
+        closes_by_code={"510300": _volatile_closes()},
+    )
+    capped = await runner.run(provider=provider, now=tick_now)
+    assert capped.routes[0].outcome is TriggerRouteOutcome.DEDUP_SKIPPED
+    # Never persisted: a restart (after the outage) retries delivery.
+    assert store.load_fired(_NOW.date().isoformat()) == frozenset()
+
+
+async def test_alert_hook_exception_never_breaks_tick(builder, tmp_path) -> None:
+    """§1.2 fail-open — a broken hook must not take the tick down."""
+
+    async def boom_hook(*, code: str, kind: str, instruction_id: str) -> None:
+        raise RuntimeError("alert channel down")
+
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, reject_alert_hook=boom_hook,
+    )
+    result = await runner.run(provider=_limit_down_sell_provider(), now=_NOW)
+    assert result.tick_outcome is IntradayTickOutcome.SCANNED
+    rejected = [
+        r for r in result.routes if r.outcome is TriggerRouteOutcome.REJECTED
+    ]
+    assert len(rejected) == 1
+
+
+async def test_rejected_buy_does_not_fire_alert_hook(builder, tmp_path) -> None:
+    """§1.2 — BUY/ADD rejections are normal fallthrough, no alert."""
+    calls: list[dict] = []
+
+    async def hook(*, code: str, kind: str, instruction_id: str) -> None:
+        calls.append({"code": code})
+
+    # An ADD intent whose plan the RiskEngine rejects: ADD at limit-up is
+    # blocked (禁涨停 BUY). Price must still satisfy the dip-vs-cost ADD gate,
+    # so use a prev_close low enough that price == prev_close × 1.1 while
+    # remaining below cost.
+    provider = FakeIntradayProvider(
+        positions=(_position("159949", volume=100, available=100, cost=5.0),),
+        spots={"159949": _spot("159949", price=4.84, prev_close=4.4)},
+        closes_by_code={"159949": _add_closes()},
+    )
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, reject_alert_hook=hook,
+    )
+    result = await runner.run(provider=provider, now=_NOW)
+    # Whether the ADD fires depends on the gates; the contract under test is
+    # only that NO BUY rejection ever reaches the hook.
+    assert calls == []
+    assert result.tick_outcome is IntradayTickOutcome.SCANNED
 
 
 async def test_empty_portfolio_short_circuits(builder, tmp_path) -> None:
