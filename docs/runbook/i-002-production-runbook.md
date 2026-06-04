@@ -334,10 +334,10 @@ Operator response:
 
 ```bash
 # Current spend snapshot
-curl -s http://127.0.0.1:8000/api/cost/breakdown | jq
+curl -s http://127.0.0.1:8001/api/cost/breakdown | jq
 
 # Today's hourly trend
-curl -s http://127.0.0.1:8000/api/cost/breakdown | \
+curl -s http://127.0.0.1:8001/api/cost/breakdown | \
     jq '.data.spent_breakdown.daily.hourly'
 ```
 

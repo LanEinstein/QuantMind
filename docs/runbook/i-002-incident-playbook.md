@@ -191,7 +191,7 @@ sudo systemctl restart quantmind
 minutes of restart:
 
 ```bash
-curl -s http://127.0.0.1:8000/api/cost/breakdown | jq '.data.spent_breakdown.daily.total'
+curl -s http://127.0.0.1:8001/api/cost/breakdown | jq '.data.spent_breakdown.daily.total'
 ```
 
 **Post-mortem.** Redis loss is **not** an acceptance window reset.
@@ -265,7 +265,7 @@ log shows `cost_guard_circuit_breaker_engaged`.
 **Detection.**
 
 ```bash
-curl -s http://127.0.0.1:8000/api/cost/breakdown | jq '.data.spent_breakdown.daily'
+curl -s http://127.0.0.1:8001/api/cost/breakdown | jq '.data.spent_breakdown.daily'
 ```
 
 `total` field exceeds ¥20.
@@ -273,7 +273,7 @@ curl -s http://127.0.0.1:8000/api/cost/breakdown | jq '.data.spent_breakdown.dai
 **Diagnosis.** Which agent over-spent?
 
 ```bash
-curl -s http://127.0.0.1:8000/api/cost/breakdown | \
+curl -s http://127.0.0.1:8001/api/cost/breakdown | \
     jq '.data.spent_breakdown.daily.by_agent | to_entries | sort_by(-.value)'
 ```
 
@@ -292,7 +292,7 @@ Typically `fund_manager` with Kimi escalation enabled.
 
 ```bash
 # 00:00:05 Asia/Shanghai
-curl -s http://127.0.0.1:8000/api/cost/breakdown | jq '.data.spent_breakdown.daily.total'
+curl -s http://127.0.0.1:8001/api/cost/breakdown | jq '.data.spent_breakdown.daily.total'
 # Expect 0.0
 ```
 
@@ -309,7 +309,7 @@ yesterday's 16:00 reconciliation.
 **Detection.**
 
 ```bash
-curl -s http://127.0.0.1:8000/api/reconciliation-tickets | \
+curl -s http://127.0.0.1:8001/api/reconciliation-tickets | \
     jq '.data.tickets[] | select(.status == "OPEN")'
 ```
 
@@ -320,7 +320,7 @@ stalls. P0-5 enforces the freeze; no auto-resolution.
 **Recovery.** Owner must decide via the API:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/reconciliation-tickets/<id>/decide \
+curl -X POST http://127.0.0.1:8001/api/reconciliation-tickets/<id>/decide \
     -H "Content-Type: application/json" \
     -d '{"decision": "RESOLVED_BROKER_AS_TRUTH"}'
 ```
@@ -491,7 +491,7 @@ window reset.
 **Verification.**
 
 ```bash
-curl -s http://127.0.0.1:8000/api/system/status | \
+curl -s http://127.0.0.1:8001/api/system/status | \
     jq '.data.feishu.long_conn_state'
 # expect "connected"
 ```

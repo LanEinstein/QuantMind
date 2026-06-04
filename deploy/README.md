@@ -13,7 +13,7 @@
 |---|---|---|
 | MongoDB | `docker compose` | `restart: unless-stopped` |
 | Redis | `docker compose` | `restart: unless-stopped` |
-| Backend | systemd + conda | 绑定 `127.0.0.1:8000`，单 worker 保证 SSE hub 一致 |
+| Backend | systemd + conda | 绑定 `127.0.0.1:8001`，单 worker 保证 SSE hub 一致 |
 | Frontend | `npm run build` + nginx 静态 | nginx 反代 `/api` 和 `/ws` |
 | HTTPS | nginx + mkcert | 本地可信证书 `quantmind.local` |
 
@@ -168,7 +168,7 @@ curl -k https://quantmind.local/api/health # 200 ok
   人工执行通道。`AUTHORIZATION_MODE` / `QUANTMIND_PHASE` 已删除，禁止重新引入。
 - 全层入站监听必须 127.0.0.1 only(P1-6 §1.5)：backend uvicorn `--host 127.0.0.1`、
   Vite `host: '127.0.0.1'`、nginx `listen 127.0.0.1:80/443`、docker-compose
-  `127.0.0.1:8000:8000`、Mongo/Redis `127.0.0.1`。远程访问只走 SSH tunnel。
+  `127.0.0.1:8001:8001`、Mongo/Redis `127.0.0.1`。远程访问只走 SSH tunnel。
 - `scripts/backup.sh` 默认写 `~/.local/state/quantmind/backups`（仓库外），
   加 `umask 077` + `chmod 600`。如改写到仓库内目录，必须确认
   `.gitignore` 已包含该路径。

@@ -27,7 +27,7 @@ EnvironmentFile=/home/ps/.config/quantmind/llm.env
 # from starting.)
 ExecStart=/home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app \
     --host 127.0.0.1 \
-    --port 8000 \
+    --port 8001 \
     --workers 1
 
 Restart=on-failure

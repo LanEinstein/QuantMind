@@ -3,7 +3,7 @@ E2E tests for Settings pages using Playwright.
 
 Requires:
     - Frontend dev server running at localhost:9276
-    - Backend API running at localhost:8000
+    - Backend API running at localhost:8001
     - Or: E2E_BASE_URL set to frontend URL
 
 These tests use Playwright's async API and are designed to be run

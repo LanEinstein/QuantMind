@@ -54,7 +54,7 @@ EnvironmentFile=/home/ps/.quantmind.env
 # implicit single-process invariants.
 ExecStart=/home/ps/anaconda3/envs/zhanglan/bin/uvicorn backend.main:app \
     --host 127.0.0.1 \
-    --port 8000 \
+    --port 8001 \
     --workers 1
 
 # Crash recovery — restart every 10s. The 20-restart / 5-min cap that

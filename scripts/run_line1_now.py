@@ -61,7 +61,7 @@ from pathlib import Path
 # the scripts dir is sys.path[0], so the sibling harness imports directly.
 from dry_run_double_line import _run_line1, build_real_context
 
-_LOCAL_API = os.environ.get("QUANTMIND_LOCAL_API", "http://127.0.0.1:8000")
+_LOCAL_API = os.environ.get("QUANTMIND_LOCAL_API", "http://127.0.0.1:8001")
 
 
 def _now_sh() -> dt.datetime:

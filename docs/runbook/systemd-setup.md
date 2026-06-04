@@ -72,7 +72,7 @@ is enough).
 sudo systemctl start quantmind
 sudo systemctl status quantmind             # should show "active (running)"
 journalctl -u quantmind -f                  # tail logs
-curl http://127.0.0.1:8000/api/system/status  # backend health
+curl http://127.0.0.1:8001/api/system/status  # backend health
 ```
 
 Expected `journalctl -u quantmind` output during a clean cold start

@@ -18,7 +18,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/.local/state/quantmind/backups}"
-BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:8001}"
 DB_NAME="${DB_NAME:-quantmind}"
 
 mkdir -p "$LOG_DIR"
