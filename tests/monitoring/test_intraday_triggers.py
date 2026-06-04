@@ -27,9 +27,12 @@ from backend.monitoring.intraday_triggers import (
     IntradaySellIntent,
     IntradayTriggerConfig,
     IntradayTriggerKind,
+    ReentryConfig,
+    StaleExitConfig,
     StrengthSellConfig,
     evaluate_intraday_add_intents,
     evaluate_intraday_sell_intents,
+    evaluate_reentry_add_intents,
     filter_fresh_quotes,
     limit_up_price,
     make_intraday_sell_context,
@@ -1594,3 +1597,257 @@ def test_strength_none_config_reproduces_v9() -> None:
         spots, closes, pos, strength=None, amounts_by_code=amounts
     )
     assert same == base == ()
+
+
+# ---------------------------------------------------------------------------
+# E4 STALE_EXIT + E5 RE_ENTRY
+# (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop)
+# ---------------------------------------------------------------------------
+
+_STALE = StaleExitConfig()
+_REENTRY = ReentryConfig()
+_REENTRY_WINDOW = datetime(2026, 5, 15, 9, 45, 0, tzinfo=_SH_TZ)
+
+
+def _stale_entry_closes() -> tuple[float, ...]:
+    # 12 held trading days: an early high at 10.5, the last 5 closes flat
+    # below it → "no recent post-entry high".
+    return (10.0, 10.2, 10.5, 10.3, 10.1, 10.0, 10.0, 9.9, 10.0, 9.9, 10.0, 9.9)
+
+
+def test_stale_exit_fires_on_three_conditions() -> None:
+    spots = {
+        "600011": _strength_spot("600011", price=10.1, prev_close=10.05, high=10.15)
+    }
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=300, available=300, cost=10.0),)
+    out = evaluate_intraday_sell_intents(
+        spots,
+        closes,
+        pos,
+        stale=_STALE,
+        entry_closes_by_code={"600011": _stale_entry_closes()},
+    )
+    assert [i.trigger_kind for i in out] == [IntradayTriggerKind.STALE_EXIT]
+    assert out[0].available_volume == 300  # full settled exit
+    assert "时间止损" in out[0].anomaly_reason
+
+
+def test_stale_exit_respects_each_condition() -> None:
+    closes = {"600011": _flat_closes()}
+    base_pos = (_position("600011", volume=300, available=300, cost=10.0),)
+    # (a) too few held days → no fire.
+    spots = {
+        "600011": _strength_spot("600011", price=10.1, prev_close=10.05, high=10.15)
+    }
+    assert (
+        evaluate_intraday_sell_intents(
+            spots,
+            closes,
+            base_pos,
+            stale=_STALE,
+            entry_closes_by_code={"600011": _stale_entry_closes()[-8:]},
+        )
+        == ()
+    )
+    # (b) interval return ≥ +3% → going somewhere, no fire.
+    rich = (_position("600011", volume=300, available=300, cost=9.5),)
+    assert (
+        evaluate_intraday_sell_intents(
+            spots,
+            closes,
+            rich,
+            stale=_STALE,
+            entry_closes_by_code={"600011": _stale_entry_closes()},
+        )
+        == ()
+    )
+    # (c) a recent post-entry high → momentum alive, no fire.
+    fresh_high = _stale_entry_closes()[:-1] + (10.6,)
+    assert (
+        evaluate_intraday_sell_intents(
+            spots,
+            closes,
+            base_pos,
+            stale=_STALE,
+            entry_closes_by_code={"600011": fresh_high},
+        )
+        == ()
+    )
+    # (d) long-term hold exempt.
+    assert (
+        evaluate_intraday_sell_intents(
+            spots,
+            closes,
+            base_pos,
+            stale=_STALE,
+            entry_closes_by_code={"600011": _stale_entry_closes()},
+            long_term_hold_codes=frozenset({"600011"}),
+        )
+        == ()
+    )
+    # (e) None config = v10 bit-for-bit.
+    assert (
+        evaluate_intraday_sell_intents(
+            spots,
+            closes,
+            base_pos,
+            entry_closes_by_code={"600011": _stale_entry_closes()},
+        )
+        == ()
+    )
+
+
+def _reentry_sale(kind: str = "take_profit") -> dict[str, dict[str, float]]:
+    return {"600011": {"kind": kind, "sold_price": 11.0, "sold_volume": 200}}
+
+
+def test_reentry_fires_on_discount_with_structure() -> None:
+    # Open 10.7 = 2.7% below yesterday's 11.0 sale; MA20 = 10 → structure OK.
+    spots = {
+        "600011": _strength_spot("600011", price=10.7, prev_close=11.0, high=10.75)
+    }
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=100, available=100, cost=9.0),)
+    out = evaluate_reentry_add_intents(
+        spots,
+        closes,
+        pos,
+        _account(100_000.0),
+        yesterday_sales=_reentry_sale(),
+        config=_REENTRY,
+        tick_time=_REENTRY_WINDOW,
+    )
+    assert len(out) == 1
+    assert out[0].add_volume == 200  # yesterday's sold volume restored
+    assert "止盈回补" in out[0].rationale
+
+
+def test_reentry_gates() -> None:
+    spots = {
+        "600011": _strength_spot("600011", price=10.7, prev_close=11.0, high=10.75)
+    }
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=100, available=100, cost=9.0),)
+    acct = _account(100_000.0)
+    # (a) protective-stop sale is NEVER re-entered.
+    assert (
+        evaluate_reentry_add_intents(
+            spots,
+            closes,
+            pos,
+            acct,
+            yesterday_sales=_reentry_sale("atr_trailing_stop"),
+            config=_REENTRY,
+            tick_time=_REENTRY_WINDOW,
+        )
+        == ()
+    )
+    # (b) outside the morning window → nothing.
+    noon = datetime(2026, 5, 15, 10, 30, 0, tzinfo=_SH_TZ)
+    assert (
+        evaluate_reentry_add_intents(
+            spots,
+            closes,
+            pos,
+            acct,
+            yesterday_sales=_reentry_sale(),
+            config=_REENTRY,
+            tick_time=noon,
+        )
+        == ()
+    )
+    # (c) discount too small (price only 1% below the sale).
+    rich_spots = {
+        "600011": _strength_spot("600011", price=10.9, prev_close=11.0, high=10.95)
+    }
+    assert (
+        evaluate_reentry_add_intents(
+            rich_spots,
+            closes,
+            pos,
+            acct,
+            yesterday_sales=_reentry_sale(),
+            config=_REENTRY,
+            tick_time=_REENTRY_WINDOW,
+        )
+        == ()
+    )
+    # (d) structure broken (price below MA20).
+    low_spots = {
+        "600011": _strength_spot("600011", price=9.5, prev_close=11.0, high=9.6)
+    }
+    assert (
+        evaluate_reentry_add_intents(
+            low_spots,
+            closes,
+            pos,
+            acct,
+            yesterday_sales=_reentry_sale(),
+            config=_REENTRY,
+            tick_time=_REENTRY_WINDOW,
+        )
+        == ()
+    )
+    # (e) full exit (no residual position) → Line-1 territory.
+    assert (
+        evaluate_reentry_add_intents(
+            spots,
+            closes,
+            (),
+            acct,
+            yesterday_sales=_reentry_sale(),
+            config=_REENTRY,
+            tick_time=_REENTRY_WINDOW,
+        )
+        == ()
+    )
+    # (f) thesis break vetoes the reflex top-up.
+    assert (
+        evaluate_reentry_add_intents(
+            spots,
+            closes,
+            pos,
+            acct,
+            yesterday_sales=_reentry_sale(),
+            config=_REENTRY,
+            tick_time=_REENTRY_WINDOW,
+            thesis_break_codes=frozenset({"600011"}),
+        )
+        == ()
+    )
+    # (g) UTC-aware tick at the same instant stays in-window (tz-normalized).
+    assert (
+        len(
+            evaluate_reentry_add_intents(
+                spots,
+                closes,
+                pos,
+                acct,
+                yesterday_sales=_reentry_sale(),
+                config=_REENTRY,
+                tick_time=_REENTRY_WINDOW.astimezone(UTC),
+            )
+        )
+        == 1
+    )
+
+
+def test_reentry_clamps_to_headroom() -> None:
+    # Tiny account: 15% cap = ¥1,605 headroom at price 10.7 → 1 lot.
+    spots = {
+        "600011": _strength_spot("600011", price=10.7, prev_close=11.0, high=10.75)
+    }
+    closes = {"600011": _flat_closes()}
+    pos = (_position("600011", volume=100, available=100, cost=9.0),)
+    out = evaluate_reentry_add_intents(
+        spots,
+        closes,
+        pos,
+        _account(18_000.0),
+        yesterday_sales=_reentry_sale(),
+        config=_REENTRY,
+        tick_time=_REENTRY_WINDOW,
+    )
+    assert len(out) == 1
+    assert out[0].add_volume == 100  # 200 sold, but headroom caps at 1 lot

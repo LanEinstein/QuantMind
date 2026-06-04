@@ -170,7 +170,7 @@ class FiredTriggerStore:
                         and kind
                         and isinstance(price, (int, float))
                         and price > 0
-                        and isinstance(volume, int)
+                        and isinstance(volume, (int, float))
                         and volume > 0
                     ):
                         out[code] = {

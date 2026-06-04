@@ -265,9 +265,7 @@ class FakeIntradayProvider:
     def index_closes(self) -> tuple[float, ...]:
         return self._index
 
-    async def fetch_spots(
-        self, codes
-    ) -> dict[str, WatchlistMarketSnapshot]:  # noqa: ANN001
+    async def fetch_spots(self, codes) -> dict[str, WatchlistMarketSnapshot]:  # noqa: ANN001
         self.fetch_calls += 1
         if self._fetch_event is not None:
             await self._fetch_event.wait()
@@ -376,6 +374,8 @@ def _make_runner(
     chandelier=None,  # noqa: ANN001
     episode_store=None,  # noqa: ANN001
     chandelier_shadow: bool = False,
+    stale=None,  # noqa: ANN001
+    reentry=None,  # noqa: ANN001
 ) -> tuple[Line2IntradayRunner, SnapshotStore, IntradayTriggerManifestStore]:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -413,6 +413,8 @@ def _make_runner(
         chandelier=chandelier,
         episode_store=episode_store,
         chandelier_shadow=chandelier_shadow,
+        stale=stale,
+        reentry=reentry,
         tick_timeout_seconds=tick_timeout_seconds,
     )
     return runner, snapshot_store, manifest_store
@@ -458,7 +460,9 @@ def _take_profit_provider() -> FakeIntradayProvider:
 async def test_feishu_mode_routes_drawdown_sell(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, snaps, manifests = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
@@ -482,7 +486,9 @@ async def test_feishu_mode_routes_atr_trailing_stop_sell(builder, tmp_path) -> N
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW)
@@ -495,7 +501,9 @@ async def test_feishu_mode_routes_atr_trailing_stop_sell(builder, tmp_path) -> N
 async def test_feishu_mode_routes_add_buy(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=_add_provider(), now=_NOW)
@@ -510,7 +518,9 @@ async def test_feishu_mode_routes_add_buy(builder, tmp_path) -> None:
 async def test_simulation_mode_auto_fills_no_feishu(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.SIMULATION_AUTO, sender=sender, builder=builder,
+        mode=RouteMode.SIMULATION_AUTO,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
@@ -524,7 +534,10 @@ async def test_dry_run_mode_render_only(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     rendered: list[str] = []
     runner, _, _ = _make_runner(
-        mode=RouteMode.DRY_RUN, sender=sender, builder=builder, tmp_path=tmp_path,
+        mode=RouteMode.DRY_RUN,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
         dry_sink=rendered.append,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
@@ -551,7 +564,9 @@ async def test_invariant1_overlapping_tick_skipped(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     task1 = asyncio.create_task(runner.run(provider=provider, now=_NOW))
@@ -573,8 +588,11 @@ async def test_invariant2_fetch_timeout_skips(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, tick_timeout_seconds=0.05,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        tick_timeout_seconds=0.05,
     )
     result = await runner.run(provider=provider, now=_NOW)
     assert result.tick_outcome is IntradayTickOutcome.SKIPPED_TIMEOUT
@@ -583,7 +601,9 @@ async def test_invariant2_fetch_timeout_skips(builder, tmp_path) -> None:
 
 async def test_invariant3_stale_quote_fails_closed(builder, tmp_path) -> None:
     stale_spot = _spot(
-        "510300", price=4.185, prev_close=4.5,
+        "510300",
+        price=4.185,
+        prev_close=4.5,
         snapshot_at=_NOW - timedelta(seconds=120),  # older than 60s
     )
     provider = FakeIntradayProvider(
@@ -593,7 +613,9 @@ async def test_invariant3_stale_quote_fails_closed(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW)
@@ -615,7 +637,9 @@ async def test_invariant3_same_instant_quote_fails_closed(builder, tmp_path) -> 
     )
     sender = FakeFeishuSender()
     runner, snaps, manifests = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW, signal_id="LINE2-MON-SI")
@@ -630,7 +654,9 @@ async def test_invariant3_same_instant_quote_fails_closed(builder, tmp_path) -> 
 async def test_invariant4_non_trading_day_skipped(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     provider = _drawdown_provider()
@@ -643,7 +669,9 @@ async def test_invariant4_non_trading_day_skipped(builder, tmp_path) -> None:
 async def test_invariant5_off_hours_skipped(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     provider = _drawdown_provider()
@@ -661,7 +689,9 @@ async def test_invariant6_suspended_holding_degrades(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW)
@@ -676,7 +706,9 @@ async def test_invariant7_persists_quote_snapshot_and_manifest(
     provider = _drawdown_provider()
     sender = FakeFeishuSender()
     runner, snaps, manifests = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW, signal_id="LINE2-MON-T7")
@@ -710,7 +742,9 @@ async def test_add_manifest_records_decision_inputs(builder, tmp_path) -> None:
     provider = _add_provider()  # 159949 cost 5.0 vol 100, 100k equity, neutral
     sender = FakeFeishuSender()
     runner, _, manifests = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     await runner.run(provider=provider, now=_NOW, signal_id="LINE2-MON-ADD")
@@ -734,8 +768,11 @@ async def test_persist_happens_before_route(builder, tmp_path) -> None:
     provider = _drawdown_provider()
     sender = FakeFeishuSender()
     runner, snaps, manifests = _make_runner(
-        mode=RouteMode.SIMULATION_AUTO, sender=sender, builder=builder,
-        tmp_path=tmp_path, sim_executor=_BoomSimExecutor(),
+        mode=RouteMode.SIMULATION_AUTO,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        sim_executor=_BoomSimExecutor(),
     )
     with pytest.raises(RuntimeError, match="boom"):
         await runner.run(provider=provider, now=_NOW, signal_id="LINE2-MON-ORDER")
@@ -753,7 +790,9 @@ async def test_persist_happens_before_route(builder, tmp_path) -> None:
 async def test_routed_plan_carries_line2_prefix(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
@@ -766,7 +805,9 @@ async def test_routed_plan_carries_line2_prefix(builder, tmp_path) -> None:
 async def test_rejects_non_line2_signal_id(builder, tmp_path) -> None:
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     with pytest.raises(ValueError, match="LINE2-MON-"):
@@ -782,7 +823,9 @@ async def test_dedup_same_code_side_within_day(builder, tmp_path) -> None:
     provider = _drawdown_provider()
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     first = await runner.run(provider=provider, now=_NOW)
@@ -802,7 +845,9 @@ async def test_feishu_mode_routes_take_profit_sell(builder, tmp_path) -> None:
     # end-to-end (single construction point → 14-check → decision group).
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=_take_profit_provider(), now=_NOW)
@@ -821,7 +866,9 @@ async def test_dedup_distinct_trigger_kinds_independent(builder, tmp_path) -> No
     # earlier profit-take).
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     first = await runner.run(provider=_take_profit_provider(), now=_NOW)
@@ -857,8 +904,11 @@ async def test_durable_dedup_survives_restart(builder, tmp_path) -> None:
     store = _fired_store(tmp_path)
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     first = await runner.run(provider=_drawdown_provider(), now=_NOW)
     assert first.routes[0].outcome is TriggerRouteOutcome.ROUTED
@@ -866,8 +916,11 @@ async def test_durable_dedup_survives_restart(builder, tmp_path) -> None:
 
     # "Restart": a brand-new runner instance sharing only the store.
     runner2, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path / "second", fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "second",
+        fired_store=store,
     )
     second = await runner2.run(
         provider=_drawdown_provider(), now=_NOW + timedelta(seconds=30)
@@ -883,8 +936,11 @@ async def test_send_failed_not_deduped_retries_next_tick(builder, tmp_path) -> N
     store = _fired_store(tmp_path)
     sender = FakeFeishuSender(fail_first_n=1)
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     first = await runner.run(provider=_drawdown_provider(), now=_NOW)
     assert first.routes[0].outcome is TriggerRouteOutcome.ROUTED
@@ -894,9 +950,7 @@ async def test_send_failed_not_deduped_retries_next_tick(builder, tmp_path) -> N
     second = await runner.run(
         provider=_drawdown_provider(), now=_NOW + timedelta(seconds=30)
     )
-    routed = [
-        r for r in second.routes if r.outcome is TriggerRouteOutcome.ROUTED
-    ]
+    routed = [r for r in second.routes if r.outcome is TriggerRouteOutcome.ROUTED]
     assert len(routed) == 1
     assert routed[0].route_outcome.action == "dispatched"
     # Delivered now → the key IS persisted for the rest of the day.
@@ -912,8 +966,11 @@ async def test_durable_dedup_is_per_day(builder, tmp_path) -> None:
     store.record_fired(yesterday, "510300", "drawdown_stop", signal_id="x")
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
     assert result.routes[0].outcome is TriggerRouteOutcome.ROUTED
@@ -930,8 +987,11 @@ async def test_same_day_fired_sell_bans_add(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     result = await runner.run(provider=_add_provider(), now=_NOW)
     assert result.tick_outcome is IntradayTickOutcome.SCANNED
@@ -945,8 +1005,11 @@ async def test_fired_add_does_not_ban_sell(builder, tmp_path) -> None:
     store.record_fired(_NOW.date().isoformat(), "510300", "add", signal_id="x")
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
     routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
@@ -969,19 +1032,18 @@ async def test_rejected_sell_fires_alert_hook(builder, tmp_path) -> None:
     calls: list[dict] = []
 
     async def hook(*, code: str, kind: str, instruction_id: str) -> None:
-        calls.append(
-            {"code": code, "kind": kind, "instruction_id": instruction_id}
-        )
+        calls.append({"code": code, "kind": kind, "instruction_id": instruction_id})
 
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, reject_alert_hook=hook,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        reject_alert_hook=hook,
     )
     result = await runner.run(provider=_limit_down_sell_provider(), now=_NOW)
-    rejected = [
-        r for r in result.routes if r.outcome is TriggerRouteOutcome.REJECTED
-    ]
+    rejected = [r for r in result.routes if r.outcome is TriggerRouteOutcome.REJECTED]
     assert len(rejected) == 1
     assert len(calls) == 1
     assert calls[0]["code"] == "510300"
@@ -999,13 +1061,14 @@ async def test_rejected_sell_not_persisted_retryable_after_restart(
     store = _fired_store(tmp_path)
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     first = await runner.run(provider=_limit_down_sell_provider(), now=_NOW)
-    rejected = [
-        r for r in first.routes if r.outcome is TriggerRouteOutcome.REJECTED
-    ]
+    rejected = [r for r in first.routes if r.outcome is TriggerRouteOutcome.REJECTED]
     assert len(rejected) == 1
     # In-memory dedup holds for this process...
     second = await runner.run(
@@ -1015,22 +1078,21 @@ async def test_rejected_sell_not_persisted_retryable_after_restart(
     # ...but nothing was persisted: a restarted runner retries.
     assert store.load_fired(_NOW.date().isoformat()) == frozenset()
     runner2, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path / "second", fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "second",
+        fired_store=store,
     )
     third = await runner2.run(
         provider=_limit_down_sell_provider(), now=_NOW + timedelta(seconds=60)
     )
     # Quote refreshed for the new tick time.
-    rejected3 = [
-        r for r in third.routes if r.outcome is TriggerRouteOutcome.REJECTED
-    ]
+    rejected3 = [r for r in third.routes if r.outcome is TriggerRouteOutcome.REJECTED]
     assert len(rejected3) <= 1  # stale-quote guard may skip; never deduped
 
 
-async def test_undelivered_send_capped_after_max_attempts(
-    builder, tmp_path
-) -> None:
+async def test_undelivered_send_capped_after_max_attempts(builder, tmp_path) -> None:
     """Review angle B — a sustained Feishu outage must not retry forever:
     after _MAX_UNDELIVERED_ATTEMPTS_PER_DAY failed sends the key enters the
     in-memory dedup (loudly), and is NOT persisted (a restart after the
@@ -1042,8 +1104,11 @@ async def test_undelivered_send_capped_after_max_attempts(
     store = _fired_store(tmp_path)
     sender = FakeFeishuSender(ok=False)  # every send fails
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, fired_store=store,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
     )
     for i in range(_MAX_UNDELIVERED_ATTEMPTS_PER_DAY):
         tick_now = _NOW + timedelta(seconds=30 * i)
@@ -1090,14 +1155,15 @@ async def test_alert_hook_exception_never_breaks_tick(builder, tmp_path) -> None
 
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, reject_alert_hook=boom_hook,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        reject_alert_hook=boom_hook,
     )
     result = await runner.run(provider=_limit_down_sell_provider(), now=_NOW)
     assert result.tick_outcome is IntradayTickOutcome.SCANNED
-    rejected = [
-        r for r in result.routes if r.outcome is TriggerRouteOutcome.REJECTED
-    ]
+    rejected = [r for r in result.routes if r.outcome is TriggerRouteOutcome.REJECTED]
     assert len(rejected) == 1
 
 
@@ -1119,8 +1185,11 @@ async def test_rejected_buy_does_not_fire_alert_hook(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, reject_alert_hook=hook,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        reject_alert_hook=hook,
     )
     result = await runner.run(provider=provider, now=_NOW)
     # Whether the ADD fires depends on the gates; the contract under test is
@@ -1130,12 +1199,12 @@ async def test_rejected_buy_does_not_fire_alert_hook(builder, tmp_path) -> None:
 
 
 async def test_empty_portfolio_short_circuits(builder, tmp_path) -> None:
-    provider = FakeIntradayProvider(
-        positions=(), spots={}, closes_by_code={}
-    )
+    provider = FakeIntradayProvider(positions=(), spots={}, closes_by_code={})
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW)
@@ -1150,7 +1219,9 @@ async def test_second_triggered_tick_same_day_persists(builder, tmp_path) -> Non
     # codes fire on two ticks (neither deduped) → both snapshots are stored.
     sender = FakeFeishuSender()
     runner, snaps, manifests = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     p1 = FakeIntradayProvider(
@@ -1163,7 +1234,9 @@ async def test_second_triggered_tick_same_day_persists(builder, tmp_path) -> Non
         positions=(_position("510500", cost=4.0),),
         spots={
             "510500": _spot(
-                "510500", price=4.185, prev_close=4.5,
+                "510500",
+                price=4.185,
+                prev_close=4.5,
                 snapshot_at=tick2_now - timedelta(seconds=2),  # fresh at tick2
             )
         },
@@ -1190,7 +1263,9 @@ async def test_sell_suppresses_add_on_same_code(builder, tmp_path) -> None:
     )
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path,
     )
     result = await runner.run(provider=provider, now=_NOW)
@@ -1246,7 +1321,14 @@ def test_runner_and_manifest_are_import_clean(module_path: str) -> None:
     src = Path(module_path).read_text(encoding="utf-8")
     tree = ast.parse(src)
     banned = {
-        "api", "broker", "risk", "llm", "agents", "agents_team", "mirofish", "data",
+        "api",
+        "broker",
+        "risk",
+        "llm",
+        "agents",
+        "agents_team",
+        "mirofish",
+        "data",
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
@@ -1432,6 +1514,8 @@ async def test_config_hash_includes_regime_drawdown_flag(
     # The decision to APPLY bear-regime tightening (D1-b) is pinned, so a replay
     # with the feature off never reproduces a tightened threshold (PIT).
     assert r_off._config_hash != r_on._config_hash  # noqa: SLF001
+
+
 async def test_config_hash_includes_takeprofit_calibration(
     builder: InstructionPlanBuilder, tmp_path: Path
 ) -> None:
@@ -1474,9 +1558,16 @@ async def test_sell_record_writes_effective_r_multiple(
     )
     spot = SimpleNamespace(prev_close=4.0)
     fired = IntradaySellIntent(
-        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.03,
-        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
-        drawdown_pct=0.0075, atr=0.02, recent_high=0.0, stop_level=4.024,
+        code="510300",
+        name="沪深300ETF",
+        available_volume=100,
+        limit_price=4.03,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT,
+        anomaly_reason="x",
+        drawdown_pct=0.0075,
+        atr=0.02,
+        recent_high=0.0,
+        stop_level=4.024,
         effective_r_multiple=0.6,
     )
     rec = runner._sell_record(fired, spot)  # noqa: SLF001
@@ -1484,13 +1575,21 @@ async def test_sell_record_writes_effective_r_multiple(
     assert rec.threshold_params["r_multiple"] == 0.6
 
     legacy = IntradaySellIntent(
-        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
-        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
-        drawdown_pct=0.0125, atr=0.02, recent_high=0.0, stop_level=4.04,
+        code="510300",
+        name="沪深300ETF",
+        available_volume=100,
+        limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT,
+        anomaly_reason="x",
+        drawdown_pct=0.0125,
+        atr=0.02,
+        recent_high=0.0,
+        stop_level=4.04,
     )
     rec2 = runner._sell_record(legacy, spot)  # noqa: SLF001
     # Absent on the intent → fall back to the static config (never guess).
     assert rec2.threshold_params["r_multiple"] == 1.0
+
 
 async def test_config_hash_includes_tiered_takeprofit(
     builder: InstructionPlanBuilder, tmp_path: Path
@@ -1533,18 +1632,33 @@ async def test_sell_record_writes_take_profit_tier(
     )
     spot = SimpleNamespace(prev_close=4.0)
     tiered = IntradaySellIntent(
-        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
-        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
-        drawdown_pct=0.0125, atr=0.02, recent_high=0.0, stop_level=4.04,
-        effective_r_multiple=1.0, take_profit_tier=1,
+        code="510300",
+        name="沪深300ETF",
+        available_volume=100,
+        limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT,
+        anomaly_reason="x",
+        drawdown_pct=0.0125,
+        atr=0.02,
+        recent_high=0.0,
+        stop_level=4.04,
+        effective_r_multiple=1.0,
+        take_profit_tier=1,
     )
     rec = runner._sell_record(tiered, spot)  # noqa: SLF001
     assert rec.threshold_params["take_profit_tier"] == 1.0
 
     untiered = IntradaySellIntent(
-        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
-        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
-        drawdown_pct=0.0125, atr=0.02, recent_high=0.0, stop_level=4.04,
+        code="510300",
+        name="沪深300ETF",
+        available_volume=100,
+        limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT,
+        anomaly_reason="x",
+        drawdown_pct=0.0125,
+        atr=0.02,
+        recent_high=0.0,
+        stop_level=4.04,
         effective_r_multiple=1.0,
     )
     rec2 = runner._sell_record(untiered, spot)  # noqa: SLF001
@@ -1570,10 +1684,18 @@ async def test_sell_record_writes_tiers_taken_on_gated_intent(
     # record carries the tiers-taken count so replay reproduces the gating
     # (codex P2).
     gated = IntradaySellIntent(
-        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
-        trigger_kind=IntradayTriggerKind.WEIGHT_TRIM, anomaly_reason="x",
-        drawdown_pct=0.0125, atr=0.0, recent_high=0.0, stop_level=0.0,
-        effective_r_multiple=1.0, take_profit_tiers_taken=1,
+        code="510300",
+        name="沪深300ETF",
+        available_volume=100,
+        limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.WEIGHT_TRIM,
+        anomaly_reason="x",
+        drawdown_pct=0.0125,
+        atr=0.0,
+        recent_high=0.0,
+        stop_level=0.0,
+        effective_r_multiple=1.0,
+        take_profit_tiers_taken=1,
     )
     rec = runner._sell_record(gated, spot)  # noqa: SLF001
     assert rec.threshold_params["take_profit_tiers_taken"] == 1.0
@@ -1592,12 +1714,17 @@ async def test_config_hash_includes_chandelier(
 
     sender = FakeFeishuSender()
     r_none, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
         tmp_path=tmp_path / "none",
     )
     r_chand, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path / "chand", chandelier=ChandelierConfig(),
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "chand",
+        chandelier=ChandelierConfig(),
     )
     # The entry-anchored stop config is pinned (incl. its absence) so a
     # replay with the feature off never reproduces an anchored stop and a
@@ -1616,8 +1743,11 @@ async def test_chandelier_episode_store_synced_per_tick(
     episodes = PositionEpisodeStore(tmp_path / "state" / "episodes.jsonl")
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, chandelier=ChandelierConfig(),
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        chandelier=ChandelierConfig(),
         episode_store=episodes,
     )
     # The fresh-entry anchored stop (cost 4.0, ATR 0.6 → initial 2.8) does
@@ -1637,9 +1767,13 @@ async def test_chandelier_shadow_logs_compare_and_stays_inert(
     episodes = PositionEpisodeStore(tmp_path / "state" / "episodes.jsonl")
     sender = FakeFeishuSender()
     runner, _, _ = _make_runner(
-        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
-        tmp_path=tmp_path, chandelier=None,  # feature OFF
-        episode_store=episodes, chandelier_shadow=True,
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        chandelier=None,  # feature OFF
+        episode_store=episodes,
+        chandelier_shadow=True,
     )
     result = await runner.run(provider=_drawdown_provider(), now=_NOW)
     # Decision-inert: the v8 drawdown SELL routes exactly as without shadow.
@@ -1654,3 +1788,201 @@ async def test_chandelier_shadow_logs_compare_and_stays_inert(
     )
     assert second.tick_outcome is IntradayTickOutcome.SCANNED
     assert "chandelier_shadow_compare" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# E4+E5 — time stop + next-day re-entry wiring
+# (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop)
+# ---------------------------------------------------------------------------
+
+
+async def test_config_hash_includes_stale_and_reentry(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from backend.monitoring.intraday_triggers import (
+        ReentryConfig,
+        StaleExitConfig,
+    )
+
+    sender = FakeFeishuSender()
+    r_none, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "none",
+    )
+    r_stale, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "stale",
+        stale=StaleExitConfig(),
+    )
+    r_re, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "re",
+        reentry=ReentryConfig(),
+    )
+    hashes = {
+        r_none._config_hash,  # noqa: SLF001
+        r_stale._config_hash,  # noqa: SLF001
+        r_re._config_hash,  # noqa: SLF001
+    }
+    assert len(hashes) == 3  # each feature (incl. absence) is pinned (PIT)
+
+
+async def test_delivered_sell_records_sale_price(builder, tmp_path) -> None:
+    """E5 groundwork — a delivered SELL writes sold_price/sold_volume so the
+    next-day re-entry gate can read yesterday's sale."""
+    store = _fired_store(tmp_path)
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
+    )
+    result = await runner.run(provider=_take_profit_provider(), now=_NOW)
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert routed[0].kind == "take_profit"
+    sales = store.delivered_sales(_NOW.date().isoformat())
+    assert sales["510300"]["kind"] == "take_profit"
+    assert sales["510300"]["sold_price"] == 4.95
+    assert sales["510300"]["sold_volume"] == 100.0  # 50% tranche of 300
+
+
+async def test_reentry_routes_next_morning_buy(builder, tmp_path) -> None:
+    """Yesterday's delivered take-profit + this morning's discount → a BUY
+    routes through the same human-gated pipeline."""
+    from backend.monitoring.intraday_triggers import ReentryConfig
+
+    store = _fired_store(tmp_path)
+    yesterday = (_NOW - timedelta(days=1)).date().isoformat()  # Thu (trading)
+    store.record_fired(
+        yesterday,
+        "510300",
+        "take_profit",
+        signal_id="s0",
+        sold_price=5.2,
+        sold_volume=100,
+    )
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
+        reentry=ReentryConfig(),
+    )
+    # 09:45, price 5.0 = 3.8% below yesterday's 5.2 sale; MA20≈4.5 intact;
+    # residual 200 shares held (cost 4.0).
+    morning = _NOW.replace(hour=9, minute=45)
+    provider = FakeIntradayProvider(
+        positions=(_position("510300", volume=200, available=200, cost=4.0),),
+        spots={
+            "510300": _spot(
+                "510300",
+                price=5.0,
+                prev_close=5.15,
+                snapshot_at=morning - timedelta(seconds=2),
+            )
+        },
+        closes_by_code={"510300": _volatile_closes()},
+    )
+    result = await runner.run(provider=provider, now=morning)
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1
+    assert routed[0].side is InstructionSide.BUY
+    assert "-510300-BUY-" in sender.calls[0]["content"]
+
+
+async def test_reentry_blocked_by_same_day_sell_mutex(builder, tmp_path) -> None:
+    """A code whose SELL already fired TODAY gets no re-entry BUY (the
+    one-way mutex covers the re-entry path identically)."""
+    from backend.monitoring.intraday_triggers import ReentryConfig
+
+    store = _fired_store(tmp_path)
+    yesterday = (_NOW - timedelta(days=1)).date().isoformat()
+    store.record_fired(
+        yesterday,
+        "510300",
+        "take_profit",
+        signal_id="s0",
+        sold_price=5.2,
+        sold_volume=100,
+    )
+    # TODAY a protective SELL already fired for the code.
+    store.record_fired(
+        _NOW.date().isoformat(),
+        "510300",
+        "drawdown_stop",
+        signal_id="s1",
+    )
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        fired_store=store,
+        reentry=ReentryConfig(),
+    )
+    morning = _NOW.replace(hour=9, minute=45)
+    provider = FakeIntradayProvider(
+        positions=(_position("510300", volume=200, available=200, cost=4.0),),
+        spots={
+            "510300": _spot(
+                "510300",
+                price=5.0,
+                prev_close=5.15,
+                snapshot_at=morning - timedelta(seconds=2),
+            )
+        },
+        closes_by_code={"510300": _volatile_closes()},
+    )
+    result = await runner.run(provider=provider, now=morning)
+    assert all(r.side is not InstructionSide.BUY for r in result.routes)
+    assert len(sender.calls) == 0
+
+
+async def test_reentry_survives_long_holiday_prune(builder, tmp_path) -> None:
+    """Review P1 — after a long holiday the previous trading day sits beyond
+    the 7-day retention; the sales row must be read BEFORE pruning and the
+    prune cutoff must never cross the lookback day."""
+    from backend.monitoring.intraday_triggers import ReentryConfig
+
+    store = _fired_store(tmp_path)
+    # Previous trading day 9 calendar days back (synthetic long holiday).
+    long_ago = (_NOW - timedelta(days=9)).date()
+    store.record_fired(
+        long_ago.isoformat(), "510300", "take_profit", signal_id="s0",
+        sold_price=5.2, sold_volume=100,
+    )
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE, sender=sender, builder=builder,
+        tmp_path=tmp_path, fired_store=store, reentry=ReentryConfig(),
+    )
+    # Force the lookback to the synthetic pre-holiday day.
+    runner._prev_trading_day = lambda today: long_ago  # type: ignore[method-assign]  # noqa: SLF001
+    morning = _NOW.replace(hour=9, minute=45)
+    provider = FakeIntradayProvider(
+        positions=(_position("510300", volume=200, available=200, cost=4.0),),
+        spots={
+            "510300": _spot(
+                "510300", price=5.0, prev_close=5.15,
+                snapshot_at=morning - timedelta(seconds=2),
+            )
+        },
+        closes_by_code={"510300": _volatile_closes()},
+    )
+    result = await runner.run(provider=provider, now=morning)
+    routed = [r for r in result.routes if r.outcome is TriggerRouteOutcome.ROUTED]
+    assert len(routed) == 1
+    assert routed[0].side is InstructionSide.BUY
+    # The pre-holiday row survived the prune (cutoff floored at the lookback).
+    assert store.delivered_sales(long_ago.isoformat()) != {}

@@ -102,9 +102,12 @@ from backend.monitoring.intraday_triggers import (
     IntradaySellIntent,
     IntradayTriggerConfig,
     IntradayTriggerKind,
+    ReentryConfig,
+    StaleExitConfig,
     StrengthSellConfig,
     evaluate_intraday_add_intents,
     evaluate_intraday_sell_intents,
+    evaluate_reentry_add_intents,
     filter_fresh_quotes,
     limit_up_price,
     serialize_intraday_quotes,
@@ -315,6 +318,8 @@ class Line2IntradayRunner:
         episode_store: PositionEpisodeStore | None = None,
         chandelier_shadow: bool = False,
         strength: StrengthSellConfig | None = None,
+        stale: StaleExitConfig | None = None,
+        reentry: ReentryConfig | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -377,6 +382,15 @@ class Line2IntradayRunner:
         # (default-OFF; env-gated in main.py). Folded into the config hash
         # below (PIT).
         self._strength = strength
+        # E4 time stop + E5 next-day re-entry (P0-10-amendment-line2-
+        # 2026-06-04-reentry-and-time-stop). Both None by default (env-gated
+        # in main.py); each None keeps the prior trigger set bit-for-bit.
+        # Folded into the config hash below (PIT). The re-entry eligibility
+        # (yesterday's delivered sales) is loaded once per day from the
+        # fired store.
+        self._stale = stale
+        self._reentry = reentry
+        self._reentry_sales: dict[str, dict[str, float]] = {}
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -459,6 +473,18 @@ class Line2IntradayRunner:
             "strength_sell": (
                 dataclasses.asdict(self._strength)
                 if self._strength is not None
+                else None
+            ),
+            # E4/E5 (incl. their absence) — maths version rides the top-level
+            # feature_code_version (v11).
+            "stale_exit": (
+                dataclasses.asdict(self._stale)
+                if self._stale is not None
+                else None
+            ),
+            "reentry": (
+                dataclasses.asdict(self._reentry)
+                if self._reentry is not None
                 else None
             ),
         }
@@ -575,10 +601,30 @@ class Line2IntradayRunner:
             # append-only file must not grow + be re-scanned unboundedly —
             # review angle A). Both fail-open.
             self._send_failures = {}
-            if self._fired_store is not None:
-                self._fired_store.prune_before(
-                    (today - timedelta(days=7)).isoformat()
+            # E5 — load the previous trading day's delivered sales once per
+            # day (re-entry eligibility; fail-open to empty = no re-entry).
+            # MUST run BEFORE the prune below: after a long holiday the
+            # previous trading day can sit further back than any fixed
+            # calendar retention, and pruning first would silently delete
+            # the very rows re-entry needs (review P1).
+            prev_trading = self._prev_trading_day(today)
+            if self._reentry is not None and self._fired_store is not None:
+                self._reentry_sales = (
+                    self._fired_store.delivered_sales(
+                        prev_trading.isoformat()
+                    )
+                    if prev_trading is not None
+                    else {}
                 )
+            if self._fired_store is not None:
+                # Retention cutoff = the EARLIER of (today − 7d) and the
+                # previous trading day, so the re-entry lookback row always
+                # survives the prune (review P1 — Spring Festival / National
+                # Day gaps exceed any fixed 7-day window).
+                cutoff = (today - timedelta(days=7)).isoformat()
+                if prev_trading is not None:
+                    cutoff = min(cutoff, prev_trading.isoformat())
+                self._fired_store.prune_before(cutoff)
         self._prune_fired(today)
 
         closes_by_code: dict[str, tuple[float, ...]] = {}
@@ -683,12 +729,16 @@ class Line2IntradayRunner:
                 chandelier=self._chandelier,
                 entry_closes_by_code=(
                     entry_closes_by_code
-                    if self._chandelier is not None
+                    if (
+                        self._chandelier is not None
+                        or self._stale is not None
+                    )
                     else None
                 ),
                 tick_time=now,
                 strength=self._strength,
                 amounts_by_code=amounts_by_code,
+                stale=self._stale,
             )
             # E2 shadow (feature OFF): once-per-day-per-code old-vs-new stop
             # comparison log — the daily counterfactual report the owner
@@ -714,6 +764,26 @@ class Line2IntradayRunner:
             # holding cannot be both scaled into and exited at once (a sharp
             # drawdown can satisfy both the SELL trigger and the dip-vs-cost ADD
             # gate). The exit wins (codex U-C3 P1).
+            # E5 — next-day re-entry BUYs after a delivered discretionary
+            # sell. Same pipeline as the regular ADD (the same-tick SELL
+            # suppression + the same-day SELL→ADD mutex below apply to it
+            # identically); a code with BOTH a regular ADD and a re-entry
+            # this tick keeps the regular ADD (dip-vs-cost has the stricter
+            # gates).
+            reentry_intents: tuple[AddIntent, ...] = ()
+            if self._reentry is not None and self._reentry_sales:
+                reentry_intents = evaluate_reentry_add_intents(
+                    fresh_spots,
+                    closes_by_code,
+                    held,
+                    account,
+                    yesterday_sales=self._reentry_sales,
+                    config=self._reentry,
+                    tick_time=now,
+                    name_by_code=name_by_code,
+                    thesis_break_codes=frozenset(thesis_break_by_code),
+                    max_single_stock_pct=self._add_cfg.max_single_stock_pct,
+                )
             sell_codes = {i.code for i in sell_intents}
             # Same-day SELL→ADD one-way mutex (ops hardening §1.3): a code
             # whose SELL trigger fired earlier TODAY (any sell kind, ROUTED or
@@ -729,9 +799,13 @@ class Line2IntradayRunner:
                 log.info(
                     "intraday_add_suppressed_same_day_sell", codes=suppressed
                 )
+            regular_add_codes = {i.code for i in add_eval.intents}
+            merged_adds = tuple(add_eval.intents) + tuple(
+                r for r in reentry_intents if r.code not in regular_add_codes
+            )
             add_intents = tuple(
                 i
-                for i in add_eval.intents
+                for i in merged_adds
                 if i.code not in sell_codes and i.code not in sell_fired_codes
             )
 
@@ -845,11 +919,23 @@ class Line2IntradayRunner:
                     # rejection whose cause clears intra-day must stay
                     # recoverable). Fail-open inside the store.
                     if delivered and self._fired_store is not None:
+                        is_sell = side is InstructionSide.SELL
                         self._fired_store.record_fired(
                             today.isoformat(),
                             intent.code,
                             fired_kind,
                             signal_id=sid,
+                            # E5: a delivered SELL carries its suggested
+                            # price/volume so tomorrow's re-entry gate can
+                            # compare the open against the sale.
+                            sold_price=(
+                                float(intent.limit_price) if is_sell else None
+                            ),
+                            sold_volume=(
+                                int(intent.available_volume)
+                                if is_sell
+                                else None
+                            ),
                         )
                 # D1-d: a DELIVERED tiered take-profit advances the episode's
                 # ladder (REJECTED does not — the same tier retries next
@@ -1114,6 +1200,18 @@ class Line2IntradayRunner:
                     else {}
                 ),
                 **self._strength_record_params(intent, spot),
+                # E4 — the time-stop thresholds in force (STALE_EXIT only).
+                **(
+                    {
+                        "stale_days": float(self._stale.stale_days),
+                        "stale_min_return": float(self._stale.min_return),
+                        "stale_high_window": float(self._stale.high_window),
+                    }
+                    if self._stale is not None
+                    and intent.trigger_kind
+                    is IntradayTriggerKind.STALE_EXIT
+                    else {}
+                ),
                 # The take-profit multiple in force when this intent fired (the
                 # regime-conditioned tier when D1-c is on, else the static
                 # config) — recorded on every SELL so replay reproduces why
@@ -1351,6 +1449,16 @@ class Line2IntradayRunner:
         except Exception as exc:  # noqa: BLE001 — exemption never breaks a tick
             log.warning("thesis_exempt_eval_failed", error=str(exc))
             return frozenset()
+
+    @staticmethod
+    def _prev_trading_day(today: date) -> date | None:
+        """Most recent trading day strictly before ``today`` (≤15d lookback)."""
+        d = today - timedelta(days=1)
+        for _ in range(15):
+            if is_trading_day(d):
+                return d
+            d -= timedelta(days=1)
+        return None
 
     @staticmethod
     def _trading_days_between(start: date, end: date) -> int:

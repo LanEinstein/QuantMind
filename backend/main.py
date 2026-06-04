@@ -1002,6 +1002,24 @@ async def _init_line2_runners(
         _strength = StrengthSellConfig()
     else:
         _strength = None
+    # E4 — STALE_EXIT time stop; E5 — next-day re-entry after a delivered
+    # discretionary sell. Independently GATED default-OFF
+    # (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop).
+    if (
+        os.environ.get("QUANTMIND_LINE2_STALE_EXIT_ENABLED", "0").strip()
+        == "1"
+    ):
+        from backend.monitoring.intraday_triggers import StaleExitConfig
+
+        _stale = StaleExitConfig()
+    else:
+        _stale = None
+    if os.environ.get("QUANTMIND_LINE2_REENTRY_ENABLED", "0").strip() == "1":
+        from backend.monitoring.intraday_triggers import ReentryConfig
+
+        _reentry = ReentryConfig()
+    else:
+        _reentry = None
 
     intraday_runner = Line2IntradayRunner(
         builder=builder,
@@ -1021,6 +1039,8 @@ async def _init_line2_runners(
         episode_store=_episode_store,
         chandelier_shadow=_chand_shadow,
         strength=_strength,
+        stale=_stale,
+        reentry=_reentry,
         pilot=pilot,
     )
 

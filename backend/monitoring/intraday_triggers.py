@@ -129,8 +129,13 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 # SEALED_LIMIT_HOLD suppression (a sealed limit-up rides — TP + strength
 # sells are suppressed that tick) when a StrengthSellConfig is supplied; a
 # None config reproduces v9 outputs bit-for-bit
-# (P0-10-amendment-line2-2026-06-04-sell-into-strength).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v10"
+# (P0-10-amendment-line2-2026-06-04-sell-into-strength). v11: the
+# STALE_EXIT time stop (held >=stale_days with <min_return and no recent
+# post-entry high -> full settled exit) + the next-day RE_ENTRY BUY after a
+# delivered discretionary sell (evaluate_reentry_add_intents); None configs
+# reproduce v10 outputs bit-for-bit
+# (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v11"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -183,6 +188,12 @@ class IntradayTriggerKind(StrEnum):
     OVERBOUGHT_BIAS = "overbought_bias"
     """乖离超买 — (price−MA20)/MA20 ≥ ``bias_threshold`` (classic A-share
     BIAS sell band); profit-gated 1/3 tranche."""
+    STALE_EXIT = "stale_exit"
+    """时间止损 — held ≥``stale_days`` trading days with interval return
+    <``min_return`` and no post-entry high in the last ``high_window``
+    closes: the momentum edge is spent, free the slot (E4,
+    P0-10-amendment-line2-2026-06-04-reentry-and-time-stop). Full settled
+    exit (¥50k-clamped)."""
 
 
 @dataclass(frozen=True)
@@ -230,6 +241,55 @@ class StrengthSellConfig:
     ma_window: int = 20
     amount_window: int = 5
     limit_epsilon: float = 0.005  # price-grid tolerance for limit touch/seal
+
+
+@dataclass(frozen=True)
+class StaleExitConfig:
+    """Runtime-immutable time-stop thresholds (E4).
+
+    Research anchor (dossier §2.4): a momentum swing's edge is spent in
+    ~8-15 trading days; a position that has gone nowhere by then is dead
+    weight in one of the ≤5 slots. The STALE_EXIT is the deterministic
+    lower bound of the rotation's "incumbent weak enough" test — it needs
+    no challenger to exist. Recalibrated only offline (P2-2 + human gate).
+    """
+
+    stale_days: int = 10  # held trading days before the test applies
+    min_return: float = 0.03  # interval return below this = going nowhere
+    high_window: int = 5  # no post-entry high within the last N closes
+
+
+@dataclass(frozen=True)
+class ReentryConfig:
+    """Runtime-immutable next-day re-entry gate (E5).
+
+    After a DELIVERED discretionary sell (TAKE_PROFIT / strength family) the
+    residual position may be topped back up the NEXT morning when the
+    overnight discount materialises: open-window price ≥``discount`` below
+    yesterday's sale, structure intact (price > MA). Microstructure anchor
+    (dossier §3.1): T+1 forces sellers onto the next-day open — buy there,
+    sell into intraday strength. Protective-stop exits are NEVER re-entered
+    (trend falsified — Turtle fail-safe; a fresh entry is Line-1's job).
+    """
+
+    discount: float = 0.02  # buy back ≥2% below yesterday's sale price
+    window_start_minute: int = 9 * 60 + 30  # 09:30 Asia/Shanghai
+    window_end_minute: int = 10 * 60  # 10:00 (exclusive)
+    ma_window: int = 20  # structure gate: price must hold above this MA
+
+
+# The sell kinds whose DELIVERED sale makes a code re-entry-eligible the
+# next day: discretionary harvests only — a protective-stop / thesis /
+# stale exit means the trend is falsified and is never bought back.
+REENTRY_ELIGIBLE_KINDS: frozenset[str] = frozenset(
+    {
+        IntradayTriggerKind.TAKE_PROFIT.value,
+        IntradayTriggerKind.LIMIT_BREAK.value,
+        IntradayTriggerKind.SURGE_FADE.value,
+        IntradayTriggerKind.VOLUME_CLIMAX.value,
+        IntradayTriggerKind.OVERBOUGHT_BIAS.value,
+    }
+)
 
 
 def limit_up_price(code: str, name: str, prev_close: float) -> float | None:
@@ -791,6 +851,75 @@ def _strength_sell_intent(
     )
 
 
+def _stale_exit_intent(
+    *,
+    code: str,
+    name: str,
+    spot: WatchlistMarketSnapshot,
+    pos: Position,
+    entry_closes: tuple[float, ...] | None,
+    cfg: StaleExitConfig,
+    max_single_instruction_amount: float,
+    effective_drawdown_threshold: float,
+    effective_r: float,
+    take_profit_tiers_taken: int | None,
+    effective_atr_stop_mult: float | None,
+    stop_anchor: float | None,
+) -> IntradaySellIntent | None:
+    """Time-stop exit for a position whose momentum edge is spent (E4).
+
+    Holding age = ``len(entry_closes)`` (the episode-sliced closes — one per
+    held trading day, deterministic from pinned inputs; a series shorter
+    than the calendar count fires LATER, the conservative direction).
+    Full settled exit, clamped to the ¥50k single-instruction cap exactly
+    like the thesis-break exit (a partial clamp re-fires next day until the
+    position drains). ``None`` when any condition fails.
+    """
+    price = spot.price
+    cost = pos.cost_price
+    if price <= 0 or cost <= 0 or entry_closes is None:
+        return None
+    held_days = len(entry_closes)
+    if held_days < cfg.stale_days or held_days <= cfg.high_window:
+        return None
+    if price / cost - 1.0 >= cfg.min_return:
+        return None  # it IS going somewhere — not stale
+    recent = [c for c in entry_closes[-cfg.high_window :] if c > 0]
+    earlier = [c for c in entry_closes[: -cfg.high_window] if c > 0]
+    if not recent or not earlier or max(recent) >= max(earlier):
+        return None  # a recent post-entry high → momentum not spent
+    vol = (pos.available_volume // _LOT) * _LOT
+    if vol <= 0:
+        return None
+    if max_single_instruction_amount > 0:
+        cap_lots = int(max_single_instruction_amount // (price * _LOT)) * _LOT
+        vol = min(vol, cap_lots)
+    if vol <= 0:
+        return None
+    detail = (
+        f"时间止损: 持有 {held_days} 交易日收益 {price / cost - 1.0:+.1%} "
+        f"(<{cfg.min_return:.0%}) 且近 {cfg.high_window} 日无入场后新高; "
+        f"清仓释放槽位"
+    )
+    return IntradaySellIntent(
+        code=code,
+        name=name,
+        available_volume=vol,
+        limit_price=price,
+        trigger_kind=IntradayTriggerKind.STALE_EXIT,
+        anomaly_reason=detail,
+        drawdown_pct=round((price - spot.prev_close) / spot.prev_close, 6),
+        atr=0.0,
+        recent_high=0.0,
+        stop_level=0.0,
+        effective_drawdown_threshold=effective_drawdown_threshold,
+        effective_r_multiple=effective_r,
+        take_profit_tiers_taken=take_profit_tiers_taken,
+        effective_atr_stop_mult=effective_atr_stop_mult,
+        stop_anchor=stop_anchor,
+    )
+
+
 def evaluate_intraday_sell_intents(
     spots: Mapping[str, WatchlistMarketSnapshot],
     closes_by_code: Mapping[str, tuple[float, ...]],
@@ -815,6 +944,7 @@ def evaluate_intraday_sell_intents(
     tick_time: datetime | None = None,
     strength: StrengthSellConfig | None = None,
     amounts_by_code: Mapping[str, tuple[float, ...]] | None = None,
+    stale: StaleExitConfig | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -905,6 +1035,13 @@ def evaluate_intraday_sell_intents(
     every protective exit stay live). Long-term holds (D2) skip the
     strength family exactly as they skip TAKE_PROFIT. ``None`` config
     reproduces v9 outputs bit-for-bit.
+
+    ``stale`` (E4, P0-10-amendment-line2-2026-06-04-reentry-and-time-stop):
+    the STALE_EXIT time stop, ranked after the strength family and before
+    TAKE_PROFIT; needs ``entry_closes_by_code`` (the E1 episode slices —
+    holding age and post-entry-high test both derive from it). Sealed
+    boards and long-term holds are exempt. ``None`` reproduces v10
+    outputs bit-for-bit.
     """
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
@@ -1145,13 +1282,14 @@ def evaluate_intraday_sell_intents(
             # the discretionary strength sells exactly like TAKE_PROFIT.
             limit_up = (
                 limit_up_price(code, names.get(code, code), prev_close)
-                if strength is not None
+                if (strength is not None or stale is not None)
                 else None
             )
+            _limit_eps = (
+                strength.limit_epsilon if strength is not None else 0.005
+            )
             sealed = (
-                strength is not None
-                and limit_up is not None
-                and price >= limit_up - strength.limit_epsilon
+                limit_up is not None and price >= limit_up - _limit_eps
             )
             strength_intent = (
                 _strength_sell_intent(
@@ -1173,8 +1311,33 @@ def evaluate_intraday_sell_intents(
                 if strength is not None and not sealed and not is_long_term
                 else None
             )
+            stale_intent = (
+                _stale_exit_intent(
+                    code=code,
+                    name=names.get(code, code),
+                    spot=spot,
+                    pos=pos,
+                    entry_closes=(entry_closes_by_code or {}).get(code),
+                    cfg=stale,
+                    max_single_instruction_amount=max_single_instruction_amount,
+                    effective_drawdown_threshold=dd_thr,
+                    effective_r=eff_r,
+                    take_profit_tiers_taken=tp_taken,
+                    effective_atr_stop_mult=eff_mult,
+                    stop_anchor=anchor_val,
+                )
+                if (
+                    stale is not None
+                    and strength_intent is None
+                    and not sealed
+                    and not is_long_term
+                )
+                else None
+            )
             if strength_intent is not None:
                 intents.append(strength_intent)
+            elif stale_intent is not None:
+                intents.append(stale_intent)
             elif account is not None:
                 # The lower-priority profit-taking / rebalance triggers (only
                 # when an account is supplied). Take-profit outranks weight-trim;
@@ -1232,6 +1395,112 @@ def evaluate_intraday_sell_intents(
                 elif trim is not None:
                     intents.append(trim)
     log.info("intraday_sell_intents_evaluated", intents=len(intents))
+    return tuple(intents)
+
+
+def evaluate_reentry_add_intents(
+    spots: Mapping[str, WatchlistMarketSnapshot],
+    closes_by_code: Mapping[str, tuple[float, ...]],
+    positions: tuple[Position, ...],
+    account: AccountInfo,
+    *,
+    yesterday_sales: Mapping[str, Mapping[str, float]],
+    config: ReentryConfig,
+    tick_time: datetime,
+    name_by_code: Mapping[str, str] | None = None,
+    thesis_break_codes: frozenset[str] = frozenset(),
+    max_single_stock_pct: float = 0.15,
+    max_single_instruction_amount: float = 50_000.0,
+) -> tuple[AddIntent, ...]:
+    """Next-day re-entry BUY after a delivered discretionary sell (E5).
+
+    ``yesterday_sales`` = the PREVIOUS trading day's delivered sales from the
+    fired-trigger store (code → {kind, sold_price, sold_volume}); only
+    :data:`REENTRY_ELIGIBLE_KINDS` qualify — a protective-stop / thesis /
+    stale exit is never bought back (Turtle fail-safe: a falsified trend
+    needs a FRESH Line-1 signal, not a reflex top-up). Gates, all
+    deterministic: the code is still held (a residual from the partial
+    sale — a full exit closed the episode and re-entry belongs to Line-1);
+    tick inside the morning window (overnight-discount harvest, dossier
+    §3.1); price ≥``discount`` below yesterday's sale; structure intact
+    (price > MA). Volume = yesterday's sold volume clamped to single-stock
+    headroom + the ¥50k cap. The produced :class:`AddIntent` rides the
+    existing ADD pipeline (same-tick SELL suppression, same-day SELL→ADD
+    mutex, 5 early-returns, 14-check, human gate).
+    """
+    names = name_by_code or {}
+    pos_by_code = {_bare(p.code): p for p in positions}
+    local = (
+        tick_time.replace(tzinfo=_SHANGHAI)
+        if tick_time.tzinfo is None
+        else tick_time.astimezone(_SHANGHAI)
+    )
+    minute = local.hour * 60 + local.minute
+    if not (config.window_start_minute <= minute < config.window_end_minute):
+        return ()
+    total = float(account.total_assets)
+    intents: list[AddIntent] = []
+    for code in sorted(yesterday_sales):
+        sale = yesterday_sales[code]
+        if str(sale.get("kind", "")) not in REENTRY_ELIGIBLE_KINDS:
+            continue
+        if code in thesis_break_codes:
+            continue
+        pos = pos_by_code.get(code)
+        if pos is None or pos.volume <= 0:
+            continue  # full exit → episode closed → Line-1 territory
+        spot = spots.get(code)
+        if spot is None:
+            continue
+        price = spot.price
+        sold_price = float(sale.get("sold_price", 0.0))
+        sold_volume = int(sale.get("sold_volume", 0))
+        if price <= 0 or sold_price <= 0 or sold_volume <= 0:
+            continue
+        if price > sold_price * (1.0 - config.discount):
+            continue  # the overnight discount did not materialise
+        closes = closes_by_code.get(code)
+        ma = moving_average(closes or (), config.ma_window)
+        if ma is None or ma <= 0 or price <= ma:
+            continue  # structure broken — no reflex top-up
+        atr = close_atr(closes or (), 14)
+        # Clamp: yesterday's volume → single-stock headroom → ¥50k cap.
+        vol = (sold_volume // _LOT) * _LOT
+        if total > 0:
+            headroom_value = (
+                max_single_stock_pct * total - pos.volume * price
+            )
+            headroom = int(max(0.0, headroom_value) // (price * _LOT)) * _LOT
+            vol = min(vol, headroom)
+        if max_single_instruction_amount > 0:
+            cap = (
+                int(max_single_instruction_amount // (price * _LOT)) * _LOT
+            )
+            vol = min(vol, cap)
+        if vol <= 0:
+            continue
+        stop_price = (
+            round(price - 2.0 * atr, 2) if atr is not None and atr > 0 else 0.0
+        )
+        rationale = (
+            f"止盈回补: 昨日 {sold_price:.3f} 卖出 ({sale.get('kind')}),"
+            f"今晨 {price:.3f} 低 {1.0 - price / sold_price:.1%} 回补 "
+            f"{vol} 股;结构完好 (>MA{config.ma_window})"
+        )
+        intents.append(
+            AddIntent(
+                code=code,
+                name=names.get(code, code),
+                add_volume=vol,
+                limit_price=price,
+                atr=round(atr, 4) if atr else 0.0,
+                stop_price=stop_price,
+                rsi=0.0,  # re-entry is discount-vs-sale driven, not RSI-gated
+                rationale=rationale,
+            )
+        )
+    if intents:
+        log.info("reentry_add_intents_evaluated", intents=len(intents))
     return tuple(intents)
 
 
@@ -1487,7 +1756,11 @@ __all__ = [
     "IntradaySellIntent",
     "IntradayTriggerConfig",
     "IntradayTriggerKind",
+    "REENTRY_ELIGIBLE_KINDS",
+    "ReentryConfig",
+    "StaleExitConfig",
     "StrengthSellConfig",
+    "evaluate_reentry_add_intents",
     "limit_up_price",
     "evaluate_intraday_add_intents",
     "evaluate_intraday_sell_intents",
