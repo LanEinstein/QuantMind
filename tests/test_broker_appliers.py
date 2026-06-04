@@ -479,9 +479,12 @@ class TestExecutionReportIdempotency:
         applier = ExecutionReportApplier(
             env.broker, env.event_store, env.audit_store
         )
+        # The sell INSTRUCTION is dated the NEXT trade date so the retried
+        # fill is one the real broker could have executed (T+1 guard keys on
+        # the instruction's embedded date, P0-4-amendment-2026-06-04).
         sell = ExecutionReport(
             report_id="r-sell-retry",
-            instruction_id="QM-20260515-100000-600519-SELL-001",
+            instruction_id="QM-20260516-100000-600519-SELL-001",
             kind=ExecutionReportKind.FILLED,
             channel=ExecutionReportChannel.FEISHU,
             side_zh="卖出",
@@ -489,8 +492,8 @@ class TestExecutionReportIdempotency:
             filled_volume=100,
             fill_price=1810.0,
             raw_text="FILLED 600519 卖出 100@1810",
-            received_at=dt.datetime(2026, 5, 15, 10, 6, tzinfo=SHANGHAI),
-            parsed_at=dt.datetime(2026, 5, 15, 10, 6, 1, tzinfo=SHANGHAI),
+            received_at=dt.datetime(2026, 5, 16, 10, 6, tzinfo=SHANGHAI),
+            parsed_at=dt.datetime(2026, 5, 16, 10, 6, 1, tzinfo=SHANGHAI),
         )
         # First attempt fails — no position to sell. The claim must be
         # released so the same report_id can be retried after the
@@ -499,6 +502,7 @@ class TestExecutionReportIdempotency:
             await applier.apply(sell, side_is_buy=False)
 
         await applier.apply(_filled_report(), side_is_buy=True)  # buy 100
+        await env.broker.advance_day()  # 16:30 settlement before the T+1 sell
 
         retry = await applier.apply(sell, side_is_buy=False)
         assert retry.reason == "execution_report_applied"
@@ -829,9 +833,15 @@ class TestExternalFillCostSchemas:
             side_is_buy=True, traded_at=_TRADED_AT, report_id="r-buy",
             kind="FILLED", report_schema_version=2,
         )
+        # T+1: settle the buy and sell on the NEXT trade date so the report
+        # passes the date-keyed guard (P0-4-amendment-2026-06-04); this test
+        # exercises the fee maths.
+        await broker.advance_day()
         out = await broker.apply_external_fill(
             order_id_hint="x", code="000001", volume=1_000, fill_price=11.0,
-            side_is_buy=False, traded_at=_TRADED_AT, report_id="r-sell",
+            side_is_buy=False,
+            traded_at=_TRADED_AT + dt.timedelta(days=1),
+            report_id="r-sell",
             kind="FILLED", report_schema_version=2,
         )
         # gross 11_000; commission max(11_000*0.00015,5)=5.0; stamp
@@ -920,3 +930,302 @@ class TestExternalFillCostSchemas:
         v1 = _filled_report_v1()
         v2 = _filled_report()
         assert compute_idempotency_key(v1) != compute_idempotency_key(v2)
+
+
+class TestExternalFillSellT1Guard:
+    """P0-4-amendment-2026-06-04 — the SELL report guard enforces T+1.
+
+    A report selling shares bought the same day could not have executed at
+    the real broker (T+1) — it is a typo, not truth. It must be rejected
+    before any mutation (mirror of the BUY affordability guard), so the
+    orchestrator clarifies instead of silently desyncing the mirror.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sell_of_today_bought_shares_rejected(self) -> None:
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=200, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-buy", kind="FILLED", report_schema_version=2,
+        )
+        with pytest.raises(ValueError, match="T\\+1"):
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-100000-600519-SELL-001",
+                code="600519", volume=100, fill_price=64.0, side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 15, 10, 30, tzinfo=SHANGHAI),
+                report_id="r-sell", kind="FILLED", report_schema_version=2,
+            )
+        # Mirror untouched by the rejected SELL — the position is intact.
+        positions = await broker.get_positions()
+        assert len(positions) == 1
+        assert positions[0].volume == 200
+
+    @pytest.mark.asyncio
+    async def test_sell_after_advance_day_is_accepted(self) -> None:
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=200, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-buy2", kind="FILLED", report_schema_version=2,
+        )
+        await broker.advance_day()  # T+1: yesterday's buy is now settled
+        applied = await broker.apply_external_fill(
+            order_id_hint="QM-20260516-100000-600519-SELL-001",
+            code="600519", volume=100, fill_price=64.0, side_is_buy=False,
+            traded_at=dt.datetime(2026, 5, 16, 10, 30, tzinfo=SHANGHAI),
+            report_id="r-sell2", kind="FILLED", report_schema_version=2,
+        )
+        assert applied["net"] > 0
+        positions = await broker.get_positions()
+        assert positions[0].volume == 100
+
+    @pytest.mark.asyncio
+    async def test_over_holding_sell_still_rejected_distinctly(self) -> None:
+        # The pre-existing over-holding guard keeps its own message (ops can
+        # tell "more than held" from "held but not yet settled").
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        with pytest.raises(ValueError, match="SELL"):
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-100000-600519-SELL-002",
+                code="600519", volume=100, fill_price=64.0, side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 15, 10, 30, tzinfo=SHANGHAI),
+                report_id="r-sell3", kind="FILLED", report_schema_version=2,
+            )
+
+    @pytest.mark.asyncio
+    async def test_late_same_day_sell_after_advance_day_still_rejected(
+        self,
+    ) -> None:
+        # codex P1: the 16:30 advance_day cron clears today_bought_volume, so
+        # a LATE same-day report (parsed after settlement reset) would bypass
+        # a counter-based guard. The date-keyed buy record keeps the guard
+        # correct: a sell dated the same trade date as the buy is impossible
+        # at the real broker no matter when the report arrives.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=200, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-buy-late", kind="FILLED", report_schema_version=2,
+        )
+        await broker.advance_day()  # 16:30 settlement reset, SAME trade date
+        with pytest.raises(ValueError, match="T\\+1"):
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-100000-600519-SELL-001",
+                code="600519", volume=100, fill_price=64.0, side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 15, 17, 0, tzinfo=SHANGHAI),
+                report_id="r-sell-late", kind="FILLED",
+                report_schema_version=2,
+            )
+        positions = await broker.get_positions()
+        assert positions[0].volume == 200  # mirror untouched
+
+    @pytest.mark.asyncio
+    async def test_next_day_parsed_report_for_same_day_instruction_rejected(
+        self,
+    ) -> None:
+        # codex cycle-2 P1: traded_at on this path is report.parsed_at — a
+        # 补录 report submitted the NEXT calendar day still refers to the
+        # INSTRUCTION-date execution (plans are human-executed same day and
+        # expire EOD). Keying the guard on parsed_at would zero
+        # bought_same_day and accept the impossible same-day sell; the guard
+        # must key on the instruction's embedded QM-YYYYMMDD date.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=200, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-buy-bk", kind="FILLED", report_schema_version=2,
+        )
+        await broker.advance_day()
+        with pytest.raises(ValueError, match="T\\+1"):
+            await broker.apply_external_fill(
+                # SELL instruction dated 5/15 (same trade date as the buy),
+                # report parsed/submitted 5/16 — still impossible at the
+                # real broker, must still be rejected.
+                order_id_hint="QM-20260515-140000-600519-SELL-001",
+                code="600519", volume=100, fill_price=64.0, side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 16, 9, 0, tzinfo=SHANGHAI),
+                report_id="r-sell-bk", kind="FILLED",
+                report_schema_version=2,
+            )
+        positions = await broker.get_positions()
+        assert positions[0].volume == 200  # mirror untouched
+
+    @pytest.mark.asyncio
+    async def test_newer_buy_does_not_erase_older_date_record(self) -> None:
+        # codex cycle-3 P1: with a single tracked buy date, a later-dated buy
+        # would overwrite the older record and let a backfilled SELL dated
+        # the OLDER buy day slip through. The per-date map keeps both.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 10, 0, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=100, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-b1", kind="FILLED", report_schema_version=2,
+        )
+        await broker.advance_day()
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260516-100000-600519-BUY-002",
+            code="600519", volume=100, fill_price=63.5, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 16, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-b2", kind="FILLED", report_schema_version=2,
+        )
+        with pytest.raises(ValueError, match="T\\+1"):
+            # Backfilled SELL dated 5/15 for the FULL 200: only 100 settled
+            # shares existed on 5/15 (100 bought that day) — impossible fill.
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-140000-600519-SELL-001",
+                code="600519", volume=200, fill_price=64.0,
+                side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 16, 11, 0, tzinfo=SHANGHAI),
+                report_id="r-s1", kind="FILLED", report_schema_version=2,
+            )
+        positions = await broker.get_positions()
+        assert positions[0].volume == 200  # mirror untouched
+
+    @pytest.mark.asyncio
+    async def test_recovery_seeded_positions_enforce_t1(self) -> None:
+        # codex cycle-3 P1: the per-date buy record must survive a restart —
+        # recovery rebuilds it and seed_from_recovery carries it into the
+        # live mirror, so a post-restart backfilled same-day SELL is still
+        # rejected.
+        from backend.broker.persistence.recovery import (
+            _MutablePosition as _RecoveredPosition,
+        )
+
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 17, 0, tzinfo=SHANGHAI),
+        )
+        recovered = _RecoveredPosition(
+            code="600519",
+            volume=200,
+            today_bought_volume=0,
+            cost_price=63.0,
+            bought_by_date={dt.date(2026, 5, 15): 200},
+        )
+        await broker.seed_from_recovery(
+            cash=80_000.0,
+            frozen_cash=0.0,
+            initial_capital=100_000.0,
+            positions=(recovered,),
+        )
+        with pytest.raises(ValueError, match="T\\+1"):
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-140000-600519-SELL-001",
+                code="600519", volume=200, fill_price=64.0,
+                side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 15, 17, 30, tzinfo=SHANGHAI),
+                report_id="r-s2", kind="FILLED", report_schema_version=2,
+            )
+
+    @pytest.mark.asyncio
+    async def test_backdated_sell_against_later_buys_rejected(self) -> None:
+        # codex cycle-6 P1: shares bought AFTER the report's trade date did
+        # not exist on it — a backfilled SELL dated D must be measured
+        # against holdings as of D, not the current position.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 16, 10, 0, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=100, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-c6-b1", kind="FILLED", report_schema_version=2,
+        )
+        await broker.advance_day()
+        await broker.apply_external_fill(
+            order_id_hint="QM-20260516-100000-600519-BUY-002",
+            code="600519", volume=100, fill_price=63.5, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 16, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-c6-b2", kind="FILLED", report_schema_version=2,
+        )
+        with pytest.raises(ValueError, match="T\\+1"):
+            # SELL dated 5/15 for 100: NOTHING was settled-sellable on 5/15
+            # (the 5/15 buy was unsettled; the 5/16 buy did not exist).
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-143000-600519-SELL-001",
+                code="600519", volume=100, fill_price=64.0,
+                side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 16, 11, 0, tzinfo=SHANGHAI),
+                report_id="r-c6-s1", kind="FILLED", report_schema_version=2,
+            )
+        positions = await broker.get_positions()
+        assert positions[0].volume == 200  # mirror untouched
+
+    @pytest.mark.asyncio
+    async def test_backfilled_prior_day_buy_does_not_lock_today(self) -> None:
+        # codex cycle-6 P2: a next-day 补录 BUY for yesterday's instruction
+        # is already settled — it must NOT freeze today's sellability.
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 16, 9, 30, tzinfo=SHANGHAI),
+        )
+        await broker.apply_external_fill(
+            # Instruction dated 5/15, report parsed/applied 5/16.
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=200, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 16, 9, 0, tzinfo=SHANGHAI),
+            report_id="r-c6-bk", kind="FILLED", report_schema_version=2,
+        )
+        positions = await broker.get_positions()
+        assert positions[0].available_volume == 200  # settled, not locked
+        # And a SELL dated today (5/16) of those settled shares is accepted.
+        applied = await broker.apply_external_fill(
+            order_id_hint="QM-20260516-100000-600519-SELL-001",
+            code="600519", volume=100, fill_price=64.0, side_is_buy=False,
+            traded_at=dt.datetime(2026, 5, 16, 10, 0, tzinfo=SHANGHAI),
+            report_id="r-c6-s2", kind="FILLED", report_schema_version=2,
+        )
+        assert applied["net"] > 0
+
+    @pytest.mark.asyncio
+    async def test_seed_normalises_iso_string_buy_date_keys(self) -> None:
+        # /code-review finding: a BrokerSnapshotPosition carrier keys the map
+        # by ISO string — seeding must normalise to datetime.date or the T+1
+        # guard's date comparisons silently never match.
+        from backend.broker.persistence.snapshots import BrokerSnapshotPosition
+
+        broker = MockBroker(
+            config=BrokerConfig(initial_capital=100_000.0),
+            now_func=lambda: dt.datetime(2026, 5, 15, 17, 0, tzinfo=SHANGHAI),
+        )
+        carrier = BrokerSnapshotPosition(
+            code="600519", volume=200, today_bought_volume=0,
+            cost_price=63.0, bought_by_date={"2026-05-15": 200},
+        )
+        await broker.seed_from_recovery(
+            cash=80_000.0, frozen_cash=0.0, initial_capital=100_000.0,
+            positions=(carrier,),
+        )
+        with pytest.raises(ValueError, match="T\\+1"):
+            await broker.apply_external_fill(
+                order_id_hint="QM-20260515-140000-600519-SELL-001",
+                code="600519", volume=200, fill_price=64.0,
+                side_is_buy=False,
+                traded_at=dt.datetime(2026, 5, 15, 17, 30, tzinfo=SHANGHAI),
+                report_id="r-iso", kind="FILLED", report_schema_version=2,
+            )

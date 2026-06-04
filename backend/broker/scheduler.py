@@ -726,12 +726,33 @@ class BrokerScheduler:
 
             account = await self._broker.get_account()
             positions = await self._broker.get_positions()
+            # Per-trade-date buy volumes (BrokerSnapshot v2) — the public
+            # Position model has no per-date field, so the broker exposes a
+            # dedicated export. getattr-guarded: scheduler test fakes / older
+            # broker views without the export degrade to empty maps
+            # (P0-4-amendment-2026-06-04, codex cycle-7 P1).
+            _export = getattr(self._broker, "export_bought_by_date", None)
+            bought_maps: dict[str, dict[str, int]] = (
+                await _export() if _export is not None else {}
+            )
             snapshot_positions = tuple(
                 BrokerSnapshotPosition(
                     code=pos.code,
                     volume=pos.volume,
-                    today_bought_volume=getattr(pos, "today_bought_volume", 0),
+                    # The public Position model exposes volume +
+                    # available_volume (not the internal counter): their
+                    # difference IS the same-day bought volume. Persisting it
+                    # keeps the recovery T+1 reseed (and the post-restart
+                    # available_volume) correct — the previous getattr on the
+                    # public model silently wrote 0 for every position
+                    # (P0-4-amendment-2026-06-04, codex cycle-5 P1).
+                    today_bought_volume=max(
+                        0,
+                        int(pos.volume)
+                        - int(getattr(pos, "available_volume", pos.volume)),
+                    ),
                     cost_price=pos.cost_price,
+                    bought_by_date=bought_maps.get(pos.code, {}),
                 )
                 for pos in positions
                 if getattr(pos, "volume", 0) > 0

@@ -1032,4 +1032,259 @@ class TestSchemaVersionEnforcement:
 
     def test_event_module_constants_match_models(self) -> None:
         assert BROKER_EVENT_SCHEMA_VERSION == 1
-        assert BROKER_SNAPSHOT_SCHEMA_VERSION == 1
+        # v2: positions carry bought_by_date (P0-4-amendment-2026-06-04;
+        # owner-approved bump — read path accepts v1, write path emits v2).
+        assert BROKER_SNAPSHOT_SCHEMA_VERSION == 2
+
+
+class TestReplayRebuildsT1BuyRecord:
+    """P0-4-amendment-2026-06-04 (codex cycle-3) — recovery rebuilds the
+    per-trade-date buy record the external-report T+1 guard consumes, so a
+    restart does not blind the guard."""
+
+    def test_external_fill_buy_keys_on_instruction_date(self) -> None:
+        from backend.broker.persistence.recovery import (
+            RecoveredState,
+            _apply_event,
+        )
+
+        state = RecoveredState(
+            cash=100_000.0, frozen_cash=0.0, initial_capital=100_000.0
+        )
+        event = BrokerEvent(
+            sequence=1,
+            # Parsed/applied the NEXT day (late 补录) — the buy record must
+            # still key on the instruction's embedded 2026-05-15.
+            occurred_at=datetime(2026, 5, 16, 9, 0, tzinfo=UTC),
+            event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
+            payload={
+                "instruction_id": "QM-20260515-100000-600519-BUY-001",
+                "report_schema_version": 2,
+                "net": 12_605.0,
+                "commission": 5.0,
+                "cash_delta": -12_605.0,
+                "positions_delta": [
+                    {"code": "600519", "volume_delta": 200, "cost_price": 63.0}
+                ],
+            },
+        )
+        _apply_event(state, event)
+        pos = state.positions["600519"]
+        from datetime import date as _date
+
+        assert pos.bought_by_date == {_date(2026, 5, 15): 200}
+
+    def test_order_filled_buy_keys_on_event_date(self) -> None:
+        from backend.broker.persistence.recovery import (
+            RecoveredState,
+            _apply_event,
+        )
+
+        state = RecoveredState(
+            cash=100_000.0, frozen_cash=10_000.0, initial_capital=100_000.0
+        )
+        event = BrokerEvent(
+            sequence=1,
+            occurred_at=datetime(2026, 5, 15, 2, 0, tzinfo=UTC),  # 10:00 SH
+            event_type=BrokerEventType.ORDER_FILLED,
+            payload={
+                "direction": "BUY",
+                "code": "510300",
+                "volume": 1000,
+                "fill_price": 4.0,
+                "commission": 5.0,
+                "stamp_tax": 0.0,
+                "transfer_fee": 0.0,
+                "frozen_amount": 4_005.0,
+            },
+        )
+        _apply_event(state, event)
+        from datetime import date as _date
+
+        pos = state.positions["510300"]
+        assert pos.bought_by_date == {_date(2026, 5, 15): 1000}
+
+    @pytest.mark.asyncio
+    async def test_recover_reseeds_buy_dates_from_snapshot(self) -> None:
+        # codex cycle-4 P1: the EOD snapshot is written BEFORE advance_day,
+        # so today_bought_volume in it IS the volume bought on the snapshot's
+        # trade date. Recovery must re-seed the per-date T+1 buy record from
+        # it — else a restart from a checkpoint containing a same-day buy
+        # blinds the external SELL guard for exactly those shares.
+        from datetime import date as _date
+
+        client = _FakeClient()
+        event_coll = _FakeCollection()
+        snap_coll = _FakeCollection()
+        es = BrokerEventStore(client, event_coll)
+        ss = BrokerSnapshotStore(client, snap_coll)
+
+        positions = (
+            BrokerSnapshotPosition(
+                code="600519",
+                volume=200,
+                today_bought_volume=200,  # bought ON the snapshot date
+                cost_price=63.0,
+            ),
+            BrokerSnapshotPosition(
+                code="510300",
+                volume=300,
+                today_bought_volume=0,  # settled — no per-date entry
+                cost_price=4.0,
+            ),
+        )
+        await ss.append(
+            _seed_snapshot(sequence=7, cash=80_000.0, positions=positions)
+        )
+
+        state = await recover_state(es, ss, initial_capital=100_000.0)
+        assert state.positions["600519"].bought_by_date == {
+            _date(2026, 5, 15): 200  # _seed_snapshot trade_date
+        }
+        assert state.positions["510300"].bought_by_date == {}
+
+    @pytest.mark.asyncio
+    async def test_recover_prefers_persisted_buy_date_map(self) -> None:
+        # codex cycle-7 P1: a v2 snapshot persists the FULL per-date buy map
+        # — multi-day buy dates survive the snapshot cursor, so a backfilled
+        # SELL dated before the snapshot day is still measured correctly.
+        from datetime import date as _date
+
+        client = _FakeClient()
+        event_coll = _FakeCollection()
+        snap_coll = _FakeCollection()
+        es = BrokerEventStore(client, event_coll)
+        ss = BrokerSnapshotStore(client, snap_coll)
+
+        positions = (
+            BrokerSnapshotPosition(
+                code="600519",
+                volume=200,
+                today_bought_volume=100,  # bought on the snapshot date
+                cost_price=63.0,
+                bought_by_date={"2026-05-14": 100, "2026-05-15": 100},
+            ),
+        )
+        await ss.append(
+            _seed_snapshot(sequence=9, cash=70_000.0, positions=positions)
+        )
+
+        state = await recover_state(es, ss, initial_capital=100_000.0)
+        assert state.positions["600519"].bought_by_date == {
+            _date(2026, 5, 14): 100,
+            _date(2026, 5, 15): 100,
+        }
+
+
+class TestSnapshotSchemaV2:
+    def test_v1_rows_still_parse_and_validate_checksum(self) -> None:
+        # Read-compat: a persisted v1 row (no bought_by_date) must parse and
+        # its STORED checksum must still validate (byte-identical payload
+        # for empty maps).
+        positions = (
+            BrokerSnapshotPosition(
+                code="600519", volume=100, today_bought_volume=0,
+                cost_price=1800.0,
+            ),
+        )
+        checksum = compute_snapshot_checksum(
+            820_000.0, 0.0, 1_000_000.0, positions
+        )
+        snap = BrokerSnapshot(
+            created_at=_ts(0),
+            trade_date="2026-05-15",
+            schema_version=1,  # an OLD persisted row
+            last_event_sequence=5,
+            cash=820_000.0,
+            frozen_cash=0.0,
+            initial_capital=1_000_000.0,
+            positions=positions,
+            checksum=checksum,
+        )
+        assert snap.schema_version == 1
+        assert (
+            compute_snapshot_checksum(
+                snap.cash,
+                snap.frozen_cash,
+                snap.initial_capital,
+                snap.positions,
+            )
+            == snap.checksum
+        )
+
+    def test_future_schema_version_rejected(self) -> None:
+        positions = ()
+        checksum = compute_snapshot_checksum(1.0, 0.0, 1.0, positions)
+        with pytest.raises(Exception, match="schema_version"):
+            BrokerSnapshot(
+                created_at=_ts(0),
+                trade_date="2026-05-15",
+                schema_version=BROKER_SNAPSHOT_SCHEMA_VERSION + 1,
+                last_event_sequence=0,
+                cash=1.0,
+                frozen_cash=0.0,
+                initial_capital=1.0,
+                positions=positions,
+                checksum=checksum,
+            )
+
+    def test_checksum_changes_with_buy_date_map(self) -> None:
+        base = BrokerSnapshotPosition(
+            code="600519", volume=200, today_bought_volume=100,
+            cost_price=63.0,
+        )
+        with_map = BrokerSnapshotPosition(
+            code="600519", volume=200, today_bought_volume=100,
+            cost_price=63.0, bought_by_date={"2026-05-15": 100},
+        )
+        assert compute_snapshot_checksum(
+            1.0, 0.0, 1.0, (base,)
+        ) != compute_snapshot_checksum(1.0, 0.0, 1.0, (with_map,))
+
+    def test_malformed_buy_date_key_rejected(self) -> None:
+        with pytest.raises(Exception, match="ISO date"):
+            BrokerSnapshotPosition(
+                code="600519", volume=100, today_bought_volume=0,
+                cost_price=63.0, bought_by_date={"20260515": 100},
+            )
+
+    def test_to_snapshot_positions_carries_buy_date_map(self) -> None:
+        # /code-review finding: scripts/reconcile_now.py persists a
+        # checkpoint built from to_snapshot_positions() — dropping the map
+        # there would re-open the multi-day gap on the next restart.
+        from datetime import date as _date
+
+        from backend.broker.persistence.recovery import (
+            RecoveredState,
+        )
+        from backend.broker.persistence.recovery import (
+            _MutablePosition as _RecPos,
+        )
+
+        state = RecoveredState(
+            cash=1.0, frozen_cash=0.0, initial_capital=1.0,
+            positions={
+                "600519": _RecPos(
+                    code="600519", volume=200, today_bought_volume=100,
+                    cost_price=63.0,
+                    bought_by_date={
+                        _date(2026, 5, 14): 100,
+                        _date(2026, 5, 15): 100,
+                    },
+                )
+            },
+        )
+        (snap_pos,) = state.to_snapshot_positions()
+        assert snap_pos.bought_by_date == {
+            "2026-05-14": 100,
+            "2026-05-15": 100,
+        }
+
+    def test_invalid_calendar_date_key_rejected(self) -> None:
+        # '2026-02-30' satisfies the regex but is not a real date — it must
+        # fail at READ time, not deep inside recovery's fromisoformat.
+        with pytest.raises(Exception, match="calendar"):
+            BrokerSnapshotPosition(
+                code="600519", volume=100, today_bought_volume=0,
+                cost_price=63.0, bought_by_date={"2026-02-30": 100},
+            )

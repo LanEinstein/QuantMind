@@ -44,19 +44,27 @@ def canonical_state_payload(
     ``code`` so iteration order from the broker doesn't matter.
     """
     sorted_positions = sorted(positions, key=lambda p: p.code)
+
+    def _row(pos: BrokerSnapshotPosition) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "code": pos.code,
+            "volume": pos.volume,
+            "today_bought_volume": pos.today_bought_volume,
+            "cost_price": round(pos.cost_price, 4),
+        }
+        # v2 (P0-4-amendment-2026-06-04): fold the per-date buy record in
+        # ONLY when present — an empty map keeps the payload byte-identical
+        # to v1, so checksums stored by v1 writers still validate on read.
+        bought = getattr(pos, "bought_by_date", None)
+        if bought:
+            row["bought_by_date"] = {k: bought[k] for k in sorted(bought)}
+        return row
+
     return {
         "cash": round(cash, 4),
         "frozen_cash": round(frozen_cash, 4),
         "initial_capital": round(initial_capital, 2),
-        "positions": [
-            {
-                "code": pos.code,
-                "volume": pos.volume,
-                "today_bought_volume": pos.today_bought_volume,
-                "cost_price": round(pos.cost_price, 4),
-            }
-            for pos in sorted_positions
-        ],
+        "positions": [_row(pos) for pos in sorted_positions],
     }
 
 

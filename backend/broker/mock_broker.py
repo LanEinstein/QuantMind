@@ -28,7 +28,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 import structlog
 
@@ -45,6 +45,7 @@ from backend.broker.models import (
     Position,
     Trade,
 )
+from backend.broker.trade_dates import instruction_trade_date, record_buy_date
 from backend.data.market_meta_provider import (
     MarketMetaProvider,
     StaleQuoteError,
@@ -81,6 +82,15 @@ class _MutablePosition:
     volume: int = 0
     today_bought_volume: int = 0
     cost_price: float = 0.0
+    # P0-4-amendment-2026-06-04: per-trade-date buy volumes. Unlike
+    # ``today_bought_volume`` (cleared by the 16:30 ``advance_day`` cron),
+    # this map is date-keyed and only buys mutate it, so the external-report
+    # T+1 guard stays correct for a late same-day report arriving AFTER the
+    # settlement reset (codex P1) and for multi-day buy sequences (a newer
+    # buy must not erase an older date's record — codex cycle-3 P1). Pruned
+    # to the most recent BOUGHT_BY_DATE_KEEP dates; rebuilt on recovery by
+    # the persistence replay.
+    bought_by_date: dict[date, int] = field(default_factory=dict)
 
     @property
     def available_volume(self) -> int:
@@ -180,6 +190,18 @@ class MockBroker(IBroker):
             for pos in positions:
                 if pos.volume <= 0:
                     continue
+                # Per-date buy record (P0-4-amendment-2026-06-04). Carriers
+                # differ: recovery's _MutablePosition keys by datetime.date,
+                # BrokerSnapshotPosition by ISO string — normalise to date so
+                # the T+1 guard's date comparisons always hold. Absent →
+                # empty (guard degrades to the over-holding check).
+                raw_buys = getattr(pos, "bought_by_date", None) or {}
+                bought_by_date = {
+                    (k if isinstance(k, date) else date.fromisoformat(k)): int(
+                        v
+                    )
+                    for k, v in raw_buys.items()
+                }
                 self._positions[pos.code] = _MutablePosition(
                     code=pos.code,
                     volume=int(pos.volume),
@@ -187,6 +209,7 @@ class MockBroker(IBroker):
                         getattr(pos, "today_bought_volume", 0)
                     ),
                     cost_price=float(pos.cost_price),
+                    bought_by_date=bought_by_date,
                 )
 
     async def place_order(
@@ -446,7 +469,12 @@ class MockBroker(IBroker):
         self._trades.append(trade)
 
         if order.direction == OrderDirection.BUY:
-            self._apply_buy(order.code, fill_price, order.volume)
+            self._apply_buy(
+                order.code,
+                fill_price,
+                order.volume,
+                traded_date=now.astimezone(SHANGHAI).date(),
+            )
             # Frozen amount equals net_amount (set in place_order) — so
             # delta is always 0 here. The defensive arithmetic is kept
             # to make a future divergence noisy rather than silent.
@@ -463,24 +491,43 @@ class MockBroker(IBroker):
             self._cash += cost.net_amount
 
     def _apply_buy(
-        self, code: str, fill_price: float, volume: int
+        self,
+        code: str,
+        fill_price: float,
+        volume: int,
+        traded_date: date | None = None,
+        lock_today: bool = True,
     ) -> None:
-        """Update position for a buy fill."""
+        """Update position for a buy fill.
+
+        ``traded_date`` (the buy's trade date, Shanghai calendar) feeds the
+        date-keyed same-day-buy record consumed by the external-report T+1
+        guard (P0-4-amendment-2026-06-04); ``None`` (legacy caller) leaves
+        the record untouched. ``lock_today=False`` (a 盘后/次日补录 BUY whose
+        instruction date is BEFORE today) skips the ``today_bought_volume``
+        T+1 lock: those shares settled on instruction-date+1, so locking them
+        for the parse day would wrongly freeze a sellable position (codex
+        cycle-6 P2).
+        """
         pos = self._positions.get(code)
         if pos is None:
-            self._positions[code] = _MutablePosition(
+            pos = _MutablePosition(
                 code=code,
                 volume=volume,
-                today_bought_volume=volume,
+                today_bought_volume=volume if lock_today else 0,
                 cost_price=fill_price,
             )
+            self._positions[code] = pos
         else:
             # Cost averaging
             total_cost = pos.cost_price * pos.volume + fill_price * volume
             new_volume = pos.volume + volume
             pos.cost_price = total_cost / new_volume
             pos.volume = new_volume
-            pos.today_bought_volume += volume
+            if lock_today:
+                pos.today_bought_volume += volume
+        if traded_date is not None:
+            record_buy_date(pos.bought_by_date, traded_date, volume)
 
     def _apply_sell(self, code: str, volume: int) -> None:
         """Update position for a sell fill."""
@@ -514,6 +561,22 @@ class MockBroker(IBroker):
         """Get all current positions as frozen models."""
         async with self._lock:
             return self._build_positions()
+
+    async def export_bought_by_date(self) -> dict[str, dict[str, int]]:
+        """Per-position per-trade-date buy volumes (ISO keys), for snapshots.
+
+        The public :class:`Position` model has no per-date field, so the
+        EOD snapshot pipeline reads this dedicated export and persists it
+        (BrokerSnapshot v2) — keeping the external-report T+1 guard correct
+        across a restart from a checkpoint spanning multi-day buys
+        (P0-4-amendment-2026-06-04, codex cycle-7 P1). Read-only copy.
+        """
+        async with self._lock:
+            return {
+                code: {d.isoformat(): v for d, v in pos.bought_by_date.items()}
+                for code, pos in self._positions.items()
+                if pos.bought_by_date
+            }
 
     def _build_positions(self) -> tuple[Position, ...]:
         """Build position snapshots (must be called under lock)."""
@@ -733,7 +796,26 @@ class MockBroker(IBroker):
                     )
                 cash_delta = -net
                 self._cash -= net
-                self._apply_buy(code, buy_cost_basis, volume)
+                buy_trade_date = instruction_trade_date(
+                    order_id_hint, traded_at
+                )
+                self._apply_buy(
+                    code,
+                    buy_cost_basis,
+                    volume,
+                    # The instruction's embedded date, not parsed_at: a late
+                    # next-day BUY 补录 still bought on the instruction date,
+                    # so those shares must unlock the day AFTER that date.
+                    traded_date=buy_trade_date,
+                    # A backfilled BUY whose instruction date is before today
+                    # is already SETTLED — locking it in today_bought_volume
+                    # would wrongly freeze a sellable position until the next
+                    # advance_day (codex cycle-6 P2).
+                    lock_today=(
+                        buy_trade_date
+                        >= self._now().astimezone(SHANGHAI).date()
+                    ),
+                )
                 positions_delta = [
                     {
                         "code": code,
@@ -748,6 +830,45 @@ class MockBroker(IBroker):
                     raise ValueError(
                         f"apply_external_fill SELL {volume}@{code} but "
                         f"available volume is {pos.volume if pos else 0}"
+                    )
+                # P0-4-amendment-2026-06-04: a report selling shares bought
+                # the SAME trade date could not have executed at the real
+                # broker (T+1) — it is a typo, not truth. Reject before
+                # mutating (mirror of the BUY affordability guard above) so
+                # the orchestrator clarifies instead of silently desyncing
+                # the mirror. The check is keyed on the DATE-stamped buy
+                # record, not today_bought_volume: the 16:30 advance_day cron
+                # clears the counter, which would let a late same-day report
+                # bypass a counter-based guard (codex P1). The trade date
+                # comes from the instruction id, not parsed_at — a next-day
+                # 补录 report still refers to the instruction-date execution
+                # (codex cycle-2 P1). Distinct message from the over-holding
+                # guard so ops can tell "more than held" from "held but not
+                # yet settled".
+                report_trade_date = instruction_trade_date(
+                    order_id_hint, traded_at
+                )
+                # Sellable AS OF the report's trade date: shares bought ON
+                # that date were unsettled (T+1) and shares bought AFTER it
+                # did not exist yet — both must be excluded, else a
+                # backfilled SELL dated D passes against a position built by
+                # later buys (codex cycle-6 P1). Sells applied since D only
+                # shrink pos.volume, so this bound under-estimates (a rare
+                # complex backfill may be falsely rejected → human
+                # clarification; it can never over-accept).
+                unavailable_on_date = sum(
+                    v
+                    for d, v in pos.bought_by_date.items()
+                    if d >= report_trade_date
+                )
+                sellable = pos.volume - unavailable_on_date
+                if volume > sellable:
+                    raise ValueError(
+                        f"apply_external_fill SELL {volume}@{code} violates "
+                        f"T+1: only {sellable} settled shares were sellable "
+                        f"on {report_trade_date} ({unavailable_on_date} "
+                        f"bought on/after that date); the real broker could "
+                        f"not have executed this fill (likely a typo)"
                     )
                 self._apply_sell(code, volume)
                 self._cash += net

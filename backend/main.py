@@ -1593,7 +1593,10 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         cash=recovered.cash,
         frozen_cash=recovered.frozen_cash,
         initial_capital=recovered.initial_capital,
-        positions=recovered.to_snapshot_positions(),
+        # Pass the recovery position records (NOT to_snapshot_positions()):
+        # the frozen snapshot carrier drops the per-date T+1 buy record the
+        # external-report guard consumes (P0-4-amendment-2026-06-04).
+        positions=tuple(recovered.positions.values()),
     )
     log.info(
         "broker_recovered_from_persistence",

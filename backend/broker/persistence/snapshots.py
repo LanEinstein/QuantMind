@@ -16,15 +16,26 @@ red line.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-BROKER_SNAPSHOT_SCHEMA_VERSION = 1
+BROKER_SNAPSHOT_SCHEMA_VERSION = 2
 """Locked schema version for broker_snapshots rows. See events.py for
-the bump procedure (paired with a P1-2.A amendment doc + migration)."""
+the bump procedure (paired with a P1-2.A amendment doc + migration).
+
+v2 (P0-4-amendment-2026-06-04): positions gained ``bought_by_date``
+(per-trade-date buy volumes, ISO-date keys) so the external-report T+1
+guard survives a restart from a checkpoint spanning multi-day buys. The
+read path accepts v1 rows (the field defaults empty; the checksum
+payload is byte-identical for empty maps, so stored v1 checksums still
+validate); the write path always emits the current version."""
+
+
+_ISO_DATE_RE = r"^\d{4}-\d{2}-\d{2}$"
 
 
 class BrokerSnapshotPosition(BaseModel):
@@ -41,6 +52,11 @@ class BrokerSnapshotPosition(BaseModel):
     volume: int = Field(ge=0)
     today_bought_volume: int = Field(ge=0)
     cost_price: float = Field(ge=0.0)
+    bought_by_date: dict[str, int] = Field(default_factory=dict)
+    """Per-trade-date buy volumes (ISO ``YYYY-MM-DD`` keys) consumed by
+    the external-report T+1 guard (P0-4-amendment-2026-06-04). Empty on
+    v1 rows — recovery then falls back to the today_bought_volume
+    reseed for the snapshot's own trade date."""
 
     @model_validator(mode="after")
     def _check_today_le_total(self) -> BrokerSnapshotPosition:
@@ -49,6 +65,31 @@ class BrokerSnapshotPosition(BaseModel):
                 f"today_bought_volume {self.today_bought_volume} "
                 f"exceeds total volume {self.volume} (code {self.code})"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_bought_by_date(self) -> BrokerSnapshotPosition:
+        for key, vol in self.bought_by_date.items():
+            # Parse, don't just pattern-match: '2026-02-30' satisfies the
+            # regex but would crash recovery's date.fromisoformat — reject
+            # the corrupt row at READ time instead (fail-closed here, clean
+            # pydantic error rather than a deep ValueError mid-recovery).
+            if not re.match(_ISO_DATE_RE, key):
+                raise ValueError(
+                    f"bought_by_date key {key!r} is not an ISO date "
+                    f"(code {self.code})"
+                )
+            try:
+                datetime.strptime(key, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError(
+                    f"bought_by_date key {key!r} is not a real calendar "
+                    f"date (code {self.code})"
+                ) from exc
+            if vol < 0:
+                raise ValueError(
+                    f"bought_by_date[{key}] is negative (code {self.code})"
+                )
         return self
 
 
@@ -92,9 +133,14 @@ class BrokerSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def _check_schema_version(self) -> BrokerSnapshot:
-        if self.schema_version != BROKER_SNAPSHOT_SCHEMA_VERSION:
+        # Read-compat: accept PRIOR versions (their new fields default —
+        # v1 rows parse with empty bought_by_date and their stored
+        # checksums still validate, byte-identical payload). A FUTURE
+        # version means this module is too old to interpret the row —
+        # fail-closed exactly as before (P0-4-amendment-2026-06-04).
+        if self.schema_version > BROKER_SNAPSHOT_SCHEMA_VERSION:
             raise ValueError(
-                f"broker_snapshot schema_version {self.schema_version} != "
+                f"broker_snapshot schema_version {self.schema_version} > "
                 f"{BROKER_SNAPSHOT_SCHEMA_VERSION}; persistence module "
                 "needs upgrade before reading"
             )

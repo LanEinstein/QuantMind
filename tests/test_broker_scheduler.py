@@ -593,3 +593,31 @@ class TestReplicaSetGate:
         finally:
             await env.scheduler.stop()
         assert calls == ["called"]
+
+
+class TestEodSnapshotCarriesTodayBought:
+    @pytest.mark.asyncio
+    async def test_snapshot_persists_same_day_bought_volume(
+        self, env: _Env
+    ) -> None:
+        # P0-4-amendment-2026-06-04 (codex cycle-5 P1): the public Position
+        # model has no today_bought_volume attribute, so the previous getattr
+        # silently wrote 0 for every position — blinding the recovery T+1
+        # reseed AND dropping the T+1 lock itself on a restart from the EOD
+        # checkpoint. volume − available_volume IS the same-day bought
+        # volume; the snapshot must carry it.
+        await env.broker.apply_external_fill(
+            order_id_hint="QM-20260515-100000-600519-BUY-001",
+            code="600519", volume=200, fill_price=63.0, side_is_buy=True,
+            traded_at=dt.datetime(2026, 5, 15, 10, 5, tzinfo=SHANGHAI),
+            report_id="r-eod-buy", kind="FILLED", report_schema_version=2,
+        )
+        result = await env.scheduler.run_eod_pipeline()
+        assert result.success
+        doc = env.snapshot_coll.docs[0]
+        rows = {p["code"]: p for p in doc["positions"]}
+        assert rows["600519"]["volume"] == 200
+        assert rows["600519"]["today_bought_volume"] == 200
+        # BrokerSnapshot v2: the full per-trade-date buy map is persisted so
+        # multi-day buy dates survive the snapshot cursor (codex cycle-7 P1).
+        assert rows["600519"]["bought_by_date"] == {"2026-05-15": 200}

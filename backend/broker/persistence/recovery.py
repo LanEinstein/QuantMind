@@ -25,6 +25,7 @@ matches all events).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import structlog
@@ -38,10 +39,12 @@ from backend.broker.persistence.store import (
     BrokerEventStore,
     BrokerSnapshotStore,
 )
+from backend.broker.trade_dates import instruction_trade_date, record_buy_date
 from backend.models.execution import (
     REPORT_SCHEMA_V1_OWNER_FEE,
     REPORT_SCHEMA_V2_SYSTEM_FEE,
 )
+from backend.utils.trading_hours import SHANGHAI
 
 log = structlog.get_logger(component="broker.persistence.recovery")
 
@@ -63,6 +66,11 @@ class _MutablePosition:
     volume: int
     today_bought_volume: int
     cost_price: float
+    # Per-trade-date buy volumes consumed by the external-report T+1 guard
+    # (P0-4-amendment-2026-06-04). Rebuilt here during replay so a restart
+    # does not blind the guard (codex cycle-3 P1); seeded into the live
+    # MockBroker via seed_from_recovery.
+    bought_by_date: dict[date, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,6 +100,15 @@ class RecoveredState:
                     volume=pos.volume,
                     today_bought_volume=pos.today_bought_volume,
                     cost_price=pos.cost_price,
+                    # Carry the per-date T+1 buy record (ISO keys) — a
+                    # checkpoint written from a recovered state (e.g.
+                    # scripts/reconcile_now.py appends one) must not drop
+                    # multi-day buy dates, or a restart from it re-opens the
+                    # cycle-7 gap (P0-4-amendment-2026-06-04).
+                    bought_by_date={
+                        d.isoformat(): v
+                        for d, v in sorted(pos.bought_by_date.items())
+                    },
                 )
             )
         return tuple(out)
@@ -154,17 +171,25 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
             state.cash += delta
             pos = state.positions.get(code)
             if pos is None:
-                state.positions[code] = _MutablePosition(
+                pos = _MutablePosition(
                     code=code,
                     volume=volume,
                     today_bought_volume=volume,
                     cost_price=fill_price,
                 )
+                state.positions[code] = pos
             else:
                 total_cost = pos.cost_price * pos.volume + fill_price * volume
                 pos.volume += volume
                 pos.today_bought_volume += volume
                 pos.cost_price = total_cost / pos.volume if pos.volume else 0.0
+            # Sim fills happen at the event time — key the T+1 buy record on
+            # the event's Shanghai trade date (P0-4-amendment-2026-06-04).
+            record_buy_date(
+                pos.bought_by_date,
+                event.occurred_at.astimezone(SHANGHAI).date(),
+                volume,
+            )
         else:  # SELL
             net = amount - commission - stamp_tax - transfer_fee
             state.cash += net
@@ -260,6 +285,13 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                     )
         cash_delta = float(payload.get("cash_delta", 0.0))
         state.cash += cash_delta
+        # External fills are keyed on the INSTRUCTION's embedded trade date
+        # (not the event/parse time) — mirrors MockBroker.apply_external_fill
+        # so the rebuilt T+1 buy record matches the live one bit-for-bit
+        # (P0-4-amendment-2026-06-04).
+        fill_trade_date = instruction_trade_date(
+            str(payload.get("instruction_id", "") or ""), event.occurred_at
+        )
         for delta in deltas:
             code = str(delta["code"])
             volume_delta = int(delta.get("volume_delta", 0))
@@ -268,7 +300,7 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
             if pos is None:
                 if volume_delta <= 0:
                     continue
-                state.positions[code] = _MutablePosition(
+                pos = _MutablePosition(
                     code=code,
                     volume=volume_delta,
                     today_bought_volume=0,
@@ -276,6 +308,8 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                         float(fill_price) if fill_price is not None else 0.0
                     ),
                 )
+                state.positions[code] = pos
+                record_buy_date(pos.bought_by_date, fill_trade_date, volume_delta)
             else:
                 if volume_delta > 0 and fill_price is not None:
                     # Weighted average mirrors MockBroker._apply_buy.
@@ -288,6 +322,9 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                         total_cost / new_volume if new_volume > 0 else 0.0
                     )
                     pos.volume = new_volume
+                    record_buy_date(
+                        pos.bought_by_date, fill_trade_date, volume_delta
+                    )
                 else:
                     pos.volume += volume_delta
                 if pos.volume <= 0:
@@ -345,6 +382,26 @@ async def recover_state(
                 f"{snapshot.checksum!r} != recomputed {expected_checksum!r}; "
                 "refusing automatic recovery (P1-2.A red line)"
             )
+        # Re-seed the per-date T+1 buy record (P0-4-amendment-2026-06-04):
+        # v2 snapshots persist the full per-date map (codex cycle-7 P1 —
+        # multi-day buy dates survive the snapshot cursor). v1 rows carry no
+        # map → fall back to the today_bought_volume reseed: the EOD snapshot
+        # is written BEFORE the 16:30 advance_day cron, so that counter IS
+        # the volume bought on the snapshot's own trade date (codex cycle-4
+        # P1). Without either, a restart from a checkpoint containing a
+        # same-day buy blinds the external-report SELL guard.
+        snapshot_day = date.fromisoformat(snapshot.trade_date)
+
+        def _buy_dates(pos: BrokerSnapshotPosition) -> dict[date, int]:
+            if pos.bought_by_date:
+                return {
+                    date.fromisoformat(k): v
+                    for k, v in pos.bought_by_date.items()
+                }
+            if pos.today_bought_volume > 0:
+                return {snapshot_day: pos.today_bought_volume}
+            return {}
+
         state = RecoveredState(
             cash=snapshot.cash,
             frozen_cash=snapshot.frozen_cash,
@@ -355,6 +412,7 @@ async def recover_state(
                     volume=pos.volume,
                     today_bought_volume=pos.today_bought_volume,
                     cost_price=pos.cost_price,
+                    bought_by_date=_buy_dates(pos),
                 )
                 for pos in snapshot.positions
             },
