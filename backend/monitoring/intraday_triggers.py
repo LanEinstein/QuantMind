@@ -65,6 +65,7 @@ from backend.monitoring.add_position import (
 from backend.monitoring.intraday_calibration import (
     DrawdownCalibrationConfig,
     TakeProfitCalibrationConfig,
+    TieredTakeProfitConfig,
     derive_drawdown_threshold,
     effective_r_multiple,
 )
@@ -103,8 +104,12 @@ _LOT = 100
 # r_multiple may be regime-conditioned (BULL later / BEAR earlier) when a
 # TakeProfitCalibrationConfig is supplied via its own independent regime
 # channel; a None calibration reproduces v6 outputs bit-for-bit
-# (P0-7-amendment-2026-06-04-regime-conditioned-takeprofit).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v7"
+# (P0-7-amendment-2026-06-04-regime-conditioned-takeprofit). v8: TAKE_PROFIT
+# may run a tiered ladder (+1R half → +2R another tranche → residual rides
+# the trailing stop) gated by the episode's ledger-folded tiers-taken count;
+# a None tiered config reproduces v7 outputs bit-for-bit
+# (P0-10-amendment-line2-2026-06-04-tiered-takeprofit).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v8"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -203,6 +208,16 @@ class IntradaySellIntent:
     # ``None`` only on legacy constructions → the recorder falls back to the
     # static config.
     effective_r_multiple: float | None = None
+    # The 1-based take-profit tier this intent fires (D1-d tiered ladder,
+    # P0-10-amendment-line2-2026-06-04). ``None`` on non-TAKE_PROFIT intents
+    # and when the tiered ladder is off (single-tier v7 behaviour).
+    take_profit_tier: int | None = None
+    # The episode's ledger-folded tiers-taken count in force this tick —
+    # carried on EVERY intent when the ladder is on (a lower-priority
+    # trigger's record must reproduce WHY take-profit was gated at a higher
+    # tier; mirrors the effective_drawdown_threshold precedent — codex P2).
+    # ``None`` when the tiered ladder is off.
+    take_profit_tiers_taken: int | None = None
 
 
 def _bare(code: str) -> str:
@@ -321,15 +336,21 @@ def _take_profit_intent(
     already_taken: frozenset[str],
     effective_drawdown_threshold: float,
     effective_r: float,
+    tier_ladder: tuple[float, ...] | None = None,
+    tiers_taken: int = 0,
 ) -> IntradaySellIntent | None:
-    """Lock a tranche of gains at ``cost + effective_r × R`` (R = k×ATR).
+    """Lock a tranche of gains at the (possibly tiered) take-profit target.
 
     ``effective_r`` is the r_multiple in force this tick — the regime-
     conditioned tier when the D1-c calibration is on, else the static
-    ``cfg.r_multiple`` (P0-7-amendment-2026-06-04). Returns ``None`` (no
-    take-profit) when this episode already took profit, the ATR/cost is
-    unusable, the price is not yet at the target, the position is not
-    net-profitable, or the tranche floors below one lot.
+    ``cfg.r_multiple`` (P0-7-amendment-2026-06-04). With a ``tier_ladder``
+    (D1-d, P0-10-amendment-line2-2026-06-04) the NEXT untaken tier gates the
+    target — ``cost + ladder[tiers_taken] × effective_r × R`` — and an
+    exhausted ladder takes no further profit (the residual rides the
+    trailing stop). ``None`` ladder reproduces the single-target v7 maths.
+    Returns ``None`` when this episode already took profit (legacy gate),
+    the ATR/cost is unusable, the price is not yet at the target, the
+    position is not net-profitable, or the tranche floors below one lot.
     """
     if code in already_taken or atr is None or atr <= 0:
         return None
@@ -338,7 +359,18 @@ def _take_profit_intent(
     if cost <= 0:
         return None
     r_unit = cfg.atr_stop_mult * atr
-    target = cost + effective_r * r_unit
+    if tier_ladder is None:
+        tier_index: int | None = None
+        target = cost + effective_r * r_unit
+        tier_label = f"+{effective_r:g}R"
+    else:
+        if tiers_taken >= len(tier_ladder):
+            return None  # ladder exhausted — residual rides the ATR stop
+        tier_index = tiers_taken + 1
+        target = cost + tier_ladder[tiers_taken] * effective_r * r_unit
+        tier_label = (
+            f"第{tier_index}档 +{tier_ladder[tiers_taken] * effective_r:g}R"
+        )
     if price < target or price <= cost:  # not at target, or not net profit
         return None
     settled = (pos.available_volume // _LOT) * _LOT
@@ -346,8 +378,8 @@ def _take_profit_intent(
     if sell_vol <= 0:  # sub-1-lot tranche → skip (never sell 0)
         return None
     detail = (
-        f"止盈 +{effective_r:g}R: 实时价 {price:.3f} ≥ 成本 {cost:.3f} + "
-        f"{effective_r:g}×R({r_unit:.3f}); 减 {sell_vol} 股锁盈,余仓续交移动止损"
+        f"止盈 {tier_label}: 实时价 {price:.3f} ≥ 目标 {target:.3f} "
+        f"(成本 {cost:.3f}, R={r_unit:.3f}); 减 {sell_vol} 股锁盈,余仓续交移动止损"
     )
     return IntradaySellIntent(
         code=code,
@@ -362,6 +394,10 @@ def _take_profit_intent(
         stop_level=round(target, 4),
         effective_drawdown_threshold=effective_drawdown_threshold,
         effective_r_multiple=effective_r,
+        take_profit_tier=tier_index,
+        take_profit_tiers_taken=(
+            tiers_taken if tier_ladder is not None else None
+        ),
     )
 
 
@@ -376,6 +412,7 @@ def _weight_trim_intent(
     max_single_stock_pct: float,
     effective_drawdown_threshold: float,
     effective_r: float,
+    take_profit_tiers_taken: int | None = None,
     hard_cap_only: bool = False,
     max_single_instruction_amount: float = 50_000.0,
 ) -> IntradaySellIntent | None:
@@ -454,6 +491,7 @@ def _weight_trim_intent(
         stop_level=0.0,
         effective_drawdown_threshold=effective_drawdown_threshold,
         effective_r_multiple=effective_r,
+        take_profit_tiers_taken=take_profit_tiers_taken,
     )
 
 
@@ -469,6 +507,7 @@ def _thesis_break_intent(
     atr: float | None,
     effective_drawdown_threshold: float,
     effective_r: float,
+    take_profit_tiers_taken: int | None = None,
 ) -> IntradaySellIntent | None:
     """Full-exit SELL for a broken thesis, clamped to the single-instruction cap.
 
@@ -501,6 +540,7 @@ def _thesis_break_intent(
         stop_level=0.0,
         effective_drawdown_threshold=effective_drawdown_threshold,
         effective_r_multiple=effective_r,
+        take_profit_tiers_taken=take_profit_tiers_taken,
     )
 
 
@@ -521,6 +561,8 @@ def evaluate_intraday_sell_intents(
     regime: MarketRegime | None = None,
     takeprofit_calibration: TakeProfitCalibrationConfig | None = None,
     takeprofit_regime: MarketRegime | None = None,
+    tiered_takeprofit: TieredTakeProfitConfig | None = None,
+    take_profit_tiers_taken: Mapping[str, int] | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -577,6 +619,14 @@ def evaluate_intraday_sell_intents(
     calibration reproduces v6 outputs bit-for-bit (the regime channel alone is
     inert). Only the discretionary TAKE_PROFIT target moves — protective
     stops, the thesis-break exit and the hard cap are untouched.
+
+    ``tiered_takeprofit`` + ``take_profit_tiers_taken`` (D1-d,
+    P0-10-amendment-line2-2026-06-04): a price-laddered scale-out — the NEXT
+    untaken tier (per the runner's ledger-folded per-episode count) gates the
+    take-profit target; an exhausted ladder takes no further profit (the
+    residual rides the trailing stop). Composes with the D1-c multiple (a
+    BEAR regime shifts the whole ladder earlier). ``None`` reproduces v7
+    outputs bit-for-bit (single target, cross-day scale-out semantics).
     """
     cfg = config or IntradayTriggerConfig()
     names = name_by_code or {}
@@ -632,6 +682,14 @@ def evaluate_intraday_sell_intents(
         # still record the threshold in effect, else the manifest would imply a
         # drawdown stop should have fired (codex P2 — audit/replay consistency).
         dd_thr = round(dd_threshold, 6)
+        # D1-d: the episode's tiers-taken count in force this tick — carried
+        # on EVERY intent (PIT: a lower-priority record must reproduce why
+        # take-profit was gated at a higher tier). None when the ladder is off.
+        tp_taken = (
+            (take_profit_tiers_taken or {}).get(code, 0)
+            if tiered_takeprofit is not None
+            else None
+        )
         atr = close_atr(closes, cfg.atr_window) if closes else None
         # The ATR trailing stop self-gates on a COMPLETE recent-high window:
         # a partial window would understate the true recent high and fire the
@@ -671,6 +729,7 @@ def evaluate_intraday_sell_intents(
                     stop_level=round(stop_level, 4),
                     effective_drawdown_threshold=dd_thr,
                     effective_r_multiple=eff_r,
+                    take_profit_tiers_taken=tp_taken,
                 )
             )
         elif drawdown_fired:
@@ -692,6 +751,7 @@ def evaluate_intraday_sell_intents(
                     stop_level=0.0,
                     effective_drawdown_threshold=dd_thr,
                     effective_r_multiple=eff_r,
+                    take_profit_tiers_taken=tp_taken,
                 )
             )
         else:
@@ -716,6 +776,7 @@ def evaluate_intraday_sell_intents(
                     atr=atr,
                     effective_drawdown_threshold=dd_thr,
                     effective_r=eff_r,
+                    take_profit_tiers_taken=tp_taken,
                 )
                 if code in thesis_breaks
                 else None
@@ -743,6 +804,14 @@ def evaluate_intraday_sell_intents(
                         already_taken=take_profit_already_taken,
                         effective_drawdown_threshold=dd_thr,
                         effective_r=eff_r,
+                        tier_ladder=(
+                            tiered_takeprofit.tiers
+                            if tiered_takeprofit is not None
+                            else None
+                        ),
+                        tiers_taken=(take_profit_tiers_taken or {}).get(
+                            code, 0
+                        ),
                     )
                 )
                 trim = (
@@ -758,6 +827,7 @@ def evaluate_intraday_sell_intents(
                         max_single_stock_pct=max_single_stock_pct,
                         effective_drawdown_threshold=dd_thr,
                         effective_r=eff_r,
+                        take_profit_tiers_taken=tp_taken,
                         hard_cap_only=is_long_term,
                         max_single_instruction_amount=max_single_instruction_amount,
                     )

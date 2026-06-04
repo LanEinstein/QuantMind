@@ -34,8 +34,10 @@ from dataclasses import dataclass
 # P0-7-amendment-2026-06-03-regime-conditioned-drawdown); is_bear=False reproduces
 # v1 outputs bit-for-bit. v3: regime-conditioned take-profit multiple (D1-c,
 # P0-7-amendment-2026-06-04-regime-conditioned-takeprofit) — a new, separate
-# derivation; the drawdown maths is untouched (v2-identical).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v3"
+# derivation; the drawdown maths is untouched (v2-identical). v4: tiered
+# take-profit ladder config (D1-d, P0-10-amendment-line2-2026-06-04) — a new
+# config type only; prior derivations untouched (v3-identical).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_calibration/v4"
 
 
 @dataclass(frozen=True)
@@ -159,10 +161,44 @@ def effective_r_multiple(
     return max(config.floor, min(config.ceiling, raw))
 
 
+@dataclass(frozen=True)
+class TieredTakeProfitConfig:
+    """Runtime-immutable take-profit tier ladder (D1-d).
+
+    Tier ``k`` (0-based, gated by the episode's tiers-taken count) targets
+    ``cost + tiers[k] × eff_r × R`` and sells ``tranche_fraction`` of the
+    current settled volume — with the default ladder ``(1.0, 2.0)`` that is
+    "+1R sell half → +2R sell another tranche → residual rides the trailing
+    stop". Composes with the D1-c regime multiple (``eff_r``): a BEAR regime
+    shifts the WHOLE ladder earlier. Recalibrated only offline (P2-2 shadow
+    + human gate + git + restart) — never at runtime, never by an LLM
+    (P0-10-amendment-line2-2026-06-04).
+    """
+
+    tiers: tuple[float, ...] = (1.0, 2.0)
+
+    def __post_init__(self) -> None:
+        if not self.tiers:
+            raise ValueError("TieredTakeProfitConfig.tiers must be non-empty")
+        prev = 0.0
+        for t in self.tiers:
+            if not (isinstance(t, (int, float)) and math.isfinite(t) and t > 0):
+                raise ValueError(
+                    f"TieredTakeProfitConfig.tiers entry {t!r} must be a "
+                    "finite positive number"
+                )
+            if t <= prev:
+                raise ValueError(
+                    "TieredTakeProfitConfig.tiers must be strictly ascending"
+                )
+            prev = t
+
+
 __all__ = [
     "FEATURE_CODE_VERSION",
     "DrawdownCalibrationConfig",
     "TakeProfitCalibrationConfig",
+    "TieredTakeProfitConfig",
     "derive_drawdown_threshold",
     "effective_r_multiple",
 ]

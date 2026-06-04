@@ -368,6 +368,8 @@ def _make_runner(
     drawdown_calibration=None,  # noqa: ANN001
     regime_drawdown_enabled: bool = False,
     takeprofit_calibration=None,  # noqa: ANN001
+    tiered_takeprofit=None,  # noqa: ANN001
+    takeprofit_ledger=None,  # noqa: ANN001
 ) -> tuple[Line2IntradayRunner, SnapshotStore, IntradayTriggerManifestStore]:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -398,6 +400,8 @@ def _make_runner(
         drawdown_calibration=drawdown_calibration,
         regime_drawdown_enabled=regime_drawdown_enabled,
         takeprofit_calibration=takeprofit_calibration,
+        tiered_takeprofit=tiered_takeprofit,
+        takeprofit_ledger=takeprofit_ledger,
         tick_timeout_seconds=tick_timeout_seconds,
     )
     return runner, snapshot_store, manifest_store
@@ -1186,3 +1190,89 @@ async def test_sell_record_writes_effective_r_multiple(
     rec2 = runner._sell_record(legacy, spot)  # noqa: SLF001
     # Absent on the intent → fall back to the static config (never guess).
     assert rec2.threshold_params["r_multiple"] == 1.0
+
+async def test_config_hash_includes_tiered_takeprofit(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from backend.monitoring.intraday_calibration import TieredTakeProfitConfig
+
+    sender = FakeFeishuSender()
+    r_none, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "none",
+    )
+    r_tier, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path / "tier",
+        tiered_takeprofit=TieredTakeProfitConfig(),
+    )
+    # The ladder is pinned (incl. its absence): a replay with the ladder off
+    # never reproduces a tier-gated target (PIT,
+    # P0-10-amendment-line2-2026-06-04).
+    assert r_none._config_hash != r_tier._config_hash  # noqa: SLF001
+
+
+async def test_sell_record_writes_take_profit_tier(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from backend.monitoring.intraday_triggers import IntradayTriggerKind
+
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    spot = SimpleNamespace(prev_close=4.0)
+    tiered = IntradaySellIntent(
+        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
+        drawdown_pct=0.0125, atr=0.02, recent_high=0.0, stop_level=4.04,
+        effective_r_multiple=1.0, take_profit_tier=1,
+    )
+    rec = runner._sell_record(tiered, spot)  # noqa: SLF001
+    assert rec.threshold_params["take_profit_tier"] == 1.0
+
+    untiered = IntradaySellIntent(
+        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.TAKE_PROFIT, anomaly_reason="x",
+        drawdown_pct=0.0125, atr=0.02, recent_high=0.0, stop_level=4.04,
+        effective_r_multiple=1.0,
+    )
+    rec2 = runner._sell_record(untiered, spot)  # noqa: SLF001
+    assert "take_profit_tier" not in rec2.threshold_params
+
+
+async def test_sell_record_writes_tiers_taken_on_gated_intent(
+    builder: InstructionPlanBuilder, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from backend.monitoring.intraday_triggers import IntradayTriggerKind
+
+    sender = FakeFeishuSender()
+    runner, _, _ = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    spot = SimpleNamespace(prev_close=4.0)
+    # A WEIGHT_TRIM that fired while take-profit was gated at tier 2: the
+    # record carries the tiers-taken count so replay reproduces the gating
+    # (codex P2).
+    gated = IntradaySellIntent(
+        code="510300", name="沪深300ETF", available_volume=100, limit_price=4.05,
+        trigger_kind=IntradayTriggerKind.WEIGHT_TRIM, anomaly_reason="x",
+        drawdown_pct=0.0125, atr=0.0, recent_high=0.0, stop_level=0.0,
+        effective_r_multiple=1.0, take_profit_tiers_taken=1,
+    )
+    rec = runner._sell_record(gated, spot)  # noqa: SLF001
+    assert rec.threshold_params["take_profit_tiers_taken"] == 1.0

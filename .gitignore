@@ -48,6 +48,9 @@ data/models/
 # written by the live service); committing it would seed production-specific
 # entry baselines into fresh checkouts — codex P2 2026-06-04.
 data/slot_rotation/
+# D1-d — take-profit tier ledger (append-only episode state written by the
+# live service); never committed (P0-10-amendment-line2-2026-06-04).
+data/takeprofit_ledger/
 
 # Secrets & config
 .env

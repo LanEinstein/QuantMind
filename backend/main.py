@@ -835,6 +835,39 @@ async def _init_line2_runners(
         == "1"
         else None
     )
+    # D1-d — tiered take-profit ladder (+1R half → +2R another tranche →
+    # residual rides the trailing stop), gated by the per-episode append-only
+    # tier ledger. GATED default-OFF; independent of the gates above. None →
+    # single-target v7 semantics exactly
+    # (P0-10-amendment-line2-2026-06-04-tiered-takeprofit).
+    if (
+        os.environ.get(
+            "QUANTMIND_LINE2_TIERED_TAKEPROFIT_ENABLED", "0"
+        ).strip()
+        == "1"
+    ):
+        from pathlib import Path as _LedgerPath
+
+        from backend.monitoring.intraday_calibration import (
+            TieredTakeProfitConfig,
+        )
+        from backend.orchestration.takeprofit_ledger import (
+            TakeProfitLedgerStore,
+        )
+
+        _tiered_tp = TieredTakeProfitConfig()
+        _tp_ledger = TakeProfitLedgerStore(
+            _LedgerPath(
+                os.environ.get(
+                    "QUANTMIND_TAKEPROFIT_LEDGER_ROOT",
+                    "data/takeprofit_ledger",
+                )
+            )
+            / "episodes.jsonl"
+        )
+    else:
+        _tiered_tp = None
+        _tp_ledger = None
     intraday_runner = Line2IntradayRunner(
         builder=builder,
         renderer=renderer,
@@ -845,6 +878,8 @@ async def _init_line2_runners(
         drawdown_calibration=_adaptive_dd,
         regime_drawdown_enabled=_regime_dd_enabled,
         takeprofit_calibration=_regime_tp,
+        tiered_takeprofit=_tiered_tp,
+        takeprofit_ledger=_tp_ledger,
         pilot=pilot,
     )
 

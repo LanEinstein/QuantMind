@@ -86,6 +86,7 @@ from backend.monitoring.intraday_calibration import (
 from backend.monitoring.intraday_calibration import (
     DrawdownCalibrationConfig,
     TakeProfitCalibrationConfig,
+    TieredTakeProfitConfig,
 )
 from backend.monitoring.intraday_triggers import (
     FEATURE_CODE_VERSION,
@@ -107,6 +108,10 @@ from backend.orchestration.intraday_manifest import (
     IntradayTriggerRecord,
 )
 from backend.orchestration.route_coordinator import RouteCoordinator, RouteOutcome
+from backend.orchestration.takeprofit_ledger import (
+    TakeProfitLedgerError,
+    TakeProfitLedgerStore,
+)
 from backend.services.instruction_plan_builder import (
     MONITORING_SIGNAL_PREFIX,
     InstructionPlanBuilder,
@@ -262,6 +267,8 @@ class Line2IntradayRunner:
         drawdown_calibration: DrawdownCalibrationConfig | None = None,
         regime_drawdown_enabled: bool = False,
         takeprofit_calibration: TakeProfitCalibrationConfig | None = None,
+        tiered_takeprofit: TieredTakeProfitConfig | None = None,
+        takeprofit_ledger: TakeProfitLedgerStore | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -288,6 +295,14 @@ class Line2IntradayRunner:
         # D1-b flag above — each feature conditions only its own maths.
         # Folded into the config hash below (PIT).
         self._takeprofit_calib = takeprofit_calibration
+        # D1-d tiered take-profit ladder (+1R half → +2R another tranche →
+        # residual rides the trailing stop). ``None`` keeps the single-target
+        # v7 semantics (default-OFF; env-gated in main.py). The ladder needs
+        # its per-episode tiers-taken ledger; both come together — a ladder
+        # without a ledger fails closed at tick time (take-profit suppressed,
+        # never double-taken). Folded into the config hash below (PIT).
+        self._tiered_takeprofit = tiered_takeprofit
+        self._takeprofit_ledger = takeprofit_ledger
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -341,6 +356,17 @@ class Line2IntradayRunner:
                     "config": dataclasses.asdict(self._takeprofit_calib),
                 }
                 if self._takeprofit_calib is not None
+                else None
+            ),
+            # D1-d tiered take-profit ladder (incl. its absence) — pinned so a
+            # replay with the ladder off never reproduces a tier-gated target
+            # (PIT, P0-10-amendment-line2-2026-06-04).
+            "tiered_takeprofit": (
+                {
+                    "version": CALIBRATION_FEATURE_VERSION,
+                    "config": dataclasses.asdict(self._tiered_takeprofit),
+                }
+                if self._tiered_takeprofit is not None
                 else None
             ),
         }
@@ -466,6 +492,34 @@ class Line2IntradayRunner:
                 if self._takeprofit_calib is not None
                 else None
             )
+            # D1-d: fold the per-episode tiers-taken state (closing episodes
+            # for codes that fully exited). Any ledger problem fails CLOSED
+            # for the take-profit ONLY — suppress TP this tick via the
+            # already-taken gate (missing a profit-take is safe; double-
+            # taking a tranche is not). Protective stops are untouched.
+            tp_tiers_taken: dict[str, int] = {}
+            tp_suppress: frozenset[str] = frozenset()
+            if self._tiered_takeprofit is not None:
+                bare_held = frozenset(
+                    p.code.split(".")[0].strip() for p in held if p.volume > 0
+                )
+                trade_date_iso = now.date().isoformat()
+                if self._takeprofit_ledger is None:
+                    log.error("tiered_takeprofit_without_ledger_suppressed")
+                    tp_suppress = bare_held
+                else:
+                    try:
+                        self._takeprofit_ledger.sync_episodes(
+                            bare_held, trade_date=trade_date_iso
+                        )
+                        tp_tiers_taken = self._takeprofit_ledger.tiers_taken()
+                    except (TakeProfitLedgerError, OSError) as exc:
+                        log.error(
+                            "takeprofit_ledger_read_failed_tp_suppressed",
+                            error=str(exc),
+                        )
+                        tp_tiers_taken = {}
+                        tp_suppress = bare_held
             sell_intents = evaluate_intraday_sell_intents(
                 fresh_spots,
                 closes_by_code,
@@ -485,6 +539,9 @@ class Line2IntradayRunner:
                 regime=sell_regime,
                 takeprofit_calibration=self._takeprofit_calib,
                 takeprofit_regime=tp_regime,
+                tiered_takeprofit=self._tiered_takeprofit,
+                take_profit_tiers_taken=tp_tiers_taken,
+                take_profit_already_taken=tp_suppress,
             )
             add_eval = evaluate_intraday_add_intents(
                 fresh_spots,
@@ -560,6 +617,41 @@ class Line2IntradayRunner:
                     TriggerRouteOutcome.REJECTED,
                 ):
                     fired_today.add((intent.code, self._kind_of(intent, side)))
+                # D1-d: a DELIVERED tiered take-profit advances the episode's
+                # ladder (REJECTED does not — the same tier retries next
+                # day). ROUTED alone is not delivery: a Feishu send_failed or
+                # a DRY_RUN render reaches no owner/order, and advancing the
+                # ladder then would silently skip a tier (codex P2). An
+                # owner-unexecuted DELIVERED dispatch still advances the
+                # ladder (under-sell direction, visible in this ledger +
+                # audit — P0-10-amendment-line2-2026-06-04 §1.2 caveat).
+                delivered = (
+                    route.outcome is TriggerRouteOutcome.ROUTED
+                    and route.route_outcome is not None
+                    and route.route_outcome.action
+                    in ("simulation_routed", "dispatched")
+                )
+                if (
+                    delivered
+                    and getattr(intent, "take_profit_tier", None) is not None
+                    and self._takeprofit_ledger is not None
+                ):
+                    try:
+                        self._takeprofit_ledger.record_tier(
+                            intent.code,
+                            tier=intent.take_profit_tier,
+                            trade_date=now.date().isoformat(),
+                            signal_id=sid,
+                        )
+                    except (TakeProfitLedgerError, OSError) as exc:
+                        # Loud but non-fatal: the tick already routed. A
+                        # missed record can re-offer the same tier next day
+                        # (human gate reviews every order).
+                        log.error(
+                            "takeprofit_tier_record_failed",
+                            code=intent.code,
+                            error=str(exc),
+                        )
 
         log.info(
             "intraday_tick_complete",
@@ -709,6 +801,28 @@ class Line2IntradayRunner:
                     intent.effective_r_multiple
                     if getattr(intent, "effective_r_multiple", None) is not None
                     else self._trigger_cfg.r_multiple
+                ),
+                # D1-d: the 1-based ladder tier this take-profit fired (absent
+                # on non-tiered / non-TP intents) — replay reproduces which
+                # tier gated the target (P0-10-amendment-line2-2026-06-04).
+                **(
+                    {"take_profit_tier": float(intent.take_profit_tier)}
+                    if getattr(intent, "take_profit_tier", None) is not None
+                    else {}
+                ),
+                # D1-d: the episode's tiers-taken count in force — carried on
+                # EVERY sell record when the ladder is on, so a lower-priority
+                # trigger's manifest reproduces WHY take-profit was gated at a
+                # higher tier (codex P2).
+                **(
+                    {
+                        "take_profit_tiers_taken": float(
+                            intent.take_profit_tiers_taken
+                        )
+                    }
+                    if getattr(intent, "take_profit_tiers_taken", None)
+                    is not None
+                    else {}
                 ),
             },
         )

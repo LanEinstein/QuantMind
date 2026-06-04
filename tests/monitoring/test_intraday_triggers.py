@@ -18,6 +18,7 @@ from backend.monitoring.add_position import AddConfig, AddRejectReason, MarketRe
 from backend.monitoring.intraday_calibration import (
     DrawdownCalibrationConfig,
     TakeProfitCalibrationConfig,
+    TieredTakeProfitConfig,
 )
 from backend.monitoring.intraday_triggers import (
     INTRADAY_QUOTE_HEADER,
@@ -978,3 +979,144 @@ def test_thesis_break_clamps_to_single_instruction_cap() -> None:
     assert intents[0].trigger_kind is IntradayTriggerKind.THESIS_QUANT_BREAK
     assert intents[0].available_volume == 12_500  # clamped to the ¥50k cap
     assert intents[0].available_volume * intents[0].limit_price <= 50_000.0
+
+
+# ---------------------------------------------------------------------------
+# tiered_takeprofit — D1-d price-laddered scale-out
+# (P0-10-amendment-line2-2026-06-04-tiered-takeprofit)
+# ---------------------------------------------------------------------------
+
+
+def test_tiered_first_tier_fires_at_one_r() -> None:
+    # Fresh episode (tiers_taken=0): tier 1 gates at cost + 1.0×R = 4.04.
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={},
+    )
+    assert len(out) == 1
+    assert out[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+    assert out[0].take_profit_tier == 1
+    assert out[0].stop_level == 4.04
+
+
+def test_tiered_second_tier_requires_two_r() -> None:
+    # tiers_taken=1: the next gate is tier 2 at cost + 2.0×R = 4.08 —
+    # +1R alone no longer re-fires (the owner's ladder semantics, replacing
+    # the cross-day re-halving).
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    not_yet = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={"510300": 1},
+    )
+    assert not_yet == ()
+    spots2 = {"510300": _spot("510300", price=4.085, prev_close=4.0)}
+    fires = evaluate_intraday_sell_intents(
+        spots2, closes, (pos,), account=_account(),
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={"510300": 1},
+    )
+    assert len(fires) == 1
+    assert fires[0].take_profit_tier == 2
+    assert fires[0].stop_level == 4.08
+
+
+def test_tiered_ladder_exhausted_rides_trailing() -> None:
+    # tiers_taken=2 with a 2-tier ladder: no further TAKE_PROFIT no matter
+    # the price — the residual rides the protective ATR trailing stop.
+    spots = {"510300": _spot("510300", price=4.5, prev_close=4.4)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={"510300": 2},
+    )
+    assert all(
+        i.trigger_kind is not IntradayTriggerKind.TAKE_PROFIT for i in out
+    )
+
+
+def test_tiered_none_reproduces_v7_single_target() -> None:
+    # No ladder → the single-target maths: same price fires with no tier.
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert len(out) == 1
+    assert out[0].trigger_kind is IntradayTriggerKind.TAKE_PROFIT
+    assert out[0].take_profit_tier is None
+
+
+def test_tiered_composes_with_bear_regime() -> None:
+    # D1-c BEAR (eff_r 0.6) shifts the WHOLE ladder earlier: tier 1 gates at
+    # cost + 1.0×0.6×R = 4.024 — price 4.03 fires tier 1 under BEAR but not
+    # under the static multiple (target 4.04).
+    spots = {"510300": _spot("510300", price=4.03, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    static = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={},
+    )
+    assert static == ()
+    bear = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(),
+        takeprofit_calibration=TakeProfitCalibrationConfig(),
+        takeprofit_regime=MarketRegime.BEAR,
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={},
+    )
+    assert len(bear) == 1
+    assert bear[0].take_profit_tier == 1
+    assert bear[0].effective_r_multiple == 0.6
+    assert bear[0].stop_level == 4.024
+
+
+def test_tiered_config_validates_ladder() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="ascending"):
+        TieredTakeProfitConfig(tiers=(2.0, 1.0))
+    with _pytest.raises(ValueError, match="non-empty"):
+        TieredTakeProfitConfig(tiers=())
+    with _pytest.raises(ValueError, match="finite positive"):
+        TieredTakeProfitConfig(tiers=(0.0, 1.0))
+
+
+def test_tiers_taken_recorded_on_gated_lower_priority_intent() -> None:
+    # codex P2 (PIT): tier 1 taken, price between +1R and +2R → TP is gated;
+    # if a lower-priority trigger routes instead, its record must carry the
+    # tiers-taken count so replay reproduces WHY take-profit did not fire.
+    spots = {"510300": _spot("510300", price=4.05, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    # Oversized position → the soft WEIGHT_TRIM fires (weight ≈ 40.5%).
+    pos = _position("510300", volume=1000, available=1000, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account(10_000.0),
+        tiered_takeprofit=TieredTakeProfitConfig(),
+        take_profit_tiers_taken={"510300": 1},
+    )
+    assert len(out) == 1
+    assert out[0].trigger_kind is IntradayTriggerKind.WEIGHT_TRIM
+    assert out[0].take_profit_tiers_taken == 1
+
+
+def test_tiers_taken_none_when_ladder_off() -> None:
+    spots = {"510300": _spot("510300", price=4.045, prev_close=4.0)}
+    closes = {"510300": _tp_closes()}
+    pos = _position("510300", volume=300, available=300, cost=4.0)
+    out = evaluate_intraday_sell_intents(
+        spots, closes, (pos,), account=_account()
+    )
+    assert len(out) == 1
+    assert out[0].take_profit_tiers_taken is None
