@@ -1,6 +1,6 @@
 # backend/strategy_evolution/ — 子任务上下文(Phase R)
 
-> 状态:**todo**(Phase R,MVP 阶段 K-N **不写**)。治理:[P2-2-amendment-2026-05-24](../../docs/decisions/P2-2-amendment-2026-05-24-active-discovery-knowledge-graph.md) + R0 §8。任务:plan.html R-001..R-005。
+> 状态:**R-001 done(2026-06-11,session #73:`live_artifact_registry.py` + `config/live_artifacts.lock.json` bootstrap + 对抗测试)**;R-002..R-005 todo。治理:[P2-2-amendment-2026-05-24](../../docs/decisions/P2-2-amendment-2026-05-24-active-discovery-knowledge-graph.md) + R0 §8。任务:plan.html R-001..R-005。
 
 ## 职责
 **自进化**:agent 发现/验证/淘汰策略;生命周期 `candidate→shadow→active→decaying→retired`;经人工 gate 进化知识库。
@@ -15,6 +15,6 @@
 ## import 隔离
 严禁 `import backend.{api,broker,risk,llm,agents,mirofish,data}`(继承 P2-2;防绕过守门)。可用:`backend.knowledge_graph` + `backend.marketdata_snapshot`(回测取数)+ rqalpha。
 
-## 接口契约(草案)
-- `LiveArtifactRegistry.is_approved(hash) -> bool`(startup 载入,无 runtime 加)。
-- `StrategyLifecycle` 状态机 + `shadow_validate`(沿用 P0-6)。
+## 接口契约
+- **`LiveArtifactRegistry`(R-001 已实现,`live_artifact_registry.py`)**:`from_lockfile("config/live_artifacts.lock.json")` boot 载入(fail-closed:缺文件/坏 JSON/坏 schema/非 sha256/未知 kind 全 raise)+ `from_lock(lock)`(in-memory/测试)。`is_approved(kind: ArtifactKind, identifier) -> bool` **kind-typed**(草案的 `is_approved(hash)` 精化为 5 类分型,防策略哈希批准 prompt;在已决 5 类边界内,非新 amendment)+ `approved(kind) -> frozenset[str]`。5 类 `ArtifactKind` = strategy_code/feature_def/prompt_version/anomaly_model/rag_index,全 sha256 hex(content-addressed)。**完全不可变**(`__setattr__` raise,无 approve/add/reload/promote;无 runtime 加哈希路径);空 bootstrap = deny-all。晋升经 amendment+pin+git+restart。
+- `StrategyLifecycle` 状态机 + `shadow_validate`(沿用 P0-6)。**todo**(R-002/R-003)。

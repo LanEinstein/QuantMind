@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-06-11T00:00:00+08:00",
+  "approved": {
+    "strategy_code": [],
+    "feature_def": [],
+    "prompt_version": [],
+    "anomaly_model": [],
+    "rag_index": []
+  }
+}
