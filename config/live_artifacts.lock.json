@@ -4,7 +4,9 @@
   "approved": {
     "strategy_code": [],
     "feature_def": [],
-    "prompt_version": [],
+    "prompt_version": [
+      "a40927ee4b7dc58a857b0c92ea4bada4a3a53af5f143686c6a9c81a71d114bf7"
+    ],
     "anomaly_model": [],
     "rag_index": []
   }

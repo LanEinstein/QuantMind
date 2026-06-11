@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-06-11T00:00:00+08:00",
+  "active_version": "v1",
+  "versions": {
+    "v1": {
+      "path": "config/prompts/theme_research/v1.yaml",
+      "sha256": "a40927ee4b7dc58a857b0c92ea4bada4a3a53af5f143686c6a9c81a71d114bf7",
+      "pinned_at": "2026-06-11T00:00:00+08:00",
+      "pinned_by": "Y-006 amendment P0-8-2026-06-01 §2.12"
+    }
+  }
+}
