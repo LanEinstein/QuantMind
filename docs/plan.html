@@ -796,6 +796,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-11 session #74 — <strong>Phase Y 全 done:产业链倒推主题研究 peer-sourcing 层</strong>(边界已决 P0-8-amendment-2026-06-01,无新 amendment;feature `d3ad416`〔Y-002+Y-006〕+`7fba7fd`〔Y-003+Y-004+Y-005〕,本地未 push)。新 `backend/theme_research/`(LLM-bearing 但零交易栈 import,LLM/web 仅注入式 Protocol):**Y-002+Y-006**=5 步倒推 SOP(`v1.yaml` 一等设计物,骨架 frozen)+ `ThemePromptRegistry`(文件式 SHA256 pin + 骨架/顺序校验 + LiveArtifactRegistry.PROMPT_VERSION 认证)+ `provenance.py`(原始字节+checksum,`is_promotable` 单一真相)+ `investigator.py`(定时有界 job:allowlist+http(s)+redirect 复检/全捕获/token 总额/严格 parse 全 fail-closed)。**Y-003**=`EvidencePrefix.THEME` 第 6 + `ThemeCandidateArtifact`(从 typed output only 构造永不解析散文,digest 绑定 promotable/schema/定精度 confidence)。**Y-004**=`ThemeCandidateRegistry` sibling pin 闸(镜像 R-001;R-001 froze 5 kinds → SOP prompt 进 PROMPT_VERSION、候选走 sibling)+ `verify_pinned_candidates` fail-closed + `CandidateSelector.select(peer_sourced=)` merge(配额 ≤2/保 ≥3 量化/纯量化永不被挤/None bit-identical)。**Y-005**=端到端 5 红线对抗 + AST 模块隔离 + redline [Y-005]。codex 9 轮 22 findings(基础层)全修 + Y-003/4/5 codex 撞额度回退 /code-review high 5 findings 全修。163 theme/selector 测试 / 新模块 98-100% / mypy strict / ruff+redline 全绿 / 5002 passed。**运行期激活(research cron + 飞书审批 + runner 消费)待 owner 重启**。下一站 = Phase Z(前端 reconcile)或 Phase R 链 R-002。</li>
         <li>2026-06-11 session #73 — <strong>Phase R 起手 R-001:LiveArtifactRegistry 自进化批准闸</strong>(已决边界内 P2-2 §2.3 + R0 §8,无新 amendment;feature `373f281`,本地未 push)。`ArtifactKind` 5 类全 SHA256 hex;`is_approved(kind, identifier)` kind-typed 仅认 pin 哈希(有效但未 pin 也拒);`from_lockfile` fail-closed;**完全不可变**(MappingProxyType + frozenset + __setattr__ raise + __slots__ → 无 runtime 加哈希路径);空 bootstrap deny-all。对抗测试先写 RED→GREEN。codex cycle1 修 P1(可变内部 dict→MappingProxyType)+P2(mypy strict)→ 撞额度回退 /code-review verify clean(6/6 sound)。16 tests/模块 100%/mypy strict clean/4880 passed/90.86%。解锁 Y-004 + Y-006 registry pin。下一站 = 回 Phase Y(Y-002+Y-006→Y-003→Y-004→Y-005)或续 Phase R 链(R-002 rqalpha oracle)。</li>
         <li>2026-06-11 session #72 — <strong>Phase Y 起手 Y-001:产业链知识图谱子能力</strong>(amendment `P2-2-amendment-2026-06-11`:frozen 9 节点/12 边 → 12/17 只增不改;feature `673105e`,本地未 push)。schema +3 节点(TREND/CHAIN_LINK/PRODUCT,Stock 复用 INSTRUMENT)/+5 边(DRIVES/REQUIRES/UPSTREAM_OF/SUPPLIES_PRODUCT/MEMBER_OF),SUPERSEDES 端点不动。新 `centrality.py` 确定性 choke-point(连通 UPSTREAM_OF 子图 reach+out-degree+betweenness+reverse-PageRank,topology-only/PIT 可复现/孤立环节零分不扰连通分,NetworkX-only)。新 `seed/industry_chain.py` 半导体国产替代链从公开知识重建(ChainKnowledgeGraph NOASSERTION 不抄,provenance 记 license;criticality 研报人工非 LLM)+ fill-missing 不 clobber ingest + 折入 seed_knowledge_graph。codex 5 轮收敛(2→2→1→1→1)+ /code-review high 回退修 3,全 P0/P1/P2/P3 修;4864 passed/90.84%,新模块 100% 覆盖。Y-004 硬阻塞于 R-001。下一站 = Y-002+Y-006(prompt SOP+registry,循环互依)或 Phase R 起手 R-001。</li>
         <li>2026-06-04 session #71 — <strong>卖出时机深度调研(dossier)+ 卖出栈 v2 全四期落地</strong>(4 amendment:ops-hardening / entry-anchored-chandelier / sell-into-strength / reentry-and-time-stop;`5d0dd02`+`868f0e6`+`595eb45`+`e943f02`,本地未 push)。实证:06-03 止盈建议被 prev_close 缺口吞(非策略缺位);新栈 = 持久 dedup+拒单告警+互斥 / 入场锚定 3×ATR 双层止损+尾盘确认 / 炸板·冲高回落·放量滞涨·乖离四强势触发+封板豁免 / 时间止损+次日折价回补。triggers v8→v11;全 env 默认 OFF;4836 passed/90.76%。下一站 = E1 shadow 启动(owner)+ Phase Y。</li>
@@ -887,6 +888,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-11",
+        session: "#74 Phase Y full:产业链倒推主题研究 peer-sourcing 层(Y-002+Y-006 SOP/provenance/registry + Y-003 THEME 分离 + Y-004 pin/接线 + Y-005 对抗收尾)",
+        owner: "Claude Opus 4.8 (1M ctx)",
+        state_in: "续 #73(R-001 done 解锁 Y-004)。owner『读 plan.html 调查清楚当前项目状态,按计划继续推进』→ SESSION_LOG #73 next:回 Phase Y 续做 Y-002+Y-006(循环互依合做)→Y-003→Y-004→Y-005 打通整个 Phase Y。全项目红线最密一块(LLM+web 调查/provenance 全捕获/prompt-injection 容器化/evidence↔机读候选分离)→ 专注 session + 对抗测试先写。边界已决(P0-8-amendment-2026-06-01 + THEME 第 6 前缀已授权),无新 amendment。",
+        actions: "**新模块 backend/theme_research/(LLM-bearing 但零交易栈 import,LLM/web 仅注入式 Protocol)。** **Y-002+Y-006(feature d3ad416,循环互依+共享 config 合一 commit)**:sop_schema.py(严格输出 sourcing-only 无决策字段/null 透明/byte-pin 引用强制)+ provenance.py(原始字节+checksum,is_promotable 单一真相)+ prompts_loader.py(ThemePromptRegistry 文件式 SHA256 pin + frozen 5 步 SOP 骨架+顺序校验 + LiveArtifactRegistry.PROMPT_VERSION 认证)+ investigator.py(定时有界 job:allowlist+http(s)+redirect 复检/全捕获/token 总额/严格 parse,全 fail-closed)+ config/prompts/theme_research/v1.yaml(一等设计物 5 步倒推 SOP,骨架 frozen)+ lock + v1 哈希 pin 进 live_artifacts.lock.json。**Y-003+Y-004+Y-005(feature 7fba7fd,紧耦合+共享 __init__/redline/config 合一)**:Y-003=EvidencePrefix.THEME 第 6 + candidate_artifact.py(content-addressed,从 typed output only 构造永不解析散文,digest 绑定 schema_version+source_promotable+定精度 confidence);Y-004=candidate_registry.py(sibling pin 闸镜像 R-001;边界决策:R-001 froze 5 kinds → SOP prompt 进 PROMPT_VERSION、候选 artifact 走 sibling)+ peer_sourcing.py(fail-closed promotable AND pinned)+ selector.py(peer_sourced merge:配额 ≤2/保 ≥3 量化/纯量化永不被挤/None bit-identical);Y-005=test_adversarial.py 端到端 5 红线 + test_module_contract.py AST 隔离 + redline [Y-005]。**门禁**:**codex 9 轮收敛(Y-002+Y-006 基础层,22 真 findings 全修:uncited-promotable/redirect bypass/capture-before-abort/candidate cap/prompt-hash↔bytes/deadline 复检×2/raw_payload json/dual-source promotability/fetch+LLM 失败 abort/scheme+encoding 守卫)** → Y-003/4/5 codex 撞 usage limit → 按 [[feedback_codex_rate_limit_fallback]] 回退 /code-review high(3 角 7 finder)5 findings 全修(digest 绑定/selector cap 防御/advisory flag/seq 守卫/confidence 量化)。163 theme+selector 测试 / candidate_artifact+registry+peer_sourcing 100% / 模块 98% / mypy --strict clean / ruff + redline 全绿 / 全量 5002 passed(基线 4880→+122)。安全地基一条未破(KG/theme 非运行时决策路径 / LLM 仅注入 / 单一构造点 / fail-closed / 模块隔离)。",
+        commit: "feature `d3ad416`(Y-002+Y-006:sop_schema/provenance/prompts_loader/investigator/__init__/CLAUDE.md + v1.yaml + 2 lock + 4 test + live_artifacts pin + test_live_artifact_registry 修订)+ `7fba7fd`(Y-003+Y-004+Y-005:evidence THEME + candidate_artifact/candidate_registry/peer_sourcing/selector + theme_candidates.lock + redline + 5 test + test_evidence_models 修订);本 docs-only 收尾(plan.html Y-002..Y-006 done + SESSION_LOG)。**本地未 push,待 owner 授权**(根 CLAUDE.md owner 未提交改动 + 既有 CLAUDE.md M 未碰)。",
+        next: "**Phase Y ✅ 全 done(Y-001..Y-006;d3ad416+7fba7fd,本地未 push)→ ship 序 V→W→Y 全落地。** **下一站候选**:① **Phase Z 双线前端**(Z-001 页锁/WS reconcile 11→13/12→14 起手,轻量;+ 主题研究/轮动/thesis 新 viz 做现有页内 panel/tab)—— 但前端非纯逻辑,且双线新功能多为离线 infra(system 停机中);② 或续 **Phase R 链 R-002**(rqalpha test-time 差分 oracle,依 R-001✓)→R-003(45 日 shadow)→R-004/R-005;③ 或存量 Phase O/Q/T 余项。**⚠️ Phase Y 运行期激活待 owner**:定时 research cron + 飞书人工审批通道 + line1_runner 消费 peer_sourced 均需重启(system 当前停机,等功能开发完集中测试)。**push 授权**:#74 两 feature commit 本地。建议②(Phase R 链把自进化闭环做完)或①(Z 轻量 reconcile 先清前端账)。",
+      },
       {
         date: "2026-06-11",
         session: "#73 Phase R 起手 R-001:LiveArtifactRegistry 自进化批准闸(对抗测试先写)",
@@ -3650,7 +3660,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "673105e", session_date: "2026-06-11", notes: "DONE #72:amendment-first P2-2-amendment-2026-06-11(frozen 9/12→12/17 只增不改)。schema +3 节点(TREND/CHAIN_LINK/PRODUCT,Stock 复用 INSTRUMENT)/+5 边(DRIVES/REQUIRES/UPSTREAM_OF/SUPPLIES_PRODUCT/MEMBER_OF);SUPERSEDES 端点不动。centrality.py 确定性 chokepoint(连通 UPSTREAM_OF 子图 reach+out-degree+betweenness+reverse-PageRank,topology-only/PIT 可复现/孤立环节零分不扰连通分,NetworkX-only 无 Neo4j)。seed/industry_chain.py 半导体国产替代链从公开知识重建(ChainKnowledgeGraph NOASSERTION 不抄,provenance 记 license;criticality 研报人工非 LLM)+ fill-missing 不 clobber ingest + 折入 seed_knowledge_graph。codex 5 轮收敛(2→2→1→1→1)+ /code-review high 回退修 3,全 P0/P1/P2/P3 修;4864 passed/90.84%,新模块 100% 覆盖。前置 ① 主题层中心性特征(无 pin 快照则权重=0)。"
       },
       {
-        id: "Y-002", phase: "Y 主题研究", status: "todo", priority: "P0",
+        id: "Y-002", phase: "Y 主题研究", status: "done", priority: "P0",
         title: "结构化倒推 prompt SOP(如何调查/怎样分析)+ LLM+web 调查 job + provenance 全捕获",
         summary: "**核心 = 一等设计物:结构化第一性原理·产业链倒推 prompt SOP**(owner 2026-06-01 强调必须设计好、明确如何调查/怎样分析)——显式 5 步方法论(① 判大方向[宏观/政策/技术拐点,限源 allowlist] → ② 圈受益板块[映射申万/概念] → ③ 倒推必需产业链[读 pin KG] → ④ 识别卡脖子环节[断供负面×替代难度×供应集中度×『还没炒热』低关注/低估值] → ⑤ 挖代表性标的)+ 分析框架(第一性原理非跟风 + 每步引用证据+置信度 + null result 透明)+ 输出 schema(趋势→板块→链环节→卡脖子理由→候选codes+理由+置信度);prompt 经文件式版本化 registry 注入(见 Y-006,不硬编码)。配套定时有界 research job(盘前/周频,非 per-signal runtime fetch);web 输入 + LLM 输出调查时全捕获进 append-only content-addressed 快照(SERP/页/prompt/model/response 字节 + checksum,仿 MarketDataSnapshot);replay 永不联网/不调 LLM(只校验哈希 + 消费 pin artifact);引用入 SignalInputManifest;隐藏字节的 run=non-promotable。",
         scope: "backend/theme_research/{investigator,prompts_loader,provenance,__init__}.py, backend/theme_research/CLAUDE.md, config/prompts/theme_research/v1.yaml",
@@ -3658,10 +3668,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "结构化 5 步 SOP prompt(显式调查/分析方法 + 输出 schema)+ 定时非实时 + 全留痕(原始字节+checksum)+ replay 不联网/不调LLM + non-promotable 守门 + SignalInputManifest 引用 + 成本 bound(cadence/max fetches/max LLM/timeout,计同一 llm:usage)。",
         tests: "SOP 5 步结构 + 输出 schema 校验 + provenance 全捕获 + replay bit-exact 不联网 + 隐藏字节非 promotable + 成本 bound + 同一计数器。",
         sources: "P0-8-amendment-2026-06-01 §2.1/§2.2/§2.9/§2.11, R0 §3, codex round-3, 调研(Expert Investment Teams 细粒度 SOP prompt p<0.0001 / nexus 5-agent+RedTeam)",
-        commit: "", session_date: "", notes: "owner:必须设计好结构化 prompt、明确如何调查/怎样分析;SOP 骨架 frozen,措辞/exemplars 可进化(Y-006)。唯一红线安全实现=定时+留痕+人工 pin;严禁进运行时数据路径。"
+        commit: "d3ad416", session_date: "2026-06-11", notes: "DONE #74(与 Y-006 同 feature commit:循环互依+共享 config/prompts/theme_research/)。sop_schema.py 严格输出(sourcing-only 无决策字段/null_result 透明/每非空声明须 byte-pin 引用)+ provenance.py(MarketDataSnapshot 式原始字节+checksum,is_promotable() 单一真相:PROMPT+LLM_RESPONSE+output digest 全捕获 AND 每引用(domain,sha)匹配捕获页)+ investigator.py(定时有界 job:allowlist+http(s)+redirect 复检/全字节捕获/per-run token 总额预留/严格 parse,全 boundary fail-closed 成 aborted run;注入式 web/LLM/reserver 零 secrets)。codex 9 轮 22 findings 全修。"
       },
       {
-        id: "Y-003", phase: "Y 主题研究", status: "todo", priority: "P1",
+        id: "Y-003", phase: "Y 主题研究", status: "done", priority: "P1",
         title: "THEME- 第6 evidence 前缀 + evidence/机读候选分离 + prompt-injection 容器化",
         summary: "validate_evidence_id 扩第 6 前缀 THEME-(P0-8 原锁 5);LLM 原始产出只写 evidence_collection.content(展示/审计文本),严禁 live code 正则解析成候选;机读候选集=独立人工批准 content-addressed pin artifact(与 evidence 文本物理分离);prompt-injection:源 allowlist + 无 secrets/交易状态/RiskConfig 访问 + 严格输出 schema + 确定性校验 + 固定转义 renderer。",
         scope: "backend/models/evidence.py(THEME-), backend/theme_research/(候选 artifact + 校验)",
@@ -3669,10 +3679,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "THEME- 第6前缀 + by-construction 无 RiskCheckSummary + 无 live selector 解析 LLM 文本 + 机读候选 artifact 分离 + prompt-injection 容器化 6 件。",
         tests: "前缀校验 + evidence-only + 候选 artifact 分离 + 恶意 web 文本不污染候选(对抗)+ 无 secrets 访问。",
         sources: "P0-8-amendment-2026-06-01 §2.3/§2.4/§2.8, codex round-3(新前缀需 amendment)",
-        commit: "", session_date: "", notes: "P0-8 5 前缀锁 → 本任务依 amendment 解锁第 6;evidence 文本 ≠ 机读候选。"
+        commit: "7fba7fd", session_date: "2026-06-11", notes: "DONE #74。EvidencePrefix.THEME 第 6 前缀 + EVIDENCE_ID_PATTERN(amendment §2.4);redline-check allowlist + test_evidence_models 同步 6 前缀(前端无 evidence 正则镜像,免改)。candidate_artifact.py:ThemeCandidateArtifact content-addressed,**从 typed ThemeResearchOutput only 构造(永不正则解析散文)** —— 对抗测试证 rationale 内夹带的 000099/600000 等代码永不成候选;build_theme_evidence_id(THEME-)+ theme_evidence_text(display-only 不机读)。pin digest 绑定 schema_version+source_promotable+定精度 confidence(review 发现:pin 按哈希拒非-promotable/schema 漂移,非仅 runtime bool)。"
       },
       {
-        id: "Y-004", phase: "Y 主题研究", status: "todo", priority: "P1",
+        id: "Y-004", phase: "Y 主题研究", status: "done", priority: "P1",
         title: "人工 pin/审批 + LiveArtifactRegistry + CandidateSelector peer-sourcing 接线",
         summary: "候选 artifact 经飞书/人工逐条批准 + 按批准哈希 pin(LiveArtifactRegistry,P2-2 沿用)才影响 live 选股;CandidateSelector peer-sourcing 接线(过排除四件套+可负担+14-check+人工 gate);主题配额 ≤cap−3(当前≤2)+ ≥3 量化名额保留 + 纯量化永不被否决 + 无新鲜 pin artifact 则配额空、纯量化照跑;日频可跑特征(估值/拥挤/板块动量分位,无 pin KG 则中心性权重=0)。",
         scope: "backend/candidate_selector/selector.py(peer-sourcing), backend/strategy_evolution/live_artifact_registry.py(复用), backend/(飞书审批通道)",
@@ -3680,10 +3690,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "人工 pin gate + 哈希校验 + peer-sourcing 过全部硬门 + 配额≤cap−3 + ≥3 量化保留 + 无 pin 配额空纯量化照跑 + 纯量化不被否决。",
         tests: "人工 pin 拒未批准 + 哈希校验 + peer-sourcing 过硬门 + 配额上限 + 无 pin 配额空 + 纯量化不被否决(对抗)。",
         sources: "P0-8-amendment-2026-06-01 §2.5/§2.6/§2.7/§2.10, P2-2-amendment-2026-05-24, codex round-3",
-        commit: "", session_date: "", notes: "LLM 浮现候选,量化定资格,人工执行;两路互不否决;依赖 R-001 LiveArtifactRegistry。"
+        commit: "7fba7fd", session_date: "2026-06-11", notes: "DONE #74。candidate_registry.py:ThemeCandidateRegistry **sibling pin 闸**(镜像 R-001 不可变/fail-closed/content-addressed;config/theme_candidates.lock.json 空 bootstrap=deny-all)。**边界决策**:R-001 froze LiveArtifactRegistry 5 kinds(改需 R-amendment,P0-8 未授权)→ SOP prompt 仍 pin 进 PROMPT_VERSION(Y-006),候选 artifact 走 sibling registry(同 P2-2 pin 纪律)。peer_sourcing.py:verify_pinned_candidates fail-closed(promotable AND pinned 才出,否则空→纯量化照跑)。selector.py:可选 peer_sourced merge,配额 ≤(final−min_quant)=≤2 + ≥min_quant=≥3 量化保留 + 纯量化永不被挤掉 + peer_sourced=None bit-identical;含 _truncate cap defense-in-depth + 空-quant advisory_applied=False(review 修)。**运行期接线(line1_runner 消费 peer_sourced + 飞书审批 cron)待 Phase Z/owner 重启**。"
       },
       {
-        id: "Y-005", phase: "Y 主题研究", status: "todo", priority: "P0",
+        id: "Y-005", phase: "Y 主题研究", status: "done", priority: "P0",
         title: "对抗测试先写(RED)+ 模块隔离 + Phase Y 收尾",
         summary: "对抗测试先写(R0 §4):种入恶意 web 文本 → 断言不污染候选 / 不写决策字段 / 纯量化候选不被否决 / 无 pin 则配额空 / replay bit-exact 不联网;theme_research import 隔离(可调 LLM+web 但只写 evidence+pin artifact;screening/marketdata_snapshot/risk 保持 0-LLM);redline + SSoT done + session log。",
         scope: "tests/theme_research/, scripts/redline-check.sh, docs/plan.html",
@@ -3691,10 +3701,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "对抗测试先红后绿 + 模块隔离(screening/marketdata/risk 仍 0-LLM)+ redline 全绿 + Phase Y 全 done。",
         tests: "对抗 5 项 + AST 隔离 + redline + 全量 pytest。",
         sources: "P0-8-amendment-2026-06-01 §5, R0 §4, codex round-3",
-        commit: "", session_date: "", notes: "① 最复杂、依赖下游最少 → ship 序最后;对抗测试先写是单一构造点纪律。"
+        commit: "7fba7fd", session_date: "2026-06-11", notes: "DONE #74。test_adversarial.py 端到端 5 红线断言(恶意 web 文本不污染候选 / 无决策字段 / 纯量化不被否决 / 无 pin 则配额空 / replay 离线不联网),走真实链 investigator→artifact→pin registry→selector。test_module_contract.py + redline-check [Y-005]:theme_research import 隔离(零交易栈 import,LLM/web 仅注入)+ screening/marketdata/risk 永不 import theme_research(0-LLM 姿态保 by-construction)。redline 全绿 + Phase Y 全 done。"
       },
       {
-        id: "Y-006", phase: "Y 主题研究", status: "todo", priority: "P1",
+        id: "Y-006", phase: "Y 主题研究", status: "done", priority: "P1",
         title: "调查 prompt 文件式版本化 registry + 保留进化接口(P2-2 沿用)",
         summary: "调查/分析 prompt 不硬编码,走文件式版本化 registry(config/prompts/theme_research/{version}.yaml + prompts.lock.json,git 版本化 + restart-gated + 改动走 amendment);保留升级进化(owner 2026-06-01 强调):经 P2-2 保守 3 路径离线进化(DSPy/GEPA ≤¥5/次 + FinMem exemplars ≤3/prompt + RAG provenance-gated),全程人工 gate + 45 日 shadow + 重启;进化只动措辞/exemplars/参数,第一性原理倒推 SOP 骨架 frozen(类比 T-001 人格卡 vs T-004 exemplars 分离);prompt version hash 入 LiveArtifactRegistry,实时只认批准版本。",
         scope: "config/prompts/theme_research/, backend/theme_research/prompts_loader.py, backend/strategy_evolution/(进化 hook 复用)",
@@ -3702,7 +3712,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "文件式版本化 registry + git+restart-gated + SOP 骨架 frozen + 措辞/exemplars 可进化(经 P2-2 人工 gate+shadow+重启)+ prompt hash 入 LiveArtifactRegistry + 实时只认批准版本。",
         tests: "registry 加载 + 版本 pin + 未批准 prompt 版本被拒(对抗)+ SOP 骨架不可 runtime 改 + 进化走 shadow+人工 gate。",
         sources: "P0-8-amendment-2026-06-01 §2.12, P2-2-amendment-2026-05-24(自进化 3 路径), P2-2(文件式 prompt registry), 用户 2026-06-01『保留升级进化的可能』",
-        commit: "", session_date: "", notes: "owner:保留后续升级进化可能;接 Phase R 自进化 infra(R-001 LiveArtifactRegistry / R-004 evolution_shadow_run)。"
+        commit: "d3ad416", session_date: "2026-06-11", notes: "DONE #74(与 Y-002 同 feature commit)。prompts_loader.py:ThemePromptRegistry 镜像 PromptRegistry —— 文件式 config/prompts/theme_research/v1.yaml + prompts.lock.json(SHA256 pin)+ frozen 5 步 SOP 骨架校验(validate_sop_skeleton:key 集 + 顺序)+ LiveArtifactRegistry.PROMPT_VERSION 认证(require_pinned=True);不可变/fail-closed/无 hot-reload。v1.yaml 哈希已 pin 进 config/live_artifacts.lock.json(授权人工 pin 动作)。进化接口(GEPA/exemplars)走 P2-2 离线+人工 gate+shadow+重启,骨架 frozen。"
       },
       {
         id: "Z-001", phase: "Z 双线前端", status: "todo", priority: "P1",
