@@ -31,7 +31,14 @@ AttrValue = str | int | float | bool | None
 
 
 class NodeType(StrEnum):
-    """The 9 node labels of the dossier §1.4 (frozen set)."""
+    """The KG node labels — original 9 (dossier §1.4) + 3 industry-chain.
+
+    The first 9 are the frozen base (P2-2-amendment-2026-05-24). The last 3
+    (Trend/ChainLink/Product) were ADDED for the industry-chain reverse-
+    deduction subcapability (P2-2-amendment-2026-06-11, Y-001); the addition
+    only grows the set — no existing label changed. ``Stock`` reuses the
+    existing ``Instrument`` label (chain attrs live in its ``attrs`` map).
+    """
 
     STRATEGY = "Strategy"
     BACKTEST_RESULT = "BacktestResult"
@@ -42,10 +49,20 @@ class NodeType(StrEnum):
     HEURISTIC = "Heuristic"
     EVENT = "Event"
     SOURCE_DOC = "SourceDoc"
+    # Industry-chain subcapability (P2-2-amendment-2026-06-11, Y-001).
+    TREND = "Trend"
+    CHAIN_LINK = "ChainLink"
+    PRODUCT = "Product"
 
 
 class EdgeType(StrEnum):
-    """The 12 relationship types of the dossier §1.4 (frozen set)."""
+    """The KG relationship types — original 12 (dossier §1.4) + 5 chain.
+
+    The last 5 (DRIVES/REQUIRES/UPSTREAM_OF/SUPPLIES_PRODUCT/MEMBER_OF) were
+    ADDED for the industry-chain subcapability (P2-2-amendment-2026-06-11,
+    Y-001); the existing 12 and their endpoint legality are unchanged. The
+    "Stock belongs to Sector" relation reuses the existing ``BELONGS_TO``.
+    """
 
     USES_FACTOR = "USES_FACTOR"
     BACKTESTED_AS = "BACKTESTED_AS"
@@ -59,6 +76,12 @@ class EdgeType(StrEnum):
     SUPERSEDES = "SUPERSEDES"
     TRIGGERED_BY = "TRIGGERED_BY"
     AFFECTS = "AFFECTS"
+    # Industry-chain subcapability (P2-2-amendment-2026-06-11, Y-001).
+    DRIVES = "DRIVES"
+    REQUIRES = "REQUIRES"
+    UPSTREAM_OF = "UPSTREAM_OF"
+    SUPPLIES_PRODUCT = "SUPPLIES_PRODUCT"
+    MEMBER_OF = "MEMBER_OF"
 
 
 class NodeStatus(StrEnum):
@@ -131,6 +154,29 @@ EDGE_ENDPOINTS: Final[dict[EdgeType, _Endpoints]] = {
     EdgeType.AFFECTS: (
         frozenset({NodeType.EVENT}),
         frozenset({NodeType.SECTOR, NodeType.CONCEPT}),
+    ),
+    # -- industry-chain reverse deduction (P2-2-amendment-2026-06-11) --------
+    # 趋势 -DRIVES-> 板块 -REQUIRES-> 产业链环节 <-UPSTREAM_OF- 上游环节;
+    # 标的 -SUPPLIES_PRODUCT-> 产品 -MEMBER_OF-> 环节 (dossier §4).
+    EdgeType.DRIVES: (
+        frozenset({NodeType.TREND}),
+        frozenset({NodeType.SECTOR}),
+    ),
+    EdgeType.REQUIRES: (
+        frozenset({NodeType.SECTOR}),
+        frozenset({NodeType.CHAIN_LINK}),
+    ),
+    EdgeType.UPSTREAM_OF: (
+        frozenset({NodeType.CHAIN_LINK}),
+        frozenset({NodeType.CHAIN_LINK}),
+    ),
+    EdgeType.SUPPLIES_PRODUCT: (
+        frozenset({NodeType.INSTRUMENT}),
+        frozenset({NodeType.PRODUCT}),
+    ),
+    EdgeType.MEMBER_OF: (
+        frozenset({NodeType.PRODUCT}),
+        frozenset({NodeType.CHAIN_LINK}),
     ),
 }
 

@@ -19,6 +19,7 @@ Red lines (enforced by tests in Q-004):
 * append-only — the store physically refuses UPDATE/DELETE on graph tables.
 """
 
+from backend.knowledge_graph.centrality import ChokePointScore, chokepoint_scores
 from backend.knowledge_graph.schema import (
     EDGE_ENDPOINTS,
     EdgeType,
@@ -31,6 +32,7 @@ from backend.knowledge_graph.store import KnowledgeGraphStore, SqliteKGStore
 
 __all__ = [
     "EDGE_ENDPOINTS",
+    "ChokePointScore",
     "EdgeType",
     "KGEdge",
     "KGNode",
@@ -38,4 +40,5 @@ __all__ = [
     "NodeStatus",
     "NodeType",
     "SqliteKGStore",
+    "chokepoint_scores",
 ]

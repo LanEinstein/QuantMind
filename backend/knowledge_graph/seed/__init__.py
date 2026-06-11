@@ -15,8 +15,23 @@ Every seeded node carries a ``provenance_ref`` anchored to its source
 doc + the seed data file's sha256, and a DERIVED_FROM edge to the
 corresponding SourceDoc node — an unsourced node is low-trust by
 convention (dossier §1.4).
+
+Y-001 adds an industry-chain tier (``industry_chain``): a small but real
+semiconductor-localization chain reconstructed from public-domain knowledge
+(``liuhuanyong/ChainKnowledgeGraph`` is NOASSERTION — its code/JSON is never
+copied), seeded into Trend/Sector/ChainLink/Product/Instrument nodes for the
+Phase Y reverse-deduction layer.
 """
 
+from backend.knowledge_graph.seed.industry_chain import (
+    IndustryChainSeedReport,
+    seed_industry_chain,
+)
 from backend.knowledge_graph.seed.loader import SeedReport, seed_knowledge_graph
 
-__all__ = ["SeedReport", "seed_knowledge_graph"]
+__all__ = [
+    "IndustryChainSeedReport",
+    "SeedReport",
+    "seed_industry_chain",
+    "seed_knowledge_graph",
+]

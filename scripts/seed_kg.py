@@ -34,12 +34,21 @@ def main() -> int:
         report = seed_knowledge_graph(store)
     finally:
         store.close()
+    chain = report.industry_chain
+    # chain_nodes (not total_nodes): the 2 chain SourceDocs are already in the
+    # "source docs" bucket above, so the buckets stay disjoint (codex P3).
+    chain_summary = (
+        f" + industry-chain {chain.chain_nodes} nodes/{chain.total_edges} edges"
+        f" ({chain.chain_links} links)"
+        if chain is not None
+        else ""
+    )
     print(
         f"seeded {report.factors} factors "
         f"(alpha158={report.alpha158}, alpha360={report.alpha360}, "
         f"wq101={report.wq101}, gtja191={report.gtja191}) "
-        f"+ {report.heuristics} heuristics + {report.source_docs} source docs "
-        f"-> {db_path}"
+        f"+ {report.heuristics} heuristics + {report.total_source_docs} source docs"
+        f"{chain_summary} -> {db_path}"
     )
     return 0
 

@@ -19,6 +19,10 @@ import structlog
 
 from backend.knowledge_graph.schema import EdgeType, KGEdge, KGNode, NodeType
 from backend.knowledge_graph.seed.heuristics import HEURISTICS
+from backend.knowledge_graph.seed.industry_chain import (
+    IndustryChainSeedReport,
+    seed_industry_chain,
+)
 from backend.knowledge_graph.seed.qlib_factors import (
     FactorSeed,
     alpha158_factors,
@@ -65,7 +69,11 @@ _SOURCE_DOCS: tuple[tuple[str, str, str], ...] = (
 
 
 class SeedReport(NamedTuple):
-    """What one seeding run wrote (counts are nodes, not versions)."""
+    """What one seeding run wrote (counts are nodes, not versions).
+
+    ``industry_chain`` is the Y-001 sub-report (None only if chain seeding
+    was skipped); appended last so the field order stays backward-compatible.
+    """
 
     alpha158: int
     alpha360: int
@@ -73,10 +81,18 @@ class SeedReport(NamedTuple):
     gtja191: int
     heuristics: int
     source_docs: int
+    industry_chain: IndustryChainSeedReport | None = None
 
     @property
     def factors(self) -> int:
         return self.alpha158 + self.alpha360 + self.wq101 + self.gtja191
+
+    @property
+    def total_source_docs(self) -> int:
+        """ALL SourceDoc nodes written, including the chain tier's (else an
+        audit relying on ``source_docs`` undercounts provenance — codex P3)."""
+        chain = self.industry_chain.source_docs if self.industry_chain else 0
+        return self.source_docs + chain
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -229,6 +245,9 @@ def seed_knowledge_graph(
                 provenance_ref=provenance,
             )
         )
+    # Industry-chain subcapability (Y-001): reconstructed, provenance-anchored
+    # the same way; folded into cold-start so the graph is complete in one run.
+    chain_report = seed_industry_chain(store)
     report = SeedReport(
         alpha158=len(a158),
         alpha360=len(a360),
@@ -236,8 +255,19 @@ def seed_knowledge_graph(
         gtja191=len(gtja),
         heuristics=len(HEURISTICS),
         source_docs=len(_SOURCE_DOCS),
+        industry_chain=chain_report,
     )
-    log.info("kg_seed_complete", **report._asdict(), factors=report.factors)
+    log.info(
+        "kg_seed_complete",
+        alpha158=report.alpha158,
+        alpha360=report.alpha360,
+        wq101=report.wq101,
+        gtja191=report.gtja191,
+        factors=report.factors,
+        heuristics=report.heuristics,
+        source_docs=report.total_source_docs,
+        chain_nodes=chain_report.chain_nodes,
+    )
     return report
 
 

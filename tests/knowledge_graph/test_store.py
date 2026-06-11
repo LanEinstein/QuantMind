@@ -56,9 +56,12 @@ def _factor(node_id: str = "factor:mom-20d") -> KGNode:
 # -- schema -------------------------------------------------------------------
 
 
-def test_schema_has_9_node_and_12_edge_types() -> None:
-    assert len(NodeType) == 9
-    assert len(EdgeType) == 12
+def test_schema_node_and_edge_type_counts() -> None:
+    # Base 9 nodes / 12 edges (P2-2-amendment-2026-05-24) + industry-chain
+    # 3 nodes / 5 edges (P2-2-amendment-2026-06-11, Y-001) = 12 / 17. The
+    # set only grew — see test_industry_chain for the only-added invariant.
+    assert len(NodeType) == 12
+    assert len(EdgeType) == 17
     assert set(EDGE_ENDPOINTS) == set(EdgeType)
 
 
