@@ -153,12 +153,13 @@ class TestCostAggregation:
 
     async def test_cost_calculation_deepseek(self) -> None:
         """Verify DeepSeek cost calculation accuracy."""
-        # DeepSeek: 0.2 RMB / million tokens (input and output)
+        # DeepSeek family fallback = priciest member, deepseek-v4-pro:
+        # 3 input + 6 output RMB / million tokens (P0-10-amendment-2026-06-11).
         cost = calculate_cost("deepseek", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(0.4, abs=1e-6)
+        assert cost == pytest.approx(9.0, abs=1e-6)
 
     async def test_cost_calculation_kimi(self) -> None:
         """Verify Kimi cost calculation accuracy."""
-        # Kimi: 2.1 input + 8.4 output per million tokens
+        # Kimi (kimi-k2.6 FX-padded): 7.5 input + 30 output per million
         cost = calculate_cost("kimi", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(10.5, abs=1e-6)
+        assert cost == pytest.approx(37.5, abs=1e-6)

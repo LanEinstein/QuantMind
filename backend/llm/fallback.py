@@ -25,6 +25,7 @@ def _utc_date_str() -> str:
     """
     return datetime.datetime.now(tz=datetime.UTC).date().isoformat()
 
+
 # -- Retryable exceptions that trigger fallback --
 
 RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
@@ -34,7 +35,7 @@ RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
     openai.APIConnectionError,
 )
 
-# -- Cost rates per million tokens (from blueprint section 2.1) --
+# -- Cost rates per million tokens (P0-10-amendment-2026-06-11) --
 
 
 @dataclass(frozen=True)
@@ -45,31 +46,63 @@ class CostRate:
     output_rmb_per_million: float
 
 
-COST_RATES: dict[str, CostRate] = {
-    "deepseek": CostRate(input_rmb_per_million=0.2, output_rmb_per_million=0.2),
-    "qwen": CostRate(input_rmb_per_million=1.0, output_rmb_per_million=1.0),
-    "kimi": CostRate(input_rmb_per_million=2.1, output_rmb_per_million=8.4),
+# Per-MODEL rates, consulted before the per-provider family table. Every
+# model actually routed in config/agent_models.yaml must have a tier here,
+# otherwise its spend is computed from the (deliberately expensive) family
+# rate below. The Redis usage key stays keyed by provider family (see
+# :func:`track_usage`) so cost_guard's aggregation is unchanged; only the
+# computed ``cost_rmb`` is model-accurate.
+#
+# Official LIST prices verified 2026-06-11 (input = cache-miss tier;
+# limited-time discounts are deliberately NOT priced in — they lapse
+# without notice and the table is restart-gated):
+#
+# * deepseek-v4-pro   ¥3 / ¥6      (api-docs.deepseek.com zh price list)
+# * deepseek-v4-flash ¥1 / ¥2      (same source; cheap high-throughput tier)
+# * qwen3.6-plus      ¥2 / ¥12     (Aliyun Model Studio; the 90-day free
+#                                    quota is assumed exhausted)
+# * qwen3.7-max       ¥12 / ¥36    (list price; the limited-time 50%-off
+#                                    ¥6/¥18 is intentionally ignored)
+# * kimi-k2.6         ¥7.5 / ¥30   (assumption: USD $0.95/$4.00 × FX 7.5,
+#                                    deliberately above the prevailing
+#                                    ~7.1-7.3 band so the table can only
+#                                    over-count; RMB list pending owner
+#                                    console verification —
+#                                    P0-10-amendment-2026-06-11 §6)
+MODEL_COST_RATES: dict[str, CostRate] = {
+    "deepseek-v4-pro": CostRate(input_rmb_per_million=3.0, output_rmb_per_million=6.0),
+    "deepseek-v4-flash": CostRate(
+        input_rmb_per_million=1.0, output_rmb_per_million=2.0
+    ),
+    "qwen3.6-plus": CostRate(input_rmb_per_million=2.0, output_rmb_per_million=12.0),
+    "qwen3.7-max": CostRate(input_rmb_per_million=12.0, output_rmb_per_million=36.0),
+    "kimi-k2.6": CostRate(input_rmb_per_million=7.5, output_rmb_per_million=30.0),
 }
 
-# Per-MODEL overrides, consulted before the per-provider family table.
-# A premium model that shares a provider family (same base_url + key) but
-# costs more must be priced from its own rate, otherwise the daily ¥20
-# hard cap under-counts spend — the dangerous direction for a budget
-# guard (silent over-spend). The Redis usage key stays keyed by provider
-# family (see :func:`track_usage`) so cost_guard's aggregation is
-# unchanged; only the computed ``cost_rmb`` becomes model-accurate.
-#
-# ``qwen3.7-max`` (fund_manager deep-reasoning model, config/
-# agent_models.yaml + P0-10-amendment-2026-05-25): Alibaba Cloud Model
-# Studio / DashScope ≤32K-input tier = ¥2.5/M input, ¥10/M output
-# (May 2026). One single-round 4-agent debate is a few thousand tokens
-# (far under the 32K tier boundary and the ¥20 daily hard cap); the
-# ~1M-token 90-day free quota only makes actual spend lower than this
-# nominal rate, so pricing at the paid tier stays conservative.
-MODEL_COST_RATES: dict[str, CostRate] = {
-    "qwen3.7-max": CostRate(
-        input_rmb_per_million=2.5, output_rmb_per_million=10.0
-    ),
+# Provider family → member models routed under that family (same
+# base_url + API key). Used to DERIVE the family fallback rate as the
+# max over members, so "an unmapped model can never bill below any known
+# family member" holds by construction instead of by hand-synced copies.
+_FAMILY_MEMBERS: dict[str, tuple[str, ...]] = {
+    "deepseek": ("deepseek-v4-pro", "deepseek-v4-flash"),
+    "qwen": ("qwen3.6-plus", "qwen3.7-max"),
+    "kimi": ("kimi-k2.6",),
+}
+
+# Provider-FAMILY fallback rates, consulted only when the model is not in
+# ``MODEL_COST_RATES``. Derived as each family's PRICIEST member — the
+# conservative direction for a budget guard (a low family rate would
+# silently under-count spend against the ¥100/day hard cap).
+COST_RATES: dict[str, CostRate] = {
+    family: CostRate(
+        input_rmb_per_million=max(
+            MODEL_COST_RATES[m].input_rmb_per_million for m in members
+        ),
+        output_rmb_per_million=max(
+            MODEL_COST_RATES[m].output_rmb_per_million for m in members
+        ),
+    )
+    for family, members in _FAMILY_MEMBERS.items()
 }
 
 
@@ -172,9 +205,7 @@ async def track_fallback(
         )
 
 
-_ESCALATION_REASONS: frozenset[str] = frozenset(
-    {"low_confidence", "parse_failed"}
-)
+_ESCALATION_REASONS: frozenset[str] = frozenset({"low_confidence", "parse_failed"})
 
 
 async def track_escalation(

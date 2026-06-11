@@ -330,6 +330,10 @@ _PROD_THINKING_TABLE: dict[str, tuple[str, int, str]] = {
     # reasoning_content, so thinking is disabled like the other qwen agents.
     "risk_officer": ("disabled", 0, "none"),
     "fund_manager": ("disabled", 0, "none"),
+    # P0-10-amendment-2026-06-11: dedicated reasoning-heavy seams on
+    # kimi-k2.6 with thinking; single-shot calls, so no rounds retained.
+    "thesis_reviewer": ("enabled", 8_000, "none"),
+    "theme_investigator": ("enabled", 10_000, "none"),
     # Phase 5B exit shadow-test baseline — kimi-only clone of
     # fund_manager (no routing block) consumed only by
     # backend.services.shadow_runner. Same thinking config so the

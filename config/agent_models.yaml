@@ -36,10 +36,13 @@ defaults:
 #   - keep ∈ {all, last_round, none}: which rounds' reasoning to retain
 #     in subsequent turns of the same conversation (consumed by P5B-T03).
 agents:
+  # P0-10-amendment-2026-06-11: the crawler/summary tier moves to
+  # deepseek-v4-flash (¥1/¥2 per M — the cheap high-throughput tier;
+  # v4-pro at ¥3/¥6 is reserved for reasoning-grade work).
   news_crawler:
     name: "新闻爬取员"
     provider: deepseek
-    model: deepseek-v4-pro
+    model: deepseek-v4-flash
     fallback: { provider: qwen, model: qwen3.6-plus }
     thinking:
       type: disabled
@@ -51,7 +54,7 @@ agents:
   sentiment_analyst:
     name: "情绪分析师"
     provider: deepseek
-    model: deepseek-v4-pro
+    model: deepseek-v4-flash
     fallback: { provider: qwen, model: qwen3.6-plus }
     thinking:
       type: disabled
@@ -63,7 +66,7 @@ agents:
   data_cleaner:
     name: "数据清洗员"
     provider: deepseek
-    model: deepseek-v4-pro
+    model: deepseek-v4-flash
     fallback: { provider: qwen, model: qwen3.6-plus }
     thinking:
       type: disabled
@@ -72,6 +75,11 @@ agents:
     frequency: "realtime"
     task: "原始数据标准化、异常值标记、格式转换"
 
+  # P0-10-amendment-2026-06-11: specialization routing — fundamental /
+  # risk_officer stay on qwen3.6-plus (Chinese A-share domain strength);
+  # technical_analyst moves to deepseek-v4-pro (numeric/indicator
+  # reasoning — LiveCodeBench + Terminal-Bench leader — at half
+  # qwen3.6-plus's output price).
   fundamental_analyst:
     name: "基本面分析师"
     provider: qwen
@@ -86,9 +94,9 @@ agents:
 
   technical_analyst:
     name: "技术分析师"
-    provider: qwen
-    model: qwen3.6-plus
-    fallback: { provider: deepseek, model: deepseek-v4-pro }
+    provider: deepseek
+    model: deepseek-v4-pro
+    fallback: { provider: qwen, model: qwen3.6-plus }
     thinking:
       type: disabled
       max_tokens: 0
@@ -146,15 +154,11 @@ agents:
     frequency: "per_trading_day"
     task: "构建看空论点、寻找下跌风险"
 
-  # P0-10-amendment-2026-05-25: double-line MVP go-live routes all 4
-  # mandatory agents to qwen with deepseek fallback (kimi → qwen). The 3
-  # analyst/risk agents use qwen3.6-plus (DashScope free quota → ~¥0/day);
-  # fund_manager (final decision) uses qwen3.7-max for stronger deep
-  # reasoning (owner pick; GPQA Diamond 92.3% > kimi 90.5%). fund_manager
-  # routing block dropped (triage/escalation meaningless once base is qwen;
-  # shadow_baseline already proves a routing-less block is valid). thinking
-  # disabled (qwen emits no reasoning_content). cost_guard ¥20/day hard +
-  # pre-reservation unchanged. Runtime-immutable: git diff + amendment + restart.
+  # risk_officer + fund_manager: see the specialization-routing note above
+  # fundamental_analyst (P0-10-amendment-2026-06-11). History: the 05-25
+  # amendment routed all 4 mandatory agents to qwen for the MVP go-live
+  # and dropped fund_manager's routing block (shadow_baseline proves a
+  # routing-less block is valid); 06-11 keeps both of these on qwen.
   risk_officer:
     name: "风控官"
     provider: qwen
@@ -178,6 +182,43 @@ agents:
       keep: none
     frequency: "per_trading_day"
     task: "综合所有Agent报告，输出最终买卖信号"
+
+  # P0-10-amendment-2026-06-11: dedicated entries for the two
+  # reasoning-heavy seams, decoupled from ``intelligence_officer`` (which
+  # the legacy 9-agent pipeline + MiroFish keep sharing). Both run on
+  # kimi-k2.6 with thinking — long-context evidence synthesis is its
+  # strength. Spend is bounded by upstream call-count caps (thesis review
+  # ≤10/day dedup'd; theme research 1 run/day ≤40k tokens) plus the ¥100/day
+  # true reservation — NOT by the kimi ¥4/day cap, which the router only
+  # enforces on the (currently unused) escalation rung; the shared
+  # provider-keyed kimi counter may legitimately read > ¥4 on heavy days
+  # because the legacy kimi trio bills the same bucket (owner accepted,
+  # amendment §6).
+  thesis_reviewer:
+    name: "持仓复盘分析师（Phase W 盘后 thesis advisory）"
+    provider: kimi
+    model: kimi-k2.6
+    fallback: { provider: qwen, model: qwen3.7-max }
+    thinking:
+      type: enabled
+      max_tokens: 8000
+      keep: none
+    frequency: "per_trading_day_eod"
+    task: "对比当前证据与持仓原始买入逻辑支柱,评估 thesis 健康度(evidence-only,严禁买卖建议)"
+
+  theme_investigator:
+    name: "产业链倒推调查员（Phase Y theme research SOP）"
+    provider: kimi
+    model: kimi-k2.6
+    # No fallback by design: the investigator is fail-closed — an LLM
+    # failure becomes an auditable aborted run and the pure-quant
+    # pipeline runs unchanged (P0-8-amendment-2026-06-01 §3.6).
+    thinking:
+      type: enabled
+      max_tokens: 10000
+      keep: none
+    frequency: "preopen_scheduled"
+    task: "5 步产业链倒推 SOP 调查(定时·留痕·人工 pin 的 peer-sourcing;sourcing-only 无决策字段)"
 
   # Phase 5B exit shadow-test baseline (consumed only by
   # backend.services.shadow_runner when QUANTMIND_SHADOW_ENABLED=1).

@@ -329,13 +329,21 @@ def test_production_routing_has_no_tiered_agents() -> None:
         f"go-live amendment; unexpected: {routed}"
     )
 
-    # The 4 mandatory agents are direct qwen with deepseek fallback;
-    # fund_manager uses the stronger qwen3.7-max deep-reasoning model.
-    for name in ("fundamental_analyst", "technical_analyst", "risk_officer"):
+    # P0-10-amendment-2026-06-11 specialization routing: fundamental +
+    # risk_officer stay on qwen3.6-plus (Chinese A-share domain);
+    # technical_analyst runs deepseek-v4-pro (numeric/indicator
+    # reasoning); fund_manager keeps qwen3.7-max. Still no tiered routing.
+    for name in ("fundamental_analyst", "risk_officer"):
         agent = cfg.agents[name]
         assert agent.provider == "qwen"
         assert agent.model == "qwen3.6-plus"
         assert agent.routing is None
+    ta = cfg.agents["technical_analyst"]
+    assert ta.provider == "deepseek"
+    assert ta.model == "deepseek-v4-pro"
+    assert ta.routing is None
+    assert ta.fallback is not None
+    assert ta.fallback.provider == "qwen"
     fm = cfg.agents["fund_manager"]
     assert fm.provider == "qwen"
     assert fm.model == "qwen3.7-max"

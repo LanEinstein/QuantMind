@@ -46,9 +46,16 @@ log = structlog.get_logger(component="services.thesis_advisory")
 # text); Phase W mints NO new prefix (THEME- lands in Phase Y). P0-8 §1.6.2.
 _THESIS_REVIEW_LABEL = "thesis"
 
-# Estimated per-call spend reserved before the LLM fires (settled after). A small
-# advisory call; the real spend is tracked by the router's track_usage.
-_DEFAULT_ESTIMATED_RMB = 0.05
+# Estimated per-call spend reserved before the LLM fires (settled after). The
+# real spend is tracked by the router's track_usage. Sized for the dedicated
+# ``thesis_reviewer`` agent on kimi-k2.6 (P0-10-amendment-2026-06-11) at the
+# TRUE worst case: the call passes no max_tokens, so the provider request is
+# defaults.max_tokens 4096 PLUS the router's kimi thinking growth 8000 =
+# 12,096 output-billable tokens × ¥30/M ≈ ¥0.363, plus ~2.5k prompt × ¥7.5/M
+# ≈ ¥0.019 → reserve ¥0.40 of headroom (kept ≥ the formula by a drift test in
+# tests/services/test_theme_llm_client.py). ≤10 reviews/day keeps the
+# transient reservation ≪ the ¥100/day hard cap.
+_DEFAULT_ESTIMATED_RMB = 0.40
 
 
 @dataclass(frozen=True)
@@ -195,7 +202,10 @@ class ThesisAdvisoryReviewer:
         *,
         router: Any,
         redis_client: redis.asyncio.Redis,
-        agent_name: str = "intelligence_officer",
+        # P0-10-amendment-2026-06-11: dedicated yaml entry, decoupled from
+        # ``intelligence_officer`` (shared by the legacy pipeline + MiroFish)
+        # so the three call points can be routed independently.
+        agent_name: str = "thesis_reviewer",
         estimated_rmb: float = _DEFAULT_ESTIMATED_RMB,
     ) -> None:
         self._router = router

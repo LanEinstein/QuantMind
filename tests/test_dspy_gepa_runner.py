@@ -85,11 +85,11 @@ def _examples(n: int) -> tuple[GEPATrainingExample, ...]:
 def test_constants_locked() -> None:
     assert GEPA_MAX_SAMPLES == 100
     assert GEPA_MAX_ITERATIONS == 10
-    assert REFLECTION_LM_NAME == "deepseek-reasoner"
+    assert REFLECTION_LM_NAME == "deepseek-v4-pro"
     assert GEPA_MAX_BUDGET_CNY == 5.0
     # Codex X-026 R3 claim 7: future production GEPA adapter (DSPy 3.2.1
     # + LiteLLM 1.60) must use the provider-prefixed spelling.
-    assert REFLECTION_LM_LITELLM_MODEL == "deepseek/deepseek-reasoner"
+    assert REFLECTION_LM_LITELLM_MODEL == "deepseek/deepseek-v4-pro"
     # The two forms must encode the same model — a regression that
     # changed one without the other would mismatch the adapter contract.
     assert REFLECTION_LM_NAME in REFLECTION_LM_LITELLM_MODEL

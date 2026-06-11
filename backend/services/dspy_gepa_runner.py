@@ -14,7 +14,9 @@ run unbounded against the daily ¥20 LLM budget. The single-run budget
 ceiling is set at ¥5 (P2-2 §1.1.1) and enforced through
 :func:`backend.services.cost_guard.assert_budget_allows`.
 
-``reflection_lm`` is locked to ``deepseek-reasoner`` because the
+``reflection_lm`` is locked to ``deepseek-v4-pro`` (the reasoning-grade
+DeepSeek model; the legacy ``deepseek-reasoner`` alias is deprecated by
+DeepSeek on 2026-07-24 — P0-10-amendment-2026-06-11 §4.4) because the
 issue #7489 thinking-token swallow regression on smaller models would
 silently turn GEPA into greedy random search. ``dspy.Reasoning`` is
 enabled so the reasoning trace surfaces in the log directory the
@@ -71,10 +73,13 @@ GEPA_MAX_BUDGET_CNY = 5.0
 when the recorded post-run spend exceeds this value — the hard
 ceiling is still the daily ¥20 from :data:`cost_guard`."""
 
-REFLECTION_LM_NAME = "deepseek-reasoner"
-"""GEPA reflection LM (provider-bare slug). Locked to deepseek-reasoner
-(Q1 SDK pin) so the issue #7489 thinking-token swallow regression on
-smaller models does not silently degrade the optimisation signal.
+REFLECTION_LM_NAME = "deepseek-v4-pro"
+"""GEPA reflection LM (provider-bare slug). Locked to deepseek-v4-pro —
+the reasoning-grade DeepSeek model (Q1 SDK pin chose the legacy
+``deepseek-reasoner`` alias, which DeepSeek deprecates on 2026-07-24;
+migrated by P0-10-amendment-2026-06-11 §4.4) — so the issue #7489
+thinking-token swallow regression on smaller models does not silently
+degrade the optimisation signal.
 
 This matches the convention used by QuantMind's existing
 ``backend/llm/router.py``, which talks to the DeepSeek
@@ -93,11 +98,19 @@ intra-router conventions; a runtime mismatch would surface as a
 LiteLLM ``BadRequestError: model not found`` on the very first GEPA
 call."""
 
-REFLECTION_LM_LITELLM_MODEL = "deepseek/deepseek-reasoner"
+REFLECTION_LM_LITELLM_MODEL = "deepseek/deepseek-v4-pro"
 """LiteLLM-compatible spelling of :data:`REFLECTION_LM_NAME`. Provided
 so the future production adapter has a single SSoT for the prefixed
 form (and does not silently re-derive it inline). Codex X-026 R3
-claim 7 fix."""
+claim 7 fix.
+
+MIGRATION CAVEAT (2026-06-11): the legacy ``deepseek-reasoner`` endpoint
+was always-thinking; ``deepseek-v4-pro`` is a unified model where
+reasoning is a per-request toggle. The production adapter MUST request
+reasoning explicitly (``dspy.Reasoning`` stays enabled per the module
+docstring; verify the provider-side thinking flag too) — a non-thinking
+reflection LM silently degrades GEPA into greedy random search, the
+exact failure this pin exists to prevent."""
 
 DEFAULT_LOG_DIR = Path("data/evolution/gepa")
 """Boot-time fixed; the dispatcher overrides with the absolute path."""

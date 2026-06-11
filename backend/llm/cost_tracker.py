@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from backend.llm.fallback import resolve_cost_rate
+from backend.llm.fallback import MODEL_COST_RATES, resolve_cost_rate
 
 if TYPE_CHECKING:
     import redis.asyncio
@@ -18,15 +18,17 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(component="cost_tracker")
 
-# Per-model pricing in RMB per 1K tokens (more granular than COST_RATES).
-# NOTE: this table is documentation/parity only — the live cost
-# computation flows through :func:`backend.llm.fallback.resolve_cost_rate`
-# (per-million). Keep the two in sync when adding a model.
+# Per-model pricing in RMB per 1K tokens (documentation/parity view of
+# the live table). DERIVED from MODEL_COST_RATES so the two can never
+# drift apart (the hand-maintained copy went 3-30x stale before
+# P0-10-amendment-2026-06-11) — the live cost computation flows through
+# :func:`backend.llm.fallback.resolve_cost_rate` (per-million).
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    "deepseek-v4-pro": {"input": 0.0002, "output": 0.0002},
-    "qwen3.6-plus": {"input": 0.001, "output": 0.001},
-    "qwen3.7-max": {"input": 0.0025, "output": 0.010},
-    "kimi-k2.6": {"input": 0.0021, "output": 0.0084},
+    model: {
+        "input": rate.input_rmb_per_million / 1_000,
+        "output": rate.output_rmb_per_million / 1_000,
+    }
+    for model, rate in MODEL_COST_RATES.items()
 }
 
 
@@ -124,19 +126,13 @@ async def aggregate_costs(
     return _build_summary(entries, period, days)
 
 
-async def _scan_keys(
-    redis_client: redis.asyncio.Redis, pattern: str
-) -> list[str]:
+async def _scan_keys(redis_client: redis.asyncio.Redis, pattern: str) -> list[str]:
     """Scan Redis for keys matching a pattern."""
     keys: list[str] = []
     cursor: int | bytes = 0
     while True:
-        cursor, batch = await redis_client.scan(
-            cursor=cursor, match=pattern, count=100
-        )
-        keys.extend(
-            k if isinstance(k, str) else k.decode() for k in batch
-        )
+        cursor, batch = await redis_client.scan(cursor=cursor, match=pattern, count=100)
+        keys.extend(k if isinstance(k, str) else k.decode() for k in batch)
         if cursor == 0:
             break
     return keys
@@ -218,9 +214,7 @@ def _build_summary(
         by_provider[entry.provider] = (
             by_provider.get(entry.provider, 0.0) + entry.cost_rmb
         )
-        daily_totals[entry.date] = (
-            daily_totals.get(entry.date, 0.0) + entry.cost_rmb
-        )
+        daily_totals[entry.date] = daily_totals.get(entry.date, 0.0) + entry.cost_rmb
 
     return CostSummary(
         period=period,
@@ -260,15 +254,17 @@ async def flush_to_mongodb(
     count = 0
     for entry in summary.entries:
         try:
-            await mongodb.save_cost_entry({
-                "date": entry.date,
-                "agent_name": entry.agent_name,
-                "provider": entry.provider,
-                "prompt_tokens": entry.prompt_tokens,
-                "completion_tokens": entry.completion_tokens,
-                "requests": entry.requests,
-                "cost_rmb": entry.cost_rmb,
-            })
+            await mongodb.save_cost_entry(
+                {
+                    "date": entry.date,
+                    "agent_name": entry.agent_name,
+                    "provider": entry.provider,
+                    "prompt_tokens": entry.prompt_tokens,
+                    "completion_tokens": entry.completion_tokens,
+                    "requests": entry.requests,
+                    "cost_rmb": entry.cost_rmb,
+                }
+            )
             count += 1
         except Exception as exc:
             log.warning(

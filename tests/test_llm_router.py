@@ -369,22 +369,25 @@ class TestTrackUsage:
     async def test_deepseek_cost_calculation(self, mock_redis: AsyncMock) -> None:
         await track_usage(mock_redis, "test_agent", "deepseek", 1_000_000, 0)
         pipe = mock_redis.pipeline.return_value
-        # DeepSeek: 0.2 RMB per million input tokens
+        # DeepSeek family fallback (no model arg) = priciest member,
+        # deepseek-v4-pro: 3 RMB per million input tokens
+        # (P0-10-amendment-2026-06-11).
         cost_calls = [
             c for c in pipe.hincrbyfloat.call_args_list if c.args[1] == "cost_rmb"
         ]
         assert len(cost_calls) == 1
-        assert abs(cost_calls[0].args[2] - 0.2) < 0.001
+        assert abs(cost_calls[0].args[2] - 3.0) < 0.001
 
     async def test_kimi_split_cost(self, mock_redis: AsyncMock) -> None:
         await track_usage(mock_redis, "test_agent", "kimi", 1_000_000, 1_000_000)
         pipe = mock_redis.pipeline.return_value
-        # Kimi: 2.1 input + 8.4 output = 10.5 RMB
+        # Kimi (kimi-k2.6 FX-padded assumption, P0-10-amendment-2026-06-11):
+        # 7.5 input + 30 output = 37.5 RMB
         cost_calls = [
             c for c in pipe.hincrbyfloat.call_args_list if c.args[1] == "cost_rmb"
         ]
         assert len(cost_calls) == 1
-        assert abs(cost_calls[0].args[2] - 10.5) < 0.001
+        assert abs(cost_calls[0].args[2] - 37.5) < 0.001
 
     async def test_redis_none_does_not_crash(self) -> None:
         await track_usage(None, "test", "deepseek", 100, 200)

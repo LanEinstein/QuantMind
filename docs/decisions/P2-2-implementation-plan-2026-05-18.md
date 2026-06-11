@@ -61,7 +61,7 @@ dependencies = [
 **升级守门**:任何 dspy / gepa / litellm minor 或 patch 升级**前**必跑 Codex R3 SDK 验证(继承 `feedback_codex_findings_real`);R3 通过 + 现 SDK 升级理由 documented in commit message 才允许升级。R3 失败 → 升级回滚 + audit 记录。
 
 **关键工程坑(必须在 dspy_gepa_runner.py docstring 体现)**:
-1. DeepSeek `<thinking>` 吞失(DSPy issue #7489)— reflection_lm 用 `deepseek-reasoner` 必须 `dspy.Reasoning` 显式启用
+1. DeepSeek `<thinking>` 吞失(DSPy issue #7489)— reflection_lm 用 `deepseek-reasoner` 必须 `dspy.Reasoning` 显式启用(2026-06-11 已迁 `deepseek-v4-pro`,旧名 2026-07-24 官方弃用;v4-pro reasoning 为 per-request 开关,适配器须显式启用 — 见 P0-10-amendment-2026-06-11 §4.4)
 2. DSPy 对 GPT-5 误传 `max_tokens` 而非 `max_completion_tokens`(issue #8612)— **本项目无 GPT-5,不涉及**,但 reasoning 模型场景需 audit
 3. compile() 不可中断 — 必经 BrokerScheduler 第 5 cron 22:00 调度,失败 1-retry + audit;**严禁工作时段触发**
 4. Pareto frontier 持久化 — `log_dir=data/dspy_runs/{YYYY-MM-DD}/` 文件,**不入 Mongo**
@@ -377,7 +377,7 @@ class ShadowAcceptanceReport(AcceptanceReport):  # 继承 P0-6 AcceptanceReport
 | ID | 标题 | 依赖 | 估时 | 描述 |
 |----|------|------|------|------|
 | X-008 | `backend/services/evolution_dispatcher.py`(4 类自进化提议协调 + 严禁 LLM 反向调用 .activate_*) | X-003..X-007 | 1.5d | 单一入口 dispatch prompt / RAG / risk_proposal / exemplar 4 类;import 守门 |
-| X-009 | `backend/services/dspy_gepa_runner.py`(DSPy GEPA 离线 prompt 演化 + R1 sample/iter cap + ≤¥5 budget + deepseek-reasoner reflection_lm) | X-003 + cost_guard | 2d | Q1 SDK pin + R1 硬约束 + Reasoning module + log_dir 文件持久化 |
+| X-009 | `backend/services/dspy_gepa_runner.py`(DSPy GEPA 离线 prompt 演化 + R1 sample/iter cap + ≤¥5 budget + deepseek-v4-pro reflection_lm(原 deepseek-reasoner,2026-06-11 迁移)) | X-003 + cost_guard | 2d | Q1 SDK pin + R1 硬约束 + Reasoning module + log_dir 文件持久化 |
 | X-010 | `backend/evolution/frontier_crawler.py`(每日 22:00 5 源 crawl + DeepSeek 总结 + 写 data/rag/) | X-004 + cost_guard | 2d | arxiv OAI-PMH + S2 + OpenReview + GitHub PAT + akshare Atom;asyncio.Semaphore + Spotlighting datamarking |
 | X-011 | `backend/evolution/rag_ingester.py`(provenance + 白名单 + sanitize + audit + 严禁非白名单入库) | X-004 + X-010 | 1d | 3 层防 injection;hash-anchored citation;starting 校验 whitelist_rule_version |
 | X-012 | P0-7 amendment 落地 — risk_parameter_proposals 扩 4 字段(target_artifact_type + shadow_validation_status + pending_amendment_id + feishu_notified_at) | P0-7 主决策 | 0.5d | 非破坏式扩展 default=None;sub Pydantic schema |
