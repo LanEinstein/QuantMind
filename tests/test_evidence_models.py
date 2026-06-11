@@ -1,8 +1,9 @@
-"""Tests for backend/models/evidence.py — evidence_id 5-prefix enforcement.
+"""Tests for backend/models/evidence.py — evidence_id prefix enforcement.
 
 Locks P0-8 §1.6.2 red line: evidence_id must start with one of
-NEWS- / MIROFISH- / MARKET- / RISK- / DEBATE-. New prefixes need an
-amendment; arbitrary prefixes are red-line violations.
+NEWS- / MIROFISH- / MARKET- / RISK- / DEBATE- / THEME- (the sixth, THEME,
+unlocked by P0-8-amendment-2026-06-01 §2.4 for theme research). Any further
+prefix needs a new amendment; arbitrary prefixes are red-line violations.
 """
 
 from __future__ import annotations
@@ -21,13 +22,16 @@ from backend.models.evidence import (
 
 
 class TestEvidencePrefix:
-    def test_five_prefixes_locked(self) -> None:
+    def test_six_prefixes_locked(self) -> None:
+        # THEME is the sixth, unlocked by P0-8-amendment-2026-06-01 (Y-003);
+        # any further prefix needs a new amendment.
         assert {p.value for p in EvidencePrefix} == {
             "NEWS",
             "MIROFISH",
             "MARKET",
             "RISK",
             "DEBATE",
+            "THEME",
         }
 
     def test_prefix_tuple_matches_enum(self) -> None:
@@ -74,6 +78,7 @@ class TestParseEvidencePrefix:
         assert parse_evidence_prefix("MARKET-y") == EvidencePrefix.MARKET
         assert parse_evidence_prefix("RISK-z") == EvidencePrefix.RISK
         assert parse_evidence_prefix("DEBATE-w") == EvidencePrefix.DEBATE
+        assert parse_evidence_prefix("THEME-t") == EvidencePrefix.THEME
 
     def test_invalid_prefix_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -102,4 +107,6 @@ class TestEvidencePattern:
         # The exported regex string is the single source of truth for both
         # backend Pydantic models and the frontend JS regex mirror (P1-5
         # §2 red line 5 / B-003 acceptance).
-        assert EVIDENCE_ID_PATTERN.startswith("^(NEWS|MIROFISH|MARKET|RISK|DEBATE)-")
+        assert EVIDENCE_ID_PATTERN.startswith(
+            "^(NEWS|MIROFISH|MARKET|RISK|DEBATE|THEME)-"
+        )

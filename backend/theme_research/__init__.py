@@ -5,6 +5,19 @@
 Line-1 实时信号/replay 路径. 见 ``CLAUDE.md``.
 """
 
+from backend.theme_research.candidate_artifact import (
+    THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION,
+    THEME_EVIDENCE_PREFIX,
+    ThemeCandidateArtifact,
+    ThemeCandidateEntry,
+    build_theme_evidence_id,
+    theme_evidence_text,
+)
+from backend.theme_research.candidate_registry import (
+    ThemeCandidateLockFile,
+    ThemeCandidateRegistry,
+    ThemeCandidateRegistryError,
+)
 from backend.theme_research.investigator import (
     InvestigatorBudget,
     InvestigatorError,
@@ -16,6 +29,10 @@ from backend.theme_research.investigator import (
     UsageReserver,
     WebFetcher,
     WebFetchResult,
+)
+from backend.theme_research.peer_sourcing import (
+    PeerSourcedCandidate,
+    verify_pinned_candidates,
 )
 from backend.theme_research.prompts_loader import (
     ThemePromptRegistry,
@@ -40,16 +57,24 @@ from backend.theme_research.sop_schema import (
 )
 
 __all__ = [
+    "THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION",
+    "THEME_EVIDENCE_PREFIX",
     "THEME_SOP_STEPS",
     "ChokePointFinding",
     "InvestigatorBudget",
     "InvestigatorError",
     "LlmClient",
     "LlmCompletion",
+    "PeerSourcedCandidate",
     "ResearchRequest",
     "SourceCitation",
     "ThemeArtifactType",
     "ThemeCandidate",
+    "ThemeCandidateArtifact",
+    "ThemeCandidateEntry",
+    "ThemeCandidateLockFile",
+    "ThemeCandidateRegistry",
+    "ThemeCandidateRegistryError",
     "ThemeInvestigator",
     "ThemePromptRegistry",
     "ThemePromptRegistryError",
@@ -62,7 +87,10 @@ __all__ = [
     "UsageReserver",
     "WebFetcher",
     "WebFetchResult",
+    "build_theme_evidence_id",
     "compute_prompt_sha256",
+    "theme_evidence_text",
     "theme_sha256",
     "validate_sop_skeleton",
+    "verify_pinned_candidates",
 ]

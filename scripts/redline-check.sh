@@ -377,12 +377,12 @@ yellow "[P0-8] evidence_id prefix allowlist"
 EVIDENCE_BAD="$(grep -rnE \
   "evidence_id[s]?\s*[:=]\s*[(\\[]?\s*['\"][A-Za-z][^'\"]+['\"]" \
   --include='*.py' backend/ 2>/dev/null \
-  | grep -vE "['\"](NEWS|MIROFISH|MARKET|RISK|DEBATE)-" \
+  | grep -vE "['\"](NEWS|MIROFISH|MARKET|RISK|DEBATE|THEME)-" \
   || true)"
 if [ -z "$EVIDENCE_BAD" ]; then
-  green "  ok    evidence_id literals use only the five locked prefixes"
+  green "  ok    evidence_id literals use only the six locked prefixes"
 else
-  red "  FAIL  evidence_id literal with unknown prefix (allow: NEWS-/MIROFISH-/MARKET-/RISK-/DEBATE-)"
+  red "  FAIL  evidence_id literal with unknown prefix (allow: NEWS-/MIROFISH-/MARKET-/RISK-/DEBATE-/THEME-)"
   printf '%s\n' "$EVIDENCE_BAD" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 fi
@@ -1457,6 +1457,89 @@ elif [ -n "$W001_OUT" ]; then
   FAIL=$((FAIL + 1))
 else
   green "  ok    position_thesis pure (no llm/agents/mirofish) + no InstructionPlan"
+fi
+
+# Y-005 / P0-8-amendment-2026-06-01 — theme_research peer-sourcing layer.
+# The ONLY LLM+web-bearing module, but LLM/web arrive via INJECTED Protocols:
+# it must never hard-import the trading stack, and must never construct an
+# InstructionPlan (single construction point). The 0-LLM modules importing it
+# back is caught by tests/theme_research/test_module_contract.py.
+yellow "[Y-005] theme_research isolation + no InstructionPlan construction"
+Y005_OUT="$(python3 - <<'PY' 2>/dev/null || echo "SCANNER_ERROR"
+import ast
+import pathlib
+import sys
+
+ROOT = pathlib.Path("backend/theme_research")
+FORBIDDEN = {
+    "api", "broker", "risk", "llm", "agents", "agents_team",
+    "mirofish", "data", "screening", "marketdata_snapshot",
+}
+violations: list[str] = []
+
+if not ROOT.exists():
+    print("")  # module not present yet — skip cleanly
+    sys.exit(0)
+
+for path in sorted(ROOT.rglob("*.py")):
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        violations.append(f"{path}: SyntaxError: {exc}")
+        continue
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if len(parts) >= 2 and parts[0] == "backend" and parts[1] in FORBIDDEN:
+                    violations.append(f"{path}:{node.lineno}: import {a.name}")
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".") if mod else []
+            if (
+                node.level == 0 and len(parts) >= 2
+                and parts[0] == "backend" and parts[1] in FORBIDDEN
+            ):
+                violations.append(f"{path}:{node.lineno}: from {mod} import ...")
+            if node.level == 0 and mod == "backend":
+                for a in node.names:
+                    if a.name in FORBIDDEN:
+                        violations.append(f"{path}:{node.lineno}: from backend import {a.name}")
+            if node.level > 0 and parts and parts[0] in FORBIDDEN:
+                violations.append(f"{path}:{node.lineno}: relative import of forbidden")
+            if node.level > 0 and not mod:
+                for a in node.names:
+                    if a.name in FORBIDDEN:
+                        violations.append(f"{path}:{node.lineno}: relative import {a.name}")
+    names = {
+        a.asname or a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for a in node.names
+        if a.name == "InstructionPlan"
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in names:
+            violations.append(f"{path}:{node.lineno}: InstructionPlan(...)")
+        elif isinstance(f, ast.Attribute) and f.attr == "InstructionPlan":
+            violations.append(f"{path}:{node.lineno}: *.InstructionPlan(...)")
+
+if violations:
+    print("\n".join(violations))
+PY
+)"
+if [ "$Y005_OUT" = "SCANNER_ERROR" ]; then
+  red "  FAIL  [Y-005] theme_research AST scanner error"
+  FAIL=$((FAIL + 1))
+elif [ -n "$Y005_OUT" ]; then
+  red "  FAIL  theme_research isolation / InstructionPlan red line violated:"
+  printf '%s\n' "$Y005_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    theme_research pure (no trading-stack imports) + no InstructionPlan"
 fi
 
 echo

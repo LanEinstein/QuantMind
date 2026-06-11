@@ -1,10 +1,12 @@
-"""Evidence ID model and 5-prefix validation (P0-8 §1.6.2).
+"""Evidence ID model and prefix validation (P0-8 §1.6.2).
 
 `InstructionPlan.evidence_ids` is a by-reference tuple linking back to
-MongoDB evidence collections. P0-8 §2 red line 14 locks the prefix set to
-exactly five values: `NEWS` / `MIROFISH` / `MARKET` / `RISK` / `DEBATE`.
-Adding a sixth prefix requires a `P0-8-amendment-*.md` before any code
-change.
+MongoDB evidence collections. P0-8 §2 red line 14 originally locked the
+prefix set to five values (`NEWS` / `MIROFISH` / `MARKET` / `RISK` /
+`DEBATE`). P0-8-amendment-2026-06-01 (§2.4/§3, Y-003) unlocks a sixth,
+`THEME`, for the theme-research peer-sourcing layer's audit/display
+evidence. Adding any further prefix still requires a new
+`P0-8-amendment-*.md` before the code change.
 
 The regex is exported so the frontend JS mirror (B-003 / P1-5 §2 red
 line 5) and the redline-check.sh static guard can reuse a single source
@@ -20,12 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EvidencePrefix(StrEnum):
-    """Allowed evidence_id prefixes (P0-8 §1.6.2).
+    """Allowed evidence_id prefixes (P0-8 §1.6.2 + amendment-2026-06-01).
 
     The string values are the literal text that must appear before the
     first dash in any `evidence_id`. Order is documented for stability —
     do not rename or reorder; the redline-check.sh scanner relies on the
-    pattern string below to be exhaustive.
+    pattern string below to be exhaustive. `THEME` is the sixth prefix,
+    unlocked by P0-8-amendment-2026-06-01 for the theme-research layer.
     """
 
     NEWS = "NEWS"
@@ -33,17 +36,18 @@ class EvidencePrefix(StrEnum):
     MARKET = "MARKET"
     RISK = "RISK"
     DEBATE = "DEBATE"
+    THEME = "THEME"
 
 
 EVIDENCE_PREFIXES: tuple[str, ...] = tuple(p.value for p in EvidencePrefix)
 """Tuple form of the allowed prefixes, used by lint/redline checks."""
 
 EVIDENCE_ID_PATTERN: str = (
-    r"^(NEWS|MIROFISH|MARKET|RISK|DEBATE)-[A-Za-z0-9_:.\-]{1,128}$"
+    r"^(NEWS|MIROFISH|MARKET|RISK|DEBATE|THEME)-[A-Za-z0-9_:.\-]{1,128}$"
 )
 """Single source of truth regex for `evidence_id` strings.
 
-- Prefix: one of the five locked values (P0-8 §1.6.2).
+- Prefix: one of the six locked values (P0-8 §1.6.2 + amendment-2026-06-01).
 - Separator: single literal `-`.
 - Suffix: 1-128 chars of ASCII alphanumerics + `_` + `:` + `.` + `-`
   to accommodate ISO timestamps (`MARKET-600519-2026-05-12T09:30:00`)

@@ -107,6 +107,10 @@ class CandidateSelection:
     advisory_applied: bool
     config_version: str
     feature_def_hash: str = ""
+    peer_sourced: tuple[str, ...] = ()
+    """Theme peer-sourced codes admitted into the shortlist (Y-004). Bounded to
+    ``final_shortlist_size − min_quant_slots`` (≤2); never evicts a reserved quant
+    name; empty when no pinned theme artifact (pure-quant path unchanged)."""
 
 
 class CandidateSelector:
@@ -123,11 +127,21 @@ class CandidateSelector:
         self,
         quant_candidates: Sequence[QuantCandidate],
         advisory: Sequence[AdvisorySignal] | None = None,
+        peer_sourced: Sequence[str] | None = None,
     ) -> CandidateSelection:
         """Select the final debate shortlist from quant candidates + advisory.
 
-        Deterministic: the same candidates + advisory + config always yield the
-        same shortlist. ``advisory`` defaults to absent (pure-quant fallback).
+        Deterministic: the same candidates + advisory + peer_sourced + config
+        always yield the same shortlist. ``advisory`` and ``peer_sourced`` default
+        to absent — and with ``peer_sourced=None`` the result is bit-identical to
+        the pure-quant path (Y-004 peer-sourcing is purely additive).
+
+        ``peer_sourced`` (Y-004) is the already-pin-verified theme codes (the
+        caller verified promotability + the LiveArtifactRegistry/ThemeCandidate
+        pin before passing them — the selector stays pure). They reserve at most
+        ``final_shortlist_size − min_quant_slots`` (≤2) slots and NEVER evict the
+        top ``min_quant_slots`` quant names; codes already quant-qualified are not
+        double-counted.
 
         Raises:
             CandidateSelectorError: duplicate candidate codes (structurally
@@ -135,7 +149,8 @@ class CandidateSelector:
         """
         ranked = self._rank_quant(quant_candidates)
         qualified = tuple(c.code for c in ranked)
-        if not ranked:
+        peer_new = self._dedup_peer(peer_sourced, set(qualified))
+        if not ranked and not peer_new:
             return CandidateSelection(
                 shortlist=(),
                 qualified=(),
@@ -145,14 +160,30 @@ class CandidateSelector:
                 feature_def_hash=self._config.feature_def_hash,
             )
 
-        ordered, applied = self._apply_bounded_rerank(ranked, advisory)
-        shortlist, reserved = self._truncate_reserving_quant(ordered, ranked)
+        # No quant to re-rank on the theme-only path → advisory did not apply
+        # (the flag must not claim a re-rank that never had quant to act on).
+        ordered, applied = (
+            self._apply_bounded_rerank(ranked, advisory) if ranked else ([], False)
+        )
+        # Theme reserves at most (final − min_quant); quant always keeps the top
+        # min_quant_slots names (red line 3). Theme fills only the slots beyond
+        # the reduced quant cap, so it can never evict a reserved quant favorite.
+        theme_quota = max(
+            0, self._config.final_shortlist_size - self._config.min_quant_slots
+        )
+        theme_taken = tuple(peer_new[:theme_quota])
+        quant_cap = self._config.final_shortlist_size - len(theme_taken)
+        quant_shortlist, reserved = self._truncate_reserving_quant(
+            ordered, ranked, quant_cap
+        )
+        shortlist = quant_shortlist + theme_taken
 
         log.info(
             "candidates_selected",
             qualified=len(qualified),
             shortlist=len(shortlist),
             quant_reserved=len(reserved),
+            peer_sourced=len(theme_taken),
             advisory_applied=applied,
             config_version=self._config.version,
         )
@@ -163,7 +194,26 @@ class CandidateSelector:
             advisory_applied=applied,
             config_version=self._config.version,
             feature_def_hash=self._config.feature_def_hash,
+            peer_sourced=theme_taken,
         )
+
+    @staticmethod
+    def _dedup_peer(
+        peer_sourced: Sequence[str] | None, qualified: set[str]
+    ) -> list[str]:
+        """Peer codes not already quant-qualified, de-duplicated, order-preserved.
+
+        A theme code that is already a quant name is counted as quant (not theme)
+        so the bounded theme quota is never inflated by overlap.
+        """
+        seen: set[str] = set()
+        out: list[str] = []
+        for code in peer_sourced or ():
+            if code in qualified or code in seen:
+                continue
+            seen.add(code)
+            out.append(code)
+        return out
 
     # -- internals -------------------------------------------------------
 
@@ -249,17 +299,27 @@ class CandidateSelector:
         return reordered, True
 
     def _truncate_reserving_quant(
-        self, ordered: list[QuantCandidate], ranked: list[QuantCandidate]
+        self,
+        ordered: list[QuantCandidate],
+        ranked: list[QuantCandidate],
+        cap: int | None = None,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Cut to ``final_shortlist_size`` keeping ≥ ``min_quant_slots`` quant.
+        """Cut to ``cap`` (default ``final_shortlist_size``) keeping the top quant.
 
         The top ``min_quant_slots`` quant-ranked codes (or all, if fewer) are
         guaranteed present; if truncation would drop one, it evicts the
         lowest-priority non-reserved code from the tail to make room. The final
         set is then emitted in ``ordered`` (post-rerank) order for determinism.
+        ``cap`` is reduced by the theme quota in :meth:`select` so peer-sourced
+        names fill only the slots beyond the reserved quant (Y-004).
         """
-        final_n = self._config.final_shortlist_size
-        reserve_n = min(self._config.min_quant_slots, len(ranked))
+        final_n = self._config.final_shortlist_size if cap is None else cap
+        # Cap the reserve by ``final_n`` too (defense-in-depth, review finding):
+        # the production loader enforces min_quant_slots ≤ final_shortlist_size, so
+        # reserve_n ≤ cap normally — but a directly-constructed config with
+        # min_quant_slots > cap could otherwise make the eviction loop append a
+        # reserved code with nothing to pop, growing the result past ``cap``.
+        reserve_n = min(self._config.min_quant_slots, len(ranked), final_n)
         reserved = [c.code for c in ranked[:reserve_n]]
 
         chosen = [c.code for c in ordered[:final_n]]

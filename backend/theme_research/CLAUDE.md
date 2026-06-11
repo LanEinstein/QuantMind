@@ -1,6 +1,6 @@
 # backend/theme_research/ — 子任务上下文(Phase Y,主题研究 peer-sourcing 层)
 
-> 状态:**Y-002 + Y-006 done(2026-06-11,session #74:`sop_schema` + `provenance` + `prompts_loader` + `investigator` + `config/prompts/theme_research/v1.yaml` + lock)**;**Y-003/Y-004/Y-005 进行中**。治理:[P0-8-amendment-2026-06-01](../../docs/decisions/P0-8-amendment-2026-06-01-llm-theme-research-peer-sourcing.md) + R0 §3/§4 + P2-2(LiveArtifactRegistry pin)。任务:plan.html Y-002..Y-006。
+> 状态:**Phase Y 全 done(2026-06-11,session #74)**:Y-002+Y-006(SOP/provenance/registry/investigator)+ Y-003(THEME- 第 6 前缀 + 机读候选 artifact 分离)+ Y-004(人工 pin registry + peer-sourcing + selector 接线)+ Y-005(对抗测试 + 模块隔离 AST + redline)。治理:[P0-8-amendment-2026-06-01](../../docs/decisions/P0-8-amendment-2026-06-01-llm-theme-research-peer-sourcing.md) + R0 §3/§4 + P2-2(LiveArtifactRegistry pin)。任务:plan.html Y-002..Y-006。
 
 ## 职责
 **LLM+web 联网调查 = 定时·留痕·人工 pin 的 peer-SOURCING 层**(方向①)。只【追加】主题候选,**永不作全局 universe 过滤器**;量化仍是资格权威,纯量化路径始终完整可跑。**严禁**进 Line-1 实时信号 / runtime / replay 路径取数。
@@ -24,10 +24,15 @@
 | `provenance.py` | `ThemeResearchSnapshot`(原始字节+checksum 自校验,仿 MarketDataSnapshot)+ `ThemeResearchRun`(promotability fail-closed)+ `ThemeResearchStore`(content-addressed append-only) | Y-002 |
 | `prompts_loader.py` | `ThemePromptRegistry`(文件式 SHA256 pin + frozen SOP 骨架校验 + LiveArtifactRegistry.PROMPT_VERSION 认证;不可变/fail-closed/无 hot-reload,镜像 PromptRegistry) | Y-006 |
 | `investigator.py` | `ThemeInvestigator`(定时有界 job body:allowlist + 全捕获 + 成本 bound + 严格 parse;注入式 web/LLM/reserver) | Y-002 |
+| `candidate_artifact.py` | **Y-003**:`ThemeCandidateArtifact`(content-addressed,从 typed output **only** 构造,digest 绑定 schema_version+source_promotable+定精度 confidence)+ `build_theme_evidence_id`(THEME- 第 6 前缀)+ `theme_evidence_text`(display-only,不机读) | Y-003 |
+| `candidate_registry.py` | **Y-004**:`ThemeCandidateRegistry`(人工 pin 闸,不可变/fail-closed/content-addressed,镜像 R-001 pin 纪律;空 bootstrap=deny-all;`config/theme_candidates.lock.json`) | Y-004 |
+| `peer_sourcing.py` | **Y-004**:`verify_pinned_candidates(artifact, registry)`(fail-closed:promotable AND pinned 才出候选;否则空=纯量化照跑) | Y-004 |
 | `config/prompts/theme_research/v1.yaml` | 5 步倒推 SOP(一等设计物;骨架 frozen,措辞可进化) | Y-002/Y-006 |
 | `config/prompts/theme_research/prompts.lock.json` | v1 SHA256 pin(active_version=v1) | Y-006 |
 
 ## 接口契约
 - `ThemePromptRegistry.from_lockfile(lock, *, repo_root, registry=None, require_pinned=False)` → 不可变;`active_prompt()` / `active_sha256` / `active_version`。
 - `ThemeInvestigator.investigate(ResearchRequest) -> ThemeResearchResult`(`output: ThemeResearchOutput | None` + `promotable` + `aborted_reason`)。
-- 待续(Y-003/Y-004):`candidate_artifact.py`(THEME- evidence + content-addressed `ThemeCandidateArtifact` 人工 pin)+ `peer_sourcing.py`(CandidateSelector 接线,配额/保量化)。
+- `ThemeCandidateArtifact.from_output(*, run_id, prompt_version_hash, output, source_promotable, created_at)` → `content_hash()`(人工 pin 值);`ThemeCandidateRegistry.is_pinned(hash)`;`verify_pinned_candidates(artifact, registry) -> tuple[PeerSourcedCandidate, ...]`。
+- `CandidateSelector.select(quant, advisory=None, peer_sourced=None)`:`peer_sourced=None` 时与纯量化路径 bit-identical;主题配额 ≤ `final−min_quant`(≤2)+ ≥`min_quant`(≥3)量化保留 + 纯量化永不被挤掉(`backend/candidate_selector/` 接线点;调用方先 `verify_pinned_candidates` 验 pin)。
+- **待续(Phase Z / 运行期接线)**:定时 research cron + 飞书人工审批通道 + line1_runner 消费 `peer_sourced`(均需 owner 重启;system 当前停机)。
