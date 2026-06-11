@@ -796,6 +796,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-11 session #73 — <strong>Phase R 起手 R-001:LiveArtifactRegistry 自进化批准闸</strong>(已决边界内 P2-2 §2.3 + R0 §8,无新 amendment;feature `373f281`,本地未 push)。`ArtifactKind` 5 类全 SHA256 hex;`is_approved(kind, identifier)` kind-typed 仅认 pin 哈希(有效但未 pin 也拒);`from_lockfile` fail-closed;**完全不可变**(MappingProxyType + frozenset + __setattr__ raise + __slots__ → 无 runtime 加哈希路径);空 bootstrap deny-all。对抗测试先写 RED→GREEN。codex cycle1 修 P1(可变内部 dict→MappingProxyType)+P2(mypy strict)→ 撞额度回退 /code-review verify clean(6/6 sound)。16 tests/模块 100%/mypy strict clean/4880 passed/90.86%。解锁 Y-004 + Y-006 registry pin。下一站 = 回 Phase Y(Y-002+Y-006→Y-003→Y-004→Y-005)或续 Phase R 链(R-002 rqalpha oracle)。</li>
         <li>2026-06-11 session #72 — <strong>Phase Y 起手 Y-001:产业链知识图谱子能力</strong>(amendment `P2-2-amendment-2026-06-11`:frozen 9 节点/12 边 → 12/17 只增不改;feature `673105e`,本地未 push)。schema +3 节点(TREND/CHAIN_LINK/PRODUCT,Stock 复用 INSTRUMENT)/+5 边(DRIVES/REQUIRES/UPSTREAM_OF/SUPPLIES_PRODUCT/MEMBER_OF),SUPERSEDES 端点不动。新 `centrality.py` 确定性 choke-point(连通 UPSTREAM_OF 子图 reach+out-degree+betweenness+reverse-PageRank,topology-only/PIT 可复现/孤立环节零分不扰连通分,NetworkX-only)。新 `seed/industry_chain.py` 半导体国产替代链从公开知识重建(ChainKnowledgeGraph NOASSERTION 不抄,provenance 记 license;criticality 研报人工非 LLM)+ fill-missing 不 clobber ingest + 折入 seed_knowledge_graph。codex 5 轮收敛(2→2→1→1→1)+ /code-review high 回退修 3,全 P0/P1/P2/P3 修;4864 passed/90.84%,新模块 100% 覆盖。Y-004 硬阻塞于 R-001。下一站 = Y-002+Y-006(prompt SOP+registry,循环互依)或 Phase R 起手 R-001。</li>
         <li>2026-06-04 session #71 — <strong>卖出时机深度调研(dossier)+ 卖出栈 v2 全四期落地</strong>(4 amendment:ops-hardening / entry-anchored-chandelier / sell-into-strength / reentry-and-time-stop;`5d0dd02`+`868f0e6`+`595eb45`+`e943f02`,本地未 push)。实证:06-03 止盈建议被 prev_close 缺口吞(非策略缺位);新栈 = 持久 dedup+拒单告警+互斥 / 入场锚定 3×ATR 双层止损+尾盘确认 / 炸板·冲高回落·放量滞涨·乖离四强势触发+封板豁免 / 时间止损+次日折价回补。triggers v8→v11;全 env 默认 OFF;4836 passed/90.76%。下一站 = E1 shadow 启动(owner)+ Phase Y。</li>
         <li>2026-06-04 session #70 — <strong>phase-Q full(知识图谱 4/4:store 双时态 append-only / 811 因子冷启动 / 人工 gate ingest + 离线检索 / 隔离收口)+ ops 端口迁移 8001 + Line-2 prev_close 死路径事故修复</strong>(amendment `P0-8-amendment-2026-06-04-line2-prev-close-frame-fallback`;ops `44840b1`+`7c69fa4` / Q `ad85279`+`f7574ca`+`aba7259`+`3eebfd1`,全部已 push)。事故:kline_daily 恒空 → RiskEngine 恒拒 Line-2 单 + dedup 吞当日重试 → 600011/605111 真实 ATR 止损被吞;修复后 14:27 实证 3 SELL dispatched 飞书。4786 passed/90.82%。下一站 Phase Y(Y-001 已解锁)。</li>
@@ -886,6 +887,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-11",
+        session: "#73 Phase R 起手 R-001:LiveArtifactRegistry 自进化批准闸(对抗测试先写)",
+        owner: "Claude Opus 4.8 (1M ctx)",
+        state_in: "续 #72(Y-001 done+push)。owner『先 push,然后分析下一步』→ 我分析:Y-004 硬阻塞于 R-001 + R-001 是 Y-006 registry pin 直接要插的槽(prompt_version_hash)+ 现在就解锁(依 Q-004✓)+ 安全闸应先于流经它的特征 → AskUserQuestion owner 选『R-001 先行(推荐)』。R-001 已在 P2-2 §2.3 + R0 §8 已决边界内,无新 amendment。",
+        actions: "**单任务 R-001(自进化唯一批准闸,R0 §8 七泄漏路径)**。**对抗测试先写(RED,任务强制)**:`tests/test_live_artifact_registry.py` —— 种入未批准高 Sharpe 策略→live selector gated/不可读;有效但未 pin 也拒;跨 kind 隔离(策略哈希永不批准 prompt);无 runtime 加哈希(rebind + item-assign 双拒);fail-closed boot(缺文件/坏 JSON/坏 schema/非 sha256/未知 kind/错 version);空 bootstrap deny-all;in-repo lockfile 加载;import 隔离 AST。**实现**:① `backend/strategy_evolution/live_artifact_registry.py` —— `ArtifactKind` 5 类(strategy_code/feature_def/prompt_version/anomaly_model/rag_index)全 SHA256 hex(content-addressed);`from_lockfile` fail-closed + `from_lock`(in-memory);`is_approved(kind, identifier)` **kind-typed**(草案 `is_approved(hash)` 精化分型,已决 5 类边界内非新 amendment)+ `approved(kind)`;**完全不可变**(MappingProxyType map + frozenset 值 + __setattr__ raise + __slots__);镜像 `prompt_registry` frozen/strict/fail-closed 姿态。② `config/live_artifacts.lock.json` 空 bootstrap(deny-all)。③ `__init__.py` 导出 + 模块 CLAUDE.md 更新(状态 + 实现接口)。**codex-review(强制门)**:`codex review --uncommitted` cycle1 抓 2(**P1 可变内部 dict=runtime 加哈希路径→MappingProxyType**〔印证 [[feedback_codex_findings_real]]:绿测试+不可变 setattr 仍漏 dict item-assign〕+ P2 mypy strict typed slot)全修+测试锁;cycle2 codex 撞 usage limit(重置 18:27)→ 按 [[feedback_codex_rate_limit_fallback]] 回退 `/code-review` 对抗 verify agent → **[] 无新/残留缺陷,6/6 维 SOUND**(不可变/fail-closed/is_approved/schema/测试非 tautological/mypy+ruff+隔离)+ 清 1 cosmetic。**门禁**:16 tests / 模块 100% 覆盖 / `mypy --strict` clean / ruff + redline 全绿 / 全量 **4880 passed / 13 skipped / 90.86%**。红线一条未破(无 runtime 加哈希 / fail-closed / 人工 gate 晋升经 amendment+pin+git+restart / 模块隔离)。",
+        commit: "feature `373f281`(live_artifact_registry.py + __init__ + 模块 CLAUDE.md + config/live_artifacts.lock.json + 新 test + review summary);本 docs-only 收尾(plan.html R-001 done + SESSION_LOG)。**本地未 push,待 owner 授权**(根 CLAUDE.md owner 未提交改动未碰)。",
+        next: "**R-001 ✅ done(`373f281`,本地未 push)→ Y-004 解锁(依 Y-003 + R-001✓)+ Y-006 registry pin 有了真 registry**。**下一站两条路**:① 回 Phase Y 续做 **Y-002 + Y-006(prompt SOP + 文件式 registry,循环互依须合做)→ Y-003 → Y-004 → Y-005** 打通整个 Phase Y(全项目红线最密一块:LLM+web 调查 / provenance 全捕获 / prompt-injection 容器化,建议专注 session + 对抗测试先写);② 或继续 **Phase R 链 R-002(rqalpha test-time 差分 oracle + 生命周期,依 R-001✓)→ R-003(45 日 shadow + 飞书 + 人工 amendment)→ R-004 → R-005**。建议①(回 Y 把 owner 强调的产业链倒推闭环做完,R-001 已铺好 pin 闸)。push 授权:#73 一 feature commit 本地。",
+      },
       {
         date: "2026-06-11",
         session: "#72 Phase Y 起手 Y-001:产业链 KG 子能力(schema +3 节点/+5 边 + liuhuanyong 重建种子 + 确定性 choke-point 中心性)",
@@ -3409,7 +3419,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "3eebfd1", session_date: "2026-06-04", notes: "DONE #70:AST 三形态隔离扫描(绝对/相对/from backend import)+ 植入自检 + 零 HTTP 写面契约 + CLAUDE.md 收口;模块覆盖率 98%。Why:KG 是纯本地工件,严禁反向进交易栈绕过守门。"
       },
       {
-        id: "R-001", phase: "R 自进化v2", status: "todo", priority: "P0",
+        id: "R-001", phase: "R 自进化v2", status: "done", priority: "P0",
         title: "LiveArtifactRegistry(批准哈希集)+ 对抗测试先写",
         summary: "startup 从不可变 config 载入批准哈希集 {strategy_code_hash, feature_def_hash, prompt_version_hash, anomaly_model_hash, rag_index_version};实时路径拒任何不在集内的哈希;无 runtime 路径加哈希。对抗测试先写(RED)。",
         scope: "backend/strategy_evolution/live_artifact_registry.py, tests/test_live_artifact_registry.py",
@@ -3417,7 +3427,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "实时拒未 pin 哈希(含有效但未 pin)+ 无 runtime 加哈希路径 + 对抗测试先红后绿。",
         tests: "对抗测试先写:种入未批准高 Sharpe 策略 → 实时 selector 不可读/执行;有效未 pin 也拒。",
         sources: "R0 §8, P2-2-amendment-2026-05-24 §2.3, Codex round-2 §4",
-        commit: "", session_date: "", notes: "Codex:断言泄漏不可能,非 happy path;7 泄漏路径各有控制(R0 §8)。"
+        commit: "373f281", session_date: "2026-06-11", notes: "DONE #73:`backend/strategy_evolution/live_artifact_registry.py` + `config/live_artifacts.lock.json`(空 bootstrap=deny-all)。已在已决边界内(P2-2 §2.3 + R0 §8),无新 amendment。`ArtifactKind` 5 类全 SHA256 hex;`is_approved(kind, identifier)` kind-typed(草案 `is_approved(hash)` 精化分型,防策略哈希批准 prompt);`from_lockfile` fail-closed(缺文件/坏 JSON/坏 schema/非 sha256/未知 kind/错 version 全 raise)。**完全不可变**:MappingProxyType map + frozenset 值 + __setattr__ raise + __slots__ 无 __dict__ → 无 runtime 加哈希路径。镜像 prompt_registry 姿态;import 隔离。对抗测试先写 RED→GREEN(种入未批准高 Sharpe→gated;有效未 pin 也拒;跨 kind 隔离;rebind+item-assign 双拒)。codex cycle1 修 P1(可变内部 dict=加哈希路径→MappingProxyType)+P2(mypy strict typed slot)→ codex 撞额度回退 /code-review verify clean(6/6 sound)。16 tests/模块 100%,mypy --strict clean,4880 passed/90.86%。**解锁 Y-004 + Y-006 的 registry pin**;R-002(rqalpha oracle)依本任务。"
       },
       {
         id: "R-002", phase: "R 自进化v2", status: "todo", priority: "P1",
