@@ -108,9 +108,16 @@
           <span class="instruction-id">{{ row.instruction_id }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="stock_code" label="标的" width="120">
+      <el-table-column prop="stock_code" label="标的" min-width="170">
         <template #default="{ row }">
           {{ row.stock_code }} {{ row.stock_name }}
+          <el-tag
+            v-if="styleFor(row.stock_code)"
+            :type="styleFor(row.stock_code)!.tagType"
+            size="small"
+            effect="plain"
+            class="style-badge"
+          >{{ styleFor(row.stock_code)!.icon }}{{ styleFor(row.stock_code)!.label }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="side" label="方向" width="80">
@@ -142,7 +149,17 @@
           <dl class="kv-list">
             <dt>方向</dt><dd>{{ detail.plan.side }}</dd>
             <dt>状态</dt><dd>{{ detail.plan.status }}</dd>
-            <dt>标的</dt><dd>{{ detail.plan.stock_code }} {{ detail.plan.stock_name }}</dd>
+            <dt>标的</dt>
+            <dd>
+              {{ detail.plan.stock_code }} {{ detail.plan.stock_name }}
+              <el-tag
+                v-if="styleFor(detail.plan.stock_code)"
+                :type="styleFor(detail.plan.stock_code)!.tagType"
+                size="small"
+                effect="plain"
+                class="style-badge"
+              >{{ styleFor(detail.plan.stock_code)!.icon }}{{ styleFor(detail.plan.stock_code)!.label }}</el-tag>
+            </dd>
             <dt>股数</dt><dd>{{ detail.plan.volume ?? '—' }}</dd>
             <dt>限价</dt><dd>{{ detail.plan.limit_price ?? '—' }}</dd>
             <dt>有效期至</dt><dd>{{ detail.plan.valid_until }}</dd>
@@ -229,7 +246,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { instructionPlansApi } from '@/api/instructionPlans'
 import { themeResearchApi } from '@/api/themeResearch'
+import { positionThesesApi } from '@/api/positionTheses'
 import IndustryChainGraph from '@/components/charts/IndustryChainGraph.vue'
+import { styleBadge, type StyleBadge } from '@/utils/styleBadge'
 import type {
   InstructionPlanDetailPayload,
   InstructionPlanSummary,
@@ -252,6 +271,15 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const statusFilter = ref<string | undefined>(undefined)
 const tradeDateFilter = ref<string | undefined>(undefined)
+
+// AD-004 — style lives on the PositionThesis (per stock_code), not on the
+// InstructionPlan. Build a code→style map from the theses feed so the badge
+// is the same single source of truth as Portfolio + Feishu (display-only).
+const styleByCode = ref<Record<string, string>>({})
+function styleFor(code: string | null | undefined): StyleBadge | null {
+  if (!code) return null
+  return styleBadge(styleByCode.value[code])
+}
 
 const chainPanelOpen = ref<string[]>(['chain'])
 const chainPayload = ref<IndustryChainPayload | null>(null)
@@ -346,9 +374,24 @@ async function fetchChain(): Promise<void> {
   }
 }
 
+async function fetchStyles(): Promise<void> {
+  // Best-effort: a missing thesis simply means no badge. Never blocks the page.
+  try {
+    const payload = await positionThesesApi.list()
+    const map: Record<string, string> = {}
+    for (const t of payload.theses) {
+      if (t.style) map[t.stock_code] = t.style
+    }
+    styleByCode.value = map
+  } catch {
+    styleByCode.value = {}
+  }
+}
+
 onMounted(() => {
   reload()
   fetchChain()
+  fetchStyles()
 })
 </script>
 
@@ -452,6 +495,10 @@ onMounted(() => {
   font-family: 'Roboto Mono', monospace;
   font-size: 12px;
   color: $text-secondary;
+}
+
+.style-badge {
+  margin-left: 6px;
 }
 
 .side-tag,

@@ -771,9 +771,11 @@ class TestThesisReviewDigest:
 
 class TestRedLines:
     def test_feishu_message_kind_count_locked(self) -> None:
-        """A seventh kind requires a P0-2 §2.5 amendment. The sixth
-        (basket_digest) landed via P0-3-amendment-2026-05-30 (display-only)."""
-        assert len(list(FeishuMessageKind)) == 6
+        """An eighth kind requires a P0-2 §2.5 amendment. The sixth
+        (basket_digest) landed via P0-3-amendment-2026-05-30; the seventh
+        (manual_trade_recorded) via P1-5-amendment-2026-06-12 §1.3 (AD-005,
+        display-only "已记录-用户自主操作")."""
+        assert len(list(FeishuMessageKind)) == 7
         assert {k.value for k in FeishuMessageKind} == {
             "instruction_plan",
             "clarification",
@@ -781,6 +783,7 @@ class TestRedLines:
             "reconciliation_result",
             "alert",
             "basket_digest",
+            "manual_trade_recorded",
         }
 
     def test_clarification_count_locked(self) -> None:

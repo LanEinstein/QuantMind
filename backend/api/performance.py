@@ -12,6 +12,8 @@ import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from backend.services.equity_kpis import compute_equity_kpis
+
 log = structlog.get_logger(component="api_performance")
 
 router = APIRouter()
@@ -209,6 +211,65 @@ def compute_core_metrics(
     }
 
 
+# AD-005 (P1-2.A-amendment-2026-06-12) — 3-way performance split. The
+# readiness gauge / KPI header read the SYSTEM_SUGGESTED bucket only so a
+# user-discretionary trade's alpha never inflates the system's measured
+# capability (codex P0-7).
+_ORIGIN_BUCKETS: tuple[str, ...] = (
+    "system_suggested",
+    "user_discretionary",
+    "reconciliation_reset",
+)
+
+
+def _trade_origin(trade: Any) -> str:
+    """Origin string of a trade, defaulting to system_suggested.
+
+    Legacy trades (and any duck-typed test double) without an ``origin``
+    attribute are treated as system-suggested — the conservative default
+    that keeps historical fills in the readiness bucket they already were.
+    """
+    origin = getattr(trade, "origin", None)
+    if origin is None:
+        return "system_suggested"
+    return getattr(origin, "value", str(origin))
+
+
+def _trade_is_sell(trade: Any) -> bool:
+    direction = getattr(trade, "direction", None)
+    return getattr(direction, "value", str(direction)) == "SELL"
+
+
+def compute_performance_split(trades: tuple[Any, ...]) -> dict[str, Any]:
+    """Per-origin trade-count + net-cash-flow breakdown for the 3-way split.
+
+    Pure aggregation over the (already date-clamped) trade set — never a
+    no-op default: a bucket with zero trades is still reported so the
+    front-end shows an explicit empty bucket rather than a missing one.
+
+    ``Trade.net_amount`` is the sign-free settled cash amount (cost for a
+    BUY, proceeds for a SELL) — positive for both — so summing it as "PnL"
+    would make every BUY look profitable (codex P2). We instead sign it by
+    direction to report a coherent **net cash flow** per bucket (SELL inflow
+    positive, BUY outflow negative); true realized PnL needs buy/sell lot
+    matching, which is out of scope for this attribution view.
+    ``reconciliation_reset`` produces no :class:`Trade` rows, so its bucket
+    is always zero here (kept for a complete, stable shape).
+    """
+    split: dict[str, Any] = {}
+    for bucket in _ORIGIN_BUCKETS:
+        bucket_trades = [t for t in trades if _trade_origin(t) == bucket]
+        net_cash_flow = sum(
+            t.net_amount if _trade_is_sell(t) else -t.net_amount
+            for t in bucket_trades
+        )
+        split[bucket] = {
+            "trade_count": len(bucket_trades),
+            "net_cash_flow": round(net_cash_flow, 2),
+        }
+    return split
+
+
 def build_model_contributions(
     cost_by_provider: dict[str, float],
     requests_by_provider: dict[str, int] | None = None,
@@ -303,6 +364,15 @@ async def get_performance(
             "the active policy segment's start date"
         ),
     ),
+    origin: str | None = Query(
+        None,
+        description=(
+            "AD-005 3-way split: 'system_suggested' / 'user_discretionary' "
+            "filters the metrics+curve to that bucket; default (None / 'all') "
+            "is the merged view. The readiness gauge requests "
+            "'system_suggested' so user alpha never inflates system capability."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Return performance analytics for a date range."""
     today = date.today()
@@ -349,16 +419,26 @@ async def get_performance(
         except Exception as exc:
             log.debug("benchmark_data_unavailable", error=str(exc))
 
-    # Codex Phase-AA P2 fix — under segment=current the TRADES feeding
-    # win rate / P&L ratio / turnover must be clamped to the segment
-    # range too, not just the equity-curve date bounds; otherwise the
-    # headline metrics blend fills from previous policy segments.
-    if segment_clamped:
-        trades = tuple(
-            t
-            for t in trades
-            if start_date <= t.traded_at.date() <= end_date
-        )
+    # Clamp the trades to the analytics window for ALL queries (not only
+    # segment=current). compute_equity_curve() filters dates internally, so
+    # without this the headline win-rate/turnover AND the AD-005 split would
+    # include fills outside the requested [start, end] and disagree with the
+    # curve (codex P2). When segment=current, start_date was already advanced
+    # to the segment start above, so this single clamp covers both cases.
+    trades = tuple(
+        t for t in trades if start_date <= t.traded_at.date() <= end_date
+    )
+
+    # AD-005 — the 3-way split is computed over the (date-clamped) set BEFORE
+    # any origin filter so the breakdown always shows every bucket.
+    performance_split = compute_performance_split(trades)
+
+    # Origin filter (AD-005): the readiness gauge requests
+    # 'system_suggested' so user-discretionary alpha never lands in the
+    # capability evidence. Unknown / 'all' / None → merged view.
+    origin_filter = (origin or "all").strip().lower()
+    if origin_filter in ("system_suggested", "user_discretionary"):
+        trades = tuple(t for t in trades if _trade_origin(t) == origin_filter)
 
     # Compute analytics
     equity = compute_equity_curve(
@@ -417,6 +497,114 @@ async def get_performance(
             "active_policy_hash": getattr(
                 request.app.state, "policy_hash", None
             ),
+            "performance_split": performance_split,
+            "origin_filter": origin_filter,
+        }
+    )
+
+
+@router.get("/api/performance/equity-kpis")
+async def get_equity_kpis(
+    request: Request,
+    start: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
+    end: str | None = Query(None, description="End date (YYYY-MM-DD)"),
+    benchmark: str | None = Query(None, description="Benchmark index"),
+) -> dict[str, Any]:
+    """AD-001 — EquityPoint-sourced KPI header + readiness inputs (read-only).
+
+    The KPI header (total return / annualized / HS300 excess / max drawdown /
+    sharpe) is computed from the EquityPoint daily series — the source of
+    truth — NOT the trade-net-amount curve. The equity series is returned
+    with per-point ``policy_hash`` so the front-end can segment the curve and
+    mark policy switch points. Short windows (<45 trading days) flag
+    ``annualized_reliable=False``. Degrades to an empty/clean shape with HTTP
+    200 when the repository is unwired (never 500), so the panel can render a
+    warm-up state.
+    """
+    today = date.today()
+    start_date = _parse_date(start, today - timedelta(days=60))
+    end_date = _parse_date(end, today)
+
+    repo = getattr(request.app.state, "equity_point_repository", None)
+    if repo is None:
+        return _ok(
+            {
+                "kpis": compute_equity_kpis([]),
+                "equity_series": [],
+                "policy_segments": [],
+                "active_policy_hash": getattr(
+                    request.app.state, "policy_hash", None
+                ),
+                "repository_status": "unavailable",
+            }
+        )
+
+    try:
+        series = await repo.list_eod_series(
+            start_date.isoformat(), end_date.isoformat()
+        )
+    except Exception as exc:
+        log.warning("equity_kpis_repo_error", error=str(exc))
+        return _ok(
+            {
+                "kpis": compute_equity_kpis([]),
+                "equity_series": [],
+                "policy_segments": [],
+                "active_policy_hash": getattr(
+                    request.app.state, "policy_hash", None
+                ),
+                "repository_status": "error",
+            }
+        )
+
+    benchmark_prices: list[dict[str, Any]] | None = None
+    mongodb = getattr(request.app.state, "mongodb", None)
+    if mongodb and series:
+        try:
+            benchmark_prices = await mongodb.get_index_prices(
+                benchmark or "000300",
+                start_date=series[0].trade_date,
+                end_date=series[-1].trade_date,
+            ) or None
+        except Exception as exc:
+            log.debug("equity_kpis_benchmark_unavailable", error=str(exc))
+
+    kpis = compute_equity_kpis(series, benchmark_prices=benchmark_prices)
+    equity_series = [
+        {
+            "trade_date": p.trade_date,
+            "total_equity": round(float(p.total_equity), 2),
+            "pnl_pct": round(float(p.pnl_pct), 6),
+            "policy_hash": p.policy_hash,
+            "quality": getattr(p.quality, "value", str(p.quality)),
+        }
+        for p in series
+    ]
+
+    policy_segments: list[dict[str, Any]] = []
+    segment_store = getattr(request.app.state, "policy_segment_store", None)
+    if segment_store is not None:
+        try:
+            policy_segments = [
+                {
+                    "policy_hash": row.policy_hash,
+                    "started_at": row.started_at.isoformat(),
+                    "trade_date": row.trade_date,
+                }
+                for row in await segment_store.list_all()
+            ]
+        except Exception as exc:
+            log.debug("equity_kpis_segments_unavailable", error=str(exc))
+
+    return _ok(
+        {
+            "kpis": kpis,
+            "equity_series": equity_series,
+            "policy_segments": policy_segments,
+            "active_policy_hash": getattr(
+                request.app.state, "policy_hash", None
+            ),
+            "repository_status": "ok",
         }
     )
 

@@ -239,6 +239,38 @@ class MongoPromotionIntentLedger:
             if st is IntentStatus.PENDING and key in opened
         )
 
+    async def list_recent(
+        self, limit: int = 50
+    ) -> list[tuple[PromotionIntent, IntentStatus, datetime]]:
+        """Folded (intent, current_status, last_event_at) newest-first.
+
+        AD-003 evolution panel — surfaces the full promotion/demotion intent
+        history (not just PENDING) so the operator sees activated, rolled-back
+        and frozen intents too. Folds the append-only event stream per intent.
+        """
+        cursor = (
+            self._db[self.COLLECTION].find({}).sort("occurred_at", 1)
+        )
+        opened: dict[str, PromotionIntent] = {}
+        status: dict[str, IntentStatus] = {}
+        last_at: dict[str, datetime] = {}
+        async for raw in cursor:
+            event = self._decode(raw)
+            if event is None:
+                continue
+            key = str(event.intent_id)
+            status[key] = event.to_status
+            last_at[key] = event.occurred_at
+            if event.intent is not None:
+                opened[key] = event.intent
+        rows = [
+            (opened[key], status[key], last_at[key])
+            for key in opened
+            if key in status
+        ]
+        rows.sort(key=lambda r: r[2], reverse=True)
+        return rows[: max(1, limit)]
+
     async def freeze_all_pending(
         self, *, at: datetime, reason: str
     ) -> tuple[UUID, ...]:

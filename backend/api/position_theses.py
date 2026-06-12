@@ -67,6 +67,9 @@ def _serialize_thesis(thesis: Any) -> dict[str, Any]:
             _serialize_condition(c) for c in thesis.invalidation_conditions
         ],
         "evidence_ids": list(thesis.evidence_ids),
+        # AD-004 — the deterministic buy-time style label (AC-001),
+        # display-only. None on legacy theses / the pure-quant path.
+        "style": getattr(getattr(thesis, "style", None), "value", None),
     }
 
 

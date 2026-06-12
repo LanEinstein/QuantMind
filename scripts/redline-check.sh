@@ -74,13 +74,14 @@ fi
 # P1-5 — write-endpoint guardrails
 # ----------------------------------------------------------------------
 echo
-yellow "[P1-5] backend write-endpoint allowlist (2 only)"
+yellow "[P1-5] backend write-endpoint allowlist (3 only)"
 NON_GET="$(grep -rnE '@(router|app)\.(post|put|patch|delete)\(' \
   --include='*.py' backend/ 2>/dev/null || true)"
-# Allowed write endpoints (P1-5 §2):
+# Allowed write endpoints (P1-5 §2 + P1-5-amendment-2026-06-12):
 #   POST /api/execution-reports                       (Phase F)
 #   POST /api/reconciliation-tickets/{id}/decide      (Phase F)
-ALLOWED='/api/execution-reports|/api/reconciliation-tickets/[{][^}]+[}]/decide'
+#   POST /api/manual-trades                           (AD-005, 3rd write)
+ALLOWED='/api/execution-reports|/api/reconciliation-tickets/[{][^}]+[}]/decide|/api/manual-trades'
 EXTRA="$(printf '%s\n' "$NON_GET" | grep -vE "$ALLOWED" || true)"
 if [ -z "$EXTRA" ]; then
   green "  ok    only allowed write endpoints present"
@@ -1254,7 +1255,7 @@ fi
 
 # ----------------------------------------------------------------------
 echo
-yellow "[P-004] FeishuMessageKind locked at 6 (basket_digest, P0-3-amendment-2026-05-30)"
+yellow "[P-004] FeishuMessageKind locked at 7 (manual_trade_recorded, P1-5-amendment-2026-06-12)"
 FMK_OUT="$(python3 - <<'PY' 2>/dev/null || echo "SCANNER_ERROR"
 from backend.integrations.feishu.renderer import FeishuMessageKind
 
@@ -1262,14 +1263,15 @@ kinds = {k.value for k in FeishuMessageKind}
 expected = {
     "instruction_plan", "clarification", "reconciliation_request",
     "reconciliation_result", "alert", "basket_digest",
+    "manual_trade_recorded",
 }
 print("OK" if kinds == expected else f"MISMATCH:{sorted(kinds)}")
 PY
 )"
 if [ "$FMK_OUT" = "OK" ]; then
-  green "  ok    FeishuMessageKind has exactly the 6 locked members (incl basket_digest)"
+  green "  ok    FeishuMessageKind has exactly the 7 locked members (incl manual_trade_recorded)"
 else
-  red "  FAIL  FeishuMessageKind != the 6 locked members: $FMK_OUT"
+  red "  FAIL  FeishuMessageKind != the 7 locked members: $FMK_OUT"
   FAIL=$((FAIL + 1))
 fi
 

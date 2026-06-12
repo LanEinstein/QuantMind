@@ -41,25 +41,28 @@ class TestEnums:
     def test_event_type_count_matches_amendment(self) -> None:
         # P1-6 amendment-34 enumerated 40 event_type values across 5
         # categories (2 + 11 + 7 + 13 + 7). J-007 extends Category 2
-        # with OWNER_PROD_AUTHORIZATION_GRANTED so the total is now
-        # 41 (2 + 12 + 7 + 13 + 7). The "34 类" shorthand in plan.html
+        # with OWNER_PROD_AUTHORIZATION_GRANTED → 41. AD-005
+        # (P1-2.A-amendment-2026-06-12) adds Category 1
+        # MANUAL_TRADE_SUBMITTED for the 3rd write endpoint → 42
+        # (3 + 12 + 7 + 13 + 7). The "34 类" shorthand in plan.html
         # is a doc-prose count; the enum is the locked source of truth.
-        assert len(AUDIT_EVENT_TYPES) == 41
+        assert len(AUDIT_EVENT_TYPES) == 42
 
     def test_event_type_documented_categories(self) -> None:
-        # 2 + 12 + 7 + 13 + 7 = 41 distinct values (J-007 added one).
+        # 3 + 12 + 7 + 13 + 7 = 42 distinct values (J-007 +1, AD-005 +1).
         category_1 = {
             AuditEventType.EXECUTION_REPORT_SUBMITTED,
             AuditEventType.RECONCILIATION_TICKET_DECIDED,
+            AuditEventType.MANUAL_TRADE_SUBMITTED,
         }
         evolution = EVOLUTION_EVENT_TYPES
-        assert len(category_1) == 2
+        assert len(category_1) == 3
         assert len(evolution) == 7
         # All five categories sum to the enum total.
         assert (
             len(AUDIT_EVENT_TYPES)
             == len(AuditEventType)
-            == 41
+            == 42
         )
 
     def test_evolution_event_count_7(self) -> None:

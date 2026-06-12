@@ -12,6 +12,12 @@ The event types fall into four families:
 * ``execution_report_applied`` — user-submitted execution report flowed
   through ExecutionReportApplier (E-004) — carries the parsed kind +
   affected order / trade ids.
+* ``manual_trade_applied`` — user-discretionary manual trade flowed through
+  ManualTradeApplier (AD-005 / P1-2.A-amendment-2026-06-12). Reuses the
+  *same* generic-delta wire format as ``execution_report_applied`` (so
+  ``BROKER_EVENT_SCHEMA_VERSION`` is unchanged — no migration); recovery
+  replays it through the identical delta path with the trade date parsed
+  from the ``UT-`` external id.
 * ``reconciliation_reset`` — user-decided reconciliation ticket called
   ReconciliationApplier::reset_to_snapshot (E-004) — carries the
   ticket_id and the snapshot reference id.
@@ -57,6 +63,7 @@ class BrokerEventType(StrEnum):
     ORDER_REJECTED = "order_rejected"
     ORDER_CANCELLED = "order_cancelled"
     EXECUTION_REPORT_APPLIED = "execution_report_applied"
+    MANUAL_TRADE_APPLIED = "manual_trade_applied"
     RECONCILIATION_RESET = "reconciliation_reset"
     ACCOUNT_INITIALIZED = "account_initialized"
     DAY_ADVANCED = "day_advanced"

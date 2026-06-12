@@ -1,7 +1,10 @@
 /** API client for the X-021 evolution GET endpoints (P1-5 §2 红线 1+2). */
 
 import { apiGet } from './request'
-import type { EvolutionPendingPayload } from '@/types/evolution'
+import type {
+  EvolutionHistoryPayload,
+  EvolutionPendingPayload,
+} from '@/types/evolution'
 
 export const evolutionApi = {
   /**
@@ -14,5 +17,14 @@ export const evolutionApi = {
    */
   getPending(): Promise<EvolutionPendingPayload> {
     return apiGet<EvolutionPendingPayload>('/api/evolution/pending')
+  },
+
+  /**
+   * AD-003 — experiment registry (failures included) + promotion-intent
+   * history + the current activation manifest. Read-only; degrades to an
+   * empty shape when Mongo is unwired.
+   */
+  getHistory(limit = 50): Promise<EvolutionHistoryPayload> {
+    return apiGet<EvolutionHistoryPayload>('/api/evolution/history', { limit })
   },
 }

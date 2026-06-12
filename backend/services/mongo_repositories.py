@@ -394,6 +394,31 @@ class MongoEquityPointRepository:
             )
         return None
 
+    async def list_eod_series(
+        self, start_date: str, end_date: str
+    ) -> list[EquityPoint]:
+        """AD-001 — one EquityPoint per trade_date in [start, end] inclusive.
+
+        EquityPoint is the source-of-truth for the KPI header (replacing the
+        trade-net-amount-derived curve). The collection holds 30s intraday
+        ticks; this reduces to the LAST tick of each trade date (the
+        closing-mark equity) so the daily series is deterministic. Trade
+        dates are ``YYYY-MM-DD`` strings, so lexical order == chronological.
+        Returned ascending by trade_date.
+        """
+        cursor = (
+            self._db[self.COLLECTION]
+            .find({"trade_date": {"$gte": start_date, "$lte": end_date}})
+            .sort("snapshot_at", 1)
+        )
+        by_date: dict[str, EquityPoint] = {}
+        async for raw in cursor:
+            point = EquityPoint.model_validate(
+                _ensure_utc(_strip_id(raw)), strict=False
+            )
+            by_date[point.trade_date] = point  # last tick of the day wins
+        return [by_date[d] for d in sorted(by_date)]
+
 
 # ===========================================================================
 # 3. ReconciliationTicket

@@ -44,6 +44,7 @@ from backend.broker.models import (
     OrderType,
     Position,
     Trade,
+    TradeOrigin,
 )
 from backend.broker.trade_dates import instruction_trade_date, record_buy_date
 from backend.data.market_meta_provider import (
@@ -773,6 +774,7 @@ class MockBroker(IBroker):
         kind: str,
         report_schema_version: int,
         fee: float | None = None,
+        origin: TradeOrigin = TradeOrigin.SYSTEM_SUGGESTED,
     ) -> dict:
         """Apply a user-reported fill to the broker mirror.
 
@@ -988,6 +990,7 @@ class MockBroker(IBroker):
                 transfer_fee=transfer_fee,
                 net_amount=net,
                 traded_at=traded_at,
+                origin=origin,
             )
             self._trades.append(trade)
 

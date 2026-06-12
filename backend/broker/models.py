@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
+from backend.models.trade_origin import TradeOrigin
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -28,6 +30,12 @@ class OrderType(StrEnum):
 
     LIMIT = "LIMIT"
     MARKET = "MARKET"
+
+
+# TradeOrigin is defined in the leaf models layer (imported above) and
+# re-exported here for the existing ``from backend.broker.models import
+# TradeOrigin`` call sites.
+__all_extra__ = ("TradeOrigin",)
 
 
 class OrderStatus(StrEnum):
@@ -134,6 +142,12 @@ class Trade(BaseModel):
     transfer_fee: float = 0.0
     net_amount: float
     traded_at: datetime
+    # AD-005 (P1-2.A-amendment-2026-06-12): provenance for the 3-way
+    # performance split. Additive with a SYSTEM_SUGGESTED default so every
+    # pre-existing trade-creation path (order match, execution-report apply)
+    # tags as system-suggested without change; only the manual-trade applier
+    # overrides it to USER_DISCRETIONARY.
+    origin: TradeOrigin = TradeOrigin.SYSTEM_SUGGESTED
 
 
 class ValidationResult(BaseModel):

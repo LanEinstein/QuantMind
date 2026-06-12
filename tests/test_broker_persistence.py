@@ -949,7 +949,9 @@ class TestRecovery:
         )
         from backend.broker.persistence.recovery import RecoveryError
 
-        with pytest.raises(RecoveryError, match="v2 EXECUTION_REPORT"):
+        # AD-005 generalised the message to the event_type value so it
+        # covers both execution_report_applied and manual_trade_applied.
+        with pytest.raises(RecoveryError, match="v2 execution_report_applied"):
             await recover_state(es, ss, initial_capital=1_000_000.0)
 
     @pytest.mark.asyncio

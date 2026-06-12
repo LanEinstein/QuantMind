@@ -155,6 +155,26 @@ class MongoExperimentRegistry:
             return None
         return self._decode(raw)
 
+    async def list_recent(self, limit: int = 50) -> list[ExperimentRecord]:
+        """Most-recent experiments, newest first (AD-003 evolution panel).
+
+        Returns ALL outcomes — failed experiments (``success=False``)
+        included — so the panel surfaces the full search, not just winners
+        (codex: a registry that hides failures is a survivorship-bias trap).
+        """
+        cursor = (
+            self._db[self.COLLECTION]
+            .find({})
+            .sort("registered_at", -1)
+            .limit(max(1, limit))
+        )
+        out: list[ExperimentRecord] = []
+        async for raw in cursor:
+            decoded = self._decode(raw)
+            if decoded is not None:
+                out.append(decoded)
+        return out
+
     async def count_trials(self, family: str | None = None) -> int:
         """Cumulative trial count (ALL outcomes — failures included).
 

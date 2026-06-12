@@ -41,13 +41,16 @@ from backend.broker.applied_report_guard import (
     InMemoryAppliedReportGuard,
 )
 from backend.broker.mock_broker import MockBroker
+from backend.broker.models import TradeOrigin
 from backend.broker.persistence.events import BrokerEventType
 from backend.broker.persistence.store import BrokerEventStore
 from backend.models.execution import (
     REPORT_SCHEMA_V1_OWNER_FEE,
+    REPORT_SCHEMA_V2_SYSTEM_FEE,
     ExecutionReport,
     ExecutionReportKind,
 )
+from backend.models.manual_trade import ExternalExecutionEvent
 from backend.models.reconciliation import (
     ReconciliationTicket,
     ReconciliationTicketStatus,
@@ -383,6 +386,164 @@ class ExecutionReportApplier:
             positions_delta=(),
             broker_event_sequence=None,
             reason="execution_report_unfilled",
+        )
+
+
+# ---------------------------------------------------------------------------
+# ManualTradeApplier — user-discretionary trades (AD-005, 3rd write endpoint)
+# ---------------------------------------------------------------------------
+
+
+def compute_manual_trade_idempotency_key(event: ExternalExecutionEvent) -> str:
+    """Deterministic dedupe key for a manual trade.
+
+    P1-5-amendment-2026-06-12 §1.2 fixes the idempotency key on the
+    client-minted ``external_trade_id`` — unlike the execution-report path
+    (which mints a fresh random report_id per parse and so keys on semantic
+    content), the manual-trade id is the stable identity, so a double-submit
+    of the same form yields the same key and is suppressed.
+    """
+    digest = hashlib.sha256(event.external_trade_id.encode("utf-8")).hexdigest()
+    return f"mt-idem-{digest[:32]}"
+
+
+class ManualTradeApplier:
+    """Apply a user-recorded :class:`ExternalExecutionEvent` to the mirror.
+
+    Mirrors :class:`ExecutionReportApplier` exactly but for the
+    user-discretionary domain: it reuses the single legitimate external
+    write entry (:meth:`MockBroker.apply_external_fill`) tagged
+    ``USER_DISCRETIONARY``, emits a ``MANUAL_TRADE_APPLIED`` BrokerEvent
+    (same generic-delta wire format so recovery replays it on the shared
+    path), and writes a Category-1 ``MANUAL_TRADE_SUBMITTED`` audit. Manual
+    trades are always complete fills under the system-fee (v2) cost schema.
+
+    Idempotency (P1-5 §1.2): claims ``external_trade_id`` before mutating;
+    a duplicate short-circuits to a no-op. The claim is released only on a
+    failure BEFORE the mirror mutates (so a corrected retry can proceed);
+    once mutated the claim is permanent.
+    """
+
+    def __init__(
+        self,
+        broker: MockBroker,
+        event_store: BrokerEventStore,
+        audit_store: AuditStore,
+        applied_guard: AppliedReportGuard | None = None,
+    ) -> None:
+        self._broker = broker
+        self._events = event_store
+        self._audit = audit_store
+        self._applied_guard: AppliedReportGuard = (
+            applied_guard
+            if applied_guard is not None
+            else InMemoryAppliedReportGuard()
+        )
+
+    async def apply(self, event: ExternalExecutionEvent) -> ApplyResult:
+        idem_key = compute_manual_trade_idempotency_key(event)
+        claimed = await self._applied_guard.claim(idem_key)
+        if not claimed:
+            log.warning(
+                "manual_trade_duplicate_skipped",
+                external_trade_id=event.external_trade_id,
+                code=event.code,
+            )
+            return ApplyResult(
+                cash_delta=0.0,
+                positions_delta=(),
+                broker_event_sequence=None,
+                reason="manual_trade_duplicate_skipped",
+            )
+
+        try:
+            applied = await self._broker.apply_external_fill(
+                order_id_hint=event.external_trade_id,
+                code=event.code,
+                volume=int(event.volume),
+                fill_price=float(event.price),
+                side_is_buy=event.side_is_buy,
+                traded_at=event.executed_at,
+                report_id=event.external_trade_id,
+                kind="FILLED",
+                report_schema_version=REPORT_SCHEMA_V2_SYSTEM_FEE,
+                fee=None,
+                origin=TradeOrigin.USER_DISCRETIONARY,
+            )
+        except Exception:
+            # apply_external_fill validates + mutates atomically; a raise
+            # means the mirror is UNCHANGED, so release the claim to let a
+            # corrected retry re-attempt. Beyond this point the broker IS
+            # mutated and the claim is permanent.
+            await self._applied_guard.release(idem_key)
+            raise
+
+        payload: dict[str, Any] = {
+            "external_trade_id": event.external_trade_id,
+            "kind": "FILLED",
+            "reason": event.reason.value,
+            "channel": "MANUAL",
+            "stock_code": event.code,
+            "volume": int(event.volume),
+            "fill_price": float(event.price),
+            "report_schema_version": applied["report_schema_version"],
+            "commission": applied["commission"],
+            "stamp_tax": applied["stamp_tax"],
+            "transfer_fee": applied["transfer_fee"],
+            "net": applied["net"],
+            "side_is_buy": event.side_is_buy,
+            "cash_delta": applied["cash_delta"],
+            "positions_delta": applied["positions_delta"],
+            "origin": TradeOrigin.USER_DISCRETIONARY.value,
+            "related_instruction_id": event.related_instruction_id,
+        }
+        # AA-004 + AC-001 nameplates ride the payload so a recovery replay of
+        # a position FIRST opened by a manual BUY rebuilds the same stack.
+        nameplate_hash, nameplate_stack = getattr(
+            self._broker, "entry_nameplate", (None, None)
+        )
+        payload["entry_policy_hash"] = nameplate_hash
+        payload["entry_sell_stack_version"] = nameplate_stack
+        _style_for = getattr(self._broker, "entry_style_for", None)
+        payload["entry_style"] = (
+            _style_for(event.code) if callable(_style_for) else None
+        )
+        broker_event = await self._events.append(
+            event_type=BrokerEventType.MANUAL_TRADE_APPLIED,
+            occurred_at=event.executed_at,
+            order_id=applied.get("order_id"),
+            trade_id=applied.get("trade_id"),
+            correlation_id=event.external_trade_id,
+            payload=payload,
+        )
+        await self._audit.write(
+            event_type=AuditEventType.MANUAL_TRADE_SUBMITTED,
+            actor=AuditActor.FEISHU_USER,
+            resource_type="manual_trade",
+            resource_id=event.external_trade_id,
+            payload={
+                "external_trade_id": event.external_trade_id,
+                "reason": event.reason.value,
+                "stock_code": event.code,
+                "filled_volume": int(event.volume),
+                "fill_price": float(event.price),
+                "side_is_buy": event.side_is_buy,
+                "commission": applied["commission"],
+                "stamp_tax": applied["stamp_tax"],
+                "transfer_fee": applied["transfer_fee"],
+                "broker_event_sequence": broker_event.sequence,
+                "related_instruction_id": event.related_instruction_id,
+            },
+            outcome=AuditOutcome.SUCCESS,
+            correlation_id=event.external_trade_id,
+            reason_namespace="manual_trade_apply",
+            timestamp=event.executed_at,
+        )
+        return ApplyResult(
+            cash_delta=applied["cash_delta"],
+            positions_delta=tuple(applied["positions_delta"]),
+            broker_event_sequence=broker_event.sequence,
+            reason="manual_trade_applied",
         )
 
 

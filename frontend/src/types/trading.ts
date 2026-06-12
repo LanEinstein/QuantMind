@@ -30,6 +30,9 @@ export interface PositionItem {
   readonly stop_loss_distance: number
   readonly position_pct: number
   readonly risk_status: RiskStatusLevel
+  /** AD-004 — deterministic buy-time style nameplate (AC-001), display-only.
+   * `null`/absent on legacy + reconciliation-reset positions. */
+  readonly entry_style?: string | null
 }
 
 export type OrderStatusType = 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED'

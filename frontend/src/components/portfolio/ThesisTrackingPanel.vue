@@ -21,7 +21,16 @@
     <div v-else class="thesis-list">
       <article v-for="t in payload.theses" :key="t.stock_code" class="thesis-card">
         <header class="thesis-card-head">
-          <span class="thesis-code">{{ t.stock_code }} {{ t.stock_name }}</span>
+          <span class="thesis-code">
+            {{ t.stock_code }} {{ t.stock_name }}
+            <el-tag
+              v-if="styleBadge(t.style)"
+              :type="styleBadge(t.style)!.tagType"
+              size="small"
+              effect="plain"
+              class="thesis-style-badge"
+            >{{ styleBadge(t.style)!.icon }}{{ styleBadge(t.style)!.label }}</el-tag>
+          </span>
           <span class="thesis-meta">
             入场价 {{ t.entry_price.toFixed(2) }} · 入场分 {{ t.entry_score.toFixed(3) }}
             · 时间止损 {{ t.time_stop_trade_days }} 交易日
@@ -70,6 +79,7 @@ import {
   INVALIDATION_TEMPLATE_LABELS,
   type PositionThesesPayload,
 } from '@/types/positionThesis'
+import { styleBadge } from '@/utils/styleBadge'
 
 const payload = ref<PositionThesesPayload | null>(null)
 const error = ref<string | null>(null)

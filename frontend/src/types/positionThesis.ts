@@ -27,6 +27,9 @@ export interface PositionThesisView {
   readonly pillars: readonly string[]
   readonly invalidation_conditions: readonly ThesisInvalidationCondition[]
   readonly evidence_ids: readonly string[]
+  /** AD-004 — deterministic buy-time style label (AC-001), display-only.
+   * `null` on legacy theses / the pure-quant path. */
+  readonly style?: string | null
 }
 
 export interface PositionThesesPayload {

@@ -54,7 +54,15 @@ from backend.models.instruction import (
     InstructionStatus,
     RiskCheckSummary,
 )
+from backend.models.manual_trade import ExternalExecutionEvent, ManualTradeReason
 from backend.models.position_thesis import ThesisHealth
+
+_MANUAL_REASON_LABEL: dict[ManualTradeReason, str] = {
+    ManualTradeReason.USER_TAKE_PROFIT: "止盈",
+    ManualTradeReason.USER_STOP_LOSS: "止损",
+    ManualTradeReason.USER_ADD: "加仓",
+    ManualTradeReason.USER_OTHER: "其他",
+}
 
 _THESIS_HEALTH_LABEL: dict[ThesisHealth, str] = {
     ThesisHealth.INTACT: "逻辑完好",
@@ -104,8 +112,12 @@ class FeishuMessageKind(StrEnum):
     not a casual addition. The sixth kind ``BASKET_DIGEST`` is the
     display-only Line-1 basket overview (P0-3-amendment-2026-05-30): it
     carries NO order, NO instruction_id, and nothing the inbound execution-
-    report parser can match — a summary, never an instruction. Tests assert
-    the enum membership stays at six.
+    report parser can match — a summary, never an instruction. The seventh
+    kind ``MANUAL_TRADE_RECORDED`` (AD-005 / P1-5-amendment-2026-06-12 §1.3)
+    is the display-only "已记录-用户自主操作" acknowledgement: it carries the
+    ``UT-`` external id (disjoint from ``QM-``), no order verb, and nothing
+    the execution-report parser can match. Tests assert the enum membership
+    stays at seven.
     """
 
     INSTRUCTION_PLAN = "instruction_plan"
@@ -114,6 +126,7 @@ class FeishuMessageKind(StrEnum):
     RECONCILIATION_RESULT = "reconciliation_result"
     ALERT = "alert"
     BASKET_DIGEST = "basket_digest"
+    MANUAL_TRADE_RECORDED = "manual_trade_recorded"
 
 
 class BuySignalTemplate(StrEnum):
@@ -695,6 +708,52 @@ class MessageRenderer:
         if broker_event_sequence is not None:
             lines.append(f"账本序号: {broker_event_sequence}")
         lines.append("(以系统模拟账本为准;如有出入请等 16:00 对账)")
+        return "\n".join(lines)
+
+    # -- Manual-trade ack (AD-005 surface) -----------------------------
+
+    def render_manual_trade_ack(
+        self,
+        *,
+        event: ExternalExecutionEvent,
+        cash_delta: float,
+        broker_event_sequence: int | None,
+        is_duplicate: bool = False,
+    ) -> str:
+        """Render the "已记录-用户自主操作" acknowledgement (P1-5 §1.3).
+
+        Display-only confirmation that a user-discretionary trade was
+        recorded to the simulation ledger. By construction it carries NO
+        ``QM-`` instruction id (only the ``UT-`` external id, disjoint from
+        the parser's id space) and NO execution-report order verb, so the
+        inbound :func:`parse_execution_report` can only ever return
+        ``no_pattern_match`` on this text — a recording, never an instruction
+        (codex P1-7). The free-text owner ``note`` is single-lined +
+        truncated + order-token-redacted so it cannot smuggle a fake header
+        or an order verb (P0-2 §2.6).
+        """
+        direction = "买入" if event.side_is_buy else "卖出"
+        reason_label = _MANUAL_REASON_LABEL[event.reason]
+        lines = [
+            "【QuantMind 已记录-用户自主操作】",
+            f"操作编号: {event.external_trade_id}",
+            f"操作类型: 自主{reason_label}",
+            f"标的: {event.code} {direction} {event.volume}股 @ {event.price}",
+        ]
+        if event.note:
+            safe_note = _redact_order_tokens(_truncate(_single_line(event.note), 80))
+            lines.append(f"备注: {safe_note}")
+        if is_duplicate:
+            lines.append("该操作此前已记录,本次未重复入账(幂等保护)。")
+            return "\n".join(lines)
+        cash_delta = cash_delta + 0.0
+        sign = "+" if cash_delta > 0 else ""
+        lines.append(f"账本现金变动: {sign}{_format_money(cash_delta)} CNY")
+        pos_sign = "+" if event.side_is_buy else "-"
+        lines.append(f"账本持仓变动: {event.code} {pos_sign}{event.volume} 股")
+        if broker_event_sequence is not None:
+            lines.append(f"账本序号: {broker_event_sequence}")
+        lines.append("(此为用户自主操作记录,不计入系统能力评估;以模拟账本为准)")
         return "\n".join(lines)
 
     # -- Reconciliation request (F-005 surface) ------------------------

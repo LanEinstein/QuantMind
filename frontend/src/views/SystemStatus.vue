@@ -60,6 +60,12 @@
       </article>
     </div>
 
+    <!-- AD-002: today's full-pipeline autopilot timeline -->
+    <AutopilotTimeline class="status-panel-row" />
+
+    <!-- AD-003: self-evolution transparency panel -->
+    <EvolutionPanel class="status-panel-row" />
+
     <footer class="page-footer">
       <span>最后更新:{{ formattedTimestamp }}</span>
       <el-button size="small" :loading="store.loading" @click="refresh">刷新</el-button>
@@ -78,6 +84,8 @@ import {
   FREEZE_SOURCE_LABELS as LABELS,
   type FreezeSource,
 } from '@/types/systemStatus'
+import AutopilotTimeline from '@/components/dashboard/AutopilotTimeline.vue'
+import EvolutionPanel from '@/components/evolution/EvolutionPanel.vue'
 
 const store = useSystemStatusStore()
 const evolutionStore = useEvolutionStore()
@@ -352,5 +360,9 @@ const evolutionPendingDirText = computed(() =>
   justify-content: space-between;
   font-size: 12px;
   color: $text-muted;
+}
+
+.status-panel-row {
+  margin-top: $gap-md;
 }
 </style>

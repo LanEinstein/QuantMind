@@ -851,7 +851,10 @@ def test_evolution_router_is_get_only() -> None:
 
 
 def test_evolution_paths_locked() -> None:
-    """The three locked paths appear in the in-module declared set."""
+    """The locked GET paths appear in the in-module declared set.
+
+    AD-003 added ``/api/evolution/history`` (still GET-only).
+    """
     from backend.api.evolution import _GET_ONLY_PATHS
 
     assert _GET_ONLY_PATHS == frozenset(
@@ -859,16 +862,18 @@ def test_evolution_paths_locked() -> None:
             "/api/evolution/pending",
             "/api/evolution/runs",
             "/api/evolution/precision",
+            "/api/evolution/history",
         }
     )
 
 
-def test_router_includes_three_get_routes() -> None:
-    """Quick assertion that fastapi sees three GET routes."""
+def test_router_includes_get_routes() -> None:
+    """Quick assertion that fastapi sees the GET routes."""
     paths = {(r.path, tuple(sorted(r.methods))) for r in evolution_router.routes}  # type: ignore[attr-defined]
     assert ("/api/evolution/pending", ("GET",)) in paths
     assert ("/api/evolution/runs", ("GET",)) in paths
     assert ("/api/evolution/precision", ("GET",)) in paths
+    assert ("/api/evolution/history", ("GET",)) in paths
 
 
 def test_main_includes_evolution_router() -> None:

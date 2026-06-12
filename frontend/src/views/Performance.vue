@@ -40,6 +40,9 @@
       </div>
     </div>
 
+    <!-- AD-001: EquityPoint-sourced KPI header + 8-gate readiness gauge -->
+    <ReadinessKpiPanel class="readiness-row" />
+
     <!-- Zone A + B: Equity Curve (left) + Core Metrics (right) -->
     <el-row :gutter="12" class="zone-ab">
       <el-col :span="16">
@@ -139,6 +142,7 @@ import { usePerformanceStore } from '@/stores/performance'
 import EquityCurve from '@/components/charts/EquityCurve.vue'
 import DrawdownChart from '@/components/charts/DrawdownChart.vue'
 import ModelContribution from '@/components/charts/ModelContribution.vue'
+import ReadinessKpiPanel from '@/components/performance/ReadinessKpiPanel.vue'
 
 const store = usePerformanceStore()
 
@@ -173,6 +177,10 @@ async function onExport(type: 'daily' | 'weekly' | 'monthly') {
   padding: $gap-md;
   position: relative;
   min-height: 100%;
+}
+
+.readiness-row {
+  margin-bottom: $gap-md;
 }
 
 .header-controls {

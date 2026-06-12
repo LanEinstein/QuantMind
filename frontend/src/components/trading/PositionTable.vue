@@ -17,6 +17,19 @@
           {{ getStockName(row.code) }}
         </template>
       </el-table-column>
+      <el-table-column label="风格" width="78" align="center">
+        <template #default="{ row }">
+          <el-tag
+            v-if="styleBadge(row.entry_style)"
+            :type="styleBadge(row.entry_style)!.tagType"
+            size="small"
+            effect="plain"
+          >
+            {{ styleBadge(row.entry_style)!.icon }}{{ styleBadge(row.entry_style)!.label }}
+          </el-tag>
+          <span v-else class="style-empty">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="volume" label="持仓" width="80" align="right" />
       <el-table-column prop="cost_price" label="成本" width="90" align="right">
         <template #default="{ row }">
@@ -71,6 +84,18 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column v-if="canRecord" label="操作" width="92" align="center">
+        <template #default="{ row }">
+          <el-button
+            text
+            size="small"
+            type="primary"
+            @click.stop="emit('record-manual', row)"
+          >
+            记录卖出
+          </el-button>
+        </template>
+      </el-table-column>
       <template #empty>
         <el-empty description="暂无持仓" :image-size="60" />
       </template>
@@ -81,14 +106,21 @@
 <script setup lang="ts">
 import type { PositionItem, RiskStatusLevel } from '@/types/trading'
 import { getStockName } from '@/stores/portfolio'
+import { styleBadge } from '@/utils/styleBadge'
 
-defineProps<{
-  positions: readonly PositionItem[]
-  totalAssets: number
-}>()
+withDefaults(
+  defineProps<{
+    positions: readonly PositionItem[]
+    totalAssets: number
+    /** AD-005 — show the per-row "记录卖出" action (feishu_interactive only). */
+    canRecord?: boolean
+  }>(),
+  { canRecord: false },
+)
 
 const emit = defineEmits<{
   'select-position': [position: PositionItem]
+  'record-manual': [position: PositionItem]
 }>()
 
 function currentPrice(row: PositionItem): number {
@@ -151,6 +183,10 @@ function rowClassName({ row }: { row: PositionItem }): string {
 .code-link {
   color: $color-accent;
   cursor: pointer;
+}
+
+.style-empty {
+  color: $text-secondary;
 }
 
 .text-up {

@@ -16,7 +16,11 @@ from datetime import date, datetime
 
 from backend.utils.trading_hours import SHANGHAI
 
-_INSTRUCTION_TRADE_DATE_RE = re.compile(r"^QM-(\d{8})-")
+# AD-005 (P1-2.A-amendment-2026-06-12): the manual-trade path mints
+# ``UT-YYYYMMDD-…`` ids in the same date position, so the same T+1 trade-date
+# derivation applies — keeping the embedded date authoritative makes the live
+# apply and the recovery replay agree bit-for-bit regardless of timestamp tz.
+_INSTRUCTION_TRADE_DATE_RE = re.compile(r"^(?:QM|UT)-(\d{8})-")
 
 # Per-position per-date buy entries kept for the T+1 guard. Legit reports
 # reference today / very recent dates; older entries are settled and only

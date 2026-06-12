@@ -258,8 +258,13 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
         state.positions.clear()
         return
 
-    if event.event_type is BrokerEventType.EXECUTION_REPORT_APPLIED:
-        # Generic delta carrier. payload['positions_delta'] entries
+    if event.event_type in (
+        BrokerEventType.EXECUTION_REPORT_APPLIED,
+        BrokerEventType.MANUAL_TRADE_APPLIED,
+    ):
+        # Generic delta carrier — EXECUTION_REPORT_APPLIED and the AD-005
+        # MANUAL_TRADE_APPLIED share the identical replay path (same wire
+        # format; P1-2.A-amendment-2026-06-12). payload['positions_delta'] entries
         # carry the per-share cost basis (cost_price field) — recovery
         # must compute a weighted average for positive deltas (add-on
         # buys) and leave cost basis unchanged for negative deltas
@@ -286,10 +291,11 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
             payload.get("report_schema_version", REPORT_SCHEMA_V1_OWNER_FEE)
         )
         deltas = payload.get("positions_delta", []) or []
+        _kind_label = event.event_type.value
         if report_schema_version == REPORT_SCHEMA_V2_SYSTEM_FEE:
             if "net" not in payload or "commission" not in payload:
                 raise RecoveryError(
-                    f"replay error: v2 EXECUTION_REPORT_APPLIED event "
+                    f"replay error: v2 {_kind_label} event "
                     f"(sequence {event.sequence}) missing derived friction "
                     "breakdown; refusing automatic recovery (P0-4-amendment "
                     "§2.4 fail-closed)"
@@ -300,19 +306,26 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                     and delta.get("cost_price") is None
                 ):
                     raise RecoveryError(
-                        f"replay error: v2 EXECUTION_REPORT_APPLIED event "
+                        f"replay error: v2 {_kind_label} event "
                         f"(sequence {event.sequence}) BUY leg missing "
                         "cost_price; refusing automatic recovery "
                         "(P0-4-amendment §2.4 fail-closed)"
                     )
         cash_delta = float(payload.get("cash_delta", 0.0))
         state.cash += cash_delta
-        # External fills are keyed on the INSTRUCTION's embedded trade date
-        # (not the event/parse time) — mirrors MockBroker.apply_external_fill
-        # so the rebuilt T+1 buy record matches the live one bit-for-bit
-        # (P0-4-amendment-2026-06-04).
+        # External fills are keyed on the embedded trade date (not the
+        # event/parse time) — mirrors MockBroker.apply_external_fill so the
+        # rebuilt T+1 buy record matches the live one bit-for-bit
+        # (P0-4-amendment-2026-06-04). Execution reports carry the QM-
+        # instruction_id; AD-005 manual trades carry the UT- external id —
+        # both parse through instruction_trade_date.
         fill_trade_date = instruction_trade_date(
-            str(payload.get("instruction_id", "") or ""), event.occurred_at
+            str(
+                payload.get("instruction_id")
+                or payload.get("external_trade_id")
+                or ""
+            ),
+            event.occurred_at,
         )
         for delta in deltas:
             code = str(delta["code"])

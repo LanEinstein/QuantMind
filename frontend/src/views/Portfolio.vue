@@ -35,12 +35,25 @@
           <el-tag v-if="store.positions.length > 0" size="small" type="info" effect="plain">
             {{ store.positions.length }} 只
           </el-tag>
+          <!-- AD-005 — manual-trade entry, only in feishu_interactive mode -->
+          <el-button
+            v-if="feishuMode"
+            size="small"
+            type="primary"
+            plain
+            class="manual-trade-btn"
+            @click="openManualTrade(null)"
+          >
+            记录手动操作
+          </el-button>
         </div>
       </template>
       <PositionTable
         :positions="store.positions"
         :total-assets="store.account?.total_assets ?? 0"
+        :can-record="feishuMode"
         @select-position="onSelectPosition"
+        @record-manual="onRecordManual"
       />
     </el-card>
 
@@ -148,6 +161,13 @@
       v-model="showPositionDrawer"
       :position="selectedPosition"
     />
+
+    <!-- AD-005 — manual-trade record form (feishu_interactive only) -->
+    <ManualTradeForm
+      v-model:visible="showManualTrade"
+      :prefill="manualPrefill"
+      @recorded="onManualRecorded"
+    />
   </div>
 </template>
 
@@ -171,6 +191,7 @@ import TradeHistory from '@/components/trading/TradeHistory.vue'
 import PositionDetailDrawer from '@/components/trading/PositionDetailDrawer.vue'
 import ThesisTrackingPanel from '@/components/portfolio/ThesisTrackingPanel.vue'
 import SlotRotationPanel from '@/components/portfolio/SlotRotationPanel.vue'
+import ManualTradeForm from '@/components/trading/ManualTradeForm.vue'
 
 const store = usePortfolioStore()
 const riskStore = useRiskStore()
@@ -178,6 +199,40 @@ const { connect: connectWs } = useWebSocket()
 const activeTab = ref('orders')
 const showPositionDrawer = ref(false)
 const selectedPosition = ref<PositionItem | null>(null)
+
+// AD-005 — manual-trade entry is only available in feishu_interactive mode
+// (pure simulation_auto is fully automated; the endpoint also 403s).
+const feishuMode = computed(
+  () => riskStore.riskStatus?.run_mode?.feishu_interactive ?? false,
+)
+const showManualTrade = ref(false)
+const manualPrefill = ref<{
+  code?: string
+  side?: 'BUY' | 'SELL'
+  sellableVolume?: number | null
+}>({})
+
+function openManualTrade(
+  prefill: { code?: string; side?: 'BUY' | 'SELL'; sellableVolume?: number | null } | null,
+): void {
+  manualPrefill.value = prefill ?? {}
+  showManualTrade.value = true
+}
+
+function onRecordManual(position: PositionItem): void {
+  openManualTrade({
+    code: position.code,
+    side: 'SELL',
+    sellableVolume: position.available_volume,
+  })
+}
+
+async function onManualRecorded(): Promise<void> {
+  // A manual BUY/SELL changes cash + account totals AND appends a trade, so
+  // refresh the full account/positions/orders/trades set (not just positions)
+  // plus the equity snapshot (codex P2).
+  await Promise.allSettled([store.fetchAll(), refreshEquityPoint()])
+}
 
 const equityPoint = ref<EquityPointSnapshot | null>(null)
 const equityRepoStatus = ref<'ok' | 'unavailable'>('unavailable')
@@ -297,6 +352,10 @@ onUnmounted(() => {
 .card-title {
   font-weight: 600;
   color: $text-primary;
+}
+
+.manual-trade-btn {
+  margin-left: auto;
 }
 
 .loading-overlay {

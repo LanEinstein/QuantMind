@@ -25,17 +25,20 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AuditEventType(StrEnum):
-    """41 locked event types across 5 categories.
+    """42 locked event types across 5 categories.
 
-    Categories: (1) write-endpoint entries x2, (2) mode/freeze/lifecycle
-    x12 (includes J-007 owner production-run gate), (3) credentials +
-    Feishu connectivity x7, (4) exception + enforcement x13,
-    (5) self-evolution lifecycle x7.
+    Categories: (1) write-endpoint entries x3 (AD-005 added
+    ``manual_trade_submitted`` for the 3rd write endpoint), (2)
+    mode/freeze/lifecycle x12 (includes J-007 owner production-run gate),
+    (3) credentials + Feishu connectivity x7, (4) exception + enforcement
+    x13, (5) self-evolution lifecycle x7.
     """
 
-    # === Category 1 — two write-endpoint invocations ===
+    # === Category 1 — three write-endpoint invocations ===
     EXECUTION_REPORT_SUBMITTED = "execution_report_submitted"
     RECONCILIATION_TICKET_DECIDED = "reconciliation_ticket_decided"
+    # AD-005 / P1-2.A-amendment-2026-06-12 — POST /api/manual-trades.
+    MANUAL_TRADE_SUBMITTED = "manual_trade_submitted"
 
     # === Category 2 — mode switch + freeze sources + lifecycle ===
     MODE_SWITCH_INITIATED = "mode_switch_initiated"

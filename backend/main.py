@@ -32,6 +32,7 @@ from backend.api.execution_reports import router as execution_reports_router
 from backend.api.feishu import router as feishu_router
 from backend.api.health import router as health_router
 from backend.api.instruction_plans import router as instruction_plans_router
+from backend.api.manual_trades import router as manual_trades_router
 from backend.api.market import router as market_router
 from backend.api.monitoring import router as monitoring_router
 from backend.api.performance import router as performance_router
@@ -2983,6 +2984,25 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         )
     )
 
+    # AD-005 — ManualTradeApplier + ManualTradeService (3rd write endpoint).
+    # Constructed unconditionally so the endpoint's mode/wiring guards can
+    # answer cleanly; the endpoint itself rejects pure-sim with 403. The
+    # applier shares the same idempotency-guard backend as the execution
+    # path (Redis when present, in-process otherwise).
+    from backend.broker.appliers import ManualTradeApplier
+    from backend.services.manual_trade_service import ManualTradeService
+
+    manual_trade_applier = ManualTradeApplier(
+        broker, event_store, audit_store, applied_guard=applied_guard
+    )
+    application.state.manual_trade_applier = manual_trade_applier
+    application.state.manual_trade_service = ManualTradeService(
+        applier=manual_trade_applier,
+        renderer=renderer,
+        feishu=feishu_client,
+        decision_chat_id=decision_chat,
+    )
+
     if decision_chat:
         application.state.reconciliation_orchestrator = (
             ReconciliationOrchestrator(
@@ -3312,6 +3332,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.feishu_event_receiver = None
     application.state.execution_report_orchestrator = None
     application.state.reconciliation_orchestrator = None
+    application.state.manual_trade_service = None
 
     await _init_data_layer(application, redis_pool)
 
@@ -3640,6 +3661,7 @@ app.include_router(audit_router)
 app.include_router(cost_router)
 app.include_router(execution_reports_router)
 app.include_router(reconciliation_router)
+app.include_router(manual_trades_router)
 app.include_router(data_quality_router)
 app.include_router(evolution_router)
 app.include_router(feishu_router)

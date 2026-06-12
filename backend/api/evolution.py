@@ -36,6 +36,7 @@ Red lines
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -190,6 +191,61 @@ class PrecisionResponse(BaseModel):
         ge=PRECISION_MIN_WINDOW_DAYS, le=PRECISION_MAX_WINDOW_DAYS
     )
     window_start: datetime
+    timestamp: datetime
+
+
+# --- AD-003 evolution panel: experiments / intents / current manifest ---
+
+
+class ExperimentSummary(BaseModel):
+    """One ExperimentRegistry row, projected (failures included)."""
+
+    model_config = _strict_config()
+
+    experiment_id: str
+    kind: str
+    family: str
+    hypothesis: str
+    success: bool
+    trading_days: int = Field(ge=0)
+    sample_count: int = Field(ge=0)
+    metrics: dict[str, float]
+    registered_at: datetime
+
+
+class IntentSummary(BaseModel):
+    """One folded PromotionIntent with its current status (AB-003)."""
+
+    model_config = _strict_config()
+
+    intent_id: str
+    action: str
+    kind: str
+    family: str
+    manifest_hash: str
+    status: str
+    last_event_at: datetime
+
+
+class CurrentManifest(BaseModel):
+    """The active LiveArtifactRegistry approved-hash set (R-001)."""
+
+    model_config = _strict_config()
+
+    version: str
+    updated_at: datetime | None = None
+    approved: dict[str, list[str]]
+
+
+class EvolutionHistoryResponse(BaseModel):
+    """Body of ``GET /api/evolution/history`` (AD-003)."""
+
+    model_config = _strict_config()
+
+    experiments: list[ExperimentSummary]
+    intents: list[IntentSummary]
+    current_manifest: CurrentManifest | None
+    source: Literal["mongo", "unavailable"]
     timestamp: datetime
 
 
@@ -586,6 +642,134 @@ async def get_evolution_precision(
 
 
 # ---------------------------------------------------------------------------
+# /history — AD-003 evolution panel (experiments + intents + manifest)
+# ---------------------------------------------------------------------------
+
+
+def _get_db(request: Request) -> Any | None:
+    mongodb = getattr(request.app.state, "mongodb", None)
+    if mongodb is None:
+        return None
+    return getattr(mongodb, "_db", None)
+
+
+def _read_current_manifest(request: Request) -> CurrentManifest | None:
+    """Load the active LiveArtifactRegistry approved-hash set (R-001).
+
+    Read-only + fail-open: a missing / malformed lockfile yields ``None`` so
+    the panel shows "manifest unavailable" rather than 500.
+    """
+    override = getattr(request.app.state, "live_artifacts_lock_path", None)
+    lock_path = Path(override) if override else Path("config/live_artifacts.lock.json")
+    try:
+        raw = json.loads(lock_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    approved_raw = raw.get("approved", {})
+    if not isinstance(approved_raw, dict):
+        return None
+    approved = {
+        str(kind): [str(h) for h in (hashes or [])]
+        for kind, hashes in approved_raw.items()
+    }
+    updated_at: datetime | None = None
+    updated_raw = raw.get("updated_at")
+    if isinstance(updated_raw, str):
+        try:
+            updated_at = datetime.fromisoformat(updated_raw)
+        except ValueError:
+            updated_at = None
+    return CurrentManifest(
+        version=str(raw.get("version", "")),
+        updated_at=updated_at,
+        approved=approved,
+    )
+
+
+@router.get("/api/evolution/history")
+async def get_evolution_history(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """AD-003 — experiment registry + promotion-intent history + manifest.
+
+    All read-only. Surfaces FAILED experiments (not just winners) and every
+    intent status (not just PENDING) so the operator can audit the full
+    self-evolution search. Degrades to an empty/clean shape with HTTP 200
+    when Mongo is unwired (never 500). Note: per-day challenger-vs-incumbent
+    shadow curves require the ChallengerReplayer, which is not yet
+    implemented (AB-007 gap) — so the shadow-comparison block is intentionally
+    absent until that lands.
+    """
+    now = datetime.now(tz=UTC)
+    manifest = _read_current_manifest(request)
+    db = _get_db(request)
+    if db is None:
+        body = EvolutionHistoryResponse(
+            experiments=[],
+            intents=[],
+            current_manifest=manifest,
+            source="unavailable",
+            timestamp=now,
+        )
+        return _ok(body)
+
+    from backend.strategy_evolution.experiment_registry import (
+        MongoExperimentRegistry,
+    )
+    from backend.strategy_evolution.promotion_intent import (
+        MongoPromotionIntentLedger,
+    )
+
+    experiments: list[ExperimentSummary] = []
+    intents: list[IntentSummary] = []
+    try:
+        registry = MongoExperimentRegistry(db)
+        for rec in await registry.list_recent(limit):
+            experiments.append(
+                ExperimentSummary(
+                    experiment_id=rec.experiment_id,
+                    kind=getattr(rec.kind, "value", str(rec.kind)),
+                    family=rec.family,
+                    hypothesis=rec.hypothesis,
+                    success=rec.success,
+                    trading_days=rec.trading_days,
+                    sample_count=rec.sample_count,
+                    metrics=dict(rec.metrics),
+                    registered_at=rec.registered_at,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — fail-open read
+        log.warning("evolution_history_experiments_failed", error=str(exc))
+
+    try:
+        ledger = MongoPromotionIntentLedger(db)
+        for intent, status, last_at in await ledger.list_recent(limit):
+            intents.append(
+                IntentSummary(
+                    intent_id=str(intent.intent_id),
+                    action=getattr(intent.action, "value", str(intent.action)),
+                    kind=getattr(intent.kind, "value", str(intent.kind)),
+                    family=intent.family,
+                    manifest_hash=intent.manifest_hash,
+                    status=getattr(status, "value", str(status)),
+                    last_event_at=last_at,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — fail-open read
+        log.warning("evolution_history_intents_failed", error=str(exc))
+
+    body = EvolutionHistoryResponse(
+        experiments=experiments,
+        intents=intents,
+        current_manifest=manifest,
+        source="mongo",
+        timestamp=now,
+    )
+    return _ok(body)
+
+
+# ---------------------------------------------------------------------------
 # Convenience for the redline-check.sh GET-only verifier — every public
 # route must appear here so an accidental write handler stands out.
 # ---------------------------------------------------------------------------
@@ -595,6 +779,7 @@ _GET_ONLY_PATHS: frozenset[str] = frozenset(
         "/api/evolution/pending",
         "/api/evolution/runs",
         "/api/evolution/precision",
+        "/api/evolution/history",
     }
 )
 

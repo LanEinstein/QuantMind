@@ -67,3 +67,41 @@ export function evolutionPendingStatus(
   }
   return 'green'
 }
+
+// AD-003 — evolution panel: GET /api/evolution/history.
+
+export interface ExperimentSummary {
+  readonly experiment_id: string
+  readonly kind: string
+  readonly family: string
+  readonly hypothesis: string
+  readonly success: boolean
+  readonly trading_days: number
+  readonly sample_count: number
+  readonly metrics: Readonly<Record<string, number>>
+  readonly registered_at: string
+}
+
+export interface IntentSummary {
+  readonly intent_id: string
+  readonly action: string
+  readonly kind: string
+  readonly family: string
+  readonly manifest_hash: string
+  readonly status: string
+  readonly last_event_at: string
+}
+
+export interface CurrentManifest {
+  readonly version: string
+  readonly updated_at: string | null
+  readonly approved: Readonly<Record<string, readonly string[]>>
+}
+
+export interface EvolutionHistoryPayload {
+  readonly experiments: readonly ExperimentSummary[]
+  readonly intents: readonly IntentSummary[]
+  readonly current_manifest: CurrentManifest | null
+  readonly source: 'mongo' | 'unavailable'
+  readonly timestamp: string
+}
