@@ -696,7 +696,7 @@
         <div class="lane aa"><div class="lane-head">AA 模拟盘自动驾驶</div><div class="lane-body">纯 sim 全自动运营收口:16:10 自动对账(零差自动 RESOLVED/差异 fail-closed 冻结)+ 18:00 逐笔归因复盘 ReviewRecord(facts-first)+ 周末/节假日复盘实验 lane(ops 门)+ 绩效按 policy_hash 分段。锁定文档 P1-2.A-amendment-2026-06-12。</div></div>
         <div class="lane ab"><div class="lane-head">AB 客观自进化</div><div class="lane-body">ObjectivePromotionEngine(分层窗口+样本量+bootstrap CI+8门不劣化+anti-gaming)+ ExperimentRegistry(含失败,防多重检验)+ PromotionIntent/activation manifest/受控重启激活(git 非控制面)+ auto-demote(incumbent 续跑 counterfactual)+ 冻结不可进化集/白名单 clamp + prompt artifact 政策化。前置 R-002。锁定文档 P2-2-amendment-2026-06-12。</div></div>
         <div class="lane ac"><div class="lane-head">AC 风格分型与价值线</div><div class="lane-body">确定性 StyleClassifier(短线/价值,买入时定型落 PositionThesis)+ 三层筛选(大势主线/资金认可+容量/共振+弹性,全确定性 PIT 特征)+ 题材四级赋权(THEME SOP 扩 theme_tier,人工 pin 确认)+ 受约束槽位分配(价值≤2/量化≥3);硬止损风格不变式。锁定文档 P0-8-amendment-2026-06-12。</div></div>
-        <div class="lane ad"><div class="lane-head">AD 前端驾驶舱与实盘交互</div><div class="lane-body">EquityPoint 真相源 KPI+实盘就绪度 gauge(8门+policy 分段曲线)+ 自动驾驶时间线 + 进化面板 + 风格标签贯穿 + 手动操作填表(第3写端点 manual-trades,ExternalExecutionEvent,绩效三分流,飞书"已记录"同步)。锁定文档 P1-5-amendment-2026-06-12。</div></div>
+        <div class="lane ad"><div class="lane-head">AD 前端驾驶舱与实盘交互</div><div class="lane-body">EquityPoint 真相源 KPI+实盘就绪度 gauge(8门+policy 分段曲线)+ 自动驾驶时间线 + 进化面板 + 风格标签贯穿 + 手动操作填表(第3写端点 manual-trades,ExternalExecutionEvent,绩效三分流,飞书"已记录"同步)。锁定文档 P1-5-amendment-2026-06-12。<strong>📋 前端体检备忘录(owner 2026-06-12 锁定,作为所有含前端构建任务的强制收尾门)</strong>:前端 <code>npm run build</code> 完整成功后,<strong>必须让 codex 基于 Playwright 对前端做全面体检</strong> —— 功能正确性 / 排版 / 美观度 / 动画效果 / 图表实时呈现 / 排布逻辑性与合理性,逐项提出详细意见;Claude 据此修改;改完后 <strong>Claude 再基于 Playwright 复测一遍</strong>,确认无问题方可判定该前端任务通过(等同 codex-review 的"绿测试 ≠ 通过"纪律,前端额外加这一道真实浏览器体检闭环)。</div></div>
       </div>
     </section>
 
@@ -806,6 +806,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-12 session #82 — <strong>Phase AD 全 done:前端驾驶舱与实盘交互</strong>(<code>P1-2.A-amendment-2026-06-12</code>;feature <code>60eb7cc</code>〔AD-001..AD-006 捆绑〕,本地未 push)。<strong>AD-005(红线核心)</strong>=第 3 写端点 POST /api/manual-trades + ExternalExecutionEvent 独立域(UT- id 与 QM- 正则空间不相交、绝不伪造 InstructionPlan)+ ManualTradeApplier(复用 apply_external_fill、幂等键 external_trade_id、MANUAL_TRADE_APPLIED broker event + recovery 回放)+ 飞书『已记录』renderer(对抗证必 no_pattern_match)+ Trade.origin 三分流(就绪度只读 system_suggested)+ 纯 sim 403。<strong>AD-001</strong>=EquityPoint 真相源 KPI + 8 门就绪度 gauge(GET /api/performance/equity-kpis + 纯函数 equity_kpis.py + 短窗年化降权 + policy 分段)。<strong>AD-002</strong>=自动驾驶链路 7 段时间轴(只读复用现有 GET)。<strong>AD-003</strong>=自进化透明面板 + GET /api/evolution/history(实验含失败 + intent 历史 + 当前 manifest)。<strong>AD-004</strong>=风格 badge(⚡短线/🏛价值)贯穿 InstructionPlans/Portfolio/thesis,display-only。<strong>AD-006</strong>=redline 写端点 2→3 + FeishuMessageKind 6→7;无新顶级页/WS 类(Z-001 页锁不变)。codex review 1 P1+4 P2 全修 + verify PASS;<strong>owner 锁定的 Playwright 前端体检</strong>(vite preview + 全 /api mock)5 页 AD panel 全渲染零 console/page error 无布局溢出 → AD 范围零缺陷直接通过。5543 passed/91% + 前端 vitest 170+type-check+build + ruff + 新模块 mypy strict + redline 全绿。安全地基红线全留(仅 3 写端点/LLM 不写决策/单一镜像/append-only/PIT 可复现/UT-⊥QM-/127.0.0.1)。模拟盘自动驾驶 v4(Z/AA/R-002/AB/AC/AD)全 ship 序完成。<strong>新增前端体检备忘录</strong>(owner 2026-06-12):含前端构建任务 build 后须 codex/Playwright 体检闭环(写入 AD lane + AD-006)。下一站 = owner 决策(运行期激活验证 / 存量 O·Q·T / AB gap)。</li>
         <li>2026-06-12 session #81 — <strong>Phase AC 全 done:风格分型与价值线</strong>(<code>P0-8-amendment-2026-06-12</code>;feature <code>64c6534</code>〔AC-001..AC-007 捆绑〕,本地未 push)。<strong>AC-001</strong>=确定性 StyleClassifier(SHORT_TERM/VALUE,纯零 LLM 可 replay)+ PositionThesis.style(legacy 兼容)+ 持仓铭牌 entry_style(per-code pending→成交 stamp→事件 payload 持久→recovery 重建)。<strong>AC-002/003</strong>=三层价值线(中层 event-study CAR/Amihud/容量;底层大势主线+regime;表层 KG 独立共振计数+公告日 PIT 基本面+弹性)→ 确定性合成 value_score∈[0,1]。<strong>AC-004</strong>=题材四级赋权(SOP schema v1→v2 扩 theme_tier,1.0/0.75/0.5/0.25 序约束 immutable clamp,人工 pin 确认 tier;v2 prompt inactive 待 gate)。<strong>AC-005</strong>=受约束槽位分配(价值≤2/量化≥3,价值槽三层得分排序;None→bit-identical;强量化永不被挤)。<strong>AC-006</strong>=per-style 软止盈带(VALUE 只拓宽永不收紧)接线 intraday v11→v12,env 默认 OFF;<strong>硬风控 style-invariant 对抗钉死</strong>。<strong>AC-007</strong>=CLAUDE.md + redline [AC-007] + 飞书 style_badge(display-only)。codex review 3 P2 + verify ×4 3 P2(含顺修既存 W-001 thesis bug)全修+回归→COMMIT-SAFE;5508 passed/90.88% cov 全门禁绿。安全地基红线全留(LLM 不进运行时数据路径/单一构造点/仅 2 写端点)。下一站 = Phase AD 前端驾驶舱。</li>
         <li>2026-06-12 session #80 — <strong>Phase AB 全 done:客观自进化</strong>(<code>P2-2-amendment-2026-06-12</code>;feature <code>990733e</code>〔AB-001..AB-008 捆绑〕,✅ 已 push origin/main)。<strong>AB-001</strong>=ExperimentRegistry(append-only 含失败,design 级 content-addressed 防洗白,多重检验校正源)。<strong>AB-002</strong>=ObjectivePromotionEngine(纯函数 9 gate:分层双门槛/锁定 bootstrap CI/deflated Sharpe/8 门不劣化/anti-gaming/oracle;位等 replay;LLM 零参与)。<strong>AB-003</strong>=PromotionIntent(sim 模式门)+ ActivationManifest + next_boot.lock 原子 staging(2h 黑窗)+ boot consume-once 自动回退 + <strong>apply 时复查模式(codex P1)</strong> + 外部 supervisor 脚本;零 git。<strong>AB-004</strong>=相对 counterfactual auto-demote + 10 日冷却。<strong>AB-005</strong>=28 名冻结集(raise 不论分数)+ immutable clamp 白名单 + 只紧不松。<strong>AB-006</strong>=prompt 禁类 lint(GEPA 出炉即拦)+ 字节捕获完整性 + 骨架 frozen。<strong>AB-007</strong>=harsh fill(harsh-or-equal 契约)+ 进化 sub-budget(¥10 双层不绕 cap)+ 22:00 cron 真接线(skip→DEGRADED 审计);<strong>已知 gap:ChallengerReplayer 未实现 → dispatcher 未挂(audit 留痕)</strong>。<strong>AB-008</strong>=对抗 5 族 + redline [AB-008]。codex 1 P1+3 P2 全修+回归;5374 passed 全门禁绿。下一站 = Phase AC(AC-001 StyleClassifier)。</li>
         <li>2026-06-12 session #79 — <strong>R-002 done:策略生命周期 + rqalpha 差分 oracle</strong>(P2-2-amendment-2026-05-24 已决边界,无新 amendment;feature <code>880ea9e</code>,✅ 已 push origin/main)。<strong>lifecycle.py</strong>=5 态状态机(RETIRED 终态)+ ACTIVE 必须 LiveArtifactRegistry pin(R-001 闸接通)+ append-only ledger(retired 永不 re-propose + 陈旧 record 拒改写)。<strong>backtest_oracle.py</strong>=注入式 BacktestRunner + compare_equity_curves(≤25bps/≤5% 散点/覆盖率 ≥90%)+ ORACLE_UNAVAILABLE 非 pass fail-closed;<strong>rqalpha LICENSE 已读:Apache 2.0+商用需米筐授权 → 非商用可选依赖、永不 vendor</strong>;真实 harness 归 AB。<strong>anti_overfit.py</strong>=purged+embargo CV + deflated Sharpe(DSR≥0.95 门)。redline [R-002]+AST 契约钉死 rqalpha 不入实时。codex 3 P1 全修(截断 overlap 假 CONSISTENT/跨 artifact hash/陈旧 record 改写终态)。55 测试/5246 passed/mypy --strict 绿。下一站 = Phase AB(AB-001 ExperimentRegistry)。</li>
@@ -905,6 +906,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-12",
+        session: "#82 Phase AD full:前端驾驶舱与实盘交互(AD-001 EquityPoint KPI+8门就绪度 gauge + AD-002 自动驾驶链路时间轴 + AD-003 自进化透明面板 + AD-004 风格 badge 贯穿 + AD-005 第3写端点 manual-trades + AD-006 收尾)",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "续 #81(Phase AC 全 done,本地 commit 64c6534;owner『读 plan.html 继续推进』)。读 SESSION_LOG #81 next:活动 Phase=AD(6 任务,depends 全满足:Z-001/Z-005/AA-004/AB-003/AC-001✓)。5 并行 Explore agent 探查 AD-001..005 现有代码面(performance/equity/acceptance + WS 14 类 + evolution AB 结构 + style 暴露 + 写端点模板)。CLAUDE.md M 仍 owner 在途(未碰)。system 停机=纯开发窗口。",
+        actions: "**AD-005(红线核心)**:第 3 写端点 POST /api/manual-trades + 新 ExternalExecutionEvent 域(UT- id 与 QM- 正则空间不相交、绝不伪造 InstructionPlan)+ ManualTradeApplier(复用 apply_external_fill、幂等键 external_trade_id、MANUAL_TRADE_APPLIED broker event + recovery 回放)+ 飞书『已记录』renderer(对抗证 parse_execution_report 必 no_pattern_match)+ Trade.origin(TradeOrigin 移至 leaf models 层)三分流(就绪度只读 system_suggested)+ 纯 sim 403 门。amendment-first P1-2.A-amendment-2026-06-12(锁定枚举扩展:BrokerEventType / AuditEventType 41→42 / FeishuMessageKind 6→7 / Trade.origin)。**AD-001**:EquityPoint 真相源 KPI 头部 + 8 门就绪度 gauge(ReadinessKpiPanel.vue + GET /api/performance/equity-kpis + 纯函数 equity_kpis.py + 短窗年化降权 + policy_hash 分段 + repo.list_eod_series)。**AD-002**:AutopilotTimeline.vue 今日 7 段链路(筛选→候选→辩论→指令→成交→Line-2→盘后,只读复用现有 GET/轮询)。**AD-003**:EvolutionPanel.vue + GET /api/evolution/history(实验表含失败 + intent 历史 + 当前 manifest;registry list_recent helper)。**AD-004**:风格 badge(⚡短线/🏛价值)贯穿 InstructionPlans/Portfolio/thesis,display-only 单一真相=AC StyleClassifier(position_theses serializer + 既有 positions API entry_style)。**AD-006**:redline 写端点 2→3 + FeishuMessageKind 锁 6→7;无新顶级页/WS 类(Z-001 页锁不变)。**门禁**:codex review 1 cycle(1 P1+4 P2 全修:ManualTradeForm 重试 id 复用幂等 / _send_ack 按 ok 返回 / split 无条件按日裁剪 / split 改方向带符号 net_cash_flow 非误当 PnL / Portfolio 全刷)+ verify PASS 无回归。**owner 锁定的 Playwright 前端体检**(vite preview + 全 /api mock):5 页 AD panel 全渲染、0 console/page error、无布局溢出、手动操作弹窗字段齐 → AD 范围零缺陷直接通过。后端 5543 passed/91% + 前端 vitest 170+type-check+build + ruff + 新模块 mypy strict + redline 全绿。安全地基:仅 3 写端点 / LLM 不写决策 / 单一镜像 / append-only / PIT 可复现 / UT-⊥QM- / 127.0.0.1。",
+        commit: "feature `60eb7cc`(AD-001..AD-006 捆绑:2 新后端服务〔manual_trade_service/equity_kpis〕+ 2 新模型〔manual_trade/trade_origin〕+ 1 新端点〔manual_trades〕+ applier/broker/recovery/renderer/audit/performance/evolution 接线 + 5 新前端组件〔ReadinessKpiPanel/AutopilotTimeline/EvolutionPanel/ManualTradeForm + styleBadge util〕+ 4 视图改 + types/api + 7 新测试文件 + redline + pyproject + amendment + review summary + ad-playwright-exam.mjs;跨任务文件耦合沿 #74/#77/#81 捆绑先例)+ 本 docs-only 收尾。**push 待 owner 授权(本地 commit)**。",
+        next: "**Phase AD ✅ 全 done(AD-001..AD-006,feature 60eb7cc 本地未 push)。模拟盘自动驾驶 v4(Phase AA/AB/AC/AD)全 ship 序 Z→AA→R-002→AB→AC→AD 已全部完成。** 下一站候选(owner 定):① **运行期激活验证** —— AD 全为只读 panel + env-gated/feishu-gated 接线,随 owner 重启生效;manual-trades 需 feishu_interactive(实盘)模式 + 新鲜 owner-prod-auth(当前 14 天已过期);三层 value_score 真实数据喂入(AC 遗留,event-study/资金流/KG 共振接线)仍待 owner 决策点。② 存量 Phase O(MiroFish)/ Q / T。③ AB 已知 gap:ChallengerReplayer 实现 + 22:00 dispatcher 挂载 + param runtime 落地 + rqalpha 安装。**push**:#82 feature 60eb7cc 本地未 push,待 owner 授权(连同 #74/#73 等本地未 push 项一并)。**前端体检备忘录**(owner 2026-06-12)已写入 AD lane + AD-006 + 记忆,后续任何前端任务 build 后须走 codex/Playwright 体检闭环。",
+      },
       {
         date: "2026-06-12",
         session: "#81 Phase AC full:风格分型与价值线(AC-001 StyleClassifier + AC-002 中层因子 + AC-003 底/表层+三层合成 + AC-004 题材四级赋权 + AC-005 受约束槽位分配 + AC-006 per-style 软层 + AC-007 收尾)",
@@ -4070,7 +4080,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "64c6534", session_date: "2026-06-12", notes: "飞书消息标注让 owner 心中有数;renderer 必经防注入。"
       },
       {
-        id: "AD-001", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P0",
+        id: "AD-001", phase: "AD 前端驾驶舱与实盘交互", status: "done", priority: "P0",
         title: "KPI 头部 + 实盘就绪度 gauge(EquityPoint 真相源,policy 分段)",
         summary: "Performance/Dashboard 重构 KPI:总收益/年化/HS300 超额/回撤/夏普以 EquityPoint 为真相源(替换成交净额派生);acceptance 8 门 gauge + can_switch_to_feishu_on 状态;短窗(<45td)年化降权显示+样本天数/数据质量 flag;曲线按 policy_hash 分段+切换点标注。",
         scope: "frontend/src/views/{Performance,Dashboard}.vue, backend/api/performance.py(EquityPoint 源), tests/",
@@ -4078,10 +4088,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "EquityPoint 真相源 + 8门 gauge + 分段曲线 + 短窗降权 + 全只读。",
         tests: "vitest + type-check + 指标对账(EquityPoint vs API)。",
         sources: "P2-2-amendment-2026-06-12 §1.6, codex P1-6, owner 需求2",
-        commit: "", session_date: "", notes: "owner:收益率/年化/跑赢指数高=具备实盘能力——这个证据必须干净。"
+        commit: "60eb7cc", session_date: "2026-06-12", notes: "owner:收益率/年化/跑赢指数高=具备实盘能力——这个证据必须干净。"
       },
       {
-        id: "AD-002", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        id: "AD-002", phase: "AD 前端驾驶舱与实盘交互", status: "done", priority: "P1",
         title: "自动驾驶时间线 panel(今日全链路事件轴)",
         summary: "Dashboard/SystemStatus panel:今日 筛选→候选→辩论→指令→成交→Line-2 触发→盘后复盘 逐事件时间轴;复用现有 WS/轮询;全只读。",
         scope: "frontend/src/views/{Dashboard,SystemStatus}.vue, frontend/src/components/",
@@ -4089,10 +4099,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "时间线完整呈现当日链路 + 复用现有 WS 类 + 全只读。",
         tests: "vitest + type-check + 只读。",
         sources: "P1-5-amendment-2026-06-01(panel 范式), owner 需求2(富有逻辑性地展现)",
-        commit: "", session_date: "", notes: "建议调 frontend-design skill;模拟盘全自动的'可观察性'主视图。"
+        commit: "60eb7cc", session_date: "2026-06-12", notes: "建议调 frontend-design skill;模拟盘全自动的'可观察性'主视图。"
       },
       {
-        id: "AD-003", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        id: "AD-003", phase: "AD 前端驾驶舱与实盘交互", status: "done", priority: "P1",
         title: "进化面板(实验注册表/shadow 对照/晋升历史/当前 manifest)",
         summary: "SystemStatus/Performance panel:ExperimentRegistry 列表(含失败)+ challenger vs incumbent shadow 对照曲线 + PromotionIntent 历史 + 当前 activation manifest 哈希;全只读。",
         scope: "frontend/src/views/, frontend/src/components/, backend/api/(只读 GET)",
@@ -4100,10 +4110,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "四区块齐 + 只读 GET + 失败实验可见(不只赢家)。",
         tests: "vitest + type-check + 只读 redline。",
         sources: "P2-2-amendment-2026-06-12, owner 需求1(自进化可观察)",
-        commit: "", session_date: "", notes: "自进化的透明度=owner 对自治系统的信任基础。"
+        commit: "60eb7cc", session_date: "2026-06-12", notes: "自进化的透明度=owner 对自治系统的信任基础。"
       },
       {
-        id: "AD-004", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        id: "AD-004", phase: "AD 前端驾驶舱与实盘交互", status: "done", priority: "P1",
         title: "风格标签贯穿前端(InstructionPlans/Portfolio badge)",
         summary: "InstructionPlans 列表/详情 + Portfolio 持仓行 + 建议卡统一 短线⚡/价值🏛 badge(读 AC 分型,display-only);与飞书标注(AC-007)口径一致。",
         scope: "frontend/src/views/{InstructionPlans,Portfolio}.vue, frontend/src/components/",
@@ -4111,10 +4121,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "badge 贯穿三处 + 与后端 style 单一真相 + display-only。",
         tests: "vitest + type-check。",
         sources: "P0-8-amendment-2026-06-12 §1.1, owner 需求3(前端明确标注)",
-        commit: "", session_date: "", notes: "让 owner 一眼区分'赚快钱'与'并肩成长'建议。"
+        commit: "60eb7cc", session_date: "2026-06-12", notes: "让 owner 一眼区分'赚快钱'与'并肩成长'建议。"
       },
       {
-        id: "AD-005", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P0",
+        id: "AD-005", phase: "AD 前端驾驶舱与实盘交互", status: "done", priority: "P0",
         title: "手动操作填表:第3写端点 manual-trades + ExternalExecutionEvent + 飞书同步 + 绩效三分流",
         summary: "POST /api/manual-trades(仅 feishu 模式;Pydantic strict;100整手+可卖量 clamp+现金校验)+ ExternalExecutionEvent 域(UT- 前缀,绝不伪造 InstructionPlan,不入决策账本/验收分母)+ ManualTradeApplier 进镜像(apply_external_fill 语义,幂等)+ renderer'已记录'飞书同步(对抗 parse 必失败)+ 绩效三分流(system_suggested/user_discretionary/reconciliation_reset;就绪度/进化只读 system 段)+ 前端表单按钮(持仓行预填/建议卡两路/两步确认/偏离落 deviation 日志)。",
         scope: "backend/api/manual_trades.py(新), backend/models/, backend/services/manual_trade_applier.py, frontend/src/views/, frontend/src/api/, tests/",
@@ -4122,18 +4132,18 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "第3端点枚举锁定 + 纯 sim 403 + 域分离(对抗:UT- 不入 instruction_plans)+ 三分流 + 飞书已记录语义 + 幂等。",
         tests: "schema 边界 + 可卖量 clamp + 域分离对抗 + 分流统计 + renderer 快照 + 前后端校验镜像。",
         sources: "P1-5-amendment-2026-06-12, codex P0-6/P0-7/P1-7, owner 需求2",
-        commit: "", session_date: "", notes: "owner:用户可能在系统没建议卖出时自主止盈止损——记录即真相,但绝不污染系统能力评估。"
+        commit: "60eb7cc", session_date: "2026-06-12", notes: "owner:用户可能在系统没建议卖出时自主止盈止损——记录即真相,但绝不污染系统能力评估。"
       },
       {
-        id: "AD-006", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
-        title: "redline 写端点 2→3 + 全套前端门禁 + Phase AD 收尾",
-        summary: "redline-check.sh 写端点允许集 2→3;type-check/vitest/build 全绿;页锁/WS 数核对(新增页/WS 类仍需 amendment);SSoT done + session log。",
+        id: "AD-006", phase: "AD 前端驾驶舱与实盘交互", status: "done", priority: "P1",
+        title: "redline 写端点 2→3 + 全套前端门禁 + Playwright 前端体检 + Phase AD 收尾",
+        summary: "redline-check.sh 写端点允许集 2→3;type-check/vitest/build 全绿;页锁/WS 数核对(新增页/WS 类仍需 amendment);**build 成功后 codex 基于 Playwright 全面体检(功能/排版/美观/动画/图表实时/排布逻辑)→ Claude 修改 → Claude Playwright 复测,无问题方可通过**;SSoT done + session log。",
         scope: "scripts/redline-check.sh, frontend/, docs/plan.html",
         depends: "AD-001, AD-002, AD-003, AD-004, AD-005",
-        acceptance: "redline 3 写端点 + 前端门禁全绿 + Phase AD 全 done。",
-        tests: "redline + type-check + vitest + build。",
-        sources: "P1-5-amendment-2026-06-12",
-        commit: "", session_date: "", notes: "写端点枚举锁定纪律不松:第 4 个仍需 amendment。"
+        acceptance: "redline 3 写端点 + 前端门禁全绿 + **Playwright 前端体检闭环通过(codex 体检意见全修 + Claude 复测无问题)** + Phase AD 全 done。",
+        tests: "redline + type-check + vitest + build + **Playwright 真实浏览器体检(codex 出意见 / Claude 复测)**。",
+        sources: "P1-5-amendment-2026-06-12 + owner 2026-06-12 前端体检备忘录(强制收尾门)",
+        commit: "60eb7cc", session_date: "2026-06-12", notes: "写端点枚举锁定纪律不松:第 4 个仍需 amendment。**前端体检备忘录(owner 2026-06-12 锁定,适用所有含前端构建的任务)**:build 成功 → codex Playwright 体检(功能/排版/美观/动画/图表实时呈现/排布逻辑性与合理性,逐项详细意见)→ Claude 改 → Claude Playwright 复测 → 通过才 done。"
       }
     ];
 
