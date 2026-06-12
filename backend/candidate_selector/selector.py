@@ -37,7 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +46,12 @@ import structlog
 import yaml
 
 log = structlog.get_logger(component="candidate_selector")
+
+# The three-tier value_score a candidate must clear to be VALUE-style. Mirrors
+# StyleClassifierConfig.value_gate (AC-001) — kept as a plain constant so the
+# selector stays import-clean of the style module. A change is an offline
+# recalibration (P2-2 whitelist).
+DEFAULT_VALUE_GATE = 0.60
 
 
 class CandidateSelectorError(ValueError):
@@ -111,6 +117,11 @@ class CandidateSelection:
     """Theme peer-sourced codes admitted into the shortlist (Y-004). Bounded to
     ``final_shortlist_size − min_quant_slots`` (≤2); never evicts a reserved quant
     name; empty when no pinned theme artifact (pure-quant path unchanged)."""
+    value_selected: tuple[str, ...] = ()
+    """VALUE-style codes (three-tier score ≥ gate) that filled the ≤2 open slots
+    by value score (AC-005). Empty when no ``value_scores`` supplied — the
+    pure-quant 5-factor path is then bit-identical to before. Never includes a
+    reserved (≥``min_quant_slots``) pure-quant name."""
 
 
 class CandidateSelector:
@@ -128,13 +139,16 @@ class CandidateSelector:
         quant_candidates: Sequence[QuantCandidate],
         advisory: Sequence[AdvisorySignal] | None = None,
         peer_sourced: Sequence[str] | None = None,
+        value_scores: Mapping[str, float] | None = None,
+        value_gate: float = DEFAULT_VALUE_GATE,
     ) -> CandidateSelection:
         """Select the final debate shortlist from quant candidates + advisory.
 
-        Deterministic: the same candidates + advisory + peer_sourced + config
-        always yield the same shortlist. ``advisory`` and ``peer_sourced`` default
-        to absent — and with ``peer_sourced=None`` the result is bit-identical to
-        the pure-quant path (Y-004 peer-sourcing is purely additive).
+        Deterministic: the same candidates + advisory + peer_sourced +
+        value_scores + config always yield the same shortlist. ``advisory``,
+        ``peer_sourced`` and ``value_scores`` default to absent — and with all
+        three absent the result is bit-identical to the pure-quant path (every
+        enrichment is purely additive).
 
         ``peer_sourced`` (Y-004) is the already-pin-verified theme codes (the
         caller verified promotability + the LiveArtifactRegistry/ThemeCandidate
@@ -142,6 +156,13 @@ class CandidateSelector:
         ``final_shortlist_size − min_quant_slots`` (≤2) slots and NEVER evict the
         top ``min_quant_slots`` quant names; codes already quant-qualified are not
         double-counted.
+
+        ``value_scores`` (AC-005) maps a qualified code to its three-tier
+        value-line score. When supplied, the ≤2 **open** (non-reserved) quant
+        slots prefer VALUE-style names (``value_score ≥ value_gate``) ordered by
+        value score; the ≥``min_quant_slots`` reserved slots stay pure-quant
+        (5-factor) and a high value score can NEVER evict a reserved quant name.
+        ``value_scores=None`` ⇒ bit-identical to the pre-AC path.
 
         Raises:
             CandidateSelectorError: duplicate candidate codes (structurally
@@ -173,9 +194,15 @@ class CandidateSelector:
         )
         theme_taken = tuple(peer_new[:theme_quota])
         quant_cap = self._config.final_shortlist_size - len(theme_taken)
-        quant_shortlist, reserved = self._truncate_reserving_quant(
-            ordered, ranked, quant_cap
-        )
+        if value_scores is None:
+            quant_shortlist, reserved = self._truncate_reserving_quant(
+                ordered, ranked, quant_cap
+            )
+            value_selected: tuple[str, ...] = ()
+        else:
+            quant_shortlist, reserved, value_selected = self._select_with_value(
+                ordered, ranked, quant_cap, value_scores, value_gate
+            )
         shortlist = quant_shortlist + theme_taken
 
         log.info(
@@ -184,6 +211,7 @@ class CandidateSelector:
             shortlist=len(shortlist),
             quant_reserved=len(reserved),
             peer_sourced=len(theme_taken),
+            value_selected=len(value_selected),
             advisory_applied=applied,
             config_version=self._config.version,
         )
@@ -195,6 +223,7 @@ class CandidateSelector:
             config_version=self._config.version,
             feature_def_hash=self._config.feature_def_hash,
             peer_sourced=theme_taken,
+            value_selected=value_selected,
         )
 
     @staticmethod
@@ -297,6 +326,53 @@ class CandidateSelector:
                 )
                 return ranked, False
         return reordered, True
+
+    def _select_with_value(
+        self,
+        ordered: list[QuantCandidate],
+        ranked: list[QuantCandidate],
+        cap: int,
+        value_scores: Mapping[str, float],
+        value_gate: float,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Constrained slot allocation: reserve quant, fill open slots by value.
+
+        The top ``min_quant_slots`` 5-factor names are reserved pure-quant and
+        emitted first (red line 3 — a high value score can NEVER displace them).
+        The remaining ``cap − reserved`` **open** slots prefer VALUE-style names
+        (``value_score ≥ value_gate``) ordered by value score desc (code asc
+        tie-break); any unfilled open slot falls back to the next 5-factor name.
+        Returns ``(shortlist, reserved, value_selected)``.
+        """
+        reserve_n = min(self._config.min_quant_slots, len(ranked), cap)
+        reserved = [c.code for c in ranked[:reserve_n]]
+        reserved_set = set(reserved)
+        open_slots = max(0, cap - len(reserved))
+
+        # Non-reserved qualified, kept in post-rerank 5-factor order for the
+        # short-term fallback ordering.
+        non_reserved = [c.code for c in ordered if c.code not in reserved_set]
+
+        def vscore(code: str) -> float | None:
+            s = value_scores.get(code)
+            return s if (s is not None and math.isfinite(s)) else None
+
+        value_pool = [
+            code
+            for code in non_reserved
+            if (vs := vscore(code)) is not None and vs >= value_gate
+        ]
+        # Value slots ordered by three-tier score desc, code asc tie-break.
+        value_pool.sort(key=lambda code: (-(vscore(code) or 0.0), code))
+        value_set = set(value_pool)
+        short_pool = [code for code in non_reserved if code not in value_set]
+
+        value_taken = value_pool[:open_slots]
+        remaining = open_slots - len(value_taken)
+        short_taken = short_pool[:remaining]
+
+        shortlist = tuple(reserved) + tuple(value_taken) + tuple(short_taken)
+        return shortlist, tuple(reserved), tuple(value_taken)
 
     def _truncate_reserving_quant(
         self,
@@ -432,6 +508,7 @@ def _require_positive_int(block: dict[str, Any], key: str) -> int:
 
 
 __all__ = [
+    "DEFAULT_VALUE_GATE",
     "AdvisorySignal",
     "CandidateSelection",
     "CandidateSelector",

@@ -290,6 +290,26 @@ class TestExecutionReportApplier:
         )
 
     @pytest.mark.asyncio
+    async def test_filled_buy_persists_entry_style_in_payload(
+        self, env: _Env
+    ) -> None:
+        """AC-001 (codex verify P2): the feishu report path persists the
+        per-code style nameplate so recovery rebuilds entry_style."""
+        env.broker.set_pending_entry_style("600519", "value")
+        applier = ExecutionReportApplier(
+            env.broker, env.event_store, env.audit_store
+        )
+        await applier.apply(_filled_report(), side_is_buy=True)
+        applied = [
+            doc
+            for doc in env.event_coll.docs
+            if doc["event_type"]
+            == BrokerEventType.EXECUTION_REPORT_APPLIED.value
+        ]
+        assert applied
+        assert applied[-1]["payload"]["entry_style"] == "value"
+
+    @pytest.mark.asyncio
     async def test_filled_sell_requires_existing_position(
         self, env: _Env
     ) -> None:

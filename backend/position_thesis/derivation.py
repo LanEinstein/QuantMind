@@ -21,6 +21,7 @@ from backend.models.position_thesis import (
     Comparator,
     InvalidationTemplate,
     PositionThesis,
+    StyleTag,
     ThesisInvalidationCondition,
 )
 from backend.position_thesis.config import (
@@ -114,6 +115,7 @@ def build_position_thesis(
     snapshot_id: str,
     evidence_ids: tuple[str, ...] = (),
     catalyst_window_end: datetime | None = None,
+    style: StyleTag | None = None,
     config: ThesisDerivationConfig | None = None,
 ) -> PositionThesis:
     """Assemble a :class:`PositionThesis` from the buy-time context.
@@ -123,6 +125,10 @@ def build_position_thesis(
     ``entry_score`` only. The returned thesis carries the replay references
     (``signal_id`` / ``snapshot_id`` / ``feature_code_version`` /
     ``evidence_ids``) so a consumer can rebuild the buy-time feature inputs.
+
+    ``style`` (AC-001) is the deterministic buy-time style label computed
+    upstream by the StyleClassifier; ``None`` keeps the pure-quant /
+    legacy behaviour. It is recorded display-only and never feeds a threshold.
     """
     cfg = config or ThesisDerivationConfig()
     conditions = derive_invalidation_conditions(
@@ -149,6 +155,7 @@ def build_position_thesis(
         entry_score=entry_score,
         snapshot_id=snapshot_id,
         feature_code_version=FEATURE_CODE_VERSION,
+        style=style,
     )
 
 

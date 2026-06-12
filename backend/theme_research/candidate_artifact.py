@@ -34,9 +34,13 @@ from backend.models.evidence import validate_evidence_id
 from backend.theme_research.sop_schema import (
     STOCK_CODE_RE,
     ThemeResearchOutput,
+    ThemeTier,
 )
 
-THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION = 1
+THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION = 2
+"""v2 (P0-8-amendment-2026-06-12 §1.3, AC-004) binds the human-confirmed
+``theme_tier`` into the pin digest. A v1 artifact (no tier) still validates: the
+digest is version-aware, so a hash pinned under v1 stays valid."""
 THEME_EVIDENCE_PREFIX = "THEME"
 
 
@@ -117,6 +121,7 @@ def _content_digest(
     prompt_version_hash: str,
     source_promotable: bool,
     entries: tuple[ThemeCandidateEntry, ...],
+    theme_tier: ThemeTier = ThemeTier.STOCK,
 ) -> str:
     """Canonical SHA256 over ALL pin-relevant content.
 
@@ -126,6 +131,10 @@ def _content_digest(
     refuses a non-promotable / schema-drifted artifact by HASH, not only by the
     runtime boolean — even a buggy/forged ``source_promotable`` cannot reuse a
     hash pinned for a different promotability/version.
+
+    Version-aware (AC-004): ``theme_tier`` is folded in **only for schema ≥ 2**,
+    so a hash pinned for a v1 artifact (which had no tier) stays valid and a v2
+    artifact's tier is part of what the human confirms by pinning.
     """
     payload = {
         "schema_version": schema_version,
@@ -142,6 +151,8 @@ def _content_digest(
             for e in entries
         ],
     }
+    if schema_version >= 2:
+        payload["theme_tier"] = int(theme_tier)
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 
@@ -167,6 +178,9 @@ class ThemeCandidateArtifact(BaseModel):
     runs yield an artifact that the pin layer must refuse — fail-closed)."""
     created_at: datetime
     entries: tuple[ThemeCandidateEntry, ...] = Field(default_factory=tuple)
+    theme_tier: ThemeTier = ThemeTier.STOCK
+    """The human-confirmed theme tier (AC-004). Defaults to the lowest-weight
+    ``STOCK`` so a v1 artifact (no tier) is never over-weighted."""
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -177,6 +191,7 @@ class ThemeCandidateArtifact(BaseModel):
             prompt_version_hash=self.prompt_version_hash,
             source_promotable=self.source_promotable,
             entries=self.entries,
+            theme_tier=self.theme_tier,
         )
         if self.content_sha256 != expected:
             raise ValueError(
@@ -203,12 +218,18 @@ class ThemeCandidateArtifact(BaseModel):
         output: ThemeResearchOutput,
         source_promotable: bool,
         created_at: datetime,
+        theme_tier: ThemeTier | None = None,
     ) -> ThemeCandidateArtifact:
         """Build the artifact from the typed output candidates ONLY.
 
         By construction reads ``output.candidates[i].{code,sector,chain_link,
         confidence}`` — typed, bounded fields — and never touches any rationale /
         evidence prose. A malicious string in a rationale cannot add a code here.
+
+        ``theme_tier`` (AC-004) is the human-confirmed tier at pin time; it
+        defaults to the LLM's suggested ``output.theme_tier`` so an un-reviewed
+        build carries the suggestion, and the human can override it before pinning
+        (the tier is part of the content hash).
         """
         entries = tuple(
             ThemeCandidateEntry(
@@ -219,12 +240,14 @@ class ThemeCandidateArtifact(BaseModel):
             )
             for c in output.candidates
         )
+        tier = theme_tier if theme_tier is not None else output.theme_tier
         digest = _content_digest(
             schema_version=THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION,
             run_id=run_id,
             prompt_version_hash=prompt_version_hash,
             source_promotable=source_promotable,
             entries=entries,
+            theme_tier=tier,
         )
         return cls(
             run_id=run_id,
@@ -232,6 +255,7 @@ class ThemeCandidateArtifact(BaseModel):
             source_promotable=source_promotable,
             created_at=created_at,
             entries=entries,
+            theme_tier=tier,
             content_sha256=digest,
         )
 

@@ -299,6 +299,12 @@ class ExecutionReportApplier:
         )
         payload["entry_policy_hash"] = nameplate_hash
         payload["entry_sell_stack_version"] = nameplate_stack
+        # AC-001: the per-code style nameplate rides the payload too (read from
+        # the just-filled position) so a recovery replay rebuilds entry_style.
+        _style_for = getattr(self._broker, "entry_style_for", None)
+        payload["entry_style"] = (
+            _style_for(report.stock_code) if callable(_style_for) else None
+        )
         event = await self._events.append(
             event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
             occurred_at=report.parsed_at,

@@ -880,6 +880,27 @@ def _format_local_ts(ts: datetime) -> str:
     return local.strftime("%Y-%m-%d %H:%M:%S")
 
 
+# AC-007 — display-only style badge. The deterministic style label (AC-001)
+# threads through the Feishu message so the owner sees 短线 vs 价值 at a glance.
+# It is a fixed-string formatter (like _format_money) — it carries NO order
+# token, NO instruction_id, and NEVER changes a risk number; it only annotates.
+_STYLE_BADGES: dict[str, str] = {
+    "short_term": "⚡短线",
+    "value": "🏛价值",
+}
+
+
+def style_badge(style: str | None) -> str:
+    """Return the display-only badge for a style label (empty if unknown/None).
+
+    Pure + total: an unknown / legacy (None) style yields an empty string so a
+    pre-AC position renders exactly as before. Display-only — never parsed back.
+    """
+    if style is None:
+        return ""
+    return _STYLE_BADGES.get(style, "")
+
+
 def _format_risk_summary(
     summary: tuple[RiskCheckSummary, ...],
 ) -> list[str]:
@@ -1031,4 +1052,5 @@ __all__ = [
     "ClarificationTemplate",
     "FeishuMessageKind",
     "MessageRenderer",
+    "style_badge",
 ]

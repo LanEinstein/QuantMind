@@ -156,6 +156,12 @@ class MockBroker(IBroker):
         # policy manifest; None (unwired/legacy) stamps None.
         self._entry_policy_hash: str | None = None
         self._entry_sell_stack_version: str | None = None
+        # AC-001 per-code pending style: the deterministic buy-time style the
+        # Line-1 runner registers BEFORE routing each candidate, consumed
+        # (popped) when that code's episode opens. Per-code (unlike the global
+        # policy nameplate) because style varies per name. Unregistered codes
+        # (Line-2 ADDs, recovery) stamp None — the legacy behaviour.
+        self._pending_entry_styles: dict[str, str] = {}
 
     def set_entry_nameplate(
         self,
@@ -177,6 +183,30 @@ class MockBroker(IBroker):
     def entry_nameplate(self) -> tuple[str | None, str | None]:
         """(policy_hash, sell_stack_version) stamped on new episodes."""
         return (self._entry_policy_hash, self._entry_sell_stack_version)
+
+    def entry_style_for(self, code: str) -> str | None:
+        """The ``entry_style`` stamped on the held ``code`` (None if absent).
+
+        Read by the fill-event writer (AC-001) so the per-code style nameplate
+        rides the ORDER_FILLED payload and a recovery replay rebuilds it (the
+        global policy nameplate uses ``entry_nameplate``; style is per-code).
+        """
+        pos = self._positions.get(code)
+        return pos.entry_style if pos is not None else None
+
+    def set_pending_entry_style(self, code: str, style: str | None) -> None:
+        """Register the buy-time style to stamp on ``code``'s next episode (AC-001).
+
+        Called by the Line-1 runner's style sink BEFORE routing a candidate's
+        BUY; consumed (popped) when that code's position episode opens. ``None``
+        clears any stale registration. Per-code because style varies per name —
+        unlike the global policy/sell-stack nameplate. Display-only: it never
+        changes a fill, a risk number, or the matching path.
+        """
+        if style is None:
+            self._pending_entry_styles.pop(code, None)
+        else:
+            self._pending_entry_styles[code] = style
 
     def attach_market_meta(self, market_meta: MarketMetaProvider) -> None:
         """Swap in the market-meta provider after construction.
@@ -560,13 +590,21 @@ class MockBroker(IBroker):
                 volume=volume,
                 today_bought_volume=volume if lock_today else 0,
                 cost_price=fill_price,
-                # Nameplate stamped at episode open only (AA-004).
+                # Nameplate stamped at episode open only (AA-004 + AC-001).
                 entry_policy_hash=self._entry_policy_hash,
                 entry_sell_stack_version=self._entry_sell_stack_version,
+                # Per-code style registered by the Line-1 runner before route;
+                # popped so a later unrelated buy of the same code does not
+                # reuse a stale label (the runner re-registers per episode).
+                entry_style=self._pending_entry_styles.pop(code, None),
             )
             self._positions[code] = pos
         else:
-            # Cost averaging
+            # Cost averaging. The episode is already open, so the add-on keeps
+            # the original nameplate — but still CONSUME any pending style for
+            # this code so a registration meant for this delivered add-on cannot
+            # linger and stamp a later unrelated episode (codex P2).
+            self._pending_entry_styles.pop(code, None)
             total_cost = pos.cost_price * pos.volume + fill_price * volume
             new_volume = pos.volume + volume
             pos.cost_price = total_cost / new_volume
@@ -710,6 +748,12 @@ class MockBroker(IBroker):
         async with self._lock:
             for pos in self._positions.values():
                 pos.today_bought_volume = 0
+            # AC-001 (codex verify P2): discard any pending entry-style that was
+            # NOT consumed by a fill today. A same-day order that never filled has
+            # expired, so its registration must not survive to stamp a later
+            # day's new episode — the concrete same-day-expiry bound for the
+            # per-code style registry.
+            self._pending_entry_styles.clear()
             self._log.info("day_advanced")
 
     # ------------------------------------------------------------------

@@ -470,6 +470,8 @@ def _make_runner(
     selection_mode: Line1SelectionMode = Line1SelectionMode.BASKET,
     digest_outbox: InMemoryOutboxRepository | None = None,
     thesis_writer: object | None = None,
+    style_sink: object | None = None,
+    sim_reject: bool = False,
 ) -> Line1Runner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -489,7 +491,7 @@ def _make_runner(
     )
     coordinator = RouteCoordinator(
         mode=mode,
-        simulation_executor=_FakeSimExecutor(),
+        simulation_executor=_FakeSimExecutor(reject=sim_reject),
         dispatcher=dispatcher,
     )
     return Line1Runner(
@@ -517,24 +519,40 @@ def _make_runner(
         digest_chat_id=_DECISION_CHAT if digest_outbox is not None else "",
         digest_outbox=digest_outbox,
         thesis_writer=thesis_writer,
+        style_sink=style_sink,
     )
 
 
 class _FakeSimExecutor:
-    """Records auto-fill routing without a live MockBroker."""
+    """Records auto-fill routing without a live MockBroker.
 
-    def __init__(self) -> None:
+    A VALIDATED plan models a real sim FILL (final_status=FILLED + one trade);
+    set ``reject=True`` to model a freeze / broker rejection (simulation_routed
+    + REJECTED + no trades), which must NOT count as a delivered holding.
+    """
+
+    def __init__(self, *, reject: bool = False) -> None:
         self.routed: list[str] = []
+        self._reject = reject
 
     async def route(self, plan, *, now):  # noqa: ANN001, ANN201
         self.routed.append(plan.instruction_id)
+        from backend.models.instruction import InstructionStatus
         from backend.services.simulation_executor import SimulationRouteResult
 
+        if self._reject:
+            return SimulationRouteResult(
+                instruction_id=plan.instruction_id,
+                final_status=InstructionStatus.REJECTED,
+                broker_order_id=None,
+                trade_ids=(),
+                reason="eod_freeze",
+            )
         return SimulationRouteResult(
             instruction_id=plan.instruction_id,
-            final_status=plan.status,
-            broker_order_id=None,
-            trade_ids=(),
+            final_status=InstructionStatus.FILLED,
+            broker_order_id="BRK-1",
+            trade_ids=(f"T-{plan.instruction_id}",),
             reason=None,
         )
 
@@ -1300,6 +1318,145 @@ async def test_thesis_persisted_for_each_routed_buy(builder, tmp_path) -> None:
         assert 3 <= len(thesis.pillars) <= 5
         # Replay reference is complete.
         assert thesis.snapshot_id and thesis.feature_code_version
+        # AC-001: every name classifies SHORT_TERM until AC-003 lights up the
+        # value score (the value path is dark, bit-identical to the legacy path).
+        from backend.style import StyleTag
+
+        assert thesis.style is StyleTag.SHORT_TERM
+
+
+async def test_style_registered_on_sink_before_route(builder, tmp_path) -> None:
+    """AC-001: the buy-time style is registered on the nameplate sink per code."""
+
+    class _RecordingSink:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def set_pending_entry_style(self, code: str, style: str) -> None:
+            self.calls.append((code, style))
+
+    sink = _RecordingSink()
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.SIMULATION_AUTO,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        style_sink=sink,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    # One registration per debated candidate; AC-001 styles are all short_term.
+    assert sink.calls, "the sink was never called"
+    assert all(style == "short_term" for _code, style in sink.calls)
+    routed_codes = {rb.plan.stock_code for rb in result.routed_buys}
+    registered_codes = {code for code, _ in sink.calls}
+    assert routed_codes <= registered_codes
+
+
+async def test_style_pending_cleared_on_rejected_route(builder, tmp_path) -> None:
+    """AC-001 (codex P2): a non-delivered route clears the pending style so a
+    later buy for the same code does not inherit a stale Line-1 label."""
+
+    class _RecordingSink:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None]] = []
+
+        def set_pending_entry_style(self, code: str, style: str | None) -> None:
+            self.calls.append((code, style))
+
+    # A HOLD router → every candidate is a non-delivered (discarded) outcome.
+    # The clear must fire in BOTH routing modes (codex verify P2).
+    for mode in (RouteMode.SIMULATION_AUTO, RouteMode.FEISHU_INTERACTIVE):
+        sink = _RecordingSink()
+        sender = FakeFeishuSender()
+        runner = _make_runner(
+            mode=mode,
+            sender=sender,
+            builder=builder,
+            tmp_path=tmp_path,
+            style_sink=sink,
+        )
+        await runner.run(
+            frame=_snapshot(),
+            provider=FakeProvider(
+                cash=98_000.0, router=_StubRouter(action="持有")
+            ),
+            now=_NOW,
+        )
+        # Every registered code must also have been cleared (None) — no BUY
+        # delivered, so no fill consumed the pending style.
+        registered = {c for c, s in sink.calls if s is not None}
+        cleared = {c for c, s in sink.calls if s is None}
+        assert registered, f"{mode}: the sink should have registered a style"
+        assert registered <= cleared, f"{mode}: every registered code cleared"
+
+
+async def test_sim_rejected_route_clears_style_and_skips_thesis(
+    builder, tmp_path
+) -> None:
+    """codex verify P2: a simulation_routed action that REJECTED (freeze/broker)
+    never produced a fill, so it must clear the pending style AND skip the
+    thesis (no holding exists)."""
+    from backend.position_thesis.store import PositionThesisStore
+
+    class _RecordingSink:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None]] = []
+
+        def set_pending_entry_style(self, code: str, style: str | None) -> None:
+            self.calls.append((code, style))
+
+    sink = _RecordingSink()
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.SIMULATION_AUTO,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        style_sink=sink,
+        thesis_writer=store,
+        sim_reject=True,  # the executor rejects (no fill) despite routing
+    )
+    await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    # No holding → no thesis, and every registered style was cleared.
+    assert store.open_theses() == {}
+    registered = {c for c, s in sink.calls if s is not None}
+    cleared = {c for c, s in sink.calls if s is None}
+    assert registered and registered <= cleared
+
+
+async def test_style_sink_failure_never_blocks_routing(builder, tmp_path) -> None:
+    """AC-001: a sink error is swallowed — the order still routes."""
+
+    class _BoomSink:
+        def set_pending_entry_style(self, code: str, style: str) -> None:
+            raise RuntimeError("broker gone")
+
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.SIMULATION_AUTO,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        style_sink=_BoomSink(),
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) >= 1
 
 
 async def test_thesis_not_persisted_for_send_failed_buy(builder, tmp_path) -> None:

@@ -219,11 +219,16 @@ def test_entry_bad_code_rejected() -> None:
 
 def test_artifact_duplicate_codes_rejected() -> None:
     e = ThemeCandidateEntry(code="600519", sector="x", chain_link="y", confidence=0.5)
-    from backend.theme_research.candidate_artifact import _content_digest
+    from backend.theme_research.candidate_artifact import (
+        THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION,
+        _content_digest,
+    )
 
     entries = (e, e)
+    # Digest must use the same schema version the artifact will default to, so
+    # the digest check passes and the duplicate-code validator is what fires.
     digest = _content_digest(
-        schema_version=1,
+        schema_version=THEME_CANDIDATE_ARTIFACT_SCHEMA_VERSION,
         run_id="r",
         prompt_version_hash=_HASH,
         source_promotable=True,

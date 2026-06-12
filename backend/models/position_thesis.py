@@ -46,6 +46,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.models.evidence import validate_evidence_id
+from backend.style.models import StyleTag
 
 # Mirror the InstructionPlan id pattern (P0-3 §1.2) so a thesis links to a
 # canonical instruction_id and a malformed link fails closed at construction.
@@ -184,6 +185,12 @@ class PositionThesis(BaseModel):
     feature_code_version: str = Field(min_length=1, max_length=64)
     """Pinned derivation-code version so a stale thesis replay fails closed."""
 
+    style: StyleTag | None = None
+    """The deterministic buy-time style label (AC-001). ``None`` on legacy
+    theses written before AC-001 (additive, backward-compatible) and on the
+    pure-quant path until AC-003 lights up the value score. Display-only +
+    soft-layer-only — it never changes a hard-risk number (AC-006 invariant)."""
+
     @model_validator(mode="after")
     def _check(self) -> PositionThesis:
         if not (MIN_PILLARS <= len(self.pillars) <= MAX_PILLARS):
@@ -207,6 +214,7 @@ __all__ = [
     "Comparator",
     "InvalidationTemplate",
     "PositionThesis",
+    "StyleTag",
     "ThesisHealth",
     "ThesisInvalidationCondition",
 ]

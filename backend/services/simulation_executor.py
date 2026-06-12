@@ -182,6 +182,13 @@ class SimulationExecutor:
             nameplate_hash, nameplate_stack = getattr(
                 self._broker, "entry_nameplate", (None, None)
             )
+            # AC-001: the per-code style nameplate (stamped on the position at
+            # episode-open) rides the FILLED payload too, so recovery rebuilds
+            # entry_style instead of resetting it to None on a restart.
+            _style_for = getattr(self._broker, "entry_style_for", None)
+            nameplate_style = (
+                _style_for(last_trade.code) if callable(_style_for) else None
+            )
             await self._events.append_many(
                 [
                     (
@@ -215,6 +222,7 @@ class SimulationExecutor:
                             "frozen_amount": frozen_amount,
                             "entry_policy_hash": nameplate_hash,
                             "entry_sell_stack_version": nameplate_stack,
+                            "entry_style": nameplate_style,
                         },
                     ),
                 ]

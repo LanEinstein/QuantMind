@@ -111,6 +111,34 @@ class TestSeedAndResetCarry:
         assert position.entry_sell_stack_version == STACK
 
     @pytest.mark.asyncio
+    async def test_seed_from_recovery_carries_entry_style(self) -> None:
+        """AC-001 (codex verify P2): entry_style survives a recovery rebuild."""
+        broker = _broker(nameplate=False)
+        await broker.seed_from_recovery(
+            cash=100_000.0,
+            frozen_cash=0.0,
+            initial_capital=1_000_000.0,
+            positions=(
+                BrokerSnapshotPosition(
+                    code="600519",
+                    volume=200,
+                    today_bought_volume=0,
+                    cost_price=12.34,
+                    entry_style="value",
+                ),
+            ),
+        )
+        (position,) = await broker.get_positions()
+        assert position.entry_style == "value"
+
+    def test_entry_style_for_reads_stamped_style(self) -> None:
+        broker = _broker(nameplate=False)
+        broker.set_pending_entry_style("600519", "value")
+        broker._apply_buy("600519", 12.34, 200, traded_date=NOW.date())
+        assert broker.entry_style_for("600519") == "value"
+        assert broker.entry_style_for("000001") is None
+
+    @pytest.mark.asyncio
     async def test_reconciliation_reset_nulls_nameplate(self) -> None:
         """A user-reported rewrite has no nameplate (origin tracking)."""
         from backend.models.reconciliation import ReportedPosition

@@ -1024,6 +1024,17 @@ async def _init_line2_runners(
         _reentry = ReentryConfig()
     else:
         _reentry = None
+    # AC-006 — per-style soft take-profit band. GATED default-OFF
+    # (P0-8-amendment-2026-06-12 §1.5). When on, a VALUE-style hold (entry_style
+    # nameplate, AC-001) gets a wider TP target; protective stops stay invariant.
+    if (
+        os.environ.get("QUANTMIND_LINE2_STYLE_SOFT_ENABLED", "0").strip() == "1"
+    ):
+        from backend.monitoring.intraday_triggers import StyleSoftConfig
+
+        _style_soft = StyleSoftConfig()
+    else:
+        _style_soft = None
 
     intraday_runner = Line2IntradayRunner(
         builder=builder,
@@ -1045,6 +1056,7 @@ async def _init_line2_runners(
         strength=_strength,
         stale=_stale,
         reentry=_reentry,
+        style_soft=_style_soft,
         pilot=pilot,
     )
 
@@ -1133,6 +1145,13 @@ async def _init_line2_runners(
     except Exception as exc:  # noqa: BLE001 — thesis must never block Line-1 BUY
         log.warning("position_thesis_store_init_failed", error=str(exc))
 
+    # AC-001: the sim MockBroker is itself the style sink (it carries the
+    # per-code pending-style registry the fill stamps onto the nameplate).
+    # Non-sim brokers lack the method → None (legacy entry_style=None).
+    from backend.broker.mock_broker import MockBroker
+
+    style_sink = broker if isinstance(broker, MockBroker) else None
+
     line1_runner = Line1Runner(
         screener=screener,
         budget_policy=budget_policy,
@@ -1151,6 +1170,8 @@ async def _init_line2_runners(
         digest_outbox=outbox,
         # W-001: persist a buy-time PositionThesis on every delivered BUY.
         thesis_writer=position_thesis_store,
+        # AC-001: stamp the buy-time style on the position nameplate.
+        style_sink=style_sink,
     )
     application.state.line1_runner = line1_runner
 

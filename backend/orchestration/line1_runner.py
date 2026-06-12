@@ -70,6 +70,7 @@ from backend.services.instruction_plan_builder import (
     MandatoryAgentRecords,
 )
 from backend.services.ledger import DecisionLedgerService
+from backend.style import StyleInputs, StyleTag, classify_style
 
 log = structlog.get_logger(component="orchestration.line1_runner")
 
@@ -313,6 +314,22 @@ class ThesisWriter(Protocol):
         ...
 
 
+@runtime_checkable
+class StyleNameplateSink(Protocol):
+    """Registers the deterministic buy-time style for a code (AC-001).
+
+    Injected so the runner stays import-clean of the broker layer — the concrete
+    sink (wired by ``main.py``) calls ``MockBroker.set_pending_entry_style`` so
+    the NEXT BUY fill stamps the position nameplate's ``entry_style``. Called
+    BEFORE the route (the fill stamps at episode open). A no-op sink on the
+    offline path leaves ``entry_style`` None, which is the legacy behaviour.
+    """
+
+    def set_pending_entry_style(self, code: str, style: str) -> None:
+        """Register the style label to stamp on ``code``'s next episode open."""
+        ...
+
+
 @dataclass(frozen=True)
 class Line1RunResult:
     """Audit-grade summary of one Line-1 run.
@@ -362,6 +379,7 @@ class Line1Runner:
         digest_chat_id: str = "",
         digest_outbox: OutboxRepository | None = None,
         thesis_writer: ThesisWriter | None = None,
+        style_sink: StyleNameplateSink | None = None,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -388,6 +406,9 @@ class Line1Runner:
         # W-001: persist the buy-time PositionThesis when a BUY routes. Optional
         # (None on the offline / simulation paths) — never gates routing.
         self._thesis_writer = thesis_writer
+        # AC-001: register the deterministic buy-time style so the fill stamps
+        # the position nameplate. Optional — None leaves entry_style None.
+        self._style_sink = style_sink
 
     async def run(
         self,
@@ -683,6 +704,23 @@ class Line1Runner:
         # NEVER written onto the InstructionPlan (single construction point
         # M-004) nor consumed by the parser / idempotency key.
         rationale = _build_buy_rationale(candidate, debate.state)
+        # AC-001: classify the deterministic buy-time style and register it on
+        # the broker nameplate BEFORE the route — the fill stamps entry_style at
+        # episode open. Display-only; it never touches the InstructionPlan or any
+        # risk number. Until AC-003 lights up the value score this is uniformly
+        # SHORT_TERM (bit-identical to the pre-AC path). Never gates routing.
+        style = self._classify_candidate_style(candidate, debate.state)
+        if self._style_sink is not None:
+            try:
+                self._style_sink.set_pending_entry_style(
+                    candidate.code, style.value
+                )
+            except Exception as exc:  # noqa: BLE001 — nameplate never blocks
+                log.warning(
+                    "line1_style_register_failed",
+                    code=candidate.code,
+                    error=str(exc),
+                )
         result = await self._route_candidate(
             built,
             signal_id=signal_id,
@@ -700,14 +738,64 @@ class Line1Runner:
         # the invalidation thresholds are derived deterministically from the fill
         # anchor + score (never from the pillar text). A failure here NEVER
         # unwinds the order (audit side-effect, like the digest).
-        if (
+        # A holding exists only when the order actually filled or will fill: a
+        # feishu dispatch fills later via report, but a SIMULATION route returns
+        # action="simulation_routed" even on a freeze / broker rejection
+        # (final_status=REJECTED, no broker mutation) — so a sim route counts as
+        # delivered ONLY when the executor confirmed a FILL (codex verify P2).
+        # This gates BOTH the W-001 thesis persist and the AC-001 style clear.
+        delivered = (
             result.outcome is Line1Outcome.ROUTED
             and result.plan is not None
             and result.route_outcome is not None
             and result.route_outcome.action in _THESIS_DELIVERED_ACTIONS
-        ):
-            self._persist_thesis(candidate, debate.state, result.plan, snapshot_id)
+            and _route_produced_holding(result.route_outcome)
+        )
+        if delivered and result.plan is not None:
+            self._persist_thesis(
+                candidate, debate.state, result.plan, snapshot_id, style
+            )
+        elif self._style_sink is not None:
+            # AC-001 (codex P2): a non-delivered route (REJECTED / HOLD /
+            # DEGRADED / non-BUY / send_failed) produced no fill to consume the
+            # pending style registered before routing. Clear it in BOTH modes so
+            # a later Line-2 ADD / recovery / report fill for the same code
+            # stamps None instead of inheriting a stale Line-1 style. This is
+            # safe across runs: a delivered feishu dispatch is in the ``delivered``
+            # branch (never reaches here), THIS run already overwrote any prior
+            # registration for the code at the pre-route register, and the broker
+            # discards the whole pending map at the daily settlement reset
+            # (advance_day) — the concrete same-day-expiry bound. Never gates
+            # routing.
+            try:
+                self._style_sink.set_pending_entry_style(candidate.code, None)
+            except Exception as exc:  # noqa: BLE001 — nameplate never blocks
+                log.warning(
+                    "line1_style_clear_failed",
+                    code=candidate.code,
+                    error=str(exc),
+                )
         return result
+
+    def _classify_candidate_style(
+        self, candidate: CandidateRow, state: TeamState
+    ) -> StyleTag:
+        """Deterministic buy-time style for a candidate (AC-001).
+
+        Pure: built from the screener factor spectrum + whether a deterministic
+        thesis can be derived (≥ MIN_PILLARS of LLM reasoning). The three-tier
+        ``value_score`` is None until AC-003, so this returns SHORT_TERM for
+        every name today — the value path activates with the value-line score.
+        """
+        thesis_derivable = len(_build_thesis_pillars(state)) >= MIN_PILLARS
+        inputs = StyleInputs(
+            momentum_20d=candidate.factors.momentum_20d,
+            volatility_20d=candidate.factors.volatility_20d,
+            ma_ratio_5_20=candidate.factors.ma_ratio_5_20,
+            value_score=None,
+            thesis_derivable=thesis_derivable,
+        )
+        return classify_style(inputs).style
 
     def _persist_thesis(
         self,
@@ -715,6 +803,7 @@ class Line1Runner:
         state: TeamState,
         plan: InstructionPlan,
         snapshot_id: str,
+        style: StyleTag | None = None,
     ) -> None:
         """Build + persist the buy-time PositionThesis (W-001). Never raises."""
         if self._thesis_writer is None:
@@ -740,6 +829,7 @@ class Line1Runner:
                 entry_score=float(candidate.score),
                 snapshot_id=snapshot_id or "unknown",
                 evidence_ids=tuple(plan.evidence_ids),
+                style=style,
             )
             wrote = self._thesis_writer.open_thesis(thesis)
             log.info(
@@ -946,6 +1036,28 @@ _THESIS_DELIVERED_ACTIONS: frozenset[str] = frozenset(
 """Route actions that mean the BUY reached the owner / was filled — the only
 states under which a holding (and therefore a thesis) exists. send_failed /
 skipped_in_flight / dry_run_rendered never produced a holding (codex W-001 P2)."""
+
+
+def _route_produced_holding(ro: RouteOutcome) -> bool:
+    """True iff the route actually created (or will create) a holding.
+
+    A feishu ``dispatched`` / ``skipped_duplicate`` fills later via the owner's
+    execution report (a holding will form). A ``simulation_routed`` action,
+    however, is returned even when the SimulationExecutor REJECTED the order
+    (EOD freeze / broker rejection): ``final_status=REJECTED`` with no trades and
+    NO broker mutation. Treating that as delivered would persist a thesis for a
+    non-held position (W-001) and skip the AC-001 style cleanup (leaving a stale
+    pending entry_style) — so a sim route counts only when the executor
+    confirmed a FILL with at least one trade (codex verify P2).
+    """
+    if ro.action != "simulation_routed":
+        return True
+    sim = ro.simulation_result
+    return (
+        ro.final_status is InstructionStatus.FILLED
+        and sim is not None
+        and len(sim.trade_ids) > 0
+    )
 
 
 _PILLAR_SOURCES: tuple[tuple[str, str], ...] = (

@@ -25,13 +25,33 @@ This module is pure: frozen Pydantic v2 strict models, no IO, no LLM, no
 from __future__ import annotations
 
 import re
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-THEME_SOP_SCHEMA_VERSION = 1
+THEME_SOP_SCHEMA_VERSION = 2
 """Locked schema version. A structural change bumps this (+ amendment) so a
-stale pinned artifact / replay fails closed rather than mis-parsing."""
+stale pinned artifact / replay fails closed rather than mis-parsing. v2
+(P0-8-amendment-2026-06-12 §1.3, AC-004) adds the optional ``theme_tier``; a v1
+output (no tier) still reads — it defaults to the most conservative tier."""
+
+
+class ThemeTier(IntEnum):
+    """The theme's nature → its weight in the value-line score (AC-004).
+
+    A driver hierarchy (国家事件 > 政策 > 技术 > 个股): the higher the tier the
+    broader + more durable the catalyst, so the larger the theme term's weight.
+    The LLM **suggests** a tier in its structured output; a human **confirms** it
+    at pin time (the tier is part of the pinned artifact, NOT a runtime LLM
+    output — P0-8-amendment-2026-06-12 §1.3). A v1 artifact with no tier defaults
+    to ``STOCK`` (the lowest weight — conservative, never over-weights an
+    un-tiered theme).
+    """
+
+    NATIONAL_EVENT = 1  # 国家事件 / 社会大势
+    POLICY = 2  # 政策支持
+    TECH = 3  # 技术利好
+    STOCK = 4  # 个股利好
 
 # 6-digit A-share code (沪深主板/创业板/ETF live in this space). The selector
 # re-validates membership against the quant universe; here we only reject
@@ -173,13 +193,20 @@ class ThemeResearchOutput(BaseModel):
     overall_confidence: float = Field(ge=0.0, le=1.0)
     null_result: bool = False
     trend_citations: tuple[SourceCitation, ...] = Field(default_factory=tuple)
+    theme_tier: ThemeTier = ThemeTier.STOCK
+    """The theme's driver tier (AC-004) — LLM suggestion, human-confirmed at pin.
+    Defaults to the lowest-weight ``STOCK`` so a v1 output / un-tiered theme is
+    never over-weighted."""
 
     @model_validator(mode="after")
     def _check_schema_version(self) -> ThemeResearchOutput:
-        if self.schema_version != THEME_SOP_SCHEMA_VERSION:
+        # Forward-compatible read: an OLDER pinned artifact (≤ current) is
+        # readable (the additive theme_tier defaults conservatively); a
+        # NEWER-than-known version still fails closed rather than mis-parsing.
+        if not 1 <= self.schema_version <= THEME_SOP_SCHEMA_VERSION:
             raise ValueError(
-                f"theme SOP schema_version {self.schema_version} != "
-                f"{THEME_SOP_SCHEMA_VERSION}; module needs upgrade before reading"
+                f"theme SOP schema_version {self.schema_version} out of supported "
+                f"range [1, {THEME_SOP_SCHEMA_VERSION}]; module needs upgrade"
             )
         return self
 
@@ -247,4 +274,5 @@ __all__ = [
     "ThemeCandidate",
     "ThemeResearchOutput",
     "ThemeStep",
+    "ThemeTier",
 ]

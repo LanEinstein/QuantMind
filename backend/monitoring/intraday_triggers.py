@@ -74,6 +74,10 @@ from backend.monitoring.intraday_calibration import (
     effective_r_multiple,
 )
 from backend.monitoring.sell_signal import normalize_position_codes
+from backend.monitoring.style_soft import (
+    StyleSoftConfig,
+    style_take_profit_r_multiple,
+)
 from backend.risk.circuit_breaker import CircuitBreaker  # noqa: TID251
 from backend.risk.daily_state import DailyTradingState  # noqa: TID251
 from backend.risk.engine import RiskEngine  # noqa: TID251
@@ -135,8 +139,11 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 # post-entry high -> full settled exit) + the next-day RE_ENTRY BUY after a
 # delivered discretionary sell (evaluate_reentry_add_intents); None configs
 # reproduce v10 outputs bit-for-bit
-# (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop).
-FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v11"
+# (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop). v12 adds the AC-006
+# per-style soft take-profit band (style_by_code + style_soft): a VALUE hold gets
+# a wider TP target while every protective stop stays style-invariant; a None
+# style_soft reproduces v11 outputs bit-for-bit (P0-8-amendment-2026-06-12 §1.5).
+FEATURE_CODE_VERSION: str = "monitoring.intraday_triggers/v12"
 
 # Canonical CSV header for a persisted intraday quote snapshot (one row per
 # fired held code — the consumed-row lineage the IntradayTriggerManifest pins).
@@ -400,6 +407,11 @@ class IntradaySellIntent:
     effective_atr_stop_mult: float | None = None
     stop_anchor: float | None = None
     stop_governing: str | None = None
+    # AC-006 soft-layer style label. Set ONLY on the TAKE_PROFIT intent (the one
+    # trigger whose band the style conditions); every protective / hard intent
+    # leaves it None so a protective SELL is bit-identical across styles
+    # (P0-8-amendment-2026-06-12 §1.5 invariant — nailed by the adversarial test).
+    style: str | None = None
 
 
 def _bare(code: str) -> str:
@@ -526,6 +538,7 @@ def _take_profit_intent(
     tiers_taken: int = 0,
     effective_atr_stop_mult: float | None = None,
     stop_anchor: float | None = None,
+    style: str | None = None,
 ) -> IntradaySellIntent | None:
     """Lock a tranche of gains at the (possibly tiered) take-profit target.
 
@@ -588,6 +601,7 @@ def _take_profit_intent(
         ),
         effective_atr_stop_mult=effective_atr_stop_mult,
         stop_anchor=stop_anchor,
+        style=style,
     )
 
 
@@ -971,6 +985,8 @@ def evaluate_intraday_sell_intents(
     strength: StrengthSellConfig | None = None,
     amounts_by_code: Mapping[str, tuple[float, ...]] | None = None,
     stale: StaleExitConfig | None = None,
+    style_by_code: Mapping[str, str] | None = None,
+    style_soft: StyleSoftConfig | None = None,
 ) -> tuple[IntradaySellIntent, ...]:
     """Pick held positions to exit from the live quotes (deterministic).
 
@@ -1376,6 +1392,23 @@ def evaluate_intraday_sell_intents(
                 # from take-profit + the soft trim, but the hard-cap trim still
                 # bounds it (P0-10-amendment-line2-2026-06-03) — never relaxing
                 # the protective stops, which already fired above if applicable.
+                # AC-006: the take-profit BAND alone is style-conditioned. A
+                # VALUE hold gets a wider target (eff_r × mult) so it can run;
+                # every protective stop above used the unconditioned eff_r and is
+                # untouched (style invariant). style_soft None / SHORT_TERM →
+                # tp_eff_r == eff_r → bit-identical to the pre-AC path.
+                code_style = (style_by_code or {}).get(code)
+                tp_eff_r = style_take_profit_r_multiple(
+                    eff_r, code_style, style_soft
+                )
+                # The widened band only EXPLAINS a TP-skip when TP was actually
+                # evaluated (not suppressed by the long-term exemption or a
+                # sealed board). For the hard-cap / suppressed paths the band is
+                # irrelevant, so the trim must record the style-invariant eff_r —
+                # else a long-term VALUE hold's hard-cap trim metadata would drift
+                # by style (codex verify P2). tp_eff_r == eff_r when off/SHORT.
+                tp_evaluated = not (is_long_term or sealed)
+                trim_eff_r = tp_eff_r if tp_evaluated else eff_r
                 tp = (
                     None
                     if (is_long_term or sealed)
@@ -1388,7 +1421,7 @@ def evaluate_intraday_sell_intents(
                         cfg=cfg,
                         already_taken=take_profit_already_taken,
                         effective_drawdown_threshold=dd_thr,
-                        effective_r=eff_r,
+                        effective_r=tp_eff_r,
                         tier_ladder=(
                             tiered_takeprofit.tiers
                             if tiered_takeprofit is not None
@@ -1399,6 +1432,7 @@ def evaluate_intraday_sell_intents(
                         ),
                         effective_atr_stop_mult=eff_mult,
                         stop_anchor=anchor_val,
+                        style=code_style if style_soft is not None else None,
                     )
                 )
                 trim = (
@@ -1413,7 +1447,14 @@ def evaluate_intraday_sell_intents(
                         cfg=cfg,
                         max_single_stock_pct=max_single_stock_pct,
                         effective_drawdown_threshold=dd_thr,
-                        effective_r=eff_r,
+                        # AC-006 (codex P2): a soft over-allocation trim ranks
+                        # just BELOW TAKE_PROFIT, so when a widened VALUE band
+                        # skips TP the trim must record the style-adjusted band —
+                        # else a PIT replay would recompute the old short-term TP
+                        # as having fired instead of the live trim. The hard-cap
+                        # trim (is_long_term/sealed) instead records the
+                        # style-invariant eff_r (trim_eff_r above).
+                        effective_r=trim_eff_r,
                         take_profit_tiers_taken=tp_taken,
                         hard_cap_only=is_long_term,
                         max_single_instruction_amount=max_single_instruction_amount,
@@ -1794,6 +1835,7 @@ __all__ = [
     "ReentryConfig",
     "StaleExitConfig",
     "StrengthSellConfig",
+    "StyleSoftConfig",
     "evaluate_reentry_add_intents",
     "limit_up_price",
     "evaluate_intraday_add_intents",

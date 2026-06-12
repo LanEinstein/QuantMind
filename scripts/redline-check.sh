@@ -1632,6 +1632,40 @@ else
   green "  ok    evolution package git-free + promotion engine confined to sim lane"
 fi
 
+# ----------------------------------------------------------------------
+# AC-007 / P0-8-amendment-2026-06-12 — style classifier + value-line.
+# (a) backend/style is a pure deterministic classifier: no LLM stack, no
+#     InstructionPlan construction (the label is display-only).
+# (b) the value-line factor modules stay 0-LLM (the three-tier score is
+#     all deterministic PIT features + the human-pinned theme artifact).
+# The AST pytest (tests/style/test_module_contract.py) is authoritative;
+# this grep is the standalone-CI fast gate (mirrors the AA-005 pattern).
+# ----------------------------------------------------------------------
+echo
+yellow "[AC-007] style + value-line isolation (no backend.{llm,agents,agents_team,mirofish}; no InstructionPlan)"
+AC007_FAIL=0
+_AC007_NAMES='llm|agents_team|agents|mirofish'
+_AC007_DIRS='backend/style backend/screening/value_factors.py backend/screening/value_score.py'
+AC007_IMP="$(grep -rnE \
+  "import +backend\.($_AC007_NAMES)\b|from +backend\.($_AC007_NAMES)\b|from +backend +import +.*\b($_AC007_NAMES)\b|from +\.+($_AC007_NAMES)\b" \
+  $_AC007_DIRS 2>/dev/null || true)"
+if [ -n "$AC007_IMP" ]; then
+  red "  FAIL  style / value-line module imports a forbidden subpackage:"
+  printf '%s\n' "$AC007_IMP" | sed 's/^/        /'
+  AC007_FAIL=1
+fi
+AC007_PLAN="$(grep -rn --include='*.py' 'InstructionPlan(' backend/style 2>/dev/null || true)"
+if [ -n "$AC007_PLAN" ]; then
+  red "  FAIL  style module constructs InstructionPlan (single construction point):"
+  printf '%s\n' "$AC007_PLAN" | sed 's/^/        /'
+  AC007_FAIL=1
+fi
+if [ "$AC007_FAIL" -ne 0 ]; then
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    style + value-line pure-deterministic (no LLM stack, no InstructionPlan)"
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

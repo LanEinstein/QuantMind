@@ -274,6 +274,10 @@ class SqliteKGStore:
                 name=node.name,
                 status=node.status.value,
                 attrs=dict(node.attrs),
+                # provenance_ref carried so the read-only AC-003 resonance query
+                # can count independent evidence families (additive — existing
+                # consumers read node_type/attrs only).
+                provenance_ref=node.provenance_ref,
             )
         for edge in self._iter_latest_edges(as_of=as_of):
             if edge.src_id in g and edge.dst_id in g:
@@ -283,6 +287,7 @@ class SqliteKGStore:
                     key=edge.edge_id,
                     edge_type=edge.edge_type.value,
                     attrs=dict(edge.attrs),
+                    provenance_ref=edge.provenance_ref,
                 )
         return g
 

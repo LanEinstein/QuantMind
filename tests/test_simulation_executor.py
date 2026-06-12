@@ -270,6 +270,26 @@ class TestSimulationExecutorRoute:
         assert "BROKER_FILLED" in kinds
 
     @pytest.mark.asyncio
+    async def test_entry_style_persisted_in_filled_payload(
+        self, env: _Env
+    ) -> None:
+        """AC-001 (codex verify P2): the per-code style nameplate rides the
+        ORDER_FILLED payload so a recovery replay rebuilds entry_style."""
+        plan = _validated_plan()
+        await env.ledger.open_for_plan(plan)
+        # The Line-1 runner registers the style before routing; the fill stamps
+        # the position, the executor writes it onto the FILLED event.
+        env.broker.set_pending_entry_style("600519", "value")
+        await env.executor.route(plan)
+        filled = [
+            d
+            for d in env.event_coll.docs
+            if d["event_type"] == BrokerEventType.ORDER_FILLED.value
+        ]
+        assert filled
+        assert filled[-1]["payload"]["entry_style"] == "value"
+
+    @pytest.mark.asyncio
     async def test_hold_plan_rejected_at_executor(self, env: _Env) -> None:
         with pytest.raises(ValueError, match="HOLD"):
             await env.executor.route(

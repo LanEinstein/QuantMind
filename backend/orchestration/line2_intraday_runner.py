@@ -106,6 +106,7 @@ from backend.monitoring.intraday_triggers import (
     ReentryConfig,
     StaleExitConfig,
     StrengthSellConfig,
+    StyleSoftConfig,
     evaluate_intraday_add_intents,
     evaluate_intraday_sell_intents,
     evaluate_reentry_add_intents,
@@ -321,6 +322,7 @@ class Line2IntradayRunner:
         strength: StrengthSellConfig | None = None,
         stale: StaleExitConfig | None = None,
         reentry: ReentryConfig | None = None,
+        style_soft: StyleSoftConfig | None = None,
         tick_timeout_seconds: float = 10.0,
         pilot: bool = False,
     ) -> None:
@@ -392,6 +394,11 @@ class Line2IntradayRunner:
         self._stale = stale
         self._reentry = reentry
         self._reentry_sales: dict[str, dict[str, float]] = {}
+        # AC-006 per-style soft take-profit band (P0-8-amendment-2026-06-12 §1.5).
+        # None by default (env-gated in main.py); None keeps the prior trigger
+        # set bit-for-bit. Folded into the config hash below (PIT). The per-code
+        # style is read from each held position's nameplate (entry_style, AC-001).
+        self._style_soft = style_soft
         self._tick_timeout = tick_timeout_seconds
         # PILOT go-live tier → prepend the "模拟盘·人工·试点" banner to every
         # order-bearing Feishu message (P0-6-amendment-2026-05-25 §2.3).
@@ -486,6 +493,15 @@ class Line2IntradayRunner:
             "reentry": (
                 dataclasses.asdict(self._reentry)
                 if self._reentry is not None
+                else None
+            ),
+            # AC-006 per-style soft take-profit band (incl. its absence) — pinned
+            # so a replay with the feature off never reproduces a widened VALUE
+            # target (PIT, P0-8-amendment-2026-06-12 §1.5). Maths version rides
+            # the top-level feature_code_version (v12).
+            "style_soft": (
+                dataclasses.asdict(self._style_soft)
+                if self._style_soft is not None
                 else None
             ),
         }
@@ -752,6 +768,20 @@ class Line2IntradayRunner:
                 strength=self._strength,
                 amounts_by_code=amounts_by_code,
                 stale=self._stale,
+                # AC-006: per-code style read from the position nameplate
+                # (entry_style, AC-001). Only fed when the feature is on; the
+                # style conditions the TAKE_PROFIT band alone (protective stops
+                # stay style-invariant). None style_soft → v11 bit-for-bit.
+                style_by_code=(
+                    {
+                        p.code.split(".")[0].strip(): p.entry_style
+                        for p in held
+                        if p.entry_style
+                    }
+                    if self._style_soft is not None
+                    else None
+                ),
+                style_soft=self._style_soft,
             )
             # E2 shadow (feature OFF): once-per-day-per-code old-vs-new stop
             # comparison log — the daily counterfactual report the owner
