@@ -806,6 +806,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-12 session #80 — <strong>Phase AB 全 done:客观自进化</strong>(<code>P2-2-amendment-2026-06-12</code>;feature <code>990733e</code>〔AB-001..AB-008 捆绑〕,✅ 已 push origin/main)。<strong>AB-001</strong>=ExperimentRegistry(append-only 含失败,design 级 content-addressed 防洗白,多重检验校正源)。<strong>AB-002</strong>=ObjectivePromotionEngine(纯函数 9 gate:分层双门槛/锁定 bootstrap CI/deflated Sharpe/8 门不劣化/anti-gaming/oracle;位等 replay;LLM 零参与)。<strong>AB-003</strong>=PromotionIntent(sim 模式门)+ ActivationManifest + next_boot.lock 原子 staging(2h 黑窗)+ boot consume-once 自动回退 + <strong>apply 时复查模式(codex P1)</strong> + 外部 supervisor 脚本;零 git。<strong>AB-004</strong>=相对 counterfactual auto-demote + 10 日冷却。<strong>AB-005</strong>=28 名冻结集(raise 不论分数)+ immutable clamp 白名单 + 只紧不松。<strong>AB-006</strong>=prompt 禁类 lint(GEPA 出炉即拦)+ 字节捕获完整性 + 骨架 frozen。<strong>AB-007</strong>=harsh fill(harsh-or-equal 契约)+ 进化 sub-budget(¥10 双层不绕 cap)+ 22:00 cron 真接线(skip→DEGRADED 审计);<strong>已知 gap:ChallengerReplayer 未实现 → dispatcher 未挂(audit 留痕)</strong>。<strong>AB-008</strong>=对抗 5 族 + redline [AB-008]。codex 1 P1+3 P2 全修+回归;5374 passed 全门禁绿。下一站 = Phase AC(AC-001 StyleClassifier)。</li>
         <li>2026-06-12 session #79 — <strong>R-002 done:策略生命周期 + rqalpha 差分 oracle</strong>(P2-2-amendment-2026-05-24 已决边界,无新 amendment;feature <code>880ea9e</code>,✅ 已 push origin/main)。<strong>lifecycle.py</strong>=5 态状态机(RETIRED 终态)+ ACTIVE 必须 LiveArtifactRegistry pin(R-001 闸接通)+ append-only ledger(retired 永不 re-propose + 陈旧 record 拒改写)。<strong>backtest_oracle.py</strong>=注入式 BacktestRunner + compare_equity_curves(≤25bps/≤5% 散点/覆盖率 ≥90%)+ ORACLE_UNAVAILABLE 非 pass fail-closed;<strong>rqalpha LICENSE 已读:Apache 2.0+商用需米筐授权 → 非商用可选依赖、永不 vendor</strong>;真实 harness 归 AB。<strong>anti_overfit.py</strong>=purged+embargo CV + deflated Sharpe(DSR≥0.95 门)。redline [R-002]+AST 契约钉死 rqalpha 不入实时。codex 3 P1 全修(截断 overlap 假 CONSISTENT/跨 artifact hash/陈旧 record 改写终态)。55 测试/5246 passed/mypy --strict 绿。下一站 = Phase AB(AB-001 ExperimentRegistry)。</li>
         <li>2026-06-12 session #78 — <strong>Phase AA 全 done:模拟盘自动驾驶地基</strong>(<code>P1-2.A-amendment-2026-06-12</code> + <code>P2-2-amendment-2026-06-12</code> §1.6;feature <code>ac1fa6b</code>〔AA-001..AA-005 捆绑,跨任务耦合沿 #74/#77 先例〕+ docs <code>8012e0b</code>,✅ 已 push origin/main)。<strong>AA-001</strong>=16:10 纯 sim 自动对账(EOD snapshot↔broker↔收盘 equity point 三方自完整性,P0-5 阈值复用;零差自动 RESOLVED_SYSTEM_AS_TRUTH 留痕、差异 OPEN 票 fail-closed + 新告警 <code>sim_reconciliation_divergence</code>〔词表 15→16〕;feishu 模式语义不变)。<strong>AA-002</strong>=新 <code>backend/review/</code> facts-first 盘后归因(18:00 cron;TradeFact vs 当日 VWAP〔单位消歧〕;反事实 promotable⊆pre_registered 反后见之明;append-only 无 update/delete;fills 读 durable broker_events)。<strong>AA-003</strong>=周末/节假日复盘 lane(周六 10:00 + 每日补跑自 gating;7 检查 ops 门 fail-closed;activation_allowed 距开盘≥2h 旗标供 AB;失败不冻结交易)。<strong>AA-004</strong>=policy_hash 分段(确定性 manifest hash + policy_segments 切换点账本;EquityPoint/acceptance/performance 全挂;FULL gate 拒旧政策 PASS〔codex P1〕;segment=current 同 clamp 曲线与 trades)+ 持仓铭牌 entry_policy_hash/style/卖出栈版本(episode-open 盖戳,事件 payload+replay+seed+BrokerSnapshot v3 贯穿;v1/v2 checksum 字节级兼容)。<strong>AA-005</strong>=review CLAUDE.md + AST 隔离 + redline [AA-005]。codex 1 cycle:1 P1+4 P2 全修+回归。5191 passed + ruff + redline + mypy 全绿;安全地基全留(仅 2 写端点不变)。下一站 = R-002(rqalpha oracle,AB 硬前置)。</li>
         <li>2026-06-12 session #77 — <strong>Phase Z 全 done:双线前端只读 viz</strong>(<code>P1-5-amendment-2026-06-01</code>;Z-001 docs reconcile + feature <code>de7b0eb</code>〔Z-002..Z-005〕 + docs <code>4770c8a</code>,✅ 已 push origin/main)。<strong>Z-001</strong>=plan.html 页锁 11→13 / WS 12→14 如实 reconcile(decision-card+lane g+G-009+X-022;CLAUDE.md §2.11 owner 在途已写;枚举锁 menu.spec/useWebSocket.spec/test_x_022 全绿;纯 docs 无 codex)。<strong>Z-002</strong>=新 GET <code>/api/theme-research/industry-chain</code> 读 seeded KG 产业链子图(趋势→板块→环节→卡脖子→标的,排除 811 因子)+ 确定性 choke-point centrality + pin 候选计数;InstructionPlans 页内 panel + ECharts 有向图。<strong>Z-003</strong>=新 GET <code>/api/position-theses</code> 读 PositionThesis(支柱 + 确定性失效阈值)+ Portfolio panel。<strong>Z-004</strong>=新 GET <code>/api/slot-rotation</code> 读 RotationIntent 账本 + ≤5 槽 + T+1 终态事件(folded legs)+ 新 <code>RotationRunner.max_total_positions</code> 只读属性 + Portfolio panel。<strong>Z-005</strong>=新 GET <code>/api/dual-line-status</code> 双线 liveness+caps + Dashboard panel(轮询不扩 WS)。全端点 GET-only + 无 trading-stack import + fail-closed 永不 500;<strong>仅 2 写端点不变</strong>。codex review --uncommitted 1 cycle:1 P2(终态事件 leg 丢失)已修+回归。28 后端测试 + vitest 156 + ruff + mypy(模块)+ redline + type-check + build 全绿。display-only/127.0.0.1/量化资格权威 红线全留。下一站 = Phase AA(模拟盘自动驾驶,AA-001 起)。</li>
@@ -903,6 +904,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-12",
+        session: "#80 Phase AB full:客观自进化(AB-001 ExperimentRegistry + AB-002 ObjectivePromotionEngine + AB-003 intent/activation + AB-004 auto-demote + AB-005 冻结集/白名单 + AB-006 prompt 政策化 + AB-007 harsh fill/22:00 接线 + AB-008 对抗收尾)",
+        owner: "Claude Fable 5",
+        state_in: "续 #79(R-002 done 已 push;owner 指令『继续 Phase AB,从 AB-001 起』)。活动 Phase=AB(8 任务,amendment 前置 P2-2-amendment-2026-06-12 已锁定;depends R-002✓/AA-004✓ 全满足)。调查(1 Explore agent):Phase X 栈可复用资产=compute_bootstrap_pnl_ci_95pct(seed 20260518 锁定)+ evaluate_challenger 8 门 verdict + EvolutionDispatcher(未接线,ShadowChain 缺 ChallengerReplayer 具体实现)+ GEPA runner(预算双 assert)+ cost_guard 无进化 sub-budget + lockfile 无任何程序化写方 + deploy 无 supervisor 脚本。",
+        actions: "**新 backend/strategy_evolution/ 8 模块(全确定性,LLM 零参与判定)**。AB-001=experiment_registry.py(append-only 含失败;design 级 content-addressed 防 outcome 洗白;count_trials+bonferroni)。AB-002=objective_promotion.py(纯函数 9 命名 gate:分层双门槛/锁定 bootstrap CI/deflated Sharpe×n_trials/锁定 8 门不劣化/anti-gaming 三件/oracle DIVERGENT 硬拒;位等可 replay)。AB-003=promotion_intent.py(sim 模式门+决策门+append-only 事件账本+allowlist+freeze_all_pending)+ activation.py(目标态 content-addressed manifest/原子 next_boot.lock+2h 黑窗/boot consume-once 备份→换→registry 健康断言→自动回退/损坏隔离)+ deploy/promote_restart.sh(外部 supervisor 08:25-08:45)+ main.py boot 消费接线(intent 终态映射);**零 git=redline [AB-008]+AST**。AB-004=demotion.py(相对 counterfactual ≥10d ≤-150bps;坏输入无判定;10 日冷却)。AB-005=evolvable_params.py(28 名冻结集 raise 不论分数+immutable clamp 白名单+safety-adjacent 只紧不松+归一/序/整数域组约束)。AB-006=prompt_policy.py(中英禁类 lint 接 GEPA 出炉即拦+字节捕获完整性 non-promotable+骨架 frozen)。AB-007=harsh_fill_model.py(harsh-or-equal 契约,零 broker import)+ cost_guard.reserve_evolution_run(双层 sub-budget ¥10/统一 ¥100 不绕 cap)+ 22:00 cron 真接线(skip 信号→DEGRADED 审计)。AB-008=对抗 5 族+redline [AB-008]+模块 CLAUDE.md 全面更新。**门禁**:codex review --uncommitted → **1 P1 + 3 P2 全修+回归**(P1=staging 后翻 feishu 模式 boot 仍会应用 → apply 时复查模式、staged 隔离 .frozen;P2=param-only manifest 静默 no-op → staging+apply 双层拒;P2=失败激活 intent 卡死 PENDING → intent_status_for_activation 映射进 allowlist;P2=skip 的 run 被审计成 SUCCESS → 回调返回信号、scheduler 审计 DEGRADED;summary=docs/reviews/phase-ab-codex-review-summary.md)。192 模块测试 / 全量 **5374 passed**(基线 5246→+128)/ ruff / redline(新 [AB-008] + [R-002] grep 放宽到包级)/ mypy(strategy_evolution 13 文件)全绿。安全地基:7 禁其余 6 条不动;**sim/live 域边界三重模式门(intent 创建+staging+boot apply)**;冻结集对抗逐名钉死。",
+        commit: "feature `990733e`(8 新模块 + GEPA lint 接线 + cost_guard sub-budget + scheduler skip 信号 + main.py boot 消费/22:00 接线 + deploy 脚本 + 10 测试文件 + review summary;跨任务耦合沿 #74/#77/#78 捆绑先例)+ 本 docs-only 收尾,随收尾 push origin/main(owner 本 session 授权链)。",
+        next: "**Phase AB ✅ 全 done。ship 序 Z→AA→R-002→AB→**AC**→AD → 下一站 = Phase AC 风格分型与价值线(起步 AC-001 StyleClassifier,depends Z-001✓/AA-004✓ 已满足)**。**AB 已知 gap(后续任务,不阻塞 AC)**:① ShadowChain ChallengerReplayer 具体实现 + 22:00 任务源(experiment harness)→ dispatcher 挂载;② 白名单参数的 runtime 落地路径(当前 param-bearing manifest 双层拒);③ rqalpha 安装+数据 bundle(owner 决策点,非商用 Apache 2.0)。**运行期**:boot 激活消费 + 22:00 cron + sub-budget 随 owner 重启生效;无 staged lock 时全部 NOOP/skip,行为与 #78 基线一致。",
+      },
       {
         date: "2026-06-12",
         session: "#79 R-002:策略生命周期 + rqalpha 回测差分 oracle(owner 指令『推送 AA 后继续 R-002』;R-003/R-004 范围已被 AB 吸收,本段=单任务)",
@@ -3885,7 +3895,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "ac1fa6b", session_date: "2026-06-12", notes: "复盘模块纯确定性;LLM 只在 orchestration 层注入。 done #78:backend/review/CLAUDE.md + AST 模块契约测试 + redline [AA-005](禁 llm/agents/agents_team/mirofish import + 禁构造 InstructionPlan);全量 5191 passed + ruff + redline + mypy(新模块)绿;Phase AA 全 done。"
       },
       {
-        id: "AB-001", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        id: "AB-001", phase: "AB 客观自进化", status: "done", priority: "P0",
         title: "ExperimentRegistry(append-only 全实验记录,防多重检验)",
         summary: "全部实验(含失败)append-only 登记:假设/参数空间/窗口/样本数/结果/CI;晋升门槛随累计试验次数校正(deflated Sharpe/Bonferroni 风格);内容寻址 experiment_id。",
         scope: "backend/strategy_evolution/experiment_registry.py, tests/strategy_evolution/",
@@ -3893,10 +3903,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "append-only + 含失败实验 + 多重检验校正系数可查 + 内容寻址。",
         tests: "登记往返 + 不可改写 + 校正随次数单调收紧。",
         sources: "P2-2-amendment-2026-06-12 §1.1, codex P2-1",
-        commit: "", session_date: "", notes: "不记失败=晋升引擎变多重检验机器;codex P2 第一条。"
+        commit: "990733e", session_date: "2026-06-12", notes: "不记失败=晋升引擎变多重检验机器;codex P2 第一条。 done #80:experiment_registry.py — append-only evolution_experiments 含全部失败;experiment_id content-addressed over DESIGN(排除 outcome,重注册=幂等 skip 不可洗);count_trials(family) 供多重检验 + bonferroni_alpha 单调收紧。"
       },
       {
-        id: "AB-002", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        id: "AB-002", phase: "AB 客观自进化", status: "done", priority: "P0",
         title: "ObjectivePromotionEngine(分层窗口+样本量+CI+8门+anti-gaming,确定性)",
         summary: "确定性晋升判据:阈值参数 ≥15td 且 ≥30 触发样本 / prompt ≥20td 且 ≥15 笔成交 / 策略代码 45td;challenger vs incumbent 同 PIT 输入 bootstrap CI 显著(接现有 ShadowChain CI);acceptance 8 门不劣化+回撤不恶化;anti-gaming(最低敞口/最少信号/换手边界);LLM 零参与判定。",
         scope: "backend/strategy_evolution/objective_promotion.py, tests/strategy_evolution/",
@@ -3904,10 +3914,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "判据全确定性可 replay + 双门槛 + CI gate + anti-gaming + LLM 零参与(对抗)。",
         tests: "各门槛边界 + CI 判定 + 小样本拒晋升 + 空仓策略拒晋升 + 同输入同输出。",
         sources: "P2-2-amendment-2026-06-12 §1.1, codex P0-2/P2-3, owner 拍板 2026-06-12",
-        commit: "", session_date: "", notes: "owner:尊重客观表现;codex:天数门槛统计无效→样本量+CI。"
+        commit: "990733e", session_date: "2026-06-12", notes: "owner:尊重客观表现;codex:天数门槛统计无效→样本量+CI。 done #80:objective_promotion.py — 纯函数 9 命名 gate(分层双门槛 15td/30、20td/15、45td/30 + ShadowChain 锁定 bootstrap CI low>0 + deflated Sharpe ≥0.95〔n_trials 含失败〕+ 锁定 8 门 evaluate_challenger 不劣化 + anti-gaming 敞口/信号/换手 + oracle DIVERGENT 硬拒、UNAVAILABLE 过但记 un-cross-checked);同输入位等可 replay,inputs_digest 排除 report 行身份;LLM 零参与。"
       },
       {
-        id: "AB-003", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        id: "AB-003", phase: "AB 客观自进化", status: "done", priority: "P0",
         title: "PromotionIntent + activation manifest + 受控重启激活(git 非控制面)",
         summary: "append-only PromotionIntent + 内容寻址 activation manifest(全套 artifact 哈希)+ 原子 next_boot.lock 切换 + 08:30 受控重启窗口(外部 supervisor,距 09:35 ≥65min)+ 开机哈希/健康断言失败自动回退上一 manifest;git 仅事后镜像,严禁 runtime 进程 git commit;PromotionEngine 成为 lockfile 唯一程序化写入方(经 intent 链审计)。",
         scope: "backend/strategy_evolution/{promotion_intent,activation}.py, deploy/(supervisor), tests/",
@@ -3915,10 +3925,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "intent append-only + manifest 内容寻址 + 原子切换 + 开机断言+自动回退 + runtime 零 git 调用(对抗)+ 激活窗口距开盘守门。",
         tests: "激活往返 + 断言失败回退 + 原子性 + 零 git(AST/grep)+ 窗口守门。",
         sources: "P2-2-amendment-2026-06-12 §1.2, codex P0-4",
-        commit: "", session_date: "", notes: "codex:auto-git-commit 是错误激活原语;重启生效语义保留,变的只是批准主体。"
+        commit: "990733e", session_date: "2026-06-12", notes: "codex:auto-git-commit 是错误激活原语;重启生效语义保留,变的只是批准主体。 done #80:promotion_intent.py + activation.py + deploy/promote_restart.sh — intent 构造 sim 模式门(feishu raise)+ 决策门;append-only intent 事件账本 + 状态 allowlist + freeze_all_pending;manifest content-addressed over 目标态;next_boot.lock 原子 staging(2h 黑窗 + 模式门 + param-bearing 拒〔codex P2,runtime 参数路径未落〕);boot consume-once(**apply 时复查模式,翻 feishu 即 .frozen 隔离=codex P1** + 备份→原子换→registry 健康断言→失败自动回退;损坏 .bad 隔离);intent_status_for_activation 映射全在 PENDING 出边 allowlist(codex P2);零 git;外部 08:25-08:45 supervisor 脚本。"
       },
       {
-        id: "AB-004", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        id: "AB-004", phase: "AB 客观自进化", status: "done", priority: "P0",
         title: "auto-demote + 回滚(incumbent 续跑 counterfactual;降级只影响未来入场)",
         summary: "晋升后 incumbent 继续 shadow 跑作 live counterfactual 基线;challenger K 日相对劣化自动降级;持仓沿用 entry_policy_hash 入场时卖出栈;退役 artifact 永久保留可回放;晋升冷却期防震荡。",
         scope: "backend/strategy_evolution/demotion.py, tests/strategy_evolution/",
@@ -3926,10 +3936,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "incumbent 续跑 + K 日相对劣化判定 + 降级不影响存量持仓卖出栈 + artifact 永不删 + 冷却期。",
         tests: "降级触发 + 持仓卖出栈不变(对抗)+ 回放退役 artifact + 冷却。",
         sources: "P2-2-amendment-2026-06-12 §1.3, codex P0-5/P2-2",
-        commit: "", session_date: "", notes: "降级用相对基线非绝对收益;防熊市误杀好策略。"
+        commit: "990733e", session_date: "2026-06-12", notes: "降级用相对基线非绝对收益;防熊市误杀好策略。 done #80:demotion.py — K 日相对 incumbent counterfactual(≥10d 且 ≤-150bps;相对基线防熊市误杀;坏输入无判定 fail-closed)+ 同族 10 日冷却;降级不碰 broker(铭牌语义 AA-004 已钉)。"
       },
       {
-        id: "AB-005", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        id: "AB-005", phase: "AB 客观自进化", status: "done", priority: "P0",
         title: "冻结不可进化集 + 可进化白名单(immutable clamp + safety-adjacent)",
         summary: "frozen non-evolvable 集(安全地基全部+仓位三连+槽cap+熔断+预算+universe+14-check+对账阈值+模式开关)对抗测试钉死;可进化白名单每参数 immutable clamp(clamp 不可进化);能推迟 SELL 的参数列 safety-adjacent 更紧 clamp+止损只紧不松单调约束。",
         scope: "backend/strategy_evolution/evolvable_params.py, config/, tests/",
@@ -3937,10 +3947,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "冻结集种入进化候选必拒(对抗)+ clamp 越界必拒 + safety-adjacent 单调约束 + clamp 自身 runtime 不可改。",
         tests: "对抗:伪造高分安全参数变体不被晋升;clamp 边界;单调约束。",
         sources: "P2-2-amendment-2026-06-12 §1.4/§1.5, codex P1-3",
-        commit: "", session_date: "", notes: "自进化的安全边界=本任务;先于引擎接通真实参数。"
+        commit: "990733e", session_date: "2026-06-12", notes: "自进化的安全边界=本任务;先于引擎接通真实参数。 done #80:evolvable_params.py — 28 名冻结集(命中即 raise 不论分数,对抗逐名钉死)+ 白名单 immutable clamp(MappingProxyType)+ safety-adjacent 只紧不松单调 + selector 归一/tier 序/槽位整数域组约束。"
       },
       {
-        id: "AB-006", phase: "AB 客观自进化", status: "todo", priority: "P1",
+        id: "AB-006", phase: "AB 客观自进化", status: "done", priority: "P1",
         title: "prompt artifact 政策化(禁类 lint + 字节捕获 + replay record)",
         summary: "prompt/exemplars 变体按政策 artifact 对待:禁类 lint(决策类/指令类语句拒入)+ shadow 期请求/响应字节全捕获(仿 theme provenance)+ replay record;GEPA/exemplars 产物全走 AB-002 同一客观晋升门;SOP/人格卡骨架 frozen 校验沿用。",
         scope: "backend/strategy_evolution/prompt_policy.py, backend/services/dspy_gepa_runner.py(接线), tests/",
@@ -3948,10 +3958,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "lint 拒禁类 + 字节捕获完整才 promotable + 骨架 frozen + 走同一晋升门。",
         tests: "禁类样本拒 + 隐藏字节 non-promotable + 骨架破坏拒。",
         sources: "P2-2-amendment-2026-06-12 §1.5, codex P0-3",
-        commit: "", session_date: "", notes: "prompt 进化=间接 LLM 自治泄漏面;按政策 artifact 关笼子。"
+        commit: "990733e", session_date: "2026-06-12", notes: "prompt 进化=间接 LLM 自治泄漏面;按政策 artifact 关笼子。 done #80:prompt_policy.py — 中英禁类 lint(带量指令/InstructionPlan 词汇/绕风控/注入/直接执行)接入 GEPA runner(GEPAPolicyLintError 出炉即拦)+ 字节捕获完整性(缺一或 0 调用=non-promotable)+ 骨架 frozen 顺序校验;走 AB-002 同一晋升门。"
       },
       {
-        id: "AB-007", phase: "AB 客观自进化", status: "todo", priority: "P1",
+        id: "AB-007", phase: "AB 客观自进化", status: "done", priority: "P1",
         title: "shadow 撮合严酷化(防 MockBroker 过拟合)+ 22:00 cron 接线",
         summary: "shadow 评估用更严苛成交假设:涨跌停不成交/ADV 容量上限/价格冲击/延迟成交/陈旧报价拒绝(仅 shadow 评估路径,实盘镜像撮合不变);R-004 的 evolution_shadow_run 22:00 cron + 独立 sub-budget 接线进 AB 实验循环。",
         scope: "backend/strategy_evolution/harsh_fill_model.py, backend/broker/scheduler.py(接线), backend/main.py, tests/",
@@ -3959,10 +3969,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "严苛假设仅 shadow 路径 + MockBroker 实盘撮合 bit-identical + 22:00 cron 真接线 + sub-budget。",
         tests: "严苛 vs 标准撮合差异 + 实盘路径不变(对抗)+ cron 触发 + 预算降级。",
         sources: "P2-2-amendment-2026-06-12 §1.1(5), codex P2-5, R-004(吸收)",
-        commit: "", session_date: "", notes: "进化对 MockBroker 怪癖过拟合是真实激励回路;rqalpha 差分(R-002)+ 严酷化双保险。"
+        commit: "990733e", session_date: "2026-06-12", notes: "进化对 MockBroker 怪癖过拟合是真实激励回路;rqalpha 差分(R-002)+ 严酷化双保险。 done #80:harsh_fill_model.py(涨跌停不成交/ADV 5% 容量整手/线性冲击/陈旧拒/延迟成交有利缺口钳=harsh-or-equal 契约;零 broker import)+ cost_guard.reserve_evolution_run 双层 sub-budget(QUANTMIND_EVOLUTION_DAILY_SUBBUDGET 默认 ¥10 + 统一 ¥100 预留不绕 cap;R-004 吸收)+ 22:00 cron 真接线(skip 返回信号→scheduler 审计 DEGRADED 非 SUCCESS,codex P2)。**已知 gap:ShadowChain 缺 ChallengerReplayer 具体实现 → dispatcher 未挂,每晚审计 skipped_dispatcher_unwired;AB 实验 harness(replayer+任务源+param 落地路径)为后续任务**。"
       },
       {
-        id: "AB-008", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        id: "AB-008", phase: "AB 客观自进化", status: "done", priority: "P0",
         title: "端到端对抗测试 + 模块隔离 + Phase AB 收尾",
         summary: "端到端对抗:种入恶意高分 artifact 不被晋升(冻结集/未捕获字节/小样本/anti-gaming)/ 晋升永不改安全参数 / feishu_interactive 模式晋升仍人工 gate / 模式切换冻结 in-flight intent;strategy_evolution import 隔离回归;redline + SSoT。",
         scope: "tests/strategy_evolution/test_adversarial_promotion.py, scripts/redline-check.sh, docs/plan.html",
@@ -3970,7 +3980,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "对抗全绿 + 实盘人工 gate 不变(对抗)+ redline + Phase AB 全 done。",
         tests: "对抗 5 族 + AST 隔离 + redline + 全量 pytest。",
         sources: "P2-2-amendment-2026-06-12 §2, R0 §4",
-        commit: "", session_date: "", notes: "对抗测试先写(RED);sim 自治域与实盘人工域的边界是最高风险面。"
+        commit: "990733e", session_date: "2026-06-12", notes: "对抗测试先写(RED);sim 自治域与实盘人工域的边界是最高风险面。 done #80:test_adversarial_promotion.py 对抗 5 族(恶意高分不晋升/安全参数不可触〔冻结集逐名〕/实盘人工 gate〔intent+staging+boot apply 三重〕/模式切换冻结 intent/零 git+实时隔离)+ redline [AB-008];Phase AB 全 done。"
       },
       {
         id: "AC-001", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
