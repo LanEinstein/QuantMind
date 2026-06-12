@@ -43,6 +43,59 @@
       加载失败:{{ error }}
     </div>
 
+    <el-collapse v-model="chainPanelOpen" class="chain-collapse">
+      <el-collapse-item name="chain">
+        <template #title>
+          <span class="chain-panel-title">产业链倒推可解释链路</span>
+          <span class="chain-panel-sub">
+            趋势→板块→环节→卡脖子→标的 · display-only · 量化仍资格权威
+          </span>
+        </template>
+        <div v-if="chainError" class="banner banner-error">
+          链路加载失败:{{ chainError }}
+        </div>
+        <div
+          v-else-if="!chainPayload || !chainPayload.available"
+          class="banner banner-info"
+        >
+          {{ chainPayload?.note || '产业链知识图谱尚未物化(scripts/seed_kg.py 后可见)。' }}
+        </div>
+        <div v-else class="chain-content">
+          <div class="chain-graph-wrap">
+            <IndustryChainGraph
+              :nodes="chainPayload.nodes"
+              :edges="chainPayload.edges"
+            />
+          </div>
+          <aside class="chain-side">
+            <h4 class="chain-side-title">卡脖子环节排名(choke-point 综合分)</h4>
+            <el-table
+              :data="chainChokepoints"
+              stripe
+              size="small"
+              max-height="300"
+              empty-text="无产业链环节"
+            >
+              <el-table-column type="index" label="#" width="48" />
+              <el-table-column prop="name" label="环节" min-width="110" />
+              <el-table-column label="综合分" width="86">
+                <template #default="{ row }">{{ row.composite.toFixed(3) }}</template>
+              </el-table-column>
+              <el-table-column label="下游波及" width="92">
+                <template #default="{ row }">
+                  {{ row.downstream_reach.toFixed(3) }}
+                </template>
+              </el-table-column>
+            </el-table>
+            <p class="chain-peer-note">
+              已 pin 主题候选:{{ chainPayload.theme_peer_sourcing.pinned_candidate_count }}
+              · {{ chainPayload.theme_peer_sourcing.note }}
+            </p>
+          </aside>
+        </div>
+      </el-collapse-item>
+    </el-collapse>
+
     <el-table
       :data="plans"
       stripe
@@ -175,10 +228,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { instructionPlansApi } from '@/api/instructionPlans'
+import { themeResearchApi } from '@/api/themeResearch'
+import IndustryChainGraph from '@/components/charts/IndustryChainGraph.vue'
 import type {
   InstructionPlanDetailPayload,
   InstructionPlanSummary,
 } from '@/types/instructionPlan'
+import type { IndustryChainPayload } from '@/types/themeResearch'
 
 const STATUS_OPTIONS = [
   'DRAFT',
@@ -196,6 +252,13 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const statusFilter = ref<string | undefined>(undefined)
 const tradeDateFilter = ref<string | undefined>(undefined)
+
+const chainPanelOpen = ref<string[]>(['chain'])
+const chainPayload = ref<IndustryChainPayload | null>(null)
+const chainError = ref<string | null>(null)
+const chainChokepoints = computed(() =>
+  chainPayload.value ? [...chainPayload.value.chokepoints] : [],
+)
 
 const drawerVisible = ref(false)
 const detail = ref<InstructionPlanDetailPayload | null>(null)
@@ -274,8 +337,18 @@ function passLabel(passed: boolean | null): string {
   return 'n/a'
 }
 
+async function fetchChain(): Promise<void> {
+  chainError.value = null
+  try {
+    chainPayload.value = await themeResearchApi.getIndustryChain()
+  } catch (err: unknown) {
+    chainError.value = err instanceof Error ? err.message : 'failed to load chain'
+  }
+}
+
 onMounted(() => {
   reload()
+  fetchChain()
 })
 </script>
 
@@ -331,6 +404,48 @@ onMounted(() => {
 
 .plans-table {
   flex-shrink: 0;
+}
+
+.chain-collapse {
+  flex-shrink: 0;
+  border: 1px solid $border-color;
+  border-radius: $border-radius;
+  background: $bg-card;
+  --el-collapse-header-bg-color: transparent;
+  --el-collapse-content-bg-color: transparent;
+  padding: 0 12px;
+}
+.chain-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: $text-primary;
+  margin-right: 12px;
+}
+.chain-panel-sub {
+  font-size: 11px;
+  color: $text-muted;
+}
+.chain-content {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: $gap-md;
+  align-items: start;
+}
+.chain-graph-wrap {
+  min-height: 360px;
+  height: 380px;
+}
+.chain-side-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-primary;
+  margin: 0 0 $gap-sm;
+}
+.chain-peer-note {
+  font-size: 11px;
+  color: $text-muted;
+  margin: $gap-sm 0 0;
+  line-height: 1.5;
 }
 
 .instruction-id {

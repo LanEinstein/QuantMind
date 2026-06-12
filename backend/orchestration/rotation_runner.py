@@ -203,6 +203,11 @@ class RotationRunner:
         """The append-only intent ledger (the scheduler folds rotations-today)."""
         return self._intents
 
+    @property
+    def max_total_positions(self) -> int:
+        """The ≤5 slot cap (check#6) — read-only surface for the Z-004 panel."""
+        return self._max_positions
+
     async def run(
         self,
         *,

@@ -86,6 +86,11 @@
           </el-button>
         </el-card>
       </div>
+
+      <!-- Z-005 双线每日并行运行态(编排概览;轮询,不扩 WS)-->
+      <div class="zone-dual-line">
+        <DualLineStatusPanel />
+      </div>
     </div>
     <!-- G-002: status bar moved to AppShell.vue (global) -->
   </div>
@@ -99,6 +104,7 @@ import MarketChart from '@/components/charts/MarketChart.vue'
 import SectorHeatmap from '@/components/charts/SectorHeatmap.vue'
 import CapitalFlowChart from '@/components/charts/CapitalFlowChart.vue'
 import NewsFeed from '@/components/common/NewsFeed.vue'
+import DualLineStatusPanel from '@/components/dashboard/DualLineStatusPanel.vue'
 
 const store = useMarketStore()
 const { connected: wsConnected, connect } = useWebSocket()

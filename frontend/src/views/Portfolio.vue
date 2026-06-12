@@ -132,6 +132,12 @@
       </el-tabs>
     </el-card>
 
+    <!-- Z-003 持仓 thesis 追踪(长持 vs 止盈)-->
+    <ThesisTrackingPanel />
+
+    <!-- Z-004 5 槽组合 + 换仓视图 -->
+    <SlotRotationPanel :held-count="store.positions.length" />
+
     <!-- Loading overlay -->
     <div v-if="store.status === 'loading'" class="loading-overlay">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -163,6 +169,8 @@ import PositionTable from '@/components/trading/PositionTable.vue'
 import OrderList from '@/components/trading/OrderList.vue'
 import TradeHistory from '@/components/trading/TradeHistory.vue'
 import PositionDetailDrawer from '@/components/trading/PositionDetailDrawer.vue'
+import ThesisTrackingPanel from '@/components/portfolio/ThesisTrackingPanel.vue'
+import SlotRotationPanel from '@/components/portfolio/SlotRotationPanel.vue'
 
 const store = usePortfolioStore()
 const riskStore = useRiskStore()

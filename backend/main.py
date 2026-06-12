@@ -25,6 +25,7 @@ from backend.api.analysis import router as analysis_router
 from backend.api.audit import router as audit_router
 from backend.api.cost import router as cost_router
 from backend.api.data_quality import router as data_quality_router
+from backend.api.dual_line_status import router as dual_line_status_router
 from backend.api.equity_points import router as equity_points_router
 from backend.api.evolution import router as evolution_router
 from backend.api.execution_reports import router as execution_reports_router
@@ -34,11 +35,14 @@ from backend.api.instruction_plans import router as instruction_plans_router
 from backend.api.market import router as market_router
 from backend.api.monitoring import router as monitoring_router
 from backend.api.performance import router as performance_router
+from backend.api.position_theses import router as position_theses_router
 from backend.api.reconciliation import router as reconciliation_router
 from backend.api.risk import router as risk_router
 from backend.api.settings import router as settings_router
 from backend.api.simulation import router as simulation_router
+from backend.api.slot_rotation import router as slot_rotation_router
 from backend.api.system_status import router as system_status_router
+from backend.api.theme_research import router as theme_research_router
 from backend.api.trading import router as trading_router
 from backend.api.watchlist import router as watchlist_router
 from backend.api.websocket import router as websocket_router
@@ -2973,6 +2977,10 @@ app.include_router(reconciliation_router)
 app.include_router(data_quality_router)
 app.include_router(evolution_router)
 app.include_router(feishu_router)
+app.include_router(theme_research_router)
+app.include_router(position_theses_router)
+app.include_router(slot_rotation_router)
+app.include_router(dual_line_status_router)
 app.include_router(websocket_router)
 
 
