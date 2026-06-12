@@ -1588,15 +1588,48 @@ fi
 # authoritative guard and this grep is the standalone-CI fast gate.
 # ----------------------------------------------------------------------
 echo
-yellow "[R-002] rqalpha confined to backend/strategy_evolution/backtest_oracle.py"
+yellow "[R-002] rqalpha confined to backend/strategy_evolution/ (imports: oracle adapter only)"
+# Prose mentions are allowed inside the evolution package (the sibling
+# modules cross-reference the oracle); the AST contract test pins the
+# actual IMPORT to backtest_oracle.py alone.
 R002_OUT="$(grep -rln 'rqalpha' backend/ --include='*.py' 2>/dev/null \
-  | grep -v '^backend/strategy_evolution/backtest_oracle.py$' || true)"
+  | grep -v '^backend/strategy_evolution/' || true)"
 if [ -n "$R002_OUT" ]; then
   red "  FAIL  rqalpha referenced outside the oracle adapter:"
   printf '%s\n' "$R002_OUT" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 else
   green "  ok    rqalpha test-time oracle only (no realtime reference)"
+fi
+
+# ----------------------------------------------------------------------
+# AB-008 / P2-2-amendment-2026-06-12 — objective-promotion guardrails.
+# (a) git is NOT a runtime control plane: zero git/subprocess in the
+#     strategy_evolution package (codex P0-4; activation = intent +
+#     manifest + next_boot.lock + controlled restart).
+# (b) the promotion engine never leaks into the realtime path.
+# The AST pytest (tests/strategy_evolution/test_adversarial_promotion
+# .py) is the authoritative guard; this grep is the CI fast gate.
+# ----------------------------------------------------------------------
+echo
+yellow "[AB-008] strategy_evolution zero git/subprocess + promotion engine confined"
+AB008_FAIL=0
+AB008_GIT="$(grep -rnE "^[^#]*\b(import +(subprocess|git)\b|from +(subprocess|git)\b)" backend/strategy_evolution --include='*.py' 2>/dev/null || true)"
+if [ -n "$AB008_GIT" ]; then
+  red "  FAIL  strategy_evolution imports git/subprocess (runtime control-plane red line):"
+  printf '%s\n' "$AB008_GIT" | sed 's/^/        /'
+  AB008_FAIL=1
+fi
+AB008_LEAK="$(grep -rln 'objective_promotion' backend/ --include='*.py' 2>/dev/null | grep -v '^backend/strategy_evolution/' || true)"
+if [ -n "$AB008_LEAK" ]; then
+  red "  FAIL  objective_promotion referenced outside strategy_evolution:"
+  printf '%s\n' "$AB008_LEAK" | sed 's/^/        /'
+  AB008_FAIL=1
+fi
+if [ "$AB008_FAIL" -ne 0 ]; then
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    evolution package git-free + promotion engine confined to sim lane"
 fi
 
 echo

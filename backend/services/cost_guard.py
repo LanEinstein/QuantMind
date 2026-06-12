@@ -941,6 +941,91 @@ async def settle_budget(
 # Internal helpers re-exported for tests + redline scanner.
 _classify = _classify_daily
 
+
+
+# ---------------------------------------------------------------------------
+# Evolution lane sub-budget (AB-007 / P2-2-amendment-2026-06-12; absorbs
+# the R-004 "independent sub-budget" mandate)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_EVOLUTION_DAILY_SUBBUDGET_RMB = 10.0
+"""Daily ceiling for the 22:00 evolution lane. A SUB-budget: every
+reservation ALSO goes through :func:`reserve_budget` against the
+unified ``llm:usage:{utc_date}`` counter, so evolution spend can never
+bypass the ¥100 daily hard cap (amendment §2.4 discipline)."""
+
+
+def _evolution_key(date_str: str) -> str:
+    return f"llm:evolution:{date_str}"
+
+
+async def get_evolution_spent(
+    redis_client: redis.asyncio.Redis,
+    *,
+    today: datetime.date | None = None,
+) -> float:
+    """Evolution-lane reserved spend for the UTC day (0.0 on cold key)."""
+    raw = await redis_client.get(_evolution_key(_utc_date_str(today)))
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value >= 0 else 0.0
+
+
+async def reserve_evolution_run(
+    redis_client: redis.asyncio.Redis,
+    *,
+    estimated_rmb: float,
+    today: datetime.date | None = None,
+) -> BudgetReservation | None:
+    """Reserve one evolution run against BOTH budget layers.
+
+    Returns the unified-counter reservation (settle it after the run)
+    or ``None`` when either layer refuses — the 22:00 lane then skips
+    tonight's run (degrade, never freeze; X-005 decoupling). Order:
+    the evolution sub-counter is checked first (cheap), then the
+    unified ¥100 reservation; the sub-counter increments only after
+    the unified reservation succeeded so the two layers cannot drift.
+    """
+    if not math.isfinite(estimated_rmb) or estimated_rmb < 0:
+        raise ValueError(
+            f"estimated_rmb must be finite and >= 0, got {estimated_rmb}"
+        )
+    subbudget = _read_env_float(
+        "QUANTMIND_EVOLUTION_DAILY_SUBBUDGET",
+        _DEFAULT_EVOLUTION_DAILY_SUBBUDGET_RMB,
+        minimum=0.0,
+    )
+    spent = await get_evolution_spent(redis_client, today=today)
+    if spent + estimated_rmb > subbudget:
+        log.info(
+            "evolution_subbudget_exhausted",
+            spent=round(spent, 4),
+            estimated=estimated_rmb,
+            subbudget=subbudget,
+        )
+        return None
+    try:
+        reservation = await reserve_budget(
+            redis_client,
+            agent_name="evolution_shadow_run",
+            estimated_rmb=estimated_rmb,
+            today=today,
+        )
+    except DailyBudgetExceededError as exc:
+        log.warning(
+            "evolution_run_blocked_by_daily_hard_cap", error=str(exc)
+        )
+        return None
+    key = _evolution_key(_utc_date_str(today))
+    await redis_client.incrbyfloat(key, estimated_rmb)
+    await redis_client.expire(key, 60 * 60 * 48)
+    return reservation
+
+
 __all__ = [
     "BudgetReservation",
     "BudgetState",  # alias kept for legacy callers
@@ -971,7 +1056,9 @@ __all__ = [
     "reserve_anomaly_llm_slot",
     "reserve_budget",
     "reserve_debate_slot",
+    "reserve_evolution_run",
     "reserve_thesis_review_slot",
     "reset_daily_gate_counters",
+    "get_evolution_spent",
     "settle_budget",
 ]

@@ -1774,6 +1774,76 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     broker.attach_market_meta(market_meta)
     application.state.market_meta_provider = market_meta
 
+    # 2a-pre. AB-003 — consume a staged activation BEFORE anything reads
+    # the live artifact lockfile (the policy-manifest hash below must see
+    # the post-activation state). Consume-once + automatic rollback on a
+    # failed registry health assertion; corruption quarantines the staged
+    # file and leaves the live lockfile untouched.
+    from backend.audit.models import AuditActor, AuditEventType, AuditOutcome
+    from backend.strategy_evolution.activation import (
+        ActivationStatus,
+        apply_pending_activation,
+    )
+
+    try:
+        activation_result = apply_pending_activation()
+    except Exception as exc:  # noqa: BLE001 — boot must not die here
+        log.error("activation_apply_crashed", error=str(exc))
+        activation_result = None
+    if activation_result is not None and (
+        activation_result.status is not ActivationStatus.NOOP
+    ):
+        log.warning(
+            "activation_consumed",
+            status=activation_result.status.value,
+            manifest_hash=activation_result.manifest_hash,
+            intent_id=activation_result.intent_id,
+            detail=activation_result.detail,
+        )
+        if activation_result.status is not ActivationStatus.APPLIED:
+            await audit_store.write(
+                event_type=AuditEventType.SYSTEM_INTERRUPTED,
+                actor=AuditActor.SYSTEM,
+                resource_type="promotion_activation",
+                resource_id=activation_result.intent_id,
+                payload={
+                    "status": activation_result.status.value,
+                    "manifest_hash": activation_result.manifest_hash,
+                    "detail": activation_result.detail,
+                },
+                outcome=AuditOutcome.DEGRADED,
+                reason_namespace="promotion_activation_failed",
+            )
+        # Mark the intent's terminal status (best-effort; the file-level
+        # state is already consistent even if Mongo is briefly down).
+        if activation_result.intent_id:
+            try:
+                import uuid as _uuid_mod
+
+                from backend.strategy_evolution.activation import (
+                    intent_status_for_activation,
+                )
+                from backend.strategy_evolution.promotion_intent import (
+                    MongoPromotionIntentLedger,
+                )
+
+                _terminal = intent_status_for_activation(
+                    activation_result.status
+                )
+                _intent_ledger = MongoPromotionIntentLedger(db)
+                if _terminal is not None:
+                    await _intent_ledger.record_status(
+                        _uuid_mod.UUID(activation_result.intent_id),
+                        _terminal,
+                        at=datetime.now(tz=SHANGHAI_TZ),
+                        reason=f"boot:{activation_result.status.value}",
+                    )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                log.warning(
+                    "activation_intent_status_update_failed",
+                    error=str(exc),
+                )
+
     # 2a. AA-004 — policy manifest boot wiring (P2-2-amendment-2026-06-12
     # §1.6). Compute the deterministic policy hash, open a new segment
     # row iff it moved (append-only transition ledger), and stamp the
@@ -2570,6 +2640,59 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     async def _holiday_catchup_review_callback(now: datetime) -> None:
         await _run_weekly_review(now, "holiday_catchup")
 
+    async def _evolution_shadow_run_callback(now: datetime) -> str | None:
+        """22:00 cron — AB-007 evolution lane (R-004 absorbed).
+
+        Real wiring: the sub-budget gate ALWAYS runs (evolution spend
+        reserves through the unified ¥100 counter AND the dedicated
+        QUANTMIND_EVOLUTION_DAILY_SUBBUDGET ceiling — degrade-and-skip
+        when either refuses). The EvolutionDispatcher lanes dispatch
+        when an instance is wired on app.state; today the dispatcher's
+        ShadowChain still lacks a concrete ChallengerReplayer (the AB
+        experiment harness gap, recorded in plan.html AB-007 notes), so
+        an unwired dispatcher logs + audits DEGRADED instead of
+        pretending to run.
+        """
+        from backend.services.cost_guard import (
+            reserve_evolution_run,
+            settle_budget,
+        )
+
+        redis_client = getattr(application.state, "redis", None)
+        if redis_client is None:
+            log.warning("evolution_run_skipped_no_redis")
+            return "skipped_no_redis"
+        reservation = await reserve_evolution_run(
+            redis_client, estimated_rmb=5.0
+        )
+        if reservation is None:
+            log.info("evolution_run_skipped_budget")
+            return "skipped_budget"
+        try:
+            dispatcher = getattr(
+                application.state, "evolution_dispatcher", None
+            )
+            if dispatcher is None:
+                # Codex AB P2 — return the skip signal so the scheduler
+                # audits DEGRADED instead of stamping a SUCCESS row for
+                # a run that never happened (AB harness gap: no
+                # ChallengerReplayer implementation yet).
+                log.info(
+                    "evolution_dispatcher_unwired",
+                    reason=(
+                        "ShadowChain ChallengerReplayer not implemented "
+                        "yet (AB experiment harness gap)"
+                    ),
+                )
+                return "skipped_dispatcher_unwired"
+            # Future AB harness: dispatcher.run_* lanes execute here
+            # with the day's tasks; each lane reserves its own LLM
+            # spend through the same counters.
+            log.info("evolution_dispatcher_present_no_tasks_v1")
+            return None
+        finally:
+            await settle_budget(redis_client, reservation)
+
     async def _has_open_reconciliation_ticket() -> bool:
         """Return True iff Mongo holds ANY OPEN / EXPIRED ticket.
 
@@ -2733,6 +2856,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         line2_intraday_runner_callback=line2_intraday_cb,
         line1_runner_callback=line1_cb,
         thesis_review_runner_callback=thesis_review_cb,
+        evolution_shadow_run_callback=_evolution_shadow_run_callback,
         sim_auto_reconciliation_callback=_sim_auto_reconciliation_callback,
         daily_attribution_review_callback=_daily_attribution_review_callback,
         weekend_deep_review_callback=_weekend_deep_review_callback,

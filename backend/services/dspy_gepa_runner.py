@@ -134,6 +134,16 @@ class GEPAIterationLimitExceededError(DSPyGEPARunnerError):
     """Raised when ``max_iterations`` exceeds :data:`GEPA_MAX_ITERATIONS`."""
 
 
+class GEPAPolicyLintError(DSPyGEPARunnerError):
+    """The produced prompt variant failed the AB-006 policy lint.
+
+    Prompt artifacts are POLICY artifacts (P2-2-amendment-2026-06-12
+    §1.5, codex P0-3): a variant containing instruction/decision-class
+    language never leaves the runner — it is rejected before any
+    registration, shadow run, or persistence as a challenger.
+    """
+
+
 class GEPABudgetError(DSPyGEPARunnerError):
     """Raised when the cost guard refuses to allow the run."""
 
@@ -295,6 +305,22 @@ class DSPyGEPARunner:
                 f"cost_guard breach detected POST-compile (GEPA internal "
                 f"spend exceeded the daily ceiling): {exc}"
             ) from exc
+
+        # AB-006 — prompt artifacts are policy artifacts: lint the
+        # produced variant for forbidden instruction/decision classes
+        # BEFORE it can be persisted or become a shadow challenger.
+        from backend.strategy_evolution.prompt_policy import (
+            lint_prompt_artifact,
+        )
+
+        lint = lint_prompt_artifact(new_prompt)
+        if not lint.passed:
+            raise GEPAPolicyLintError(
+                "GEPA variant failed the prompt policy lint: "
+                + "; ".join(
+                    f"{v.rule}({v.excerpt!r})" for v in lint.violations
+                )
+            )
 
         log_dir_for_run = self._persist_log(
             agent=agent,

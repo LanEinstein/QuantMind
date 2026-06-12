@@ -310,7 +310,7 @@ class BrokerScheduler:
         ] | None = None,
         acceptance_callback: Callable[[datetime], Awaitable[None]] | None = None,
         evolution_shadow_run_callback: Callable[
-            [datetime], Awaitable[None]
+            [datetime], Awaitable[None | str]
         ] | None = None,
         line2_daily_runner_callback: Callable[
             [datetime], Awaitable[None]
@@ -997,7 +997,27 @@ class BrokerScheduler:
         trade_date = started.astimezone(SHANGHAI).strftime("%Y-%m-%d")
         error: str | None = None
         try:
-            await self._evolution_shadow_run(started)
+            outcome_signal = await self._evolution_shadow_run(started)
+            if isinstance(outcome_signal, str):
+                # AB-007 (codex AB P2) — the callback signalled a SKIP
+                # (budget exhausted / dispatcher unwired): audit it as
+                # DEGRADED so the trail never shows a SUCCESS for a run
+                # that did not happen. Backward compatible: a None
+                # return keeps the original SUCCESS semantics.
+                await self._audit.write(
+                    event_type=AuditEventType.SHADOW_EVOLUTION_RUN_COMPLETED,
+                    actor=AuditActor.SCHEDULER,
+                    resource_type="evolution_shadow_run",
+                    resource_id=trade_date,
+                    payload={
+                        "trade_date": trade_date,
+                        "status": outcome_signal,
+                        "retried": not retry,
+                    },
+                    outcome=AuditOutcome.DEGRADED,
+                    reason_namespace="evolution_shadow_run_skipped",
+                )
+                return True
             await self._audit.write(
                 event_type=AuditEventType.SHADOW_EVOLUTION_RUN_COMPLETED,
                 actor=AuditActor.SCHEDULER,
