@@ -296,11 +296,29 @@ async def get_performance(
     end: str | None = Query(None, description="End date (YYYY-MM-DD)"),
     benchmark: str | None = Query(None, description="Benchmark index"),
     account_id: str | None = Query(None, description="Account ID"),
+    segment: str | None = Query(
+        None,
+        description=(
+            "AA-004 policy segmentation: 'current' clamps the range to "
+            "the active policy segment's start date"
+        ),
+    ),
 ) -> dict[str, Any]:
     """Return performance analytics for a date range."""
     today = date.today()
     start_date = _parse_date(start, today - timedelta(days=30))
     end_date = _parse_date(end, today)
+
+    # AA-004 (P2-2-amendment-2026-06-12 §1.6) — segment-aware range:
+    # 'current' restricts the analytics window to the active policy
+    # segment so a promotion cannot blend old-policy performance into
+    # the readiness view. Read-only; unknown values are ignored.
+    segment_started = getattr(
+        request.app.state, "policy_segment_started", None
+    )
+    segment_clamped = segment == "current" and segment_started is not None
+    if segment_clamped:
+        start_date = max(start_date, segment_started)
 
     # Get trading data from broker
     registry = getattr(request.app.state, "broker_registry", None)
@@ -330,6 +348,17 @@ async def get_performance(
                 benchmark_prices = None
         except Exception as exc:
             log.debug("benchmark_data_unavailable", error=str(exc))
+
+    # Codex Phase-AA P2 fix — under segment=current the TRADES feeding
+    # win rate / P&L ratio / turnover must be clamped to the segment
+    # range too, not just the equity-curve date bounds; otherwise the
+    # headline metrics blend fills from previous policy segments.
+    if segment_clamped:
+        trades = tuple(
+            t
+            for t in trades
+            if start_date <= t.traded_at.date() <= end_date
+        )
 
     # Compute analytics
     equity = compute_equity_curve(
@@ -361,12 +390,33 @@ async def get_performance(
         cost_by_provider, requests_by_provider
     )
 
+    # AA-004 — segment transition ledger so the frontend can annotate
+    # policy switch points on the curve.
+    policy_segments: list[dict[str, Any]] = []
+    segment_store = getattr(request.app.state, "policy_segment_store", None)
+    if segment_store is not None:
+        try:
+            policy_segments = [
+                {
+                    "policy_hash": row.policy_hash,
+                    "started_at": row.started_at.isoformat(),
+                    "trade_date": row.trade_date,
+                }
+                for row in await segment_store.list_all()
+            ]
+        except Exception as exc:
+            log.debug("policy_segments_unavailable", error=str(exc))
+
     return _ok(
         {
             "equity_curve": equity,
             "metrics": metrics,
             "drawdown_curve": drawdown,
             "model_contributions": model_contributions,
+            "policy_segments": policy_segments,
+            "active_policy_hash": getattr(
+                request.app.state, "policy_hash", None
+            ),
         }
     )
 

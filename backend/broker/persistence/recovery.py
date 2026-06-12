@@ -71,6 +71,11 @@ class _MutablePosition:
     # does not blind the guard (codex cycle-3 P1); seeded into the live
     # MockBroker via seed_from_recovery.
     bought_by_date: dict[date, int] = field(default_factory=dict)
+    # AA-004 nameplate (snapshot v3): stamped on episode-open from the
+    # event payload during replay; carried from snapshot v3 rows on seed.
+    entry_policy_hash: str | None = None
+    entry_style: str | None = None
+    entry_sell_stack_version: str | None = None
 
 
 @dataclass
@@ -109,6 +114,9 @@ class RecoveredState:
                         d.isoformat(): v
                         for d, v in sorted(pos.bought_by_date.items())
                     },
+                    entry_policy_hash=pos.entry_policy_hash,
+                    entry_style=pos.entry_style,
+                    entry_sell_stack_version=pos.entry_sell_stack_version,
                 )
             )
         return tuple(out)
@@ -176,6 +184,13 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                     volume=volume,
                     today_bought_volume=volume,
                     cost_price=fill_price,
+                    # AA-004: nameplate rides in the event payload; absent
+                    # on pre-v3 events → None (legacy semantics).
+                    entry_policy_hash=payload.get("entry_policy_hash"),
+                    entry_style=payload.get("entry_style"),
+                    entry_sell_stack_version=payload.get(
+                        "entry_sell_stack_version"
+                    ),
                 )
                 state.positions[code] = pos
             else:
@@ -225,6 +240,13 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                 volume=int(raw["volume"]),
                 today_bought_volume=int(raw.get("today_bought_volume", 0)),
                 cost_price=float(raw["cost_price"]),
+                # AA-004: reconciliation payload rows usually carry no
+                # nameplate (user-reported truth) → None.
+                entry_policy_hash=raw.get("entry_policy_hash"),
+                entry_style=raw.get("entry_style"),
+                entry_sell_stack_version=raw.get(
+                    "entry_sell_stack_version"
+                ),
             )
         return
 
@@ -306,6 +328,11 @@ def _apply_event(state: RecoveredState, event: BrokerEvent) -> None:
                     today_bought_volume=0,
                     cost_price=(
                         float(fill_price) if fill_price is not None else 0.0
+                    ),
+                    entry_policy_hash=payload.get("entry_policy_hash"),
+                    entry_style=payload.get("entry_style"),
+                    entry_sell_stack_version=payload.get(
+                        "entry_sell_stack_version"
                     ),
                 )
                 state.positions[code] = pos
@@ -413,6 +440,9 @@ async def recover_state(
                     today_bought_volume=pos.today_bought_volume,
                     cost_price=pos.cost_price,
                     bought_by_date=_buy_dates(pos),
+                    entry_policy_hash=pos.entry_policy_hash,
+                    entry_style=pos.entry_style,
+                    entry_sell_stack_version=pos.entry_sell_stack_version,
                 )
                 for pos in snapshot.positions
             },

@@ -140,6 +140,28 @@ class PositionThesisStore:
         """The current open thesis for ``code`` (None if unknown / closed)."""
         return self.open_theses().get(code)
 
+    def closed_theses_on(self, trade_date: str) -> dict[str, PositionThesis]:
+        """code → thesis retired by a CLOSED event dated ``trade_date``.
+
+        AA-002 (codex Phase-AA P2 fix): the 18:00 attribution review
+        needs the entry price for positions fully sold the same day —
+        but the 17:30 thesis sync has already CLOSED those theses, so
+        ``open_theses`` no longer sees them. Read-only fold; a same-day
+        close-then-reopen-then-close keeps the latest closed thesis.
+        """
+        open_now: dict[str, PositionThesis] = {}
+        closed: dict[str, PositionThesis] = {}
+        for ev in self._load():
+            if ev.event_type is ThesisEventType.OPENED and (
+                ev.thesis is not None
+            ):
+                open_now[ev.code] = ev.thesis
+            elif ev.event_type is ThesisEventType.CLOSED:
+                retired = open_now.pop(ev.code, None)
+                if retired is not None and ev.trade_date == trade_date:
+                    closed[ev.code] = retired
+        return closed
+
     def open_thesis(self, thesis: PositionThesis) -> bool:
         """Record a buy-time thesis. Idempotent on a re-routed instruction_id.
 

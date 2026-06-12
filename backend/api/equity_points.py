@@ -53,6 +53,7 @@ def _serialize(point: EquityPoint) -> dict[str, Any]:
         "pnl_pct": point.pnl_pct,
         "quality": point.quality.value,
         "last_broker_event_id": point.last_broker_event_id,
+        "policy_hash": getattr(point, "policy_hash", None),
         "positions": [
             {
                 "code": p.code,

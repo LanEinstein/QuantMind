@@ -81,6 +81,9 @@ class EquityPoint(BaseModel):
     pnl_pct: float
     quality: EquityPointQuality
     positions: tuple[EquityPointPosition, ...] = Field(default_factory=tuple)
+    policy_hash: str | None = Field(default=None, max_length=64)
+    """AA-004 (P2-2-amendment-2026-06-12 §1.6): the policy-manifest hash
+    active when this point was built. ``None`` = legacy segment."""
     last_broker_event_id: int | None = Field(default=None, ge=0)
     """Sequence of the broker_events row whose effect is reflected in
     this point's position state. ``None`` for a fresh deploy before

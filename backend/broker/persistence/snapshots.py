@@ -23,7 +23,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-BROKER_SNAPSHOT_SCHEMA_VERSION = 2
+BROKER_SNAPSHOT_SCHEMA_VERSION = 3
 """Locked schema version for broker_snapshots rows. See events.py for
 the bump procedure (paired with a P1-2.A amendment doc + migration).
 
@@ -32,7 +32,15 @@ v2 (P0-4-amendment-2026-06-04): positions gained ``bought_by_date``
 guard survives a restart from a checkpoint spanning multi-day buys. The
 read path accepts v1 rows (the field defaults empty; the checksum
 payload is byte-identical for empty maps, so stored v1 checksums still
-validate); the write path always emits the current version."""
+validate); the write path always emits the current version.
+
+v3 (P2-2-amendment-2026-06-12 §1.6, AA-004): positions gained the
+nameplate triple ``entry_policy_hash`` / ``entry_style`` /
+``entry_sell_stack_version`` so a restart preserves which policy stack
+opened each episode (a demotion only affects FUTURE entries; held
+positions ride their entry stack). Same read-compat discipline as v2:
+the fields default to None and the checksum folds them in ONLY when
+present, so stored v1/v2 checksums still validate."""
 
 
 _ISO_DATE_RE = r"^\d{4}-\d{2}-\d{2}$"
@@ -57,6 +65,14 @@ class BrokerSnapshotPosition(BaseModel):
     the external-report T+1 guard (P0-4-amendment-2026-06-04). Empty on
     v1 rows — recovery then falls back to the today_bought_volume
     reseed for the snapshot's own trade date."""
+
+    entry_policy_hash: str | None = Field(default=None, max_length=64)
+    entry_style: str | None = Field(default=None, max_length=32)
+    entry_sell_stack_version: str | None = Field(
+        default=None, max_length=64
+    )
+    """AA-004 nameplate (v3): which policy stack opened the episode.
+    None on v1/v2 rows and reconciliation-reset rewrites."""
 
     @model_validator(mode="after")
     def _check_today_le_total(self) -> BrokerSnapshotPosition:

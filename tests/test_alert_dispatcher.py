@@ -77,8 +77,9 @@ def fake_feishu() -> MagicMock:
 
 def test_matrix_count_is_locked() -> None:
     # 5 cost types + 4 P0-6 interruptions + 3 ops lifecycle + 1 P2-2 +
-    # 1 J-004 acceptance reset trigger.
-    assert len(ALERT_MATRIX) == 15
+    # 1 J-004 acceptance reset trigger + 1 Line-2 protective-sell reject
+    # + 1 AA-001 sim reconciliation divergence.
+    assert len(ALERT_MATRIX) == 16
 
 
 def test_every_feishu_fire_is_in_feishu_alert_types() -> None:
@@ -115,7 +116,7 @@ def test_kimi_cap_fires_to_feishu_but_not_critical() -> None:
 def test_matrix_summary_shape_is_stable() -> None:
     rows = matrix_summary()
     assert isinstance(rows, list)
-    assert len(rows) == 15
+    assert len(rows) == 16
     required_keys = {
         "alert_type",
         "audit_event_type",
@@ -323,7 +324,9 @@ def test_feishu_alert_types_unchanged_count() -> None:
 
     J-004 added one entry (acceptance_reset_triggered, 14); the Line-2
     ops hardening amendment (2026-06-04) added
-    line2_protective_sell_rejected bringing the total to 15. CLAUDE.md
+    line2_protective_sell_rejected (15); AA-001
+    (P1-2.A-amendment-2026-06-12 §1.2) added
+    sim_reconciliation_divergence bringing the total to 16. CLAUDE.md
     §2.11 maintains the locked vocabulary.
     """
-    assert len(FEISHU_ALERT_TYPES) == 15
+    assert len(FEISHU_ALERT_TYPES) == 16

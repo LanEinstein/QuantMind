@@ -91,6 +91,15 @@ class _MutablePosition:
     # to the most recent BOUGHT_BY_DATE_KEEP dates; rebuilt on recovery by
     # the persistence replay.
     bought_by_date: dict[date, int] = field(default_factory=dict)
+    # AA-004 (P2-2-amendment-2026-06-12 §1.6) position nameplate: the
+    # policy hash / sell-stack version active when the EPISODE opened
+    # (volume 0 → >0). Add-on buys keep the original stamp; a position
+    # that closes and re-opens gets a fresh one. ``entry_style`` stays
+    # None until Phase AC's StyleClassifier lands. A demotion only
+    # affects FUTURE entries — held positions ride their entry stack.
+    entry_policy_hash: str | None = None
+    entry_style: str | None = None
+    entry_sell_stack_version: str | None = None
 
     @property
     def available_volume(self) -> int:
@@ -143,6 +152,31 @@ class MockBroker(IBroker):
         self._lock = asyncio.Lock()
         self._market_meta = market_meta
         self._log = log
+        # AA-004 nameplate source — set once at boot by main.py from the
+        # policy manifest; None (unwired/legacy) stamps None.
+        self._entry_policy_hash: str | None = None
+        self._entry_sell_stack_version: str | None = None
+
+    def set_entry_nameplate(
+        self,
+        *,
+        policy_hash: str | None,
+        sell_stack_version: str | None,
+    ) -> None:
+        """Set the nameplate stamped onto NEW position episodes (AA-004).
+
+        Called once at boot by main.py with the active policy-manifest
+        hash + the Line-2 trigger stack version. Existing positions are
+        untouched — a promotion/demotion only affects future entries
+        (P2-2-amendment-2026-06-12 §1.6).
+        """
+        self._entry_policy_hash = policy_hash
+        self._entry_sell_stack_version = sell_stack_version
+
+    @property
+    def entry_nameplate(self) -> tuple[str | None, str | None]:
+        """(policy_hash, sell_stack_version) stamped on new episodes."""
+        return (self._entry_policy_hash, self._entry_sell_stack_version)
 
     def attach_market_meta(self, market_meta: MarketMetaProvider) -> None:
         """Swap in the market-meta provider after construction.
@@ -202,6 +236,9 @@ class MockBroker(IBroker):
                     )
                     for k, v in raw_buys.items()
                 }
+                # Nameplate fields ride through recovery when the carrier
+                # has them (snapshot v3 / recovery state); absent → None
+                # (legacy rows, AA-004 backward compat).
                 self._positions[pos.code] = _MutablePosition(
                     code=pos.code,
                     volume=int(pos.volume),
@@ -210,6 +247,13 @@ class MockBroker(IBroker):
                     ),
                     cost_price=float(pos.cost_price),
                     bought_by_date=bought_by_date,
+                    entry_policy_hash=getattr(
+                        pos, "entry_policy_hash", None
+                    ),
+                    entry_style=getattr(pos, "entry_style", None),
+                    entry_sell_stack_version=getattr(
+                        pos, "entry_sell_stack_version", None
+                    ),
                 )
 
     async def place_order(
@@ -516,6 +560,9 @@ class MockBroker(IBroker):
                 volume=volume,
                 today_bought_volume=volume if lock_today else 0,
                 cost_price=fill_price,
+                # Nameplate stamped at episode open only (AA-004).
+                entry_policy_hash=self._entry_policy_hash,
+                entry_sell_stack_version=self._entry_sell_stack_version,
             )
             self._positions[code] = pos
         else:
@@ -596,6 +643,9 @@ class MockBroker(IBroker):
                     market_value=round(mv, 2),
                     unrealized_pnl=round(pnl, 2),
                     unrealized_pnl_pct=round(pnl_pct, 4),
+                    entry_policy_hash=pos.entry_policy_hash,
+                    entry_style=pos.entry_style,
+                    entry_sell_stack_version=pos.entry_sell_stack_version,
                 )
             )
         return tuple(result)
@@ -971,11 +1021,22 @@ class MockBroker(IBroker):
             for pos in positions:
                 if pos.volume <= 0:
                     continue
+                # Reconciliation rewrite: a user-reported position has no
+                # nameplate → None (origin = reconciliation_reset, AA-004).
+                # Carriers that do expose one (amended snapshots built from
+                # system state) keep it.
                 self._positions[pos.code] = _MutablePosition(
                     code=pos.code,
                     volume=int(pos.volume),
                     today_bought_volume=0,
                     cost_price=float(pos.cost_price),
+                    entry_policy_hash=getattr(
+                        pos, "entry_policy_hash", None
+                    ),
+                    entry_style=getattr(pos, "entry_style", None),
+                    entry_sell_stack_version=getattr(
+                        pos, "entry_sell_stack_version", None
+                    ),
                 )
 
             new_positions = {

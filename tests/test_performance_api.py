@@ -264,3 +264,46 @@ class TestExportPerformance:
         assert "QuantMind Performance Report" in content
         assert "Core Metrics" in content
         assert "Date" in content
+
+
+class TestPolicySegmentParam:
+    """AA-004 — segment=current clamps both the curve range AND the
+    trades feeding the headline metrics (codex Phase-AA P2)."""
+
+    @pytest.mark.asyncio
+    async def test_segment_current_filters_trades_and_reports_segments(
+        self, client: AsyncClient
+    ) -> None:
+        app.state.policy_segment_started = date(2026, 3, 4)
+        app.state.policy_hash = "c" * 64
+        seg_store = MagicMock()
+        seg_store.list_all = AsyncMock(
+            return_value=(
+                MagicMock(
+                    policy_hash="c" * 64,
+                    started_at=datetime(2026, 3, 4, 9, 0, tzinfo=UTC),
+                    trade_date="2026-03-04",
+                ),
+            )
+        )
+        app.state.policy_segment_store = seg_store
+        try:
+            resp = await client.get(
+                "/api/performance",
+                params={
+                    "start": "2026-03-01",
+                    "end": "2026-03-10",
+                    "segment": "current",
+                },
+            )
+            body = resp.json()
+            assert resp.status_code == 200
+            data = body["data"]
+            assert data["active_policy_hash"] == "c" * 64
+            assert data["policy_segments"][0]["trade_date"] == "2026-03-04"
+            # Curve starts at the segment boundary, not the request start.
+            assert data["equity_curve"][0]["date"] == "2026-03-04"
+        finally:
+            app.state.policy_segment_started = None
+            app.state.policy_hash = None
+            app.state.policy_segment_store = None

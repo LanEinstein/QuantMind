@@ -1034,7 +1034,9 @@ class TestSchemaVersionEnforcement:
         assert BROKER_EVENT_SCHEMA_VERSION == 1
         # v2: positions carry bought_by_date (P0-4-amendment-2026-06-04;
         # owner-approved bump — read path accepts v1, write path emits v2).
-        assert BROKER_SNAPSHOT_SCHEMA_VERSION == 2
+        # v3: positions carry the AA-004 entry nameplate
+        # (P2-2-amendment-2026-06-12 §1.6; read path accepts v1/v2).
+        assert BROKER_SNAPSHOT_SCHEMA_VERSION == 3
 
 
 class TestReplayRebuildsT1BuyRecord:

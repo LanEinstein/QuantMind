@@ -123,9 +123,11 @@ class TestAlertTypes:
 
         J-004 added ``acceptance_reset_triggered`` (14); the Line-2 ops
         hardening amendment (2026-06-04) added
-        ``line2_protective_sell_rejected`` bringing the total to 15.
+        ``line2_protective_sell_rejected`` (15); AA-001
+        (P1-2.A-amendment-2026-06-12 §1.2) added
+        ``sim_reconciliation_divergence`` bringing the total to 16.
         """
-        assert len(ALERT_TYPES) == 15
+        assert len(ALERT_TYPES) == 16
 
     def test_includes_p1_7_budget_types(self) -> None:
         for kind in (

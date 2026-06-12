@@ -85,6 +85,13 @@ class Position(BaseModel):
     market_value: float
     unrealized_pnl: float
     unrealized_pnl_pct: float
+    # AA-004 nameplate (P2-2-amendment-2026-06-12 §1.6): the policy
+    # hash / sell-stack version active when the episode opened. None on
+    # legacy positions and reconciliation-reset rewrites; ``entry_style``
+    # stays None until Phase AC's StyleClassifier.
+    entry_policy_hash: str | None = None
+    entry_style: str | None = None
+    entry_sell_stack_version: str | None = None
 
 
 class AccountInfo(BaseModel):

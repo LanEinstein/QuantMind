@@ -70,6 +70,7 @@ class EquityPointBuilder:
         *,
         now: datetime,
         last_broker_event_id: int | None = None,
+        policy_hash: str | None = None,
     ) -> EquityPoint:
         """Snapshot the broker + price every position; return the EquityPoint."""
         account = await self._broker.get_account()
@@ -100,6 +101,7 @@ class EquityPointBuilder:
             pnl_pct=round(pnl_pct, 6),
             quality=overall_quality,
             positions=pos_rows,
+            policy_hash=policy_hash,
             last_broker_event_id=last_broker_event_id,
         )
         return point
@@ -109,6 +111,7 @@ class EquityPointBuilder:
         *,
         now: datetime,
         last_broker_event_id: int | None = None,
+        policy_hash: str | None = None,
     ) -> EquityPoint:
         """Construct an EOD_FALLBACK EquityPoint when no intraday tick exists.
 
@@ -161,6 +164,7 @@ class EquityPointBuilder:
             pnl_pct=round(pnl_pct, 6),
             quality=EquityPointQuality.EOD_FALLBACK,
             positions=tuple(pos_rows),
+            policy_hash=policy_hash,
             last_broker_event_id=last_broker_event_id,
         )
 

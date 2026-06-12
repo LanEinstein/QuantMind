@@ -127,6 +127,9 @@ class AcceptanceReport(BaseModel):
     metrics: tuple[AcceptanceMetric, ...]
     notes: str = Field(default="", max_length=256)
     reset_state: WindowResetState = Field(default_factory=WindowResetState)
+    policy_hash: str | None = Field(default=None, max_length=64)
+    """AA-004 (P2-2-amendment-2026-06-12 §1.6): the policy-manifest hash
+    the window was computed under. ``None`` = legacy rows."""
 
     @model_validator(mode="after")
     def _check_window(self) -> AcceptanceReport:
@@ -188,6 +191,12 @@ class AcceptanceComputeInput:
     pausing the acceptance window (CLAUDE.md §2.8). The service still
     builds a report row but tags it ``PAUSED`` so the UI can render
     the pause provenance."""
+    policy_hash: str | None = None
+    """AA-004: active policy-manifest hash; recorded on the report."""
+    policy_segment_started: dt.date | None = None
+    """AA-004 (codex P0-1): the active policy segment's start date. The
+    45-day window clamps to it so go-live readiness is judged on the
+    CURRENT policy only — never a half-old-half-new hybrid curve."""
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +311,7 @@ class AcceptanceService:
         self._repo = repository or InMemoryAcceptanceRepository()
         self._reset_state: WindowResetState = WindowResetState()
         self._pilot_probe: PilotReadinessProbeProtocol | None = None
+        self._active_policy_hash: str | None = None
 
     def set_pilot_probe(
         self, probe: PilotReadinessProbeProtocol | None
@@ -315,6 +325,19 @@ class AcceptanceService:
         ``None`` → PILOT is fail-closed there (no probe == not ready).
         """
         self._pilot_probe = probe
+
+    def set_active_policy(self, policy_hash: str | None) -> None:
+        """Wire the active policy-manifest hash at startup (AA-004).
+
+        Codex Phase-AA P1 fix — without this, a PASS report computed
+        under the PREVIOUS policy could authorize feishu_interactive
+        right after a policy promotion (the segment clamp only affects
+        the NEXT EOD compute). ``_evaluate_full`` rejects any latest
+        report whose ``policy_hash`` differs from the active one, which
+        forces the fresh current-segment warm-up. ``None`` (legacy /
+        manifest boot failure) keeps the original behaviour.
+        """
+        self._active_policy_hash = policy_hash
 
     def record_reset(self, *, when: dt.datetime, reason: str) -> None:
         """Mark the rolling window as reset; subsequent compute() starts fresh.
@@ -427,6 +450,16 @@ class AcceptanceService:
             if reset_date > start:
                 start = reset_date
 
+        # AA-004 (P2-2-amendment-2026-06-12 §1.6) — clamp the window to
+        # the active policy segment so readiness reflects the CURRENT
+        # policy only. Same mechanism as the J-004 reset clamp above; a
+        # promotion restarts the rolling 45-day warm-up by construction.
+        if (
+            payload.policy_segment_started is not None
+            and payload.policy_segment_started > start
+        ):
+            start = payload.policy_segment_started
+
         actual_days = _count_trading_days_inclusive(start, end)
 
         if payload.reconciliation_paused:
@@ -440,6 +473,7 @@ class AcceptanceService:
                 metrics=(),
                 notes="acceptance paused — reconciliation OPEN/EXPIRED",
                 reset_state=self._reset_state,
+                policy_hash=payload.policy_hash,
             )
 
         if actual_days < WINDOW_TRADING_DAYS:
@@ -456,6 +490,7 @@ class AcceptanceService:
                     f"need {WINDOW_TRADING_DAYS}"
                 ),
                 reset_state=self._reset_state,
+                policy_hash=payload.policy_hash,
             )
 
         metrics = self._build_metrics(payload)
@@ -471,6 +506,7 @@ class AcceptanceService:
             metrics=tuple(metrics),
             notes="",
             reset_state=self._reset_state,
+            policy_hash=payload.policy_hash,
         )
 
     def _build_metrics(
@@ -586,13 +622,19 @@ class AcceptanceService:
             reasons.append("full:no_acceptance_report")
         elif latest.outcome is not AcceptanceOutcome.PASS:
             reasons.append(f"full:latest_outcome_{latest.outcome.value}")
-        elif self._reset_state.last_reset_at is not None:
-            reset_date = self._reset_state.last_reset_at.astimezone(
-                SHANGHAI
-            ).date()
-            pass_date = dt.date.fromisoformat(latest.trade_date)
-            if reset_date >= pass_date:
-                reasons.append("full:reset_on_or_after_latest_pass")
+        elif self._reset_state.last_reset_at is not None and (
+            self._reset_state.last_reset_at.astimezone(SHANGHAI).date()
+            >= dt.date.fromisoformat(latest.trade_date)
+        ):
+            reasons.append("full:reset_on_or_after_latest_pass")
+        elif (
+            self._active_policy_hash is not None
+            and latest.policy_hash != self._active_policy_hash
+        ):
+            # AA-004 (codex Phase-AA P1) — a PASS computed under a
+            # previous policy segment must not authorize the switch; the
+            # current policy needs its own segment-clamped warm-up.
+            reasons.append("full:latest_report_from_previous_policy")
         return GateDecision(
             tier=GoLiveTier.FULL,
             allowed=not reasons,

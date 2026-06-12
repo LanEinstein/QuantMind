@@ -1542,6 +1542,43 @@ else
   green "  ok    theme_research pure (no trading-stack imports) + no InstructionPlan"
 fi
 
+# ----------------------------------------------------------------------
+# AA-005 / P1-2.A-amendment-2026-06-12 — attribution review module
+# isolation. backend/review is the objective-evidence substrate for the
+# Phase AB promotion engine: pure-deterministic, zero LLM. It must never
+# import backend.{llm,agents,agents_team,mirofish} and never construct
+# an InstructionPlan (single construction point, R0 §4). The AST pytest
+# (tests/review/test_module_contract.py) is the authoritative guard and
+# this grep is the standalone-CI fast gate (mirrors the N-005 pattern).
+# ----------------------------------------------------------------------
+echo
+yellow "[AA-005] review module isolation (no backend.{llm,agents,agents_team,mirofish}; no InstructionPlan)"
+if [ -d backend/review ]; then
+  AA005_FAIL=0
+  _AA005_NAMES='llm|agents_team|agents|mirofish'
+  AA005_IMP="$(grep -rnE \
+    "import +backend\.($_AA005_NAMES)\b|from +backend\.($_AA005_NAMES)\b|from +backend +import +.*\b($_AA005_NAMES)\b|from +\.+($_AA005_NAMES)\b|from +\.+ +import +.*\b($_AA005_NAMES)\b" \
+    backend/review 2>/dev/null || true)"
+  if [ -n "$AA005_IMP" ]; then
+    red "  FAIL  review module imports a forbidden subpackage:"
+    printf '%s\n' "$AA005_IMP" | sed 's/^/        /'
+    AA005_FAIL=1
+  fi
+  AA005_PLAN="$(grep -rn --include='*.py' 'InstructionPlan(' backend/review 2>/dev/null || true)"
+  if [ -n "$AA005_PLAN" ]; then
+    red "  FAIL  review module constructs InstructionPlan (single construction point):"
+    printf '%s\n' "$AA005_PLAN" | sed 's/^/        /'
+    AA005_FAIL=1
+  fi
+  if [ "$AA005_FAIL" -ne 0 ]; then
+    FAIL=$((FAIL + 1))
+  else
+    green "  ok    backend/review pure-deterministic (no LLM stack, no InstructionPlan)"
+  fi
+else
+  green "  ok    no review module present yet (skip)"
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

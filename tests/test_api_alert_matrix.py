@@ -21,7 +21,7 @@ async def test_alert_matrix_endpoint_returns_locked_rows() -> None:
     body = resp.json()
     assert resp.status_code == 200
     assert body["status"] == "ok"
-    assert len(body["data"]["alerts"]) == len(ALERT_MATRIX) == 15
+    assert len(body["data"]["alerts"]) == len(ALERT_MATRIX) == 16
     types = {row["alert_type"] for row in body["data"]["alerts"]}
     # Spot-check a few across categories
     assert "daily_cost_ceiling_20cny_breached" in types

@@ -69,6 +69,12 @@ ALERT_TYPES: frozenset[str] = frozenset(
         # surface it (the 2026-06-03 prev_close gap killed every exit for
         # two trading days before a human noticed).
         "line2_protective_sell_rejected",
+        # P1-2.A-amendment-2026-06-12 §1.2 (AA-001) — the 16:10 pure-sim
+        # self-integrity reconciliation found a divergence between the
+        # EOD snapshot / broker mirror / equity point. A divergence here
+        # is a program-bug signal: routing is frozen fail-closed by the
+        # OPEN ticket and a human must investigate.
+        "sim_reconciliation_divergence",
     }
 )
 """Locked alert-type vocabulary. Adding a new entry needs an amendment +

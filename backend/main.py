@@ -7,7 +7,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -1774,6 +1774,46 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     broker.attach_market_meta(market_meta)
     application.state.market_meta_provider = market_meta
 
+    # 2a. AA-004 — policy manifest boot wiring (P2-2-amendment-2026-06-12
+    # §1.6). Compute the deterministic policy hash, open a new segment
+    # row iff it moved (append-only transition ledger), and stamp the
+    # broker's entry nameplate so every NEW position episode records the
+    # policy stack that opened it. Failure degrades to the legacy
+    # (None-hash) behaviour rather than blocking boot — segmentation is
+    # observability, not a routing precondition.
+    from backend.services.policy_manifest import (
+        MongoPolicySegmentStore,
+        current_sell_stack_version,
+        ensure_policy_segment,
+    )
+
+    policy_segment_store = MongoPolicySegmentStore(db)
+    application.state.policy_segment_store = policy_segment_store
+    try:
+        _boot_now = datetime.now(tz=SHANGHAI_TZ)
+        _segment = await ensure_policy_segment(
+            policy_segment_store,
+            now=_boot_now,
+            trade_date=_boot_now.date().isoformat(),
+        )
+        application.state.policy_hash = _segment.policy_hash
+        application.state.policy_segment_started = date.fromisoformat(
+            _segment.trade_date
+        )
+        broker.set_entry_nameplate(
+            policy_hash=_segment.policy_hash,
+            sell_stack_version=current_sell_stack_version(),
+        )
+        log.info(
+            "policy_segment_active",
+            policy_hash=_segment.policy_hash,
+            started=_segment.trade_date,
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to legacy segment
+        log.warning("policy_manifest_boot_failed", error=str(exc))
+        application.state.policy_hash = None
+        application.state.policy_segment_started = None
+
     # 2b. Recover broker state from broker_snapshots + broker_events
     # BEFORE exposing the broker to SimulationExecutor / MTM / EOD
     # (Codex Cycle 6 P1 fix). Without this seed the registry's fresh
@@ -1997,7 +2037,9 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
             last_seq = None
         try:
             point = await equity_builder.build(
-                now=now, last_broker_event_id=last_seq
+                now=now,
+                last_broker_event_id=last_seq,
+                policy_hash=getattr(application.state, "policy_hash", None),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("intraday_mtm_build_failed", error=str(exc))
@@ -2062,6 +2104,471 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # a cron firing in the startup window would see None, fail-open to no
     # tickets, and bypass the reconciliation freeze.
     application.state.reconciliation_ticket_repository = ticket_repo
+
+    async def _sim_auto_reconciliation_callback(now: datetime) -> None:
+        """16:10 cron — AA-001 pure-sim self-integrity reconciliation.
+
+        P1-2.A-amendment-2026-06-12 §1.2: zero difference between the
+        EOD snapshot / broker mirror / equity point auto-resolves
+        ``RESOLVED_SYSTEM_AS_TRUTH`` (append-only trail); any
+        difference leaves the OPEN ticket frozen fail-closed + alerts.
+        The service itself skips when feishu_interactive is enabled.
+        The alert dispatcher is resolved lazily off app.state because
+        it is constructed after the orchestration layer.
+        """
+        from backend.services.sim_reconciliation import (
+            run_sim_auto_reconciliation,
+        )
+
+        await run_sim_auto_reconciliation(
+            broker=broker,
+            snapshot_store=snapshot_store,
+            equity_points=equity_repo,
+            tickets=ticket_repo,
+            applier=reconciliation_applier,
+            audit=audit_store,
+            alert_dispatcher=getattr(
+                application.state, "alert_dispatcher", None
+            ),
+            now=now,
+        )
+
+    # AA-002 — append-only ReviewRecord store for the 18:00 attribution
+    # review (P1-2.A-amendment-2026-06-12 §1.3). Bound before the
+    # scheduler closures so a cron firing in the startup window sees it.
+    from backend.review.store import MongoReviewRecordStore
+
+    review_record_store = MongoReviewRecordStore(db)
+    application.state.review_record_store = review_record_store
+
+    async def _daily_attribution_review_callback(now: datetime) -> None:
+        """18:00 cron — AA-002 facts-first daily attribution review.
+
+        Gathers the day's deterministic inputs (trades / kline VWAP /
+        thesis entry costs / pre-registered counterfactual plans /
+        violation counts) and persists ONE append-only DailyReviewRecord
+        via the pure ``backend.review`` builder. Idempotent on re-run.
+        """
+        from dataclasses import dataclass
+
+        from backend.review.attribution import (
+            build_daily_review,
+            normalize_kline_vwap,
+        )
+        from backend.review.models import (
+            CounterfactualEntry,
+            CounterfactualKind,
+        )
+
+        trade_date = now.astimezone(SHANGHAI_TZ).date()
+        date_iso = trade_date.isoformat()
+        if await review_record_store.exists(date_iso):
+            log.info("daily_attribution_already_recorded", date=date_iso)
+            return
+
+        # Codex Phase-AA P2 fix — source fills from the DURABLE
+        # broker_events stream, not the in-memory trade list: a restart
+        # between a fill and 18:00 leaves ``broker.get_trades()`` empty
+        # (recovery seeds cash/positions, not trades) and the idempotent
+        # exists() check would lock in a wrong empty record. A read
+        # failure RAISES so the scheduler retries / audits DEGRADED
+        # instead of recording bad evidence.
+        @dataclass(frozen=True)
+        class _DurableFill:
+            trade_id: str
+            order_id: str
+            code: str
+            price: float
+            volume: int
+            amount: float
+            direction: str
+            commission: float
+            stamp_tax: float
+            transfer_fee: float
+            slippage_cost: float
+            traded_at: datetime
+
+        fill_day_start = datetime.combine(
+            trade_date, datetime.min.time(), tzinfo=SHANGHAI_TZ
+        )
+        fill_day_end = fill_day_start + timedelta(days=1)
+        todays: list[_DurableFill] = []
+        cursor = (
+            db["broker_events"]
+            .find(
+                {
+                    "event_type": {
+                        "$in": ["order_filled", "execution_report_applied"]
+                    },
+                    "occurred_at": {
+                        "$gte": fill_day_start,
+                        "$lt": fill_day_end,
+                    },
+                }
+            )
+            .sort("sequence", 1)
+        )
+        async for event_doc in cursor:
+            payload = event_doc.get("payload") or {}
+            if str(event_doc.get("event_type")) == "order_filled":
+                code = str(payload.get("code") or "")
+                direction = str(payload.get("direction") or "")
+            else:
+                code = str(payload.get("stock_code") or "")
+                direction = (
+                    "BUY" if payload.get("side_is_buy") else "SELL"
+                )
+            volume = int(payload.get("volume") or 0)
+            price = float(payload.get("fill_price") or 0.0)
+            if volume <= 0 or price <= 0.0 or len(code) != 6:
+                continue
+            occurred = event_doc.get("occurred_at")
+            if isinstance(occurred, datetime) and occurred.tzinfo is None:
+                occurred = occurred.replace(tzinfo=UTC)
+            todays.append(
+                _DurableFill(
+                    trade_id=str(
+                        event_doc.get("trade_id")
+                        or f"seq-{event_doc.get('sequence')}"
+                    ),
+                    order_id=str(event_doc.get("order_id") or "unknown"),
+                    code=code,
+                    price=price,
+                    volume=volume,
+                    amount=price * volume,
+                    direction=direction,
+                    commission=float(payload.get("commission") or 0.0),
+                    stamp_tax=float(payload.get("stamp_tax") or 0.0),
+                    transfer_fee=float(payload.get("transfer_fee") or 0.0),
+                    # Slippage is not persisted on events (it is folded
+                    # into fill_price); recorded as 0 — the VWAP basis is
+                    # the execution-quality signal here.
+                    slippage_cost=0.0,
+                    traded_at=(
+                        occurred if isinstance(occurred, datetime) else now
+                    ),
+                )
+            )
+
+        vwap_by_code: dict[str, float] = {}
+        for code in sorted({t.code for t in todays}):
+            try:
+                doc = await db["kline_daily"].find_one(
+                    {"code": code, "date": date_iso}
+                )
+            except Exception as exc:  # noqa: BLE001 — null beats a crash
+                log.warning(
+                    "daily_attribution_kline_read_failed",
+                    code=code,
+                    error=str(exc),
+                )
+                continue
+            if not doc:
+                continue
+            vwap = normalize_kline_vwap(
+                amount=float(doc.get("amount") or 0.0),
+                volume=float(doc.get("volume") or 0.0),
+                close=float(doc.get("close") or 0.0),
+            )
+            if vwap is not None:
+                vwap_by_code[code] = vwap
+
+        entry_cost_by_code: dict[str, float] = {}
+        thesis_store = getattr(
+            application.state, "position_thesis_store", None
+        )
+        if thesis_store is not None:
+            try:
+                # Open theses + theses CLOSED today (codex Phase-AA P2):
+                # the 17:30 sync retires theses for fully-sold positions
+                # BEFORE this 18:00 job, which is exactly the SELL set
+                # whose holding-return attribution matters most.
+                theses = dict(thesis_store.open_theses())
+                closed_today = getattr(
+                    thesis_store, "closed_theses_on", None
+                )
+                if closed_today is not None:
+                    for code, thesis in closed_today(date_iso).items():
+                        theses.setdefault(code, thesis)
+                for code, thesis in theses.items():
+                    price = float(getattr(thesis, "entry_price", 0.0))
+                    if price > 0.0:
+                        entry_cost_by_code[str(code)] = price
+            except Exception as exc:  # noqa: BLE001 — entry cost is optional
+                log.warning(
+                    "daily_attribution_thesis_read_failed", error=str(exc)
+                )
+
+        # Pre-registered counterfactuals: today's HOLD plans + rejected
+        # orders — they existed at decision time, so they are the ONLY
+        # promotable counterfactual evidence (anti-hindsight, codex P2-6).
+        counterfactuals: list[CounterfactualEntry] = []
+        compact = trade_date.strftime("%Y%m%d")
+        try:
+            cursor = db["instruction_plans"].find(
+                {"instruction_id": {"$regex": f"^QM-{compact}-"}},
+                projection={
+                    "instruction_id": 1,
+                    "side": 1,
+                    "status": 1,
+                    "signal_id": 1,
+                },
+            )
+            async for plan_doc in cursor:
+                side = str(plan_doc.get("side", ""))
+                status = str(plan_doc.get("status", ""))
+                if side == "HOLD":
+                    kind = CounterfactualKind.HOLD_PLAN
+                elif status == "REJECTED":
+                    kind = CounterfactualKind.REJECTED_ORDER
+                else:
+                    continue
+                counterfactuals.append(
+                    CounterfactualEntry(
+                        signal_id=str(
+                            plan_doc.get("signal_id")
+                            or plan_doc["instruction_id"]
+                        ),
+                        kind=kind,
+                        pre_registered=True,
+                        promotable=True,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 — counterfactuals optional
+            log.warning(
+                "daily_attribution_plans_read_failed", error=str(exc)
+            )
+
+        day_start = datetime.combine(
+            trade_date, datetime.min.time(), tzinfo=SHANGHAI_TZ
+        )
+        day_end = day_start + timedelta(days=1)
+
+        async def _count(event_type: str) -> int:
+            try:
+                return int(
+                    await db["audit_events"].count_documents(
+                        {
+                            "event_type": event_type,
+                            "timestamp": {"$gte": day_start, "$lt": day_end},
+                        }
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — counts optional
+                log.warning(
+                    "daily_attribution_audit_count_failed",
+                    event_type=event_type,
+                    error=str(exc),
+                )
+                return 0
+
+        record = build_daily_review(
+            trade_date=date_iso,
+            created_at=now,
+            trades=todays,
+            vwap_by_code=vwap_by_code,
+            entry_cost_by_code=entry_cost_by_code,
+            policy_hash=getattr(application.state, "policy_hash", None),
+            counterfactuals=counterfactuals,
+            risk_rejected_count=await _count("risk_engine_check_rejected"),
+            builder_early_return_count=await _count("builder_early_return"),
+        )
+        appended = await review_record_store.append(record)
+        log.info(
+            "daily_attribution_review_done",
+            date=date_iso,
+            trades=len(todays),
+            counterfactuals=len(counterfactuals),
+            appended=appended,
+        )
+
+    # AA-003 — weekly deep-review store + the non-trading-day lane body.
+    from backend.review.store import MongoWeeklyReviewStore
+
+    weekly_review_store = MongoWeeklyReviewStore(db)
+    application.state.weekly_review_store = weekly_review_store
+
+    async def _gather_ops_gate_inputs(now: datetime) -> Any:
+        """Collect §1.4 ops-gate observations; unknown stays None."""
+        import shutil
+        from pathlib import Path
+
+        from backend.broker.persistence.checksum import (
+            compute_snapshot_checksum,
+        )
+        from backend.review.ops_gate import OpsGateInputs, next_market_open
+        from backend.review.weekly import resolve_review_week
+
+        open_count: int | None = None
+        try:
+            open_count = len(await ticket_repo.list_all_open())
+        except Exception as exc:  # noqa: BLE001 — unknown fails the gate
+            log.warning("ops_gate_ticket_probe_failed", error=str(exc))
+
+        checksum_valid: bool | None = None
+        snapshot_date: str | None = None
+        try:
+            latest = await snapshot_store.read_latest()
+            if latest is not None:
+                snapshot_date = latest.trade_date
+                checksum_valid = (
+                    compute_snapshot_checksum(
+                        latest.cash,
+                        latest.frozen_cash,
+                        latest.initial_capital,
+                        latest.positions,
+                    )
+                    == latest.checksum
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ops_gate_snapshot_probe_failed", error=str(exc))
+
+        artifact_ok: bool | None = None
+        try:
+            from backend.strategy_evolution.live_artifact_registry import (
+                LiveArtifactRegistry,
+            )
+
+            LiveArtifactRegistry.from_lockfile(
+                Path("config/live_artifacts.lock.json")
+            )
+            artifact_ok = True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ops_gate_artifact_probe_failed", error=str(exc))
+            artifact_ok = False
+
+        disk_free: int | None = None
+        try:
+            disk_free = int(shutil.disk_usage(".").free)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ops_gate_disk_probe_failed", error=str(exc))
+
+        llm_remaining: float | None = None
+        redis_client = getattr(application.state, "redis", None)
+        if redis_client is not None:
+            try:
+                from backend.services.cost_guard import (
+                    get_daily_budget_state,
+                )
+
+                state = await get_daily_budget_state(redis_client)
+                llm_remaining = float(state.remaining)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("ops_gate_budget_probe_failed", error=str(exc))
+
+        kline_max_date: str | None = None
+        try:
+            doc = await db["kline_daily"].find_one(
+                {}, sort=[("date", -1)], projection={"date": 1}
+            )
+            if doc and doc.get("date"):
+                kline_max_date = str(doc["date"])[:10]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ops_gate_kline_probe_failed", error=str(exc))
+
+        week = resolve_review_week(now.astimezone(SHANGHAI_TZ))
+        return OpsGateInputs(
+            open_ticket_count=open_count,
+            snapshot_checksum_valid=checksum_valid,
+            latest_snapshot_trade_date=snapshot_date,
+            last_trading_date=(
+                week.last_trading_date.isoformat()
+                if week is not None
+                else None
+            ),
+            artifact_registry_ok=artifact_ok,
+            disk_free_bytes=disk_free,
+            llm_budget_remaining_cny=llm_remaining,
+            kline_max_date=kline_max_date,
+            now=now,
+            next_open_at=next_market_open(now),
+        )
+
+    async def _run_weekly_review(now: datetime, lane_name: str) -> None:
+        """Shared body for the weekend + holiday catch-up lanes (AA-003)."""
+        from backend.audit.models import (
+            AuditActor,
+            AuditEventType,
+            AuditOutcome,
+        )
+        from backend.review.models import ReviewLane
+        from backend.review.ops_gate import evaluate_ops_gate
+        from backend.review.weekly import (
+            build_weekly_review,
+            resolve_review_week,
+        )
+
+        lane = ReviewLane(lane_name)
+        week = resolve_review_week(now.astimezone(SHANGHAI_TZ))
+        if week is None:
+            log.warning("weekly_review_no_trading_day_found", lane=lane_name)
+            return
+        if not week.complete:
+            # Mid-week holiday: the review week still has sessions ahead
+            # — a premature record would block the real weekend run.
+            log.info(
+                "weekly_review_week_incomplete",
+                lane=lane_name,
+                week_key=week.week_key,
+            )
+            return
+        if await weekly_review_store.exists(week.week_key):
+            log.info(
+                "weekly_review_already_recorded",
+                lane=lane_name,
+                week_key=week.week_key,
+            )
+            return
+
+        gate = evaluate_ops_gate(await _gather_ops_gate_inputs(now))
+        if not gate.passed:
+            # Skip + audit (§1.4) — never freezes trading.
+            await audit_store.write(
+                event_type=AuditEventType.SYSTEM_INTERRUPTED,
+                actor=AuditActor.SCHEDULER,
+                resource_type="weekly_review_ops_gate",
+                resource_id=week.week_key,
+                payload={
+                    "lane": lane_name,
+                    "week_key": week.week_key,
+                    "failed_checks": list(gate.failed_names),
+                },
+                outcome=AuditOutcome.DEGRADED,
+                reason_namespace="weekly_review_ops_gate_failed",
+            )
+            log.warning(
+                "weekly_review_ops_gate_failed",
+                lane=lane_name,
+                failed=list(gate.failed_names),
+            )
+            return
+
+        dailies = await review_record_store.list_between(
+            week.window_start_iso, week.window_end_iso
+        )
+        record = build_weekly_review(
+            week=week,
+            created_at=now,
+            lane=lane,
+            daily_records=dailies,
+            policy_hash=getattr(application.state, "policy_hash", None),
+        )
+        appended = await weekly_review_store.append(record)
+        log.info(
+            "weekly_review_done",
+            lane=lane_name,
+            week_key=week.week_key,
+            dailies=len(dailies),
+            missing=len(record.missing_trade_dates),
+            activation_allowed=gate.activation_allowed,
+            appended=appended,
+        )
+
+    async def _weekend_deep_review_callback(now: datetime) -> None:
+        await _run_weekly_review(now, "weekend")
+
+    async def _holiday_catchup_review_callback(now: datetime) -> None:
+        await _run_weekly_review(now, "holiday_catchup")
 
     async def _has_open_reconciliation_ticket() -> bool:
         """Return True iff Mongo holds ANY OPEN / EXPIRED ticket.
@@ -2134,6 +2641,11 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                 csi300_excess_pct=0.0,
             ),
             reconciliation_paused=paused,
+            # AA-004 — readiness is judged on the CURRENT policy segment.
+            policy_hash=getattr(application.state, "policy_hash", None),
+            policy_segment_started=getattr(
+                application.state, "policy_segment_started", None
+            ),
         )
         report = acceptance_service.compute(payload)
         # Codex Cycle 5 P2 fix — DO NOT swallow upsert failures here.
@@ -2195,6 +2707,11 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # is consulted only on the PILOT branch of can_switch_to_feishu_on; in the
     # FULL / simulation_auto default it is dormant. Each check is fail-closed.
     acceptance_service.set_pilot_probe(_build_pilot_probe(application, broker))
+    # AA-004 (codex Phase-AA P1) — the FULL gate must reject a PASS
+    # report computed under a previous policy segment.
+    acceptance_service.set_active_policy(
+        getattr(application.state, "policy_hash", None)
+    )
 
     replica_set_gate = (
         None
@@ -2216,6 +2733,10 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         line2_intraday_runner_callback=line2_intraday_cb,
         line1_runner_callback=line1_cb,
         thesis_review_runner_callback=thesis_review_cb,
+        sim_auto_reconciliation_callback=_sim_auto_reconciliation_callback,
+        daily_attribution_review_callback=_daily_attribution_review_callback,
+        weekend_deep_review_callback=_weekend_deep_review_callback,
+        holiday_catchup_review_callback=_holiday_catchup_review_callback,
         # U-A2 / U-D1 — align the scheduler's NAV fallback to the ¥100k
         # 同花顺模拟盘 the broker config loads (recovery still wins when a
         # snapshot exists).

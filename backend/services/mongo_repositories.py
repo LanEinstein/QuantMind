@@ -443,6 +443,30 @@ class MongoTicketRepository:
         """
         return await self._list_open(trade_date=None)
 
+    async def allocate_next_id(self, trade_date_compact: str) -> str:
+        """Return ``RECON-<yyyymmdd>-NNN`` one past today's max seq.
+
+        Mirrors the allocation in ``scripts/reconcile_now.py`` (fail-safe
+        001 when no ticket exists for the date). AA-001's 16:10 sim
+        auto-reconciliation is the only in-process caller; the cron runs
+        one-at-a-time so a read-then-write race cannot occur in practice,
+        and a collision would surface as an upsert on the same id rather
+        than silent data loss.
+        """
+        prefix = f"RECON-{trade_date_compact}-"
+        cursor = self._db[self.COLLECTION].find(
+            {"ticket_id": {"$regex": f"^{prefix}"}},
+            projection={"ticket_id": 1},
+        )
+        max_seq = 0
+        async for doc in cursor:
+            tid = str(doc.get("ticket_id", ""))
+            try:
+                max_seq = max(max_seq, int(tid.rsplit("-", 1)[1]))
+            except (ValueError, IndexError):
+                continue
+        return f"{prefix}{max_seq + 1:03d}"
+
     async def _list_open(
         self, *, trade_date: str | None
     ) -> tuple[ReconciliationTicket, ...]:

@@ -262,6 +262,38 @@ class BrokerScheduler:
     emits ``SHADOW_EVOLUTION_RUN_COMPLETED`` audit; does not activate
     any freeze (X-005 acceptance criteria)."""
 
+    WEEKEND_DEEP_REVIEW_CRON = "0 10 * * sat"
+    """10:00 Saturday — weekly deep review + experiment planning lane
+    (AA-003 / P1-2.A-amendment-2026-06-12 §1.1). NON-trading-day lane:
+    a makeup-workday Saturday skips (the trading-day cron family owns
+    that day). The callback enforces the §1.4 ops gate; failures never
+    freeze trading (decoupled, X-005 precedent)."""
+
+    HOLIDAY_CATCHUP_REVIEW_CRON = "0 10 * * *"
+    """10:00 daily — holiday / Sunday catch-up window for the weekly
+    deep review (AA-003). Self-gates: skips trading days (live session)
+    and Saturdays (the weekend lane owns them); the callback further
+    skips when the weekly record already exists or the review week is
+    not complete yet (mid-week holiday)."""
+
+    DAILY_ATTRIBUTION_REVIEW_CRON = "0 18 * * mon-fri"
+    """18:00 mon-fri — facts-first daily attribution review (AA-002 /
+    P1-2.A-amendment-2026-06-12 §1.1). Runs AFTER the 17:30 thesis
+    review so the day's evidence chain is complete. Deterministic
+    (``backend/review``); writes one append-only ReviewRecord. One retry
+    on failure; a final failure emits a DEGRADED audit and never
+    freezes trading (the review lane is decoupled, X-005 precedent)."""
+
+    SIM_AUTO_RECONCILIATION_CRON = "10 16 * * mon-fri"
+    """16:10 mon-fri — pure-sim self-integrity reconciliation (AA-001 /
+    P1-2.A-amendment-2026-06-12 §1.2). Runs AFTER the 16:00 EOD pipeline
+    so today's snapshot + closing equity point exist. The callback skips
+    itself when ``feishu_interactive`` is enabled (the human arbitration
+    semantics of P0-5 are untouched). One retry on failure; a final
+    failure emits a DEGRADED audit but does NOT activate any scheduler
+    freeze — fail-closed safety rides on the OPEN ticket the run itself
+    persists before resolving."""
+
     def __init__(
         self,
         *,
@@ -292,6 +324,18 @@ class BrokerScheduler:
         thesis_review_runner_callback: Callable[
             [datetime], Awaitable[None]
         ] | None = None,
+        sim_auto_reconciliation_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
+        daily_attribution_review_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
+        weekend_deep_review_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
+        holiday_catchup_review_callback: Callable[
+            [datetime], Awaitable[None]
+        ] | None = None,
         now_func: Callable[[], datetime] | None = None,
         initial_capital: float = 100_000.0,
     ) -> None:
@@ -318,6 +362,10 @@ class BrokerScheduler:
         self._line2_intraday = line2_intraday_runner_callback
         self._line1 = line1_runner_callback
         self._thesis_review = thesis_review_runner_callback
+        self._sim_auto_recon = sim_auto_reconciliation_callback
+        self._daily_attribution = daily_attribution_review_callback
+        self._weekend_review = weekend_deep_review_callback
+        self._holiday_catchup = holiday_catchup_review_callback
         self._now = now_func or (lambda: datetime.now(tz=SHANGHAI))
         self._initial_capital = initial_capital
         self._scheduler: AsyncIOScheduler | None = None
@@ -434,6 +482,51 @@ class BrokerScheduler:
             replace_existing=True,
             misfire_grace_time=300,
         )
+        # AA-001 — pure-sim self-integrity reconciliation at 16:10, after
+        # the 16:00 EOD pipeline. Same always-register / no-op-when-unwired
+        # pattern as the other runner crons (P1-2.A-amendment-2026-06-12).
+        self._scheduler.add_job(
+            self._sim_auto_reconciliation_job,
+            trigger=CronTrigger.from_crontab(
+                "10 16 * * mon-fri", timezone="Asia/Shanghai"
+            ),
+            id="sim_auto_reconciliation",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
+        # AA-002 — facts-first daily attribution review at 18:00, after
+        # the 17:30 thesis review. Same always-register / no-op-when-
+        # unwired pattern (P1-2.A-amendment-2026-06-12 §1.1).
+        self._scheduler.add_job(
+            self._daily_attribution_review_job,
+            trigger=CronTrigger.from_crontab(
+                "0 18 * * mon-fri", timezone="Asia/Shanghai"
+            ),
+            id="daily_attribution_review",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
+        # AA-003 — non-trading-day review lanes (weekend deep review +
+        # holiday/Sunday catch-up). Same always-register / no-op-when-
+        # unwired pattern (P1-2.A-amendment-2026-06-12 §1.1/§1.4).
+        self._scheduler.add_job(
+            self._weekend_deep_review_job,
+            trigger=CronTrigger.from_crontab(
+                "0 10 * * sat", timezone="Asia/Shanghai"
+            ),
+            id="weekend_deep_review",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
+        self._scheduler.add_job(
+            self._holiday_catchup_review_job,
+            trigger=CronTrigger.from_crontab(
+                "0 10 * * *", timezone="Asia/Shanghai"
+            ),
+            id="holiday_catchup_review",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
         self._scheduler.start()
         await self._audit.write(
             event_type=AuditEventType.BROKERSCHEDULER_STARTED,
@@ -443,7 +536,11 @@ class BrokerScheduler:
                               "mirofish_postclose", "advance_day",
                               "line2_daily_runner", "line2_intraday_runner",
                               "line1_runner", "thesis_review_runner",
-                              "evolution_shadow_run"]},
+                              "evolution_shadow_run",
+                              "sim_auto_reconciliation",
+                              "daily_attribution_review",
+                              "weekend_deep_review",
+                              "holiday_catchup_review"]},
             outcome=AuditOutcome.SUCCESS,
         )
         log.info("broker_scheduler_started")
@@ -607,6 +704,258 @@ class BrokerScheduler:
         except Exception as exc:  # noqa: BLE001 — log + continue
             log.warning("line2_intraday_failed", error=str(exc))
 
+    async def _sim_auto_reconciliation_job(self) -> None:
+        """16:10 cron entry for the AA-001 sim auto-reconciliation.
+
+        Calls into :meth:`run_sim_auto_reconciliation` so tests and
+        operators can exercise the retry + audit semantics without
+        scheduling.
+        """
+        await self.run_sim_auto_reconciliation()
+
+    async def run_sim_auto_reconciliation(
+        self,
+        *,
+        retry: bool = True,
+        force_now: datetime | None = None,
+    ) -> bool:
+        """Trigger the pure-sim self-integrity reconciliation (AA-001).
+
+        Returns ``True`` on success (or when no callback is wired / the
+        day is a holiday), ``False`` when both the initial attempt and
+        the single retry failed. A final failure emits a DEGRADED
+        ``SYSTEM_INTERRUPTED`` audit (mirofish best-effort precedent)
+        and does NOT activate any scheduler freeze: the run persists its
+        OPEN ticket before resolving, so a mid-run crash already leaves
+        routing frozen fail-closed via the ticket — a scheduler-level
+        freeze would be redundant.
+        """
+        if self._sim_auto_recon is None:
+            return True
+        started = force_now or self._now()
+        trade_date = started.astimezone(SHANGHAI).date()
+        if not is_trading_day(trade_date):
+            log.info(
+                "sim_auto_reconciliation_skipped_non_trading_day",
+                date=trade_date.isoformat(),
+            )
+            return True
+        error: str | None = None
+        try:
+            await self._sim_auto_recon(started)
+            return True
+        except Exception as exc:  # noqa: BLE001 — the run is the trust boundary
+            error = str(exc)
+            log.warning(
+                "sim_auto_reconciliation_failed",
+                trade_date=trade_date.isoformat(),
+                error=error,
+                will_retry=retry,
+            )
+
+        if retry:
+            log.info(
+                "sim_auto_reconciliation_retrying",
+                trade_date=trade_date.isoformat(),
+            )
+            await asyncio.sleep(0)
+            return await self.run_sim_auto_reconciliation(
+                retry=False, force_now=started
+            )
+
+        await self._audit.write(
+            event_type=AuditEventType.SYSTEM_INTERRUPTED,
+            actor=AuditActor.SCHEDULER,
+            resource_type="sim_auto_reconciliation",
+            resource_id=trade_date.isoformat(),
+            payload={
+                "trade_date": trade_date.isoformat(),
+                "error": error,
+                "retried": True,
+            },
+            outcome=AuditOutcome.DEGRADED,
+            reason_namespace="sim_auto_reconciliation_failed",
+        )
+        return False
+
+    async def _daily_attribution_review_job(self) -> None:
+        """18:00 cron entry for the AA-002 daily attribution review."""
+        await self.run_daily_attribution_review()
+
+    async def run_daily_attribution_review(
+        self,
+        *,
+        retry: bool = True,
+        force_now: datetime | None = None,
+    ) -> bool:
+        """Trigger the facts-first daily attribution review (AA-002).
+
+        Same retry + audit contract as
+        :meth:`run_sim_auto_reconciliation`: one retry, a final failure
+        emits a DEGRADED ``SYSTEM_INTERRUPTED`` audit, and NOTHING here
+        freezes trading — the review lane is decoupled from routing
+        (X-005 precedent; a broken review must not block tomorrow's
+        session).
+        """
+        if self._daily_attribution is None:
+            return True
+        started = force_now or self._now()
+        trade_date = started.astimezone(SHANGHAI).date()
+        if not is_trading_day(trade_date):
+            log.info(
+                "daily_attribution_review_skipped_non_trading_day",
+                date=trade_date.isoformat(),
+            )
+            return True
+        error: str | None = None
+        try:
+            await self._daily_attribution(started)
+            return True
+        except Exception as exc:  # noqa: BLE001 — review is the trust boundary
+            error = str(exc)
+            log.warning(
+                "daily_attribution_review_failed",
+                trade_date=trade_date.isoformat(),
+                error=error,
+                will_retry=retry,
+            )
+
+        if retry:
+            log.info(
+                "daily_attribution_review_retrying",
+                trade_date=trade_date.isoformat(),
+            )
+            await asyncio.sleep(0)
+            return await self.run_daily_attribution_review(
+                retry=False, force_now=started
+            )
+
+        await self._audit.write(
+            event_type=AuditEventType.SYSTEM_INTERRUPTED,
+            actor=AuditActor.SCHEDULER,
+            resource_type="daily_attribution_review",
+            resource_id=trade_date.isoformat(),
+            payload={
+                "trade_date": trade_date.isoformat(),
+                "error": error,
+                "retried": True,
+            },
+            outcome=AuditOutcome.DEGRADED,
+            reason_namespace="daily_attribution_review_failed",
+        )
+        return False
+
+    async def _weekend_deep_review_job(self) -> None:
+        """10:00 Saturday cron entry for the AA-003 weekend lane."""
+        await self.run_weekend_deep_review()
+
+    async def run_weekend_deep_review(
+        self,
+        *,
+        retry: bool = True,
+        force_now: datetime | None = None,
+    ) -> bool:
+        """Trigger the weekend deep-review lane (AA-003).
+
+        NON-trading-day gating: a makeup-workday Saturday skips. Retry +
+        audit contract mirrors :meth:`run_daily_attribution_review`;
+        failures never freeze trading (§2 of the amendment, X-005
+        precedent).
+        """
+        if self._weekend_review is None:
+            return True
+        started = force_now or self._now()
+        review_date = started.astimezone(SHANGHAI).date()
+        if is_trading_day(review_date):
+            log.info(
+                "weekend_deep_review_skipped_trading_day",
+                date=review_date.isoformat(),
+            )
+            return True
+        return await self._attempt_review_lane(
+            self._weekend_review,
+            started,
+            retry=retry,
+            resource_type="weekend_deep_review",
+        )
+
+    async def _holiday_catchup_review_job(self) -> None:
+        """10:00 daily cron entry for the AA-003 catch-up lane."""
+        await self.run_holiday_catchup_review()
+
+    async def run_holiday_catchup_review(
+        self,
+        *,
+        retry: bool = True,
+        force_now: datetime | None = None,
+    ) -> bool:
+        """Trigger the Sunday/holiday catch-up lane (AA-003).
+
+        Skips trading days (live session) and Saturdays (owned by the
+        weekend lane); the main.py callback additionally skips when the
+        weekly record already exists or the week is incomplete.
+        """
+        if self._holiday_catchup is None:
+            return True
+        started = force_now or self._now()
+        review_date = started.astimezone(SHANGHAI).date()
+        if is_trading_day(review_date):
+            return True
+        if review_date.weekday() == 5:  # Saturday → weekend lane owns it
+            log.info(
+                "holiday_catchup_skipped_saturday",
+                date=review_date.isoformat(),
+            )
+            return True
+        return await self._attempt_review_lane(
+            self._holiday_catchup,
+            started,
+            retry=retry,
+            resource_type="holiday_catchup_review",
+        )
+
+    async def _attempt_review_lane(
+        self,
+        callback: Callable[[datetime], Awaitable[None]],
+        started: datetime,
+        *,
+        retry: bool,
+        resource_type: str,
+    ) -> bool:
+        """Shared retry-once + DEGRADED-audit body for the review lanes."""
+        review_date = started.astimezone(SHANGHAI).date()
+        error: str | None = None
+        try:
+            await callback(started)
+            return True
+        except Exception as exc:  # noqa: BLE001 — lane is the trust boundary
+            error = str(exc)
+            log.warning(
+                f"{resource_type}_failed",
+                date=review_date.isoformat(),
+                error=error,
+                will_retry=retry,
+            )
+        if retry:
+            await asyncio.sleep(0)
+            return await self._attempt_review_lane(
+                callback, started, retry=False, resource_type=resource_type
+            )
+        await self._audit.write(
+            event_type=AuditEventType.SYSTEM_INTERRUPTED,
+            actor=AuditActor.SCHEDULER,
+            resource_type=resource_type,
+            resource_id=review_date.isoformat(),
+            payload={
+                "date": review_date.isoformat(),
+                "error": error,
+                "retried": True,
+            },
+            outcome=AuditOutcome.DEGRADED,
+            reason_namespace=f"{resource_type}_failed",
+        )
+        return False
+
     async def _evolution_shadow_run_job(self) -> None:
         """22:00 cron entry for the Phase X evolution shadow chain.
 
@@ -753,6 +1102,16 @@ class BrokerScheduler:
                     ),
                     cost_price=pos.cost_price,
                     bought_by_date=bought_maps.get(pos.code, {}),
+                    # AA-004 nameplate (snapshot v3) — getattr-guarded so
+                    # scheduler test fakes without the fields degrade to
+                    # None (legacy semantics).
+                    entry_policy_hash=getattr(
+                        pos, "entry_policy_hash", None
+                    ),
+                    entry_style=getattr(pos, "entry_style", None),
+                    entry_sell_stack_version=getattr(
+                        pos, "entry_sell_stack_version", None
+                    ),
                 )
                 for pos in positions
                 if getattr(pos, "volume", 0) > 0

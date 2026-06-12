@@ -201,6 +201,26 @@ ALERT_MATRIX: dict[str, AlertSpec] = {
         "profit-take) was REJECTED by the RiskEngine — investigate the "
         "rejecting check (data gap / limits) before the next session.",
     ),
+    # P1-2.A-amendment-2026-06-12 §1.2 (AA-001) — the 16:10 pure-sim
+    # self-integrity reconciliation found a divergence between the EOD
+    # snapshot / live broker mirror / latest equity point. NOT an
+    # arbitration prompt (no cash/position semantics ride in the alert;
+    # the decision-path red line below is untouched): it tells the
+    # operator routing is frozen fail-closed by the OPEN ticket and a
+    # program bug must be investigated. Reuses the existing
+    # RECONCILIATION_TICKET_OPEN_OR_EXPIRED audit type (the 41-type
+    # vocabulary is unchanged).
+    "sim_reconciliation_divergence": AlertSpec(
+        alert_type="sim_reconciliation_divergence",
+        audit_event_type=AuditEventType.RECONCILIATION_TICKET_OPEN_OR_EXPIRED,
+        fire_to_feishu=True,
+        severity="critical",
+        reason_namespace="sim_reconciliation_divergence",
+        description="The pure-sim 16:10 self-integrity reconciliation "
+        "found a divergence (EOD snapshot vs broker mirror vs equity "
+        "point) — routing is frozen by the OPEN ticket; investigate the "
+        "program bug, then resolve via the decide endpoint.",
+    ),
 }
 """Locked alert vocabulary. Adding a new entry needs an amendment +
 audit-type addition + FeishuAlerter.ALERT_TYPES inclusion. Buy/sell/

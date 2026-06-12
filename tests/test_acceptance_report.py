@@ -499,3 +499,91 @@ class TestTierAwareGate:
         decision = await service.can_switch_to_feishu_on()
         assert bool(decision) is True
         assert decision
+
+
+class TestPolicySegmentClamp:
+    """AA-004 (P2-2-amendment-2026-06-12 §1.6) — readiness is judged on
+    the CURRENT policy segment: the 45-day window clamps to the segment
+    start, and the report records the active policy hash."""
+
+    def test_segment_start_clamps_window(self) -> None:
+        service = AcceptanceService()
+        payload = AcceptanceComputeInput(
+            trade_date=dt.date(2026, 6, 12),
+            now=dt.datetime(2026, 6, 12, 16, 0, 30, tzinfo=dt.UTC),
+            stability=_passing_stability(),
+            strategy=_passing_strategy(),
+            policy_hash="a" * 64,
+            policy_segment_started=dt.date(2026, 6, 1),
+        )
+        report = service.compute(payload)
+        assert report.window_start == "2026-06-01"
+        assert report.outcome is AcceptanceOutcome.INSUFFICIENT_DATA
+        assert report.policy_hash == "a" * 64
+
+    def test_old_segment_start_does_not_widen_window(self) -> None:
+        service = AcceptanceService()
+        payload = AcceptanceComputeInput(
+            trade_date=dt.date(2026, 6, 12),
+            now=dt.datetime(2026, 6, 12, 16, 0, 30, tzinfo=dt.UTC),
+            stability=_passing_stability(),
+            strategy=_passing_strategy(),
+            policy_segment_started=dt.date(2020, 1, 1),
+        )
+        clamped = service.compute(payload)
+        baseline = service.compute(
+            AcceptanceComputeInput(
+                trade_date=dt.date(2026, 6, 12),
+                now=dt.datetime(2026, 6, 12, 16, 0, 30, tzinfo=dt.UTC),
+                stability=_passing_stability(),
+                strategy=_passing_strategy(),
+            )
+        )
+        assert clamped.window_start == baseline.window_start
+
+    def test_legacy_rows_have_null_policy_hash(self) -> None:
+        service = AcceptanceService()
+        report = service.compute(_payload())
+        assert report.policy_hash is None
+
+
+class TestActivePolicyGate:
+    """Codex Phase-AA P1 — a PASS computed under a previous policy must
+    not authorize feishu_interactive after a promotion."""
+
+    @pytest.mark.asyncio
+    async def test_stale_policy_pass_is_rejected(self) -> None:
+        service = AcceptanceService()
+        report = service.compute(_payload())  # policy_hash=None (legacy)
+        assert report.outcome is AcceptanceOutcome.PASS
+        await service.upsert(report)
+        service.set_active_policy("b" * 64)
+        decision = await service.can_switch_to_feishu_on()
+        assert decision.allowed is False
+        assert "full:latest_report_from_previous_policy" in decision.reasons
+
+    @pytest.mark.asyncio
+    async def test_current_policy_pass_is_accepted(self) -> None:
+        service = AcceptanceService()
+        report = service.compute(
+            AcceptanceComputeInput(
+                trade_date=dt.date(2026, 6, 12),
+                now=dt.datetime(2026, 6, 12, 16, 0, 30, tzinfo=dt.UTC),
+                stability=_passing_stability(),
+                strategy=_passing_strategy(),
+                policy_hash="b" * 64,
+            )
+        )
+        assert report.outcome is AcceptanceOutcome.PASS
+        await service.upsert(report)
+        service.set_active_policy("b" * 64)
+        decision = await service.can_switch_to_feishu_on()
+        assert decision.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_legacy_no_active_policy_keeps_old_behaviour(self) -> None:
+        service = AcceptanceService()
+        report = service.compute(_payload())
+        await service.upsert(report)
+        decision = await service.can_switch_to_feishu_on()
+        assert decision.allowed is True

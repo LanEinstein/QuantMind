@@ -291,6 +291,14 @@ class ExecutionReportApplier:
             "cash_delta": applied["cash_delta"],
             "positions_delta": applied["positions_delta"],
         }
+        # AA-004: persist the entry nameplate so recovery replay stamps a
+        # freshly-created position with the same policy stack the live
+        # _apply_buy used (bit-identical replay). getattr-guarded.
+        nameplate_hash, nameplate_stack = getattr(
+            self._broker, "entry_nameplate", (None, None)
+        )
+        payload["entry_policy_hash"] = nameplate_hash
+        payload["entry_sell_stack_version"] = nameplate_stack
         event = await self._events.append(
             event_type=BrokerEventType.EXECUTION_REPORT_APPLIED,
             occurred_at=report.parsed_at,

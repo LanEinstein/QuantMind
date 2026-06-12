@@ -58,6 +58,17 @@ def canonical_state_payload(
         bought = getattr(pos, "bought_by_date", None)
         if bought:
             row["bought_by_date"] = {k: bought[k] for k in sorted(bought)}
+        # v3 (AA-004): fold the nameplate in ONLY when present — None
+        # keeps the payload byte-identical to v1/v2, so older stored
+        # checksums still validate on read.
+        for nameplate_field in (
+            "entry_policy_hash",
+            "entry_style",
+            "entry_sell_stack_version",
+        ):
+            value = getattr(pos, nameplate_field, None)
+            if value is not None:
+                row[nameplate_field] = str(value)
         return row
 
     return {

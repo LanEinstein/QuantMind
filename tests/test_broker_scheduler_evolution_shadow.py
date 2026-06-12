@@ -277,6 +277,13 @@ async def test_start_registers_evolution_shadow_run_job(tmp_path: Path) -> None:
     assert "line1_runner" in job_ids
     # W-002 — the Line-2 post-close thesis-review cron too.
     assert "thesis_review_runner" in job_ids
+    # AA-001 — the 16:10 pure-sim self-integrity reconciliation cron too.
+    assert "sim_auto_reconciliation" in job_ids
+    # AA-002 — the 18:00 daily attribution review cron too.
+    assert "daily_attribution_review" in job_ids
+    # AA-003 — the non-trading-day review lanes too.
+    assert "weekend_deep_review" in job_ids
+    assert "holiday_catchup_review" in job_ids
 
     started_events = [
         d for d in audit.documents
@@ -294,6 +301,10 @@ async def test_start_registers_evolution_shadow_run_job(tmp_path: Path) -> None:
         "line1_runner",
         "thesis_review_runner",
         "evolution_shadow_run",
+        "sim_auto_reconciliation",
+        "daily_attribution_review",
+        "weekend_deep_review",
+        "holiday_catchup_review",
     ]
 
 

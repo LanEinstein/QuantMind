@@ -175,6 +175,13 @@ class SimulationExecutor:
                 if last_trade.direction is OrderDirection.BUY
                 else 0.0
             )
+            # AA-004: persist the entry nameplate on the FILLED event so
+            # recovery replay stamps a freshly-created position with the
+            # same policy stack the live _apply_buy used (bit-identical
+            # replay). getattr-guarded for broker fakes.
+            nameplate_hash, nameplate_stack = getattr(
+                self._broker, "entry_nameplate", (None, None)
+            )
             await self._events.append_many(
                 [
                     (
@@ -206,6 +213,8 @@ class SimulationExecutor:
                             "stamp_tax": last_trade.stamp_tax,
                             "transfer_fee": last_trade.transfer_fee,
                             "frozen_amount": frozen_amount,
+                            "entry_policy_hash": nameplate_hash,
+                            "entry_sell_stack_version": nameplate_stack,
                         },
                     ),
                 ]
