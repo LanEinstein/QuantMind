@@ -573,7 +573,7 @@
           <p>P1-2.A/B/C、P1-5、P1-6、P1-7 定义持久化、估值、撮合、前端、安全、审计和成本。</p>
           <ul>
             <li>MockBroker 单一镜像, delta + EOD snapshot。</li>
-            <li>MVP 7 页 + Phase B 4 页, 仅 2 个写入端点。</li>
+            <li>前端 13 页(决策闭环枚举集, Z-001 reconcile 11→13), 仅 2 个写入端点。</li>
             <li>LLM daily ¥20 hard, Kimi daily ¥4, monthly ¥440 soft。</li>
           </ul>
         </div>
@@ -673,7 +673,7 @@
         <div class="lane d"><div class="lane-head">D 风控与路由</div><div class="lane-body">RiskEngine 14-check、Builder 早返、ModeRouter。</div></div>
         <div class="lane e"><div class="lane-head">E 模拟账本</div><div class="lane-body">PersistentMockBroker、MTM、EOD、acceptance 45 日。</div></div>
         <div class="lane f"><div class="lane-head">F 飞书闭环</div><div class="lane-body">长连接、指令文本、回报解析、澄清、对账。</div></div>
-        <div class="lane g"><div class="lane-head">G 前端工作台</div><div class="lane-body">MVP 7 页、Phase B 4 页、全局 5 冻结源。</div></div>
+        <div class="lane g"><div class="lane-head">G 前端工作台</div><div class="lane-body">前端 13 页(决策闭环枚举集, Z-001 reconcile)、全局 5 冻结源。</div></div>
         <div class="lane h"><div class="lane-head">H 安全审计成本</div><div class="lane-body">secrets、audit 双写、成本预算扩、红线 CI。</div></div>
         <div class="lane j"><div class="lane-head">J 运行前 hardening</div><div class="lane-body">acceptance dashboard CLI、cold-start smoke、systemd 单元、5 reset 触发器、N 日预演 harness、production runbook、owner-auth 二级门;**(a) 真实长跑前置必备**。</div></div>
         <div class="lane i"><div class="lane-head">I 验收运行</div><div class="lane-body">simulation_auto 联调 + 45 交易日滚动 acceptance + feishu_interactive 启用 gate;**owner 直接授权才许启动,严禁 env var 绕过**。</div></div>
@@ -806,6 +806,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-12 session #77 — <strong>Phase Z 全 done:双线前端只读 viz</strong>(<code>P1-5-amendment-2026-06-01</code>;Z-001 docs reconcile + feature <code>de7b0eb</code>〔Z-002..Z-005〕,本地未 push)。<strong>Z-001</strong>=plan.html 页锁 11→13 / WS 12→14 如实 reconcile(decision-card+lane g+G-009+X-022;CLAUDE.md §2.11 owner 在途已写;枚举锁 menu.spec/useWebSocket.spec/test_x_022 全绿;纯 docs 无 codex)。<strong>Z-002</strong>=新 GET <code>/api/theme-research/industry-chain</code> 读 seeded KG 产业链子图(趋势→板块→环节→卡脖子→标的,排除 811 因子)+ 确定性 choke-point centrality + pin 候选计数;InstructionPlans 页内 panel + ECharts 有向图。<strong>Z-003</strong>=新 GET <code>/api/position-theses</code> 读 PositionThesis(支柱 + 确定性失效阈值)+ Portfolio panel。<strong>Z-004</strong>=新 GET <code>/api/slot-rotation</code> 读 RotationIntent 账本 + ≤5 槽 + T+1 终态事件(folded legs)+ 新 <code>RotationRunner.max_total_positions</code> 只读属性 + Portfolio panel。<strong>Z-005</strong>=新 GET <code>/api/dual-line-status</code> 双线 liveness+caps + Dashboard panel(轮询不扩 WS)。全端点 GET-only + 无 trading-stack import + fail-closed 永不 500;<strong>仅 2 写端点不变</strong>。codex review --uncommitted 1 cycle:1 P2(终态事件 leg 丢失)已修+回归。28 后端测试 + vitest 156 + ruff + mypy(模块)+ redline + type-check + build 全绿。display-only/127.0.0.1/量化资格权威 红线全留。下一站 = Phase AA(模拟盘自动驾驶,AA-001 起)。</li>
         <li>2026-06-12 session #76 — <strong>模拟盘自动驾驶 v4 规划 📐(无运行代码)</strong>:owner 3 需求(① 模拟盘全自动+自进化试验场〔调整尊重客观表现〕② 前端驾驶舱+实盘手动操作填表 ③ 短线vs价值三层筛选+四级赋权分型)→ 3 并行调查 agent + <strong>1 轮 codex 红队</strong>(P0×8/P1×7/P2×6 全吸收:policy_hash 分段就绪度 / 样本量+CI 取代纯天数 / prompt=政策 artifact / PromotionIntent+受控重启取代 auto-git / 持仓铭牌 / 手动交易独立域 / 绩效三分流 / 价值风格禁松硬退出)+ <strong>owner 4 拍板</strong>(sim 客观全自动晋升〔实盘人工 gate 不变〕/ 分层窗口+样本量双门槛 / 第 3 写端点 manual-trades / 统一硬门+受约束槽位分配)→ 落 <strong>4 amendment</strong>(<code>P2-2-…-sim-objective-promotion</code> / <code>P1-2.A-…-sim-autopilot-review-crons</code> / <code>P1-5-…-manual-trade-third-write-endpoint</code> / <code>P0-8-…-style-classifier-and-value-line</code>)+ <strong>新 Phase AA/AB/AC/AD(26 任务)</strong> + dossier <code>docs/research/sim-autopilot-objective-evolution-frontend-style-2026-06-12.md</code>。ship 序 Z→AA→R-002→AB→AC→AD。安全地基红线全留;冻结不可进化集+clamp 白名单为 AB 强制对抗项。</li>
         <li>2026-06-11 session #75 — <strong>LLM 三模型按特长分工路由恢复 + 计价表全面校准</strong>(amendment <code>P0-10-amendment-2026-06-11-multi-model-specialization-routing</code> supersede 05-25 全 qwen 临时路由;feature <code>b1b1cd1</code>,已 push)。owner 四问拍板:① 四必经=特长分工(technical→deepseek-v4-pro,fundamental/risk 留 qwen3.6-plus,fund_manager 留 qwen3.7-max);② theme 调查+thesis 复盘=kimi-k2.6 thinking 专用条目(<code>theme_investigator</code>/<code>thesis_reviewer</code>,与 intelligence_officer 三方共用解耦);③ 旧 9-agent 管线 kimi 三件套不动(owner:成本可接受);④ 计价保守列价。调查纠正任务假设两处:旧管线仍活跃(fast×4+slow cron)、thesis advisory 已复用 intelligence_officer。<strong>计价表过期 3-30 倍(低估=静默超支)全部重写</strong>:MODEL_COST_RATES 五档列价(kimi 初版 7.5/30 FX 上垫假设;<strong>2026-06-12 owner 提供官方价目页后已按 §6 授权路径校准实价 6.5/27,feature <code>2a556dd</code>,codex clean</strong>),family 兜底+cost_tracker.MODEL_PRICING 改派生。新 <code>theme_llm_client.py</code>(RouterLlmClient/RouterUsageReserver,investigator 注入式 Protocol 生产实现;kimi thinking 钳制防击穿预留)。GEPA reflection_lm 迁 deepseek-v4-pro(旧名 7/24 弃用)。爬虫层降 v4-flash。codex 撞额度→/code-review high 回退,8 findings 全修(thinking 增量击穿预留/镜像表未同步/预留覆盖泄漏等)。5034 passed/新模块 100%/mypy strict/ruff+redline 全绿。<strong>生效需 owner 重启</strong>(yaml runtime 不可改;system 停机中)。</li>
         <li>2026-06-11 session #74 — <strong>Phase Y 全 done:产业链倒推主题研究 peer-sourcing 层</strong>(边界已决 P0-8-amendment-2026-06-01,无新 amendment;feature `d3ad416`〔Y-002+Y-006〕+`7fba7fd`〔Y-003+Y-004+Y-005〕,本地未 push)。新 `backend/theme_research/`(LLM-bearing 但零交易栈 import,LLM/web 仅注入式 Protocol):**Y-002+Y-006**=5 步倒推 SOP(`v1.yaml` 一等设计物,骨架 frozen)+ `ThemePromptRegistry`(文件式 SHA256 pin + 骨架/顺序校验 + LiveArtifactRegistry.PROMPT_VERSION 认证)+ `provenance.py`(原始字节+checksum,`is_promotable` 单一真相)+ `investigator.py`(定时有界 job:allowlist+http(s)+redirect 复检/全捕获/token 总额/严格 parse 全 fail-closed)。**Y-003**=`EvidencePrefix.THEME` 第 6 + `ThemeCandidateArtifact`(从 typed output only 构造永不解析散文,digest 绑定 promotable/schema/定精度 confidence)。**Y-004**=`ThemeCandidateRegistry` sibling pin 闸(镜像 R-001;R-001 froze 5 kinds → SOP prompt 进 PROMPT_VERSION、候选走 sibling)+ `verify_pinned_candidates` fail-closed + `CandidateSelector.select(peer_sourced=)` merge(配额 ≤2/保 ≥3 量化/纯量化永不被挤/None bit-identical)。**Y-005**=端到端 5 红线对抗 + AST 模块隔离 + redline [Y-005]。codex 9 轮 22 findings(基础层)全修 + Y-003/4/5 codex 撞额度回退 /code-review high 5 findings 全修。163 theme/selector 测试 / 新模块 98-100% / mypy strict / ruff+redline 全绿 / 5002 passed。**运行期激活(research cron + 飞书审批 + runner 消费)待 owner 重启**。下一站 = Phase Z(前端 reconcile)或 Phase R 链 R-002。</li>
@@ -900,6 +901,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-12",
+        session: "#77 Phase Z full:双线前端只读 viz(Z-001 页锁/WS reconcile + Z-002 产业链链路 + Z-003 thesis 追踪 + Z-004 5槽轮动 + Z-005 双线运行态)",
+        owner: "Claude Opus 4.8 (1M ctx)",
+        state_in: "续 #76(sim-autopilot v4 规划 done 已 push;ship 序锁定 Z→AA→R-002→AB→AC→AD,#76 next 明确『下一 session 起点=Phase Z 从 Z-001 起步』,owner 拍板)。读 SESSION_LOG #76 next + TASKS:活动 Phase=Z(5 任务全可做,依赖 V-003✓/W-001✓/Y-004✓ 已满足)。CLAUDE.md M 为 owner 在途修改(§2.0b/§2.11 v3 注记),不碰。系统 #71 起停机=纯开发窗口。",
+        actions: "**调查**(3 并行 Explore agent + 读 P1-5-amendment-2026-06-01):4 panel 后端读模型全部需新只读 GET 端点(数据模型/store 已存在但未经 HTTP 暴露)。关键事实:thesis store(W)/rotation runner(V)已挂 app.state;产业链 KG 已 seeded 落盘 data/knowledge_graph/kg.sqlite3(565KB,确定性 read model);theme_research 层未接 runtime(空数据→优雅空态)。amendment:新 viz 全做现有页内 panel/tab、全只读、新推送优先轮询(新 WS 类需另写 amendment)。**Z-001(纯 docs,无 codex)**:plan.html 页锁 11→13 / WS 12→14 reconcile(decision-card+lane g+G-009 task+X-022 task);CLAUDE.md §2.11 owner 在途已写 13/14;枚举锁现成(menu.spec 13 页结构 / useWebSocket.spec 14+2禁 / test_x_022 19 文件)全绿。**Z-002..Z-005 = 1 bundled feature commit de7b0eb**(跨任务文件耦合:共享 main.py 4 路由接线 + Portfolio.vue 2 panel → 沿 #20/#74 一次审查+捆绑先例):Z-002 theme_research.py(读 SqliteKGStore 产业链子图 TREND/SECTOR/CHAIN_LINK/PRODUCT/INSTRUMENT + 5 链边,排除 811 因子;chokepoint centrality;pin 候选计数;file-absent→available=false 永不建库不报 500)+ InstructionPlans 页内 panel + IndustryChainGraph.vue(ECharts);Z-003 position_theses.py(读 open_theses,支柱+确定性失效阈值)+ Portfolio ThesisTrackingPanel.vue;Z-004 slot_rotation.py(读 intent_store open_intents/load_events/underinvested;新 RotationRunner.max_total_positions 只读属性)+ Portfolio SlotRotationPanel.vue(5 槽条 heldCount cross-ref);Z-005 dual_line_status.py(双线 liveness+caps,get_max_debates_per_day)+ Dashboard DualLineStatusPanel.vue。全端点 GET-only + AST 无 trading-stack import 守门 + _ok envelope + fail-closed 永不 500。**门禁**:codex review --uncommitted(1 cycle 覆盖整 diff)→ **1 P2(0 P0/P1)**:RESOLVED/EXPIRED 事件 intent=None → leg codes 序列化成 null(完成轮动语境丢失)→ 全量 load_events 建 intent_id→legs 映射,终态事件 fold + 回归测试;已修。28 新后端测试 + vitest 139→156 + ruff + mypy(模块)+ redline(仅 2 写端点不变,4 新端点皆 GET)+ type-check + build 全绿;app 4 路由注册 + 2 写端点不变实测。安全地基一条未破(display-only/127.0.0.1/不扩 WS/LLM 不进读路径/量化资格权威/thesis 阈值确定性)。",
+        commit: "feature `de7b0eb`(4 GET 端点 + rotation_runner property + main.py 接线 + 5 前端组件/panel + 12 vitest + 4 后端 test + docs/reviews/phase-z-codex-review-summary.md)+ 本 docs-only 收尾(plan.html Z-001 reconcile + Z-001..Z-005 done + SESSION_LOG)。**本地未 push,待 owner 授权**(根 CLAUDE.md owner 在途 M 未碰;push 受 auto-mode 门控)。",
+        next: "**Phase Z ✅ 全 done(Z-001 docs reconcile + Z-002..Z-005 feature de7b0eb,本地未 push)。ship 序 Z→AA→R-002→AB→AC→AD → 下一站 = Phase AA 模拟盘自动驾驶(起步 AA-001 sim 自动对账 16:10;depends 纯 sim 基建已满足)**。AA 后 R-002(rqalpha oracle,AB 硬前置)→ AB → AC → AD(AD-001/002 只读可与 AB 并行)。**运行期激活**:Phase Z 4 端点随 owner 重启自动生效(system 停机中);theme_research 层仍待 owner 重启接 research cron(空数据优雅空态,不阻塞)。**push 授权**:Phase Z feature de7b0eb + 本 docs 收尾本地待 owner 授权(#74/#75 已 push,本 session 未授权)。",
+      },
       {
         date: "2026-06-12",
         session: "#76 模拟盘自动驾驶 v4 规划:全自动+客观自进化 / 前端驾驶舱+实盘填表 / 短线vs价值分型(规划 session,无运行代码)",
@@ -2180,11 +2190,11 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       },
       {
         id: "G-009", phase: "G 前端工作台", status: "done", priority: "P1",
-        title: "WebSocket 12 类消息升级",
-        summary: "WS 单通道扩展到 12 类:保留 6(index_update/signal/news/status/position_update/circuit_breaker_update)+ 新增 8(instruction_plan_update/broker_event/equity_point_update/data_quality_breach/freeze_source_update/ticket_update/acceptance_report_ready/feishu_message_received)+ 删 2(auth_mode_change/approval_update);SSE 仅 LLM 流式。",
+        title: "WebSocket 14 类消息升级",
+        summary: "WS 单通道扩展到 14 类:保留 6(index_update/signal/news/status/position_update/circuit_breaker_update)+ 新增 8(instruction_plan_update/broker_event/equity_point_update/data_quality_breach/freeze_source_update/ticket_update/acceptance_report_ready/feishu_message_received)= 14;删 2(auth_mode_change/approval_update)为永禁减项(doc「8−2」措辞曾混淆并集大小为 12,Z-001 reconcile 12→14);SSE 仅 LLM 流式。",
         scope: "backend/api/websocket.py, frontend/src/composables/useWebSocket.ts, backend/data/publisher.py, frontend/src/types/market.ts, scripts/redline-check.sh, backend/main.py, frontend/src/router/*",
         depends: "G-002, G-003, E-005, E-006, F-003",
-        acceptance: "12 类消息在 useWebSocket 类型联合中精确出现; auth_mode_change / approval_update grep 为空。",
+        acceptance: "14 类消息在 useWebSocket 类型联合中精确出现; auth_mode_change / approval_update grep 为空。",
         tests: "ws contract tests; redline grep tests。",
         sources: "P1-5 红线 4",
         commit: "73c2953",
@@ -2596,8 +2606,8 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       },
       {
         id: "X-022", phase: "X 自进化", status: "done", priority: "P2",
-        title: "前端不新增独立页(P1-5 §2 红线 1 11 页名额永锁;纯约束任务)",
-        summary: "履行 P1-5 §2 红线 1 11 页名额永锁;Phase X 不破。owner 走飞书 + amendment 文件路径,不需要前端独立页。X-D 2/3(纯约束,0d 工作量)。",
+        title: "前端不新增独立页(P1-5 §2 红线 1 页名额锁;实建 13 页枚举集,Z-001 reconcile 11→13)",
+        summary: "履行 P1-5 §2 红线 1 页名额锁(实建枚举集 13 页 = 决策闭环 4 分组逐页;P1-5-amendment-2026-06-01 / Z-001 reconcile 11→13,不收敛回 11);Phase X 不破。owner 走飞书 + amendment 文件路径,不需要前端独立页。X-D 2/3(纯约束,0d 工作量)。",
         scope: "tests/test_x_022_frontend_page_lock.py(纯测试守门)",
         depends: "P1-5 主决策",
         acceptance: "约束遵守(无新前端 .vue 文件创建)。",
@@ -3745,7 +3755,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "d3ad416", session_date: "2026-06-11", notes: "DONE #74(与 Y-002 同 feature commit)。prompts_loader.py:ThemePromptRegistry 镜像 PromptRegistry —— 文件式 config/prompts/theme_research/v1.yaml + prompts.lock.json(SHA256 pin)+ frozen 5 步 SOP 骨架校验(validate_sop_skeleton:key 集 + 顺序)+ LiveArtifactRegistry.PROMPT_VERSION 认证(require_pinned=True);不可变/fail-closed/无 hot-reload。v1.yaml 哈希已 pin 进 config/live_artifacts.lock.json(授权人工 pin 动作)。进化接口(GEPA/exemplars)走 P2-2 离线+人工 gate+shadow+重启,骨架 frozen。"
       },
       {
-        id: "Z-001", phase: "Z 双线前端", status: "todo", priority: "P1",
+        id: "Z-001", phase: "Z 双线前端", status: "done", priority: "P1",
         title: "doc/代码漂移 reconcile(页锁 11→13 / WS 12→14 如实入账)",
         summary: "plan.html + CLAUDE.md §2.11 页锁/WS 数字如实更新到实际枚举集:13 页(4 决策闭环分组逐页枚举,Simulation.vue 仍 hidden,Settings 4 子页不计)+ 14 WS 类(6 保留 + 8 新;auth_mode_change/approval_update 永禁不变);再加顶级页/WS 类仍需 amendment。轻量、早做。",
         scope: "docs/plan.html, CLAUDE.md, frontend/(无功能改,仅核对)",
@@ -3753,10 +3763,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "页锁/WS 数字与实际一致 + 枚举集锁定 + 纪律(再加需 amendment)+ 永禁 2 WS 类不变。",
         tests: "枚举集核对 + FORBIDDEN_WS_* 不变。",
         sources: "P1-5-amendment-2026-06-01 §1.1",
-        commit: "", session_date: "", notes: "如实承认漂移(owner 选 A),不收敛回 11;纪律不松。"
+        commit: "本session docs收尾", session_date: "2026-06-12", notes: "如实承认漂移(owner 选 A),不收敛回 11;纪律不松。done #77:plan.html 页锁 11→13/WS 12→14 reconcile(decision-card+lane g+G-009+X-022);CLAUDE.md §2.11 owner 在途已写;枚举锁 menu.spec(13)/useWebSocket.spec(14+2禁)/test_x_022(19)全绿;纯 docs 无 codex。"
       },
       {
-        id: "Z-002", phase: "Z 双线前端", status: "todo", priority: "P2",
+        id: "Z-002", phase: "Z 双线前端", status: "done", priority: "P2",
         title: "产业链倒推可解释链路 viz(InstructionPlans 抽屉 tab)",
         summary: "趋势→板块→链→卡脖子环节→标的可解释链路,进 InstructionPlans 详情抽屉新 tab 或现有页内 panel;读 pin 主题候选 artifact + THEME- evidence(display-only);ECharts 有向图;全只读。",
         scope: "frontend/src/views/InstructionPlans.vue, frontend/src/components/",
@@ -3764,10 +3774,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "链路 viz 现有页内 panel + 读 pin artifact + THEME- evidence display-only + 全只读 + 不加写端点。",
         tests: "vitest 组件 + type-check + 只读断言。",
         sources: "P1-5-amendment-2026-06-01 §1.2, P0-8-amendment-2026-06-01",
-        commit: "", session_date: "", notes: "建议调 frontend-design skill。"
+        commit: "de7b0eb", session_date: "2026-06-12", notes: "建议调 frontend-design skill。done #77:新 GET /api/theme-research/industry-chain 读 seeded KG 产业链子图(趋势→板块→环节→卡脖子→标的)+确定性 choke-point centrality+pin 候选计数;InstructionPlans 页内 panel + ECharts 有向图(display-only,量化仍资格权威,永不剪 universe)。7 后端+5 vitest;codex P2(无关,Z-004)。"
       },
       {
-        id: "Z-003", phase: "Z 双线前端", status: "todo", priority: "P2",
+        id: "Z-003", phase: "Z 双线前端", status: "done", priority: "P2",
         title: "持仓 thesis 追踪 + 长持vs止盈 panel(Portfolio)",
         summary: "Portfolio 页 panel:读 PositionThesis 读模型(支柱 + 量化失效阈值健康度)+ advisory 复盘 evidence(display-only,不可解析);thesis 健康度时间线;全只读。",
         scope: "frontend/src/views/Portfolio.vue, frontend/src/components/",
@@ -3775,10 +3785,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "thesis 追踪 panel + 健康度时间线 + advisory display-only + 全只读。",
         tests: "vitest + type-check + display-only 不可解析。",
         sources: "P1-5-amendment-2026-06-01 §1.2, P0-10-amendment-line2-2026-06-01",
-        commit: "", session_date: "", notes: "长线看逻辑(thesis 健康)+ 短线看量化指标 双视图。"
+        commit: "de7b0eb", session_date: "2026-06-12", notes: "长线看逻辑(thesis 健康)+ 短线看量化指标 双视图。done #77:新 GET /api/position-theses 读 PositionThesis(支柱文本 + 确定性失效阈值,LLM 永不影响阈值);Portfolio panel 支柱列表 + 失效阈值表 + advisory display-only。8 后端+4 vitest。"
       },
       {
-        id: "Z-004", phase: "Z 双线前端", status: "todo", priority: "P2",
+        id: "Z-004", phase: "Z 双线前端", status: "done", priority: "P2",
         title: "5 槽组合 + 换仓视图 panel(Portfolio)",
         summary: "Portfolio 页 panel:5 槽占用 + 在位/挑战分 + RotationIntent 读模型(卖谁换谁/到期/状态)+ T+1 跨日轮动态;全只读。",
         scope: "frontend/src/views/Portfolio.vue, frontend/src/components/",
@@ -3786,10 +3796,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "5 槽 + 在位/挑战分 + RotationIntent viz + 跨日态 + 全只读。",
         tests: "vitest + type-check + 只读。",
         sources: "P1-5-amendment-2026-06-01 §1.2, P0-7-amendment-2026-06-01",
-        commit: "", session_date: "", notes: "卖一买一可视化;到期 fallback/UNDERINVESTED 态显示。"
+        commit: "de7b0eb", session_date: "2026-06-12", notes: "卖一买一可视化;到期 fallback/UNDERINVESTED 态显示。done #77:新 GET /api/slot-rotation 读 RotationIntent 账本 + ≤5 槽 cap + T+1 终态事件(folded legs by intent_id,codex P2 修);新 RotationRunner.max_total_positions 只读属性;Portfolio panel 5 槽条 + 换仓表 + 事件表。9 后端+5 vitest;codex 1 P2 已修+回归测试。"
       },
       {
-        id: "Z-005", phase: "Z 双线前端", status: "todo", priority: "P2",
+        id: "Z-005", phase: "Z 双线前端", status: "done", priority: "P2",
         title: "双线每日并行运行态 panel(Dashboard/SystemStatus)+ Phase Z 收尾",
         summary: "Dashboard/SystemStatus panel:Line-1 选股 + Line-2 监控双线每日并行运行态(最近运行/产出/cap 占用);三层 reason 抽屉延展(命名空间区分,不加写交互);新推送优先复用现有 14 WS 类或轮询;type-check/vitest/build 绿 + Phase Z 全 done。",
         scope: "frontend/src/views/{Dashboard,SystemStatus}.vue, docs/plan.html",
@@ -3797,7 +3807,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "双线运行态 panel + 复用现有 WS/轮询(新 WS 类需 amendment)+ 全只读 + 仅 2 写端点不变 + type-check/vitest/build 绿 + Phase Z 全 done。",
         tests: "vitest + type-check + build + 仅 2 写端点 redline。",
         sources: "P1-5-amendment-2026-06-01 §1.2/§1.3",
-        commit: "", session_date: "", notes: "贯穿 4 方向的运行态总览;WS 不扩张(MVP 倾向轮询)。"
+        commit: "de7b0eb", session_date: "2026-06-12", notes: "贯穿 4 方向的运行态总览;WS 不扩张(MVP 倾向轮询)。done #77:新 GET /api/dual-line-status 报双线 liveness + bounded caps(max_debates_per_day / max_total_positions);Dashboard panel 三线运行态 + 调度器 liveness(轮询,不扩 WS)。4 后端+3 vitest;Phase Z 全 done。"
       },
       {
         id: "AA-001", phase: "AA 模拟盘自动驾驶", status: "todo", priority: "P0",
