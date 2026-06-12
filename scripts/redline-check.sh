@@ -1579,6 +1579,26 @@ else
   green "  ok    no review module present yet (skip)"
 fi
 
+# ----------------------------------------------------------------------
+# R-002 / P2-2-amendment-2026-05-24 — rqalpha realtime isolation.
+# rqalpha is a TEST-TIME differential oracle (never a second execution
+# truth, never on the realtime path) with a NOASSERTION license (never
+# vendored). The string must stay confined to the oracle adapter; the
+# AST pytest (tests/strategy_evolution/test_module_contract.py) is the
+# authoritative guard and this grep is the standalone-CI fast gate.
+# ----------------------------------------------------------------------
+echo
+yellow "[R-002] rqalpha confined to backend/strategy_evolution/backtest_oracle.py"
+R002_OUT="$(grep -rln 'rqalpha' backend/ --include='*.py' 2>/dev/null \
+  | grep -v '^backend/strategy_evolution/backtest_oracle.py$' || true)"
+if [ -n "$R002_OUT" ]; then
+  red "  FAIL  rqalpha referenced outside the oracle adapter:"
+  printf '%s\n' "$R002_OUT" | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    rqalpha test-time oracle only (no realtime reference)"
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."
