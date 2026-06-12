@@ -806,6 +806,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-12 session #81 — <strong>Phase AC 全 done:风格分型与价值线</strong>(<code>P0-8-amendment-2026-06-12</code>;feature <code>64c6534</code>〔AC-001..AC-007 捆绑〕,本地未 push)。<strong>AC-001</strong>=确定性 StyleClassifier(SHORT_TERM/VALUE,纯零 LLM 可 replay)+ PositionThesis.style(legacy 兼容)+ 持仓铭牌 entry_style(per-code pending→成交 stamp→事件 payload 持久→recovery 重建)。<strong>AC-002/003</strong>=三层价值线(中层 event-study CAR/Amihud/容量;底层大势主线+regime;表层 KG 独立共振计数+公告日 PIT 基本面+弹性)→ 确定性合成 value_score∈[0,1]。<strong>AC-004</strong>=题材四级赋权(SOP schema v1→v2 扩 theme_tier,1.0/0.75/0.5/0.25 序约束 immutable clamp,人工 pin 确认 tier;v2 prompt inactive 待 gate)。<strong>AC-005</strong>=受约束槽位分配(价值≤2/量化≥3,价值槽三层得分排序;None→bit-identical;强量化永不被挤)。<strong>AC-006</strong>=per-style 软止盈带(VALUE 只拓宽永不收紧)接线 intraday v11→v12,env 默认 OFF;<strong>硬风控 style-invariant 对抗钉死</strong>。<strong>AC-007</strong>=CLAUDE.md + redline [AC-007] + 飞书 style_badge(display-only)。codex review 3 P2 + verify ×4 3 P2(含顺修既存 W-001 thesis bug)全修+回归→COMMIT-SAFE;5508 passed/90.88% cov 全门禁绿。安全地基红线全留(LLM 不进运行时数据路径/单一构造点/仅 2 写端点)。下一站 = Phase AD 前端驾驶舱。</li>
         <li>2026-06-12 session #80 — <strong>Phase AB 全 done:客观自进化</strong>(<code>P2-2-amendment-2026-06-12</code>;feature <code>990733e</code>〔AB-001..AB-008 捆绑〕,✅ 已 push origin/main)。<strong>AB-001</strong>=ExperimentRegistry(append-only 含失败,design 级 content-addressed 防洗白,多重检验校正源)。<strong>AB-002</strong>=ObjectivePromotionEngine(纯函数 9 gate:分层双门槛/锁定 bootstrap CI/deflated Sharpe/8 门不劣化/anti-gaming/oracle;位等 replay;LLM 零参与)。<strong>AB-003</strong>=PromotionIntent(sim 模式门)+ ActivationManifest + next_boot.lock 原子 staging(2h 黑窗)+ boot consume-once 自动回退 + <strong>apply 时复查模式(codex P1)</strong> + 外部 supervisor 脚本;零 git。<strong>AB-004</strong>=相对 counterfactual auto-demote + 10 日冷却。<strong>AB-005</strong>=28 名冻结集(raise 不论分数)+ immutable clamp 白名单 + 只紧不松。<strong>AB-006</strong>=prompt 禁类 lint(GEPA 出炉即拦)+ 字节捕获完整性 + 骨架 frozen。<strong>AB-007</strong>=harsh fill(harsh-or-equal 契约)+ 进化 sub-budget(¥10 双层不绕 cap)+ 22:00 cron 真接线(skip→DEGRADED 审计);<strong>已知 gap:ChallengerReplayer 未实现 → dispatcher 未挂(audit 留痕)</strong>。<strong>AB-008</strong>=对抗 5 族 + redline [AB-008]。codex 1 P1+3 P2 全修+回归;5374 passed 全门禁绿。下一站 = Phase AC(AC-001 StyleClassifier)。</li>
         <li>2026-06-12 session #79 — <strong>R-002 done:策略生命周期 + rqalpha 差分 oracle</strong>(P2-2-amendment-2026-05-24 已决边界,无新 amendment;feature <code>880ea9e</code>,✅ 已 push origin/main)。<strong>lifecycle.py</strong>=5 态状态机(RETIRED 终态)+ ACTIVE 必须 LiveArtifactRegistry pin(R-001 闸接通)+ append-only ledger(retired 永不 re-propose + 陈旧 record 拒改写)。<strong>backtest_oracle.py</strong>=注入式 BacktestRunner + compare_equity_curves(≤25bps/≤5% 散点/覆盖率 ≥90%)+ ORACLE_UNAVAILABLE 非 pass fail-closed;<strong>rqalpha LICENSE 已读:Apache 2.0+商用需米筐授权 → 非商用可选依赖、永不 vendor</strong>;真实 harness 归 AB。<strong>anti_overfit.py</strong>=purged+embargo CV + deflated Sharpe(DSR≥0.95 门)。redline [R-002]+AST 契约钉死 rqalpha 不入实时。codex 3 P1 全修(截断 overlap 假 CONSISTENT/跨 artifact hash/陈旧 record 改写终态)。55 测试/5246 passed/mypy --strict 绿。下一站 = Phase AB(AB-001 ExperimentRegistry)。</li>
         <li>2026-06-12 session #78 — <strong>Phase AA 全 done:模拟盘自动驾驶地基</strong>(<code>P1-2.A-amendment-2026-06-12</code> + <code>P2-2-amendment-2026-06-12</code> §1.6;feature <code>ac1fa6b</code>〔AA-001..AA-005 捆绑,跨任务耦合沿 #74/#77 先例〕+ docs <code>8012e0b</code>,✅ 已 push origin/main)。<strong>AA-001</strong>=16:10 纯 sim 自动对账(EOD snapshot↔broker↔收盘 equity point 三方自完整性,P0-5 阈值复用;零差自动 RESOLVED_SYSTEM_AS_TRUTH 留痕、差异 OPEN 票 fail-closed + 新告警 <code>sim_reconciliation_divergence</code>〔词表 15→16〕;feishu 模式语义不变)。<strong>AA-002</strong>=新 <code>backend/review/</code> facts-first 盘后归因(18:00 cron;TradeFact vs 当日 VWAP〔单位消歧〕;反事实 promotable⊆pre_registered 反后见之明;append-only 无 update/delete;fills 读 durable broker_events)。<strong>AA-003</strong>=周末/节假日复盘 lane(周六 10:00 + 每日补跑自 gating;7 检查 ops 门 fail-closed;activation_allowed 距开盘≥2h 旗标供 AB;失败不冻结交易)。<strong>AA-004</strong>=policy_hash 分段(确定性 manifest hash + policy_segments 切换点账本;EquityPoint/acceptance/performance 全挂;FULL gate 拒旧政策 PASS〔codex P1〕;segment=current 同 clamp 曲线与 trades)+ 持仓铭牌 entry_policy_hash/style/卖出栈版本(episode-open 盖戳,事件 payload+replay+seed+BrokerSnapshot v3 贯穿;v1/v2 checksum 字节级兼容)。<strong>AA-005</strong>=review CLAUDE.md + AST 隔离 + redline [AA-005]。codex 1 cycle:1 P1+4 P2 全修+回归。5191 passed + ruff + redline + mypy 全绿;安全地基全留(仅 2 写端点不变)。下一站 = R-002(rqalpha oracle,AB 硬前置)。</li>
@@ -904,6 +905,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-12",
+        session: "#81 Phase AC full:风格分型与价值线(AC-001 StyleClassifier + AC-002 中层因子 + AC-003 底/表层+三层合成 + AC-004 题材四级赋权 + AC-005 受约束槽位分配 + AC-006 per-style 软层 + AC-007 收尾)",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "续 #80(Phase AB 全 done 已 push;owner 指令『读 plan.html next 指针,按计划继续推进』)。读 SESSION_LOG #80 next:活动 Phase=AC(7 任务,amendment 前置 P0-8-amendment-2026-06-12 已锁定〔#76〕,AA-004 铭牌配套已 ✓,无未满足 depends)。调查(3 并行 Explore agent):screener 现 5 因子栈 + FactorVector / PositionThesis 模型 + W-001 接线 + AA-004 铭牌机制 / KG schema+store+centrality + redline+CLAUDE.md 隔离先例 + theme SOP schema + selector 配额。CLAUDE.md M 仍 owner 在途(未碰)。系统停机=纯开发窗口。",
+        actions: "**新模块 backend/style/(纯确定性零 LLM)** + screening/value_factors.py + value_score.py + knowledge_graph/resonance.py + monitoring/style_soft.py + theme_research/tier_weights.py。**AC-001**=StyleClassifier(VALUE iff 三层 value_score≥gate AND thesis 可派生;AC-003 前 value_score=None → 全 SHORT_TERM 与现状 bit-identical)+ PositionThesis.style(legacy None 兼容)+ 持仓铭牌 entry_style(runner StyleNameplateSink→broker per-code pending→episode-open stamp;**成交事件 payload 持久 + recovery 重建**)。**AC-002**=中层 PIT 因子(event-study CAR〔窗口须 fully-elapsed 防泄漏〕/Amihud/自由流通容量/换手/资金流)。**AC-003**=底/表层 helper(beta/共振计数〔同 run 去重〕/公告日 PIT 基本面/percentile)+ 三层确定性合成 ∈[0,1] + 只读 KG 独立 evidence family 计数(provenance_ref,跳过对端股票节点防双计)。**AC-004**=ThemeTier(IntEnum)+ SOP 扩 theme_tier(schema v1→v2,version-aware digest,v1 兼容默认 STOCK 保守)+ 四级权重 1.0/0.75/0.5/0.25 序约束 immutable clamp + pin artifact 携人工确认 tier + v2 prompt(inactive,owner P2-2 gate 激活)。**AC-005**=selector 受约束槽位(价值≤2/量化≥3,价值槽三层得分排序、短线槽现 5 因子;value_scores=None bit-identical;对抗:强量化永不被挤)。**AC-006**=style_soft per-style 软止盈带(VALUE 只拓宽永不收紧)接线 intraday(v11→v12;style_by_code 读铭牌;env QUANTMIND_LINE2_STYLE_SOFT_ENABLED 默认 OFF);**对抗:任意 style 下保护性 SELL bit-identical**(硬顶 trim 记 style-invariant eff_r,软超配 trim 才记拓宽带)。**AC-007**=backend/style/CLAUDE.md + redline [AC-007] + 飞书 style_badge(⚡短线/🏛价值,display-only)。**门禁**:codex review --uncommitted 1 cycle(3 P2)+ verify ×4 收敛(3 P2,逐层深挖持仓铭牌:硬顶 trim 风格不变 / 两模式清 pending+advance_day 落地同日过期界 / **simulation_routed+REJECTED 误判 delivered → 顺修既存 W-001 thesis bug** / 成交 payload 漏写 entry_style)→ 全修 + 回归;最终 verify COMMIT-SAFE 0 P0/P1/P2;summary=docs/reviews/phase-ac-codex-review-summary.md。5508 passed(基线 5374→+134)/ 90.88% cov / ruff / redline(新 [AC-007])/ 新模块 mypy strict 全绿。安全地基:LLM 不进运行时数据路径(三层得分纯 PIT+人工 pin 题材)/ 单一构造点不破 / 硬风控 style-invariant / 仅 2 写端点。",
+        commit: "feature `64c6534`(6 新模块 + 模型/选择器/卖出栈/铭牌/持久化接线 + v2 prompt + redline [AC-007] + backend/style/CLAUDE.md + 12 测试文件 + review summary;跨任务文件耦合〔value_factors 跨 AC-002/003、selector 跨 AC-005、style 跨 AC-001/006/007〕沿 #74/#77/#78/#80 捆绑先例)+ 本 docs-only 收尾。**push 待 owner 授权(本地 commit)**。",
+        next: "**Phase AC ✅ 全 done。ship 序 Z→AA→R-002→AB→AC→**AD** → 下一站 = Phase AD 前端驾驶舱与实盘交互(起步 AD-001 KPI 头部+实盘就绪度 gauge;AD-001/002 只读可先做,depends 已满足;AD-004 风格 badge depends AC-001✓+Z-001✓)**。**运行期激活**:AC 全为库代码 + env-gated 接线,随 owner 重启生效;`QUANTMIND_LINE2_STYLE_SOFT_ENABLED` 默认 OFF(建议 45 日 shadow 后开);三层 value_score 的**真实数据喂入**(event-study 事件日来自 pin EVENT/THEME 节点、资金流/容量 Tushare PIT 域、KG 共振)= AD 之后或 owner 接线决策点 —— 当前 value_scores=None → 全 SHORT_TERM 与现状 bit-identical,价值槽空、纯量化照跑;v2 prompt theme_tier 建议待 owner P2-2 gate 激活。**push**:#81 feature 64c6534 本地未 push,待 owner 授权。",
+      },
       {
         date: "2026-06-12",
         session: "#80 Phase AB full:客观自进化(AB-001 ExperimentRegistry + AB-002 ObjectivePromotionEngine + AB-003 intent/activation + AB-004 auto-demote + AB-005 冻结集/白名单 + AB-006 prompt 政策化 + AB-007 harsh fill/22:00 接线 + AB-008 对抗收尾)",
@@ -3983,7 +3993,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "990733e", session_date: "2026-06-12", notes: "对抗测试先写(RED);sim 自治域与实盘人工域的边界是最高风险面。 done #80:test_adversarial_promotion.py 对抗 5 族(恶意高分不晋升/安全参数不可触〔冻结集逐名〕/实盘人工 gate〔intent+staging+boot apply 三重〕/模式切换冻结 intent/零 git+实时隔离)+ redline [AB-008];Phase AB 全 done。"
       },
       {
-        id: "AC-001", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        id: "AC-001", phase: "AC 风格分型与价值线", status: "done", priority: "P0",
         title: "StyleClassifier(确定性)+ PositionThesis.style + 持仓铭牌",
         summary: "确定性分型 style ∈ {SHORT_TERM, VALUE}(输入=量化因子谱+三层得分+thesis 可派生性;同输入同输出可 replay);买入时定型落 PositionThesis.style + 持仓铭牌(entry_policy_hash/卖出栈版本,配套 AA-004);标签 display-only 永不改风控数值。",
         scope: "backend/style/(新模块), backend/models/position_thesis.py(扩 style), tests/style/",
@@ -3991,10 +4001,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "确定性 replay + style 落库 + 标签不改任何数值字段(对抗)+ 旧 thesis 兼容(无 style=legacy)。",
         tests: "分型确定性 + 落库往返 + 对抗:改标签→风控输出 bit-identical。",
         sources: "P0-8-amendment-2026-06-12 §1.1, owner 需求3",
-        commit: "", session_date: "", notes: "短线=数学(现5因子栈);价值=三层筛选;先有分型容器再有价值得分。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "短线=数学(现5因子栈);价值=三层筛选;先有分型容器再有价值得分。"
       },
       {
-        id: "AC-002", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        id: "AC-002", phase: "AC 风格分型与价值线", status: "done", priority: "P0",
         title: "中层因子集:资金认可+题材容量(event-study/换手/容量/资金流,PIT)",
         summary: "确定性 PIT 特征:事件后异常收益(事件日=pinned EVENT/THEME 节点)+ 板块成交额/换手分位 + 自由流通市值容量 + Amihud 非流动性 + 北向/主力资金分位(仅 PIT-safe 源);Tushare SDK-only;入 screening 同构纯模块。",
         scope: "backend/screening/value_factors.py(新), backend/marketdata_snapshot/(若需新数据域), tests/",
@@ -4002,10 +4012,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "全因子 PIT 可 replay + 事件日来自 pin 节点 + 数据源 SDK-only + 0 LLM。",
         tests: "event-study 窗口正确 + 分位确定性 + PIT 泄漏对抗 + 隔离。",
         sources: "P0-8-amendment-2026-06-12 §1.2, codex P1-4",
-        commit: "", session_date: "", notes: "owner:消息刺激后有市场反应+能容纳大资金——全部量化可测。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "owner:消息刺激后有市场反应+能容纳大资金——全部量化可测。"
       },
       {
-        id: "AC-003", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        id: "AC-003", phase: "AC 风格分型与价值线", status: "done", priority: "P0",
         title: "底层+表层因子:大势主线匹配 + KG 共振计数 + 基本面(公告日 PIT)+ 弹性",
         summary: "底层=pinned THEME 覆盖+板块动量分位+regime;表层=KG 逻辑共振计数(独立 evidence family,同 run 重复引用只算1)+ tushare fundamentals 按公告日 PIT(严禁报告期泄漏)+ 弹性(beta/振幅/自由流通占比)。",
         scope: "backend/screening/value_factors.py(扩), backend/knowledge_graph/(共振查询,只读), tests/",
@@ -4013,10 +4023,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "共振=独立 family 计数 + 公告日 PIT + KG 只读 + 三层得分合成确定性。",
         tests: "family 去重 + 公告日泄漏对抗 + 合成可 replay。",
         sources: "P0-8-amendment-2026-06-12 §1.2, codex P1-4/P1-5",
-        commit: "", session_date: "", notes: "owner:≥2 核心逻辑+基本面支撑/弹性属性;共振不能数同一来源的回声。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "owner:≥2 核心逻辑+基本面支撑/弹性属性;共振不能数同一来源的回声。"
       },
       {
-        id: "AC-004", phase: "AC 风格分型与价值线", status: "todo", priority: "P1",
+        id: "AC-004", phase: "AC 风格分型与价值线", status: "done", priority: "P1",
         title: "题材四级赋权:THEME SOP 扩 theme_tier + 人工 pin 确认 + 权重配置",
         summary: "SOP 输出 schema 扩 theme_tier ∈ {1 国家事件,2 政策,3 技术,4 个股}(LLM 给建议,人工 pin 时确认,tier 是 pin artifact 一部分);三层得分题材项 × tier 权重(初始 1.0/0.75/0.5/0.25,config 化+可进化白名单,序约束 immutable clamp)。",
         scope: "backend/theme_research/sop_schema.py(扩,schema_version bump), config/prompts/theme_research/(v2), config/, tests/",
@@ -4024,10 +4034,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "tier 经人工 pin 确认才生效 + 权重序约束 + schema 版本化 + v1 artifact 兼容(无 tier=4 保守)。",
         tests: "tier pin 流 + 序约束 clamp + 版本兼容。",
         sources: "P0-8-amendment-2026-06-12 §1.3, owner 需求3(四级赋权)",
-        commit: "", session_date: "", notes: "tier 不是 runtime LLM 输出而是 pin artifact 属性;国家事件>政策>技术>个股。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "tier 不是 runtime LLM 输出而是 pin artifact 属性;国家事件>政策>技术>个股。"
       },
       {
-        id: "AC-005", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        id: "AC-005", phase: "AC 风格分型与价值线", status: "done", priority: "P0",
         title: "受约束槽位分配 selector 接线(价值≤2/量化≥3;空集 bit-identical)",
         summary: "统一资格硬门不变 → 全体合格候选过 StyleClassifier → 价值槽 ≤2/纯量化 ≥3(沿用现配额)→ 价值槽内三层得分排序、短线槽现5因子排序;无 pin/价值槽空与现状 bit-identical;配额列可进化白名单(0..2 整数域 clamp)。",
         scope: "backend/candidate_selector/selector.py(扩展), tests/",
@@ -4035,10 +4045,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "硬门不变 + 配额守恒 + 空集 bit-identical + 纯量化永不被挤(对抗)。",
         tests: "分配边界 + bit-identical 回归 + 对抗:价值高分不挤量化保留位。",
         sources: "P0-8-amendment-2026-06-12 §1.4, codex P1-1/P1-2, owner 拍板 2026-06-12",
-        commit: "", session_date: "", notes: "codex:双池硬切会放进弱价值挤掉强短线;统一硬门+受约束分配。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "codex:双池硬切会放进弱价值挤掉强短线;统一硬门+受约束分配。"
       },
       {
-        id: "AC-006", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        id: "AC-006", phase: "AC 风格分型与价值线", status: "done", priority: "P0",
         title: "per-style 卖出栈软层参数 + 风格不变式对抗测试",
         summary: "style 只影响软层(止盈带/time-stop/复盘节奏;VALUE 复用既有 thesis-gated 止盈豁免);硬保护止损/熔断/仓位三连/14-check/可卖量/单一构造点风格不变式——对抗:任意 style 组合下保护性 SELL 输出 bit-identical;style 入 trigger record + replay hash。",
         scope: "backend/monitoring/intraday_triggers.py(软层接线), backend/orchestration/, tests/",
@@ -4046,10 +4056,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "软层差异化 + 硬层不变式(对抗)+ style 入 record/manifest + env 门控 default-OFF。",
         tests: "对抗:VALUE 标签不放松 ATR/drawdown;软层参数生效;replay。",
         sources: "P0-8-amendment-2026-06-12 §1.5, codex P0-8",
-        commit: "", session_date: "", notes: "价值投资≠放松风控;风格只改'何时主动收割',不改'何时必须逃生'。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "价值投资≠放松风控;风格只改'何时主动收割',不改'何时必须逃生'。"
       },
       {
-        id: "AC-007", phase: "AC 风格分型与价值线", status: "todo", priority: "P1",
+        id: "AC-007", phase: "AC 风格分型与价值线", status: "done", priority: "P1",
         title: "backend/style/ 模块 CLAUDE.md + 隔离 + Phase AC 收尾",
         summary: "style/value_factors 模块 CLAUDE.md + import 隔离(纯量化,0 LLM)+ redline + 标签进 evidence/飞书渲染上下文(display-only)+ SSoT done。",
         scope: "backend/style/CLAUDE.md, backend/integrations/feishu/renderer.py(标签), scripts/redline-check.sh, docs/plan.html",
@@ -4057,7 +4067,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "AST 隔离 + 飞书标注短线/价值(display-only)+ redline + Phase AC 全 done。",
         tests: "AST + renderer 快照 + redline + 全量 pytest。",
         sources: "P0-8-amendment-2026-06-12, owner 需求3(飞书明确标注)",
-        commit: "", session_date: "", notes: "飞书消息标注让 owner 心中有数;renderer 必经防注入。"
+        commit: "64c6534", session_date: "2026-06-12", notes: "飞书消息标注让 owner 心中有数;renderer 必经防注入。"
       },
       {
         id: "AD-001", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P0",
