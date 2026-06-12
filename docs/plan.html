@@ -283,6 +283,11 @@
     .lane.q .lane-head { background: #be185d; }
     .lane.r .lane-head { background: #9f1239; }
     .lane.t .lane-head { background: #9a3412; }
+    /* 模拟盘自动驾驶 v4(2026-06-12)Phase AA-AD — teal/emerald 家族 */
+    .lane.aa .lane-head { background: #0f766e; }
+    .lane.ab .lane-head { background: #047857; }
+    .lane.ac .lane-head { background: #15803d; }
+    .lane.ad .lane-head { background: #4d7c0f; }
     .lane.v2-sep { background: linear-gradient(90deg,#1e3a8a,#9a3412); color:#fff; border:none; }
     .lane.v2-sep .lane-head { background: transparent; font-size: .82rem; letter-spacing:.04em; }
     .lane.v2-sep .lane-body { color:#fff; opacity:.92; }
@@ -687,6 +692,11 @@
         <div class="lane w"><div class="lane-head">W 持仓 thesis 与盘后复盘(②)</div><div class="lane-body">PositionThesis 持久化(LLM 支柱文本 advisory + 确定性量化失效阈值);阶段1 LLM advisory 盘后复盘(EOD cron,evidence-only + display-only 飞书,owner 人工执行,monitoring 仍 0-LLM);阶段2 确定性 THESIS_QUANT_BREAK(白名单模板,只增卖压不放松现有止损)。锁定文档 P0-10-amendment-line2-2026-06-01。</div></div>
         <div class="lane y"><div class="lane-head">Y 主题研究 peer-sourcing(① 最后)</div><div class="lane-body">LLM 联网调查·产业链倒推作 peer-sourcing 层:定时·留痕(provenance 捕获)·人工 pin;THEME- 第 6 evidence 前缀;量化仍资格权威(过排除四件套+可负担+14-check+人工 gate);主题配额 ≤cap−3(≤2),≥3 量化名额保留;无 pin 则配额空、纯量化照跑。前置 Phase Q 产业链 KG pin 快照。锁定文档 P0-8-amendment-2026-06-01。</div></div>
         <div class="lane z"><div class="lane-head">Z 双线前端可视化(④ 贯穿)</div><div class="lane-body">先 reconcile doc/代码漂移(页锁 11→13 / WS 12→14 如实入账);双线新 viz 全作现有页内 panel/tab/抽屉(产业链链路→InstructionPlans;thesis+5槽→Portfolio;双线运行态→Dashboard/SystemStatus);仅 2 写端点不变、全只读、127.0.0.1。锁定文档 P1-5-amendment-2026-06-01。</div></div>
+        <div class="lane v2-sep"><div class="lane-head">▼ 模拟盘自动驾驶 v4(2026-06-12 #76 规划)</div><div class="lane-body">owner 3 需求(模拟盘全自动+自进化试验场 / 前端驾驶舱+实盘填表 / 短线vs价值分型)经 1 轮 codex 红队 + owner 4 拍板,落 4 amendment + 新 Phase AA/AB/AC/AD。<strong>sim 范围客观判据自动晋升推翻人工 gate(实盘人工 gate 不变)</strong>;写端点 2→3;统一资格硬门+受约束槽位分配。安全地基红线全留。<strong>ship 序:Z → AA → R-002 → AB → AC → AD</strong>。dossier = docs/research/sim-autopilot-objective-evolution-frontend-style-2026-06-12.md。</div></div>
+        <div class="lane aa"><div class="lane-head">AA 模拟盘自动驾驶</div><div class="lane-body">纯 sim 全自动运营收口:16:10 自动对账(零差自动 RESOLVED/差异 fail-closed 冻结)+ 18:00 逐笔归因复盘 ReviewRecord(facts-first)+ 周末/节假日复盘实验 lane(ops 门)+ 绩效按 policy_hash 分段。锁定文档 P1-2.A-amendment-2026-06-12。</div></div>
+        <div class="lane ab"><div class="lane-head">AB 客观自进化</div><div class="lane-body">ObjectivePromotionEngine(分层窗口+样本量+bootstrap CI+8门不劣化+anti-gaming)+ ExperimentRegistry(含失败,防多重检验)+ PromotionIntent/activation manifest/受控重启激活(git 非控制面)+ auto-demote(incumbent 续跑 counterfactual)+ 冻结不可进化集/白名单 clamp + prompt artifact 政策化。前置 R-002。锁定文档 P2-2-amendment-2026-06-12。</div></div>
+        <div class="lane ac"><div class="lane-head">AC 风格分型与价值线</div><div class="lane-body">确定性 StyleClassifier(短线/价值,买入时定型落 PositionThesis)+ 三层筛选(大势主线/资金认可+容量/共振+弹性,全确定性 PIT 特征)+ 题材四级赋权(THEME SOP 扩 theme_tier,人工 pin 确认)+ 受约束槽位分配(价值≤2/量化≥3);硬止损风格不变式。锁定文档 P0-8-amendment-2026-06-12。</div></div>
+        <div class="lane ad"><div class="lane-head">AD 前端驾驶舱与实盘交互</div><div class="lane-body">EquityPoint 真相源 KPI+实盘就绪度 gauge(8门+policy 分段曲线)+ 自动驾驶时间线 + 进化面板 + 风格标签贯穿 + 手动操作填表(第3写端点 manual-trades,ExternalExecutionEvent,绩效三分流,飞书"已记录"同步)。锁定文档 P1-5-amendment-2026-06-12。</div></div>
       </div>
     </section>
 
@@ -796,6 +806,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-12 session #76 — <strong>模拟盘自动驾驶 v4 规划 📐(无运行代码)</strong>:owner 3 需求(① 模拟盘全自动+自进化试验场〔调整尊重客观表现〕② 前端驾驶舱+实盘手动操作填表 ③ 短线vs价值三层筛选+四级赋权分型)→ 3 并行调查 agent + <strong>1 轮 codex 红队</strong>(P0×8/P1×7/P2×6 全吸收:policy_hash 分段就绪度 / 样本量+CI 取代纯天数 / prompt=政策 artifact / PromotionIntent+受控重启取代 auto-git / 持仓铭牌 / 手动交易独立域 / 绩效三分流 / 价值风格禁松硬退出)+ <strong>owner 4 拍板</strong>(sim 客观全自动晋升〔实盘人工 gate 不变〕/ 分层窗口+样本量双门槛 / 第 3 写端点 manual-trades / 统一硬门+受约束槽位分配)→ 落 <strong>4 amendment</strong>(<code>P2-2-…-sim-objective-promotion</code> / <code>P1-2.A-…-sim-autopilot-review-crons</code> / <code>P1-5-…-manual-trade-third-write-endpoint</code> / <code>P0-8-…-style-classifier-and-value-line</code>)+ <strong>新 Phase AA/AB/AC/AD(26 任务)</strong> + dossier <code>docs/research/sim-autopilot-objective-evolution-frontend-style-2026-06-12.md</code>。ship 序 Z→AA→R-002→AB→AC→AD。安全地基红线全留;冻结不可进化集+clamp 白名单为 AB 强制对抗项。</li>
         <li>2026-06-11 session #75 — <strong>LLM 三模型按特长分工路由恢复 + 计价表全面校准</strong>(amendment <code>P0-10-amendment-2026-06-11-multi-model-specialization-routing</code> supersede 05-25 全 qwen 临时路由;feature <code>b1b1cd1</code>,已 push)。owner 四问拍板:① 四必经=特长分工(technical→deepseek-v4-pro,fundamental/risk 留 qwen3.6-plus,fund_manager 留 qwen3.7-max);② theme 调查+thesis 复盘=kimi-k2.6 thinking 专用条目(<code>theme_investigator</code>/<code>thesis_reviewer</code>,与 intelligence_officer 三方共用解耦);③ 旧 9-agent 管线 kimi 三件套不动(owner:成本可接受);④ 计价保守列价。调查纠正任务假设两处:旧管线仍活跃(fast×4+slow cron)、thesis advisory 已复用 intelligence_officer。<strong>计价表过期 3-30 倍(低估=静默超支)全部重写</strong>:MODEL_COST_RATES 五档列价(kimi 初版 7.5/30 FX 上垫假设;<strong>2026-06-12 owner 提供官方价目页后已按 §6 授权路径校准实价 6.5/27,feature <code>2a556dd</code>,codex clean</strong>),family 兜底+cost_tracker.MODEL_PRICING 改派生。新 <code>theme_llm_client.py</code>(RouterLlmClient/RouterUsageReserver,investigator 注入式 Protocol 生产实现;kimi thinking 钳制防击穿预留)。GEPA reflection_lm 迁 deepseek-v4-pro(旧名 7/24 弃用)。爬虫层降 v4-flash。codex 撞额度→/code-review high 回退,8 findings 全修(thinking 增量击穿预留/镜像表未同步/预留覆盖泄漏等)。5034 passed/新模块 100%/mypy strict/ruff+redline 全绿。<strong>生效需 owner 重启</strong>(yaml runtime 不可改;system 停机中)。</li>
         <li>2026-06-11 session #74 — <strong>Phase Y 全 done:产业链倒推主题研究 peer-sourcing 层</strong>(边界已决 P0-8-amendment-2026-06-01,无新 amendment;feature `d3ad416`〔Y-002+Y-006〕+`7fba7fd`〔Y-003+Y-004+Y-005〕,本地未 push)。新 `backend/theme_research/`(LLM-bearing 但零交易栈 import,LLM/web 仅注入式 Protocol):**Y-002+Y-006**=5 步倒推 SOP(`v1.yaml` 一等设计物,骨架 frozen)+ `ThemePromptRegistry`(文件式 SHA256 pin + 骨架/顺序校验 + LiveArtifactRegistry.PROMPT_VERSION 认证)+ `provenance.py`(原始字节+checksum,`is_promotable` 单一真相)+ `investigator.py`(定时有界 job:allowlist+http(s)+redirect 复检/全捕获/token 总额/严格 parse 全 fail-closed)。**Y-003**=`EvidencePrefix.THEME` 第 6 + `ThemeCandidateArtifact`(从 typed output only 构造永不解析散文,digest 绑定 promotable/schema/定精度 confidence)。**Y-004**=`ThemeCandidateRegistry` sibling pin 闸(镜像 R-001;R-001 froze 5 kinds → SOP prompt 进 PROMPT_VERSION、候选走 sibling)+ `verify_pinned_candidates` fail-closed + `CandidateSelector.select(peer_sourced=)` merge(配额 ≤2/保 ≥3 量化/纯量化永不被挤/None bit-identical)。**Y-005**=端到端 5 红线对抗 + AST 模块隔离 + redline [Y-005]。codex 9 轮 22 findings(基础层)全修 + Y-003/4/5 codex 撞额度回退 /code-review high 5 findings 全修。163 theme/selector 测试 / 新模块 98-100% / mypy strict / ruff+redline 全绿 / 5002 passed。**运行期激活(research cron + 飞书审批 + runner 消费)待 owner 重启**。下一站 = Phase Z(前端 reconcile)或 Phase R 链 R-002。</li>
         <li>2026-06-11 session #73 — <strong>Phase R 起手 R-001:LiveArtifactRegistry 自进化批准闸</strong>(已决边界内 P2-2 §2.3 + R0 §8,无新 amendment;feature `373f281`,本地未 push)。`ArtifactKind` 5 类全 SHA256 hex;`is_approved(kind, identifier)` kind-typed 仅认 pin 哈希(有效但未 pin 也拒);`from_lockfile` fail-closed;**完全不可变**(MappingProxyType + frozenset + __setattr__ raise + __slots__ → 无 runtime 加哈希路径);空 bootstrap deny-all。对抗测试先写 RED→GREEN。codex cycle1 修 P1(可变内部 dict→MappingProxyType)+P2(mypy strict)→ 撞额度回退 /code-review verify clean(6/6 sound)。16 tests/模块 100%/mypy strict clean/4880 passed/90.86%。解锁 Y-004 + Y-006 registry pin。下一站 = 回 Phase Y(Y-002+Y-006→Y-003→Y-004→Y-005)或续 Phase R 链(R-002 rqalpha oracle)。</li>
@@ -889,6 +900,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-12",
+        session: "#76 模拟盘自动驾驶 v4 规划:全自动+客观自进化 / 前端驾驶舱+实盘填表 / 短线vs价值分型(规划 session,无运行代码)",
+        owner: "Claude Fable 5",
+        state_in: "续 #75(LLM 路由恢复 done 已 push;system #71 起停机等集中测试)。owner 提出 3 项方向性需求:① 模拟盘双职责=全自动交易实战测试 + 自进化试验场(交易时间全自动,非交易时间复盘自进化;调整尊重客观表现不靠用户/开发者);② 前端同步推进(全自动可观察 + 收益/年化/超额作实盘就绪证据 + 实盘模式用户手动操作填表+飞书同步);③ 风格分型(短线=数学 vs 价值=三层筛选+题材四级赋权,前端/飞书明确标注)。指令:充分调研 + 与 codex 辩论 + 形成可实操规划修改 plan.html;触旧红线必须 owner 决策。",
+        actions: "**调查(3 并行 agent)**:纯 sim 模式交易时间全自动已存在(SimulationExecutor 自动撮合,无人工环节);真缺口=周末/节假日零 job + evolution cron no-op + 16:00 对账未接线 + **自进化人工 gate(P2-2)与需求①直接冲突**;前端 Performance 已有年化/对标但曲线由成交净额派生(太弱)、无就绪度 gauge、无用户自主录入(必须挂 QM- id);选股纯 5 因子=天然短线栈,PositionThesis=长持雏形,THEME SOP step① 已分 macro/policy/tech(tier 挂点现成)。**codex 红队 1 轮**(read-only,134k tokens):判定方案A=真红线修订非小扩展;P0×8(就绪度按 policy_hash 分段防混血曲线 / 天数门槛统计无效→样本量+CI / prompt 进化=间接 LLM 自治泄漏→政策 artifact 化 / auto-git-commit 是错误激活原语→PromotionIntent+manifest+受控重启 / 回滚须持仓铭牌 entry_policy_hash / 手动交易禁伪造 InstructionPlan→独立域 / 绩效三分流防用户 alpha 污染 / 价值风格禁放松硬退出)+ P1×7 + P2×6 全吸收。**owner 4 拍板(AskUserQuestion)**:① sim 范围客观判据全自动晋升(实盘人工 gate 不变);② 分层窗口+样本量双门槛(阈值 ≥15td 且 ≥30 样本 / prompt ≥20td 且 ≥15 笔 / 策略代码 45td + bootstrap CI);③ 新增第 3 写端点 POST /api/manual-trades;④ 统一资格硬门+受约束槽位分配(价值≤2/量化≥3,配额列可进化参数)。**产出**:dossier `docs/research/sim-autopilot-objective-evolution-frontend-style-2026-06-12.md` + 4 amendment(`P2-2-amendment-2026-06-12-sim-objective-promotion` / `P1-2.A-amendment-2026-06-12-sim-autopilot-review-crons` / `P1-5-amendment-2026-06-12-manual-trade-third-write-endpoint` / `P0-8-amendment-2026-06-12-style-classifier-and-value-line`)+ plan.html 新 **Phase AA(模拟盘自动驾驶 5 任务)/ AB(客观自进化 8 任务)/ AC(风格分型与价值线 7 任务)/ AD(前端驾驶舱与实盘交互 6 任务)** + 时间线 lanes + R-003/R-004 范围注记(sim 人工 gate 由 AB 替代/cron 接线归 AB-007)。安全地基红线全留(永禁真实下单/飞书人工〔实盘〕/127.0.0.1/LLM 不写决策/单一构造点/PIT/RiskEngine 纯函数);冻结不可进化集+白名单 clamp 对抗测试为 AB-005/AB-008 强制项。",
+        commit: "(本 docs-only commit:dossier + 4 amendment + plan.html)。规划 session 无运行代码,不触 codex commit 门。CLAUDE.md 有 owner 在途修改未碰——§2.0c(v4 总览)+ §2.12(sim 客观晋升)+ §2.11(3 写端点)注记待 owner 改动收口后补。",
+        next: "**推荐 ship 序(amendment-first 已就位):Z(前端 reconcile,轻量先行)→ AA(自动驾驶地基)→ R-002(rqalpha oracle,AB 硬前置)→ AB(客观自进化)→ AC(风格分型)→ AD(前端驾驶舱;AD-001/002 只读部分可与 AB 并行)**。存量 Phase O(MiroFish)可作 AC 底层增强非硬前置;Phase T 进化产物走 AB 同一晋升门。下一 session 起点 = Phase Z(Z-001 reconcile)或直接 AA-001(若 owner 想先攻自动驾驶)。⚠️ owner 待办:① push 授权(本 docs commit);② CLAUDE.md 在途修改收口(以便补 §2 注记);③ 重启激活 #74/#75 已落功能仍挂起(等集中测试)。",
+      },
       {
         date: "2026-06-11",
         session: "#75 LLM 多模型分工路由恢复(owner 直接任务,非 Phase;amendment P0-10-2026-06-11)",
@@ -3469,7 +3489,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "45 日 shadow 沿用 P0-6 + 飞书通知 + 人工 gate + git+restart 生效;agent 零自动上线。",
         tests: "shadow 5+3 门槛 + 飞书通知 + 人工批准前不生效 + restart-gated。",
         sources: "P2-2-amendment-2026-05-24 §2.2, P0-6(复用)",
-        commit: "", session_date: "", notes: "人工 gate 不变(Owner 2026-05-24 锁定进化自主度)。"
+        commit: "", session_date: "", notes: "⚠️ 2026-06-12 范围变更(P2-2-amendment-2026-06-12):sim 范围人工 gate 被 Phase AB 客观晋升替代(分层窗口+样本量双门槛取代统一 45 日);本任务的人工 gate 语义仅保留给 feishu_interactive 实盘模式。实施时与 AB-002/AB-003 合并设计。"
       },
       {
         id: "R-004", phase: "R 自进化v2", status: "todo", priority: "P1",
@@ -3480,7 +3500,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "22:00 cron + shadow 独立 sub-budget + 日余额低降级 + audit 类 5 七类 + LLM 不写 audit。",
         tests: "cron 触发 + sub-budget 降级 + audit 类 5 + LLM 写 audit 拒绝。",
         sources: "P2-2-amendment-2026-05-24, P1-7-amendment-2026-05-24, P1-2.A-amendment(第五 cron)",
-        commit: "", session_date: "", notes: "shadow MVP OUT;Phase R 启用给独立 sub-budget。"
+        commit: "", session_date: "", notes: "shadow MVP OUT;Phase R 启用给独立 sub-budget。⚠️ 2026-06-12:22:00 cron 接线与 sub-budget 由 AB-007 吸收(P2-2-amendment-2026-06-12);audit 类5 七类仍按本任务落。"
       },
       {
         id: "R-005", phase: "R 自进化v2", status: "todo", priority: "P1",
@@ -3778,6 +3798,292 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         tests: "vitest + type-check + build + 仅 2 写端点 redline。",
         sources: "P1-5-amendment-2026-06-01 §1.2/§1.3",
         commit: "", session_date: "", notes: "贯穿 4 方向的运行态总览;WS 不扩张(MVP 倾向轮询)。"
+      },
+      {
+        id: "AA-001", phase: "AA 模拟盘自动驾驶", status: "todo", priority: "P0",
+        title: "sim 自动对账(16:10 自完整性校验,零差自动 RESOLVED)",
+        summary: "纯 sim 模式下镜像即权威 → 对账转自完整性校验:16:10 比对 EOD snapshot ↔ broker 派生态 ↔ equity point;零差异确定性自动 RESOLVED_SYSTEM_AS_TRUTH(append-only 留痕);任何差异 OPEN ticket fail-closed 冻结 + 飞书告警(差异=bug 信号)。feishu 模式对账语义不变。",
+        scope: "backend/broker/scheduler.py(新 cron), backend/services/(sim auto reconciliation), tests/",
+        depends: "(amendment 前置:P1-2.A-amendment-2026-06-12)",
+        acceptance: "16:10 cron 仅纯 sim 模式跑 + 零差自动 RESOLVED 留痕 + 差异 fail-closed 冻结+告警 + feishu 模式不变。",
+        tests: "零差自动决议 + 差异冻结 + 模式 gating + append-only。",
+        sources: "P1-2.A-amendment-2026-06-12 §1.2, P0-5(对账阈值复用)",
+        commit: "", session_date: "", notes: "owner 需求1:模拟盘无用户交互;对账自闭环但差异必人工(bug 信号)。"
+      },
+      {
+        id: "AA-002", phase: "AA 模拟盘自动驾驶", status: "todo", priority: "P0",
+        title: "盘后归因复盘 job(18:00)+ ReviewRecord store(facts-first)",
+        summary: "交易日 18:00 逐笔归因:entry/exit 价 vs VWAP、触发器命中/被吞、滑点、持有期收益、policy_hash、style;append-only ReviewRecord store;'错过信号'反事实默认 non-promotable(仅预注册信号可入晋升证据,防后见之明);作 AB 客观晋升证据源;LLM 可读不可写。",
+        scope: "backend/review/(新模块), backend/broker/scheduler.py(新 cron), tests/review/",
+        depends: "AA-001",
+        acceptance: "18:00 cron + ReviewRecord append-only facts-first + 反事实 non-promotable 标记 + LLM 零写入 + 失败不冻结交易。",
+        tests: "归因字段完整 + append-only + non-promotable 守门 + cron gating。",
+        sources: "P1-2.A-amendment-2026-06-12 §1.1/§1.3, codex P2-6",
+        commit: "", session_date: "", notes: "复盘=自进化的数据地基;facts 先于 conclusions。"
+      },
+      {
+        id: "AA-003", phase: "AA 模拟盘自动驾驶", status: "todo", priority: "P0",
+        title: "周末/节假日复盘实验 cron lane + ops 门",
+        summary: "新 gating 类型'非交易日':周六 10:00 周度深复盘+实验规划;周日/节假日补跑;ops 门全满足才跑(无 OPEN ticket/snapshot checksum 有效/磁盘/LLM 预算计同一计数器/数据新鲜度/距开盘 ≥2h 不激活),否则 skip+audit;失败不冻结交易。",
+        scope: "backend/broker/scheduler.py, backend/review/(weekly), config/, tests/",
+        depends: "AA-002",
+        acceptance: "周六/节假日 lane 触发 + ops 门逐项 skip+audit + 预算不绕 ¥100 cap + 交易解耦。",
+        tests: "非交易日 gating + ops 门各项 + skip 留痕 + 预算计数。",
+        sources: "P1-2.A-amendment-2026-06-12 §1.1/§1.4, codex P2-4",
+        commit: "", session_date: "", notes: "当前周末/节假日零 job;此 lane 是'非交易时间自进化'的基础设施。"
+      },
+      {
+        id: "AA-004", phase: "AA 模拟盘自动驾驶", status: "todo", priority: "P0",
+        title: "绩效按 policy_hash 分段 + 持仓铭牌(entry_policy_hash/style/卖出栈版本)",
+        summary: "EquityPoint/acceptance/performance 全挂 policy_hash(activation manifest 哈希);晋升即开新段;就绪度判定以当前段为准;持仓记 entry_policy_hash + style + 卖出栈版本(降级只影响未来入场的前提)。",
+        scope: "backend/models/, backend/services/acceptance_report.py, backend/api/performance.py, tests/",
+        depends: "AA-002",
+        acceptance: "三类指标全分段 + 切换点留痕 + 当前段就绪度 + 持仓铭牌字段贯穿。",
+        tests: "分段正确性 + 切换点 + 铭牌往返 + 旧数据兼容(无 hash=legacy 段)。",
+        sources: "P2-2-amendment-2026-06-12 §1.6, codex P0-1/P0-5",
+        commit: "", session_date: "", notes: "防自动晋升把就绪度曲线变成混血不可复现;codex P0 第一条。"
+      },
+      {
+        id: "AA-005", phase: "AA 模拟盘自动驾驶", status: "todo", priority: "P1",
+        title: "backend/review/ 模块 CLAUDE.md + 隔离 + Phase AA 收尾",
+        summary: "review 模块 CLAUDE.md + import 隔离(严禁 import backend.{llm,agents,mirofish};LLM 复盘文本走 orchestration 注入)+ redline + SSoT done + session log。",
+        scope: "backend/review/CLAUDE.md, scripts/redline-check.sh, docs/plan.html",
+        depends: "AA-001, AA-002, AA-003, AA-004",
+        acceptance: "AST 隔离 + redline 全绿 + Phase AA 全 done。",
+        tests: "AST 隔离 + redline + 全量 pytest。",
+        sources: "P1-2.A-amendment-2026-06-12",
+        commit: "", session_date: "", notes: "复盘模块纯确定性;LLM 只在 orchestration 层注入。"
+      },
+      {
+        id: "AB-001", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        title: "ExperimentRegistry(append-only 全实验记录,防多重检验)",
+        summary: "全部实验(含失败)append-only 登记:假设/参数空间/窗口/样本数/结果/CI;晋升门槛随累计试验次数校正(deflated Sharpe/Bonferroni 风格);内容寻址 experiment_id。",
+        scope: "backend/strategy_evolution/experiment_registry.py, tests/strategy_evolution/",
+        depends: "R-002",
+        acceptance: "append-only + 含失败实验 + 多重检验校正系数可查 + 内容寻址。",
+        tests: "登记往返 + 不可改写 + 校正随次数单调收紧。",
+        sources: "P2-2-amendment-2026-06-12 §1.1, codex P2-1",
+        commit: "", session_date: "", notes: "不记失败=晋升引擎变多重检验机器;codex P2 第一条。"
+      },
+      {
+        id: "AB-002", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        title: "ObjectivePromotionEngine(分层窗口+样本量+CI+8门+anti-gaming,确定性)",
+        summary: "确定性晋升判据:阈值参数 ≥15td 且 ≥30 触发样本 / prompt ≥20td 且 ≥15 笔成交 / 策略代码 45td;challenger vs incumbent 同 PIT 输入 bootstrap CI 显著(接现有 ShadowChain CI);acceptance 8 门不劣化+回撤不恶化;anti-gaming(最低敞口/最少信号/换手边界);LLM 零参与判定。",
+        scope: "backend/strategy_evolution/objective_promotion.py, tests/strategy_evolution/",
+        depends: "AB-001",
+        acceptance: "判据全确定性可 replay + 双门槛 + CI gate + anti-gaming + LLM 零参与(对抗)。",
+        tests: "各门槛边界 + CI 判定 + 小样本拒晋升 + 空仓策略拒晋升 + 同输入同输出。",
+        sources: "P2-2-amendment-2026-06-12 §1.1, codex P0-2/P2-3, owner 拍板 2026-06-12",
+        commit: "", session_date: "", notes: "owner:尊重客观表现;codex:天数门槛统计无效→样本量+CI。"
+      },
+      {
+        id: "AB-003", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        title: "PromotionIntent + activation manifest + 受控重启激活(git 非控制面)",
+        summary: "append-only PromotionIntent + 内容寻址 activation manifest(全套 artifact 哈希)+ 原子 next_boot.lock 切换 + 08:30 受控重启窗口(外部 supervisor,距 09:35 ≥65min)+ 开机哈希/健康断言失败自动回退上一 manifest;git 仅事后镜像,严禁 runtime 进程 git commit;PromotionEngine 成为 lockfile 唯一程序化写入方(经 intent 链审计)。",
+        scope: "backend/strategy_evolution/{promotion_intent,activation}.py, deploy/(supervisor), tests/",
+        depends: "AB-002",
+        acceptance: "intent append-only + manifest 内容寻址 + 原子切换 + 开机断言+自动回退 + runtime 零 git 调用(对抗)+ 激活窗口距开盘守门。",
+        tests: "激活往返 + 断言失败回退 + 原子性 + 零 git(AST/grep)+ 窗口守门。",
+        sources: "P2-2-amendment-2026-06-12 §1.2, codex P0-4",
+        commit: "", session_date: "", notes: "codex:auto-git-commit 是错误激活原语;重启生效语义保留,变的只是批准主体。"
+      },
+      {
+        id: "AB-004", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        title: "auto-demote + 回滚(incumbent 续跑 counterfactual;降级只影响未来入场)",
+        summary: "晋升后 incumbent 继续 shadow 跑作 live counterfactual 基线;challenger K 日相对劣化自动降级;持仓沿用 entry_policy_hash 入场时卖出栈;退役 artifact 永久保留可回放;晋升冷却期防震荡。",
+        scope: "backend/strategy_evolution/demotion.py, tests/strategy_evolution/",
+        depends: "AB-003, AA-004",
+        acceptance: "incumbent 续跑 + K 日相对劣化判定 + 降级不影响存量持仓卖出栈 + artifact 永不删 + 冷却期。",
+        tests: "降级触发 + 持仓卖出栈不变(对抗)+ 回放退役 artifact + 冷却。",
+        sources: "P2-2-amendment-2026-06-12 §1.3, codex P0-5/P2-2",
+        commit: "", session_date: "", notes: "降级用相对基线非绝对收益;防熊市误杀好策略。"
+      },
+      {
+        id: "AB-005", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        title: "冻结不可进化集 + 可进化白名单(immutable clamp + safety-adjacent)",
+        summary: "frozen non-evolvable 集(安全地基全部+仓位三连+槽cap+熔断+预算+universe+14-check+对账阈值+模式开关)对抗测试钉死;可进化白名单每参数 immutable clamp(clamp 不可进化);能推迟 SELL 的参数列 safety-adjacent 更紧 clamp+止损只紧不松单调约束。",
+        scope: "backend/strategy_evolution/evolvable_params.py, config/, tests/",
+        depends: "AB-002",
+        acceptance: "冻结集种入进化候选必拒(对抗)+ clamp 越界必拒 + safety-adjacent 单调约束 + clamp 自身 runtime 不可改。",
+        tests: "对抗:伪造高分安全参数变体不被晋升;clamp 边界;单调约束。",
+        sources: "P2-2-amendment-2026-06-12 §1.4/§1.5, codex P1-3",
+        commit: "", session_date: "", notes: "自进化的安全边界=本任务;先于引擎接通真实参数。"
+      },
+      {
+        id: "AB-006", phase: "AB 客观自进化", status: "todo", priority: "P1",
+        title: "prompt artifact 政策化(禁类 lint + 字节捕获 + replay record)",
+        summary: "prompt/exemplars 变体按政策 artifact 对待:禁类 lint(决策类/指令类语句拒入)+ shadow 期请求/响应字节全捕获(仿 theme provenance)+ replay record;GEPA/exemplars 产物全走 AB-002 同一客观晋升门;SOP/人格卡骨架 frozen 校验沿用。",
+        scope: "backend/strategy_evolution/prompt_policy.py, backend/services/dspy_gepa_runner.py(接线), tests/",
+        depends: "AB-002, AB-005",
+        acceptance: "lint 拒禁类 + 字节捕获完整才 promotable + 骨架 frozen + 走同一晋升门。",
+        tests: "禁类样本拒 + 隐藏字节 non-promotable + 骨架破坏拒。",
+        sources: "P2-2-amendment-2026-06-12 §1.5, codex P0-3",
+        commit: "", session_date: "", notes: "prompt 进化=间接 LLM 自治泄漏面;按政策 artifact 关笼子。"
+      },
+      {
+        id: "AB-007", phase: "AB 客观自进化", status: "todo", priority: "P1",
+        title: "shadow 撮合严酷化(防 MockBroker 过拟合)+ 22:00 cron 接线",
+        summary: "shadow 评估用更严苛成交假设:涨跌停不成交/ADV 容量上限/价格冲击/延迟成交/陈旧报价拒绝(仅 shadow 评估路径,实盘镜像撮合不变);R-004 的 evolution_shadow_run 22:00 cron + 独立 sub-budget 接线进 AB 实验循环。",
+        scope: "backend/strategy_evolution/harsh_fill_model.py, backend/broker/scheduler.py(接线), backend/main.py, tests/",
+        depends: "AB-002",
+        acceptance: "严苛假设仅 shadow 路径 + MockBroker 实盘撮合 bit-identical + 22:00 cron 真接线 + sub-budget。",
+        tests: "严苛 vs 标准撮合差异 + 实盘路径不变(对抗)+ cron 触发 + 预算降级。",
+        sources: "P2-2-amendment-2026-06-12 §1.1(5), codex P2-5, R-004(吸收)",
+        commit: "", session_date: "", notes: "进化对 MockBroker 怪癖过拟合是真实激励回路;rqalpha 差分(R-002)+ 严酷化双保险。"
+      },
+      {
+        id: "AB-008", phase: "AB 客观自进化", status: "todo", priority: "P0",
+        title: "端到端对抗测试 + 模块隔离 + Phase AB 收尾",
+        summary: "端到端对抗:种入恶意高分 artifact 不被晋升(冻结集/未捕获字节/小样本/anti-gaming)/ 晋升永不改安全参数 / feishu_interactive 模式晋升仍人工 gate / 模式切换冻结 in-flight intent;strategy_evolution import 隔离回归;redline + SSoT。",
+        scope: "tests/strategy_evolution/test_adversarial_promotion.py, scripts/redline-check.sh, docs/plan.html",
+        depends: "AB-001, AB-002, AB-003, AB-004, AB-005, AB-006, AB-007",
+        acceptance: "对抗全绿 + 实盘人工 gate 不变(对抗)+ redline + Phase AB 全 done。",
+        tests: "对抗 5 族 + AST 隔离 + redline + 全量 pytest。",
+        sources: "P2-2-amendment-2026-06-12 §2, R0 §4",
+        commit: "", session_date: "", notes: "对抗测试先写(RED);sim 自治域与实盘人工域的边界是最高风险面。"
+      },
+      {
+        id: "AC-001", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        title: "StyleClassifier(确定性)+ PositionThesis.style + 持仓铭牌",
+        summary: "确定性分型 style ∈ {SHORT_TERM, VALUE}(输入=量化因子谱+三层得分+thesis 可派生性;同输入同输出可 replay);买入时定型落 PositionThesis.style + 持仓铭牌(entry_policy_hash/卖出栈版本,配套 AA-004);标签 display-only 永不改风控数值。",
+        scope: "backend/style/(新模块), backend/models/position_thesis.py(扩 style), tests/style/",
+        depends: "(amendment 前置:P0-8-amendment-2026-06-12)",
+        acceptance: "确定性 replay + style 落库 + 标签不改任何数值字段(对抗)+ 旧 thesis 兼容(无 style=legacy)。",
+        tests: "分型确定性 + 落库往返 + 对抗:改标签→风控输出 bit-identical。",
+        sources: "P0-8-amendment-2026-06-12 §1.1, owner 需求3",
+        commit: "", session_date: "", notes: "短线=数学(现5因子栈);价值=三层筛选;先有分型容器再有价值得分。"
+      },
+      {
+        id: "AC-002", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        title: "中层因子集:资金认可+题材容量(event-study/换手/容量/资金流,PIT)",
+        summary: "确定性 PIT 特征:事件后异常收益(事件日=pinned EVENT/THEME 节点)+ 板块成交额/换手分位 + 自由流通市值容量 + Amihud 非流动性 + 北向/主力资金分位(仅 PIT-safe 源);Tushare SDK-only;入 screening 同构纯模块。",
+        scope: "backend/screening/value_factors.py(新), backend/marketdata_snapshot/(若需新数据域), tests/",
+        depends: "AC-001",
+        acceptance: "全因子 PIT 可 replay + 事件日来自 pin 节点 + 数据源 SDK-only + 0 LLM。",
+        tests: "event-study 窗口正确 + 分位确定性 + PIT 泄漏对抗 + 隔离。",
+        sources: "P0-8-amendment-2026-06-12 §1.2, codex P1-4",
+        commit: "", session_date: "", notes: "owner:消息刺激后有市场反应+能容纳大资金——全部量化可测。"
+      },
+      {
+        id: "AC-003", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        title: "底层+表层因子:大势主线匹配 + KG 共振计数 + 基本面(公告日 PIT)+ 弹性",
+        summary: "底层=pinned THEME 覆盖+板块动量分位+regime;表层=KG 逻辑共振计数(独立 evidence family,同 run 重复引用只算1)+ tushare fundamentals 按公告日 PIT(严禁报告期泄漏)+ 弹性(beta/振幅/自由流通占比)。",
+        scope: "backend/screening/value_factors.py(扩), backend/knowledge_graph/(共振查询,只读), tests/",
+        depends: "AC-002",
+        acceptance: "共振=独立 family 计数 + 公告日 PIT + KG 只读 + 三层得分合成确定性。",
+        tests: "family 去重 + 公告日泄漏对抗 + 合成可 replay。",
+        sources: "P0-8-amendment-2026-06-12 §1.2, codex P1-4/P1-5",
+        commit: "", session_date: "", notes: "owner:≥2 核心逻辑+基本面支撑/弹性属性;共振不能数同一来源的回声。"
+      },
+      {
+        id: "AC-004", phase: "AC 风格分型与价值线", status: "todo", priority: "P1",
+        title: "题材四级赋权:THEME SOP 扩 theme_tier + 人工 pin 确认 + 权重配置",
+        summary: "SOP 输出 schema 扩 theme_tier ∈ {1 国家事件,2 政策,3 技术,4 个股}(LLM 给建议,人工 pin 时确认,tier 是 pin artifact 一部分);三层得分题材项 × tier 权重(初始 1.0/0.75/0.5/0.25,config 化+可进化白名单,序约束 immutable clamp)。",
+        scope: "backend/theme_research/sop_schema.py(扩,schema_version bump), config/prompts/theme_research/(v2), config/, tests/",
+        depends: "AC-003",
+        acceptance: "tier 经人工 pin 确认才生效 + 权重序约束 + schema 版本化 + v1 artifact 兼容(无 tier=4 保守)。",
+        tests: "tier pin 流 + 序约束 clamp + 版本兼容。",
+        sources: "P0-8-amendment-2026-06-12 §1.3, owner 需求3(四级赋权)",
+        commit: "", session_date: "", notes: "tier 不是 runtime LLM 输出而是 pin artifact 属性;国家事件>政策>技术>个股。"
+      },
+      {
+        id: "AC-005", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        title: "受约束槽位分配 selector 接线(价值≤2/量化≥3;空集 bit-identical)",
+        summary: "统一资格硬门不变 → 全体合格候选过 StyleClassifier → 价值槽 ≤2/纯量化 ≥3(沿用现配额)→ 价值槽内三层得分排序、短线槽现5因子排序;无 pin/价值槽空与现状 bit-identical;配额列可进化白名单(0..2 整数域 clamp)。",
+        scope: "backend/candidate_selector/selector.py(扩展), tests/",
+        depends: "AC-003, AC-001",
+        acceptance: "硬门不变 + 配额守恒 + 空集 bit-identical + 纯量化永不被挤(对抗)。",
+        tests: "分配边界 + bit-identical 回归 + 对抗:价值高分不挤量化保留位。",
+        sources: "P0-8-amendment-2026-06-12 §1.4, codex P1-1/P1-2, owner 拍板 2026-06-12",
+        commit: "", session_date: "", notes: "codex:双池硬切会放进弱价值挤掉强短线;统一硬门+受约束分配。"
+      },
+      {
+        id: "AC-006", phase: "AC 风格分型与价值线", status: "todo", priority: "P0",
+        title: "per-style 卖出栈软层参数 + 风格不变式对抗测试",
+        summary: "style 只影响软层(止盈带/time-stop/复盘节奏;VALUE 复用既有 thesis-gated 止盈豁免);硬保护止损/熔断/仓位三连/14-check/可卖量/单一构造点风格不变式——对抗:任意 style 组合下保护性 SELL 输出 bit-identical;style 入 trigger record + replay hash。",
+        scope: "backend/monitoring/intraday_triggers.py(软层接线), backend/orchestration/, tests/",
+        depends: "AC-001",
+        acceptance: "软层差异化 + 硬层不变式(对抗)+ style 入 record/manifest + env 门控 default-OFF。",
+        tests: "对抗:VALUE 标签不放松 ATR/drawdown;软层参数生效;replay。",
+        sources: "P0-8-amendment-2026-06-12 §1.5, codex P0-8",
+        commit: "", session_date: "", notes: "价值投资≠放松风控;风格只改'何时主动收割',不改'何时必须逃生'。"
+      },
+      {
+        id: "AC-007", phase: "AC 风格分型与价值线", status: "todo", priority: "P1",
+        title: "backend/style/ 模块 CLAUDE.md + 隔离 + Phase AC 收尾",
+        summary: "style/value_factors 模块 CLAUDE.md + import 隔离(纯量化,0 LLM)+ redline + 标签进 evidence/飞书渲染上下文(display-only)+ SSoT done。",
+        scope: "backend/style/CLAUDE.md, backend/integrations/feishu/renderer.py(标签), scripts/redline-check.sh, docs/plan.html",
+        depends: "AC-001, AC-002, AC-003, AC-004, AC-005, AC-006",
+        acceptance: "AST 隔离 + 飞书标注短线/价值(display-only)+ redline + Phase AC 全 done。",
+        tests: "AST + renderer 快照 + redline + 全量 pytest。",
+        sources: "P0-8-amendment-2026-06-12, owner 需求3(飞书明确标注)",
+        commit: "", session_date: "", notes: "飞书消息标注让 owner 心中有数;renderer 必经防注入。"
+      },
+      {
+        id: "AD-001", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P0",
+        title: "KPI 头部 + 实盘就绪度 gauge(EquityPoint 真相源,policy 分段)",
+        summary: "Performance/Dashboard 重构 KPI:总收益/年化/HS300 超额/回撤/夏普以 EquityPoint 为真相源(替换成交净额派生);acceptance 8 门 gauge + can_switch_to_feishu_on 状态;短窗(<45td)年化降权显示+样本天数/数据质量 flag;曲线按 policy_hash 分段+切换点标注。",
+        scope: "frontend/src/views/{Performance,Dashboard}.vue, backend/api/performance.py(EquityPoint 源), tests/",
+        depends: "Z-001, AA-004",
+        acceptance: "EquityPoint 真相源 + 8门 gauge + 分段曲线 + 短窗降权 + 全只读。",
+        tests: "vitest + type-check + 指标对账(EquityPoint vs API)。",
+        sources: "P2-2-amendment-2026-06-12 §1.6, codex P1-6, owner 需求2",
+        commit: "", session_date: "", notes: "owner:收益率/年化/跑赢指数高=具备实盘能力——这个证据必须干净。"
+      },
+      {
+        id: "AD-002", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        title: "自动驾驶时间线 panel(今日全链路事件轴)",
+        summary: "Dashboard/SystemStatus panel:今日 筛选→候选→辩论→指令→成交→Line-2 触发→盘后复盘 逐事件时间轴;复用现有 WS/轮询;全只读。",
+        scope: "frontend/src/views/{Dashboard,SystemStatus}.vue, frontend/src/components/",
+        depends: "Z-005",
+        acceptance: "时间线完整呈现当日链路 + 复用现有 WS 类 + 全只读。",
+        tests: "vitest + type-check + 只读。",
+        sources: "P1-5-amendment-2026-06-01(panel 范式), owner 需求2(富有逻辑性地展现)",
+        commit: "", session_date: "", notes: "建议调 frontend-design skill;模拟盘全自动的'可观察性'主视图。"
+      },
+      {
+        id: "AD-003", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        title: "进化面板(实验注册表/shadow 对照/晋升历史/当前 manifest)",
+        summary: "SystemStatus/Performance panel:ExperimentRegistry 列表(含失败)+ challenger vs incumbent shadow 对照曲线 + PromotionIntent 历史 + 当前 activation manifest 哈希;全只读。",
+        scope: "frontend/src/views/, frontend/src/components/, backend/api/(只读 GET)",
+        depends: "AB-003, Z-001",
+        acceptance: "四区块齐 + 只读 GET + 失败实验可见(不只赢家)。",
+        tests: "vitest + type-check + 只读 redline。",
+        sources: "P2-2-amendment-2026-06-12, owner 需求1(自进化可观察)",
+        commit: "", session_date: "", notes: "自进化的透明度=owner 对自治系统的信任基础。"
+      },
+      {
+        id: "AD-004", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        title: "风格标签贯穿前端(InstructionPlans/Portfolio badge)",
+        summary: "InstructionPlans 列表/详情 + Portfolio 持仓行 + 建议卡统一 短线⚡/价值🏛 badge(读 AC 分型,display-only);与飞书标注(AC-007)口径一致。",
+        scope: "frontend/src/views/{InstructionPlans,Portfolio}.vue, frontend/src/components/",
+        depends: "AC-001, Z-001",
+        acceptance: "badge 贯穿三处 + 与后端 style 单一真相 + display-only。",
+        tests: "vitest + type-check。",
+        sources: "P0-8-amendment-2026-06-12 §1.1, owner 需求3(前端明确标注)",
+        commit: "", session_date: "", notes: "让 owner 一眼区分'赚快钱'与'并肩成长'建议。"
+      },
+      {
+        id: "AD-005", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P0",
+        title: "手动操作填表:第3写端点 manual-trades + ExternalExecutionEvent + 飞书同步 + 绩效三分流",
+        summary: "POST /api/manual-trades(仅 feishu 模式;Pydantic strict;100整手+可卖量 clamp+现金校验)+ ExternalExecutionEvent 域(UT- 前缀,绝不伪造 InstructionPlan,不入决策账本/验收分母)+ ManualTradeApplier 进镜像(apply_external_fill 语义,幂等)+ renderer'已记录'飞书同步(对抗 parse 必失败)+ 绩效三分流(system_suggested/user_discretionary/reconciliation_reset;就绪度/进化只读 system 段)+ 前端表单按钮(持仓行预填/建议卡两路/两步确认/偏离落 deviation 日志)。",
+        scope: "backend/api/manual_trades.py(新), backend/models/, backend/services/manual_trade_applier.py, frontend/src/views/, frontend/src/api/, tests/",
+        depends: "(amendment 前置:P1-5-amendment-2026-06-12), AA-004, Z-001",
+        acceptance: "第3端点枚举锁定 + 纯 sim 403 + 域分离(对抗:UT- 不入 instruction_plans)+ 三分流 + 飞书已记录语义 + 幂等。",
+        tests: "schema 边界 + 可卖量 clamp + 域分离对抗 + 分流统计 + renderer 快照 + 前后端校验镜像。",
+        sources: "P1-5-amendment-2026-06-12, codex P0-6/P0-7/P1-7, owner 需求2",
+        commit: "", session_date: "", notes: "owner:用户可能在系统没建议卖出时自主止盈止损——记录即真相,但绝不污染系统能力评估。"
+      },
+      {
+        id: "AD-006", phase: "AD 前端驾驶舱与实盘交互", status: "todo", priority: "P1",
+        title: "redline 写端点 2→3 + 全套前端门禁 + Phase AD 收尾",
+        summary: "redline-check.sh 写端点允许集 2→3;type-check/vitest/build 全绿;页锁/WS 数核对(新增页/WS 类仍需 amendment);SSoT done + session log。",
+        scope: "scripts/redline-check.sh, frontend/, docs/plan.html",
+        depends: "AD-001, AD-002, AD-003, AD-004, AD-005",
+        acceptance: "redline 3 写端点 + 前端门禁全绿 + Phase AD 全 done。",
+        tests: "redline + type-check + vitest + build。",
+        sources: "P1-5-amendment-2026-06-12",
+        commit: "", session_date: "", notes: "写端点枚举锁定纪律不松:第 4 个仍需 amendment。"
       }
     ];
 
