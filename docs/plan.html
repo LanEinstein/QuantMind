@@ -911,7 +911,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         state_in: "续 #79(R-002 done 已 push;owner 指令『继续 Phase AB,从 AB-001 起』)。活动 Phase=AB(8 任务,amendment 前置 P2-2-amendment-2026-06-12 已锁定;depends R-002✓/AA-004✓ 全满足)。调查(1 Explore agent):Phase X 栈可复用资产=compute_bootstrap_pnl_ci_95pct(seed 20260518 锁定)+ evaluate_challenger 8 门 verdict + EvolutionDispatcher(未接线,ShadowChain 缺 ChallengerReplayer 具体实现)+ GEPA runner(预算双 assert)+ cost_guard 无进化 sub-budget + lockfile 无任何程序化写方 + deploy 无 supervisor 脚本。",
         actions: "**新 backend/strategy_evolution/ 8 模块(全确定性,LLM 零参与判定)**。AB-001=experiment_registry.py(append-only 含失败;design 级 content-addressed 防 outcome 洗白;count_trials+bonferroni)。AB-002=objective_promotion.py(纯函数 9 命名 gate:分层双门槛/锁定 bootstrap CI/deflated Sharpe×n_trials/锁定 8 门不劣化/anti-gaming 三件/oracle DIVERGENT 硬拒;位等可 replay)。AB-003=promotion_intent.py(sim 模式门+决策门+append-only 事件账本+allowlist+freeze_all_pending)+ activation.py(目标态 content-addressed manifest/原子 next_boot.lock+2h 黑窗/boot consume-once 备份→换→registry 健康断言→自动回退/损坏隔离)+ deploy/promote_restart.sh(外部 supervisor 08:25-08:45)+ main.py boot 消费接线(intent 终态映射);**零 git=redline [AB-008]+AST**。AB-004=demotion.py(相对 counterfactual ≥10d ≤-150bps;坏输入无判定;10 日冷却)。AB-005=evolvable_params.py(28 名冻结集 raise 不论分数+immutable clamp 白名单+safety-adjacent 只紧不松+归一/序/整数域组约束)。AB-006=prompt_policy.py(中英禁类 lint 接 GEPA 出炉即拦+字节捕获完整性 non-promotable+骨架 frozen)。AB-007=harsh_fill_model.py(harsh-or-equal 契约,零 broker import)+ cost_guard.reserve_evolution_run(双层 sub-budget ¥10/统一 ¥100 不绕 cap)+ 22:00 cron 真接线(skip 信号→DEGRADED 审计)。AB-008=对抗 5 族+redline [AB-008]+模块 CLAUDE.md 全面更新。**门禁**:codex review --uncommitted → **1 P1 + 3 P2 全修+回归**(P1=staging 后翻 feishu 模式 boot 仍会应用 → apply 时复查模式、staged 隔离 .frozen;P2=param-only manifest 静默 no-op → staging+apply 双层拒;P2=失败激活 intent 卡死 PENDING → intent_status_for_activation 映射进 allowlist;P2=skip 的 run 被审计成 SUCCESS → 回调返回信号、scheduler 审计 DEGRADED;summary=docs/reviews/phase-ab-codex-review-summary.md)。192 模块测试 / 全量 **5374 passed**(基线 5246→+128)/ ruff / redline(新 [AB-008] + [R-002] grep 放宽到包级)/ mypy(strategy_evolution 13 文件)全绿。安全地基:7 禁其余 6 条不动;**sim/live 域边界三重模式门(intent 创建+staging+boot apply)**;冻结集对抗逐名钉死。",
         commit: "feature `990733e`(8 新模块 + GEPA lint 接线 + cost_guard sub-budget + scheduler skip 信号 + main.py boot 消费/22:00 接线 + deploy 脚本 + 10 测试文件 + review summary;跨任务耦合沿 #74/#77/#78 捆绑先例)+ 本 docs-only 收尾,随收尾 push origin/main(owner 本 session 授权链)。",
-        next: "**Phase AB ✅ 全 done。ship 序 Z→AA→R-002→AB→**AC**→AD → 下一站 = Phase AC 风格分型与价值线(起步 AC-001 StyleClassifier,depends Z-001✓/AA-004✓ 已满足)**。**AB 已知 gap(后续任务,不阻塞 AC)**:① ShadowChain ChallengerReplayer 具体实现 + 22:00 任务源(experiment harness)→ dispatcher 挂载;② 白名单参数的 runtime 落地路径(当前 param-bearing manifest 双层拒);③ rqalpha 安装+数据 bundle(owner 决策点,非商用 Apache 2.0)。**运行期**:boot 激活消费 + 22:00 cron + sub-budget 随 owner 重启生效;无 staged lock 时全部 NOOP/skip,行为与 #78 基线一致。",
+        next: "**Phase AB ✅ 全 done。ship 序 Z→AA→R-002→AB→**AC**→AD → 下一站 = Phase AC 风格分型与价值线(起步 AC-001 StyleClassifier;amendment 前置 P0-8-amendment-2026-06-12 已锁定〔#76〕,无未满足 depends;AA-004 铭牌为其配套基建已 ✓)**。**Phase R 处置(防『最早 todo Phase』规则误导)**:R-004/R-005 已随 AB/R-002 交付标 done(990733e);R-003 仅余**实盘(feishu_interactive)人工 gate 语义**(sim 范围已被 AB 客观晋升替代)→ 实盘上线前与 AB-002/003 合并设计,不在当前 sim ship 序内。**AB 已知 gap(后续任务,不阻塞 AC)**:① ShadowChain ChallengerReplayer 具体实现 + 22:00 任务源(experiment harness)→ dispatcher 挂载;② 白名单参数的 runtime 落地路径(当前 param-bearing manifest 双层拒);③ rqalpha 安装+数据 bundle(owner 决策点,非商用 Apache 2.0)。**运行期**:boot 激活消费 + 22:00 cron + sub-budget 随 owner 重启生效;无 staged lock 时全部 NOOP/skip,行为与 #78 基线一致。",
       },
       {
         date: "2026-06-12",
@@ -3532,7 +3532,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", session_date: "", notes: "⚠️ 2026-06-12 范围变更(P2-2-amendment-2026-06-12):sim 范围人工 gate 被 Phase AB 客观晋升替代(分层窗口+样本量双门槛取代统一 45 日);本任务的人工 gate 语义仅保留给 feishu_interactive 实盘模式。实施时与 AB-002/AB-003 合并设计。"
       },
       {
-        id: "R-004", phase: "R 自进化v2", status: "todo", priority: "P1",
+        id: "R-004", phase: "R 自进化v2", status: "done", priority: "P1",
         title: "evolution_shadow_run 22:00 + 独立 sub-budget + audit 类5 + P2-2 落地",
         summary: "BrokerScheduler evolution_shadow_run 22:00(第五 cron,原 P2-2 规划)启用;shadow 给独立 sub-budget,日余额低降级/跳过,计同一 utc_date 计数器;audit 类 5 自进化生命周期 7 类(actor=SYSTEM/SCHEDULER,严禁 LLM 写)。",
         scope: "backend/broker/scheduler.py, backend/audit/(类5), backend/strategy_evolution/",
@@ -3540,10 +3540,10 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "22:00 cron + shadow 独立 sub-budget + 日余额低降级 + audit 类 5 七类 + LLM 不写 audit。",
         tests: "cron 触发 + sub-budget 降级 + audit 类 5 + LLM 写 audit 拒绝。",
         sources: "P2-2-amendment-2026-05-24, P1-7-amendment-2026-05-24, P1-2.A-amendment(第五 cron)",
-        commit: "", session_date: "", notes: "shadow MVP OUT;Phase R 启用给独立 sub-budget。⚠️ 2026-06-12:22:00 cron 接线与 sub-budget 由 AB-007 吸收(P2-2-amendment-2026-06-12);audit 类5 七类仍按本任务落。"
+        commit: "990733e", session_date: "2026-06-12", notes: "shadow MVP OUT;Phase R 启用给独立 sub-budget。⚠️ 2026-06-12:22:00 cron 接线与 sub-budget 由 AB-007 吸收(P2-2-amendment-2026-06-12);audit 类5 七类仍按本任务落。 **done #80(被 AB-007 完整吸收)**:22:00 cron 接线(main.py 回调)+ 独立 sub-budget reserve_evolution_run(¥10 双层不绕 ¥100 cap)+ 日余额低 skip 降级(返回信号→scheduler 审计 DEGRADED)全在 990733e;audit 类 5 七类 + LLM 不写 audit 早已在 backend/audit/models.py(P1-6/J-007 时代锁定,B-005 测试守门)。无残余 scope。"
       },
       {
-        id: "R-005", phase: "R 自进化v2", status: "todo", priority: "P1",
+        id: "R-005", phase: "R 自进化v2", status: "done", priority: "P1",
         title: "backend/strategy_evolution/ 模块 + CLAUDE.md + 隔离测试",
         summary: "strategy_evolution 子任务 CLAUDE.md + import 隔离(严禁 backend.{api,broker,risk,llm,agents,mirofish,data})。",
         scope: "backend/strategy_evolution/CLAUDE.md, tests/strategy_evolution/",
@@ -3551,7 +3551,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "import 隔离 + CLAUDE.md 锁红线(人工 gate + LiveArtifactRegistry)+ 覆盖率 ≥80%。",
         tests: "AST 隔离 + 模块契约 + LiveArtifactRegistry 对抗测试纳入。",
         sources: "P2-2-amendment-2026-05-24, 用户子任务 CLAUDE.md 指令",
-        commit: "", session_date: "", notes: "7 禁不变(含 LLM 自动决策权);继承 P2-2 import 隔离。"
+        commit: "990733e", session_date: "2026-06-12", notes: "7 禁不变(含 LLM 自动决策权);继承 P2-2 import 隔离。 **done #80(随 R-002〔#79〕+ Phase AB〔#80〕交付)**:CLAUDE.md 两轮全面更新(R-002 oracle/lifecycle/anti-overfit + AB 8 模块红线与接口契约)+ tests/strategy_evolution/test_module_contract.py AST 隔离 + test_adversarial_promotion.py 隔离/零 git 族 + ruff TID251 全局禁(strategy_evolution 不在 per-file-ignores)+ 包覆盖率 97%〔≥80% acceptance ✓,199 tests〕。"
       },
       {
         id: "T-001", phase: "T 交易员与全栈", status: "todo", priority: "P1",
