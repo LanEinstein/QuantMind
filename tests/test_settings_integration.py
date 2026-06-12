@@ -160,6 +160,6 @@ class TestCostAggregation:
 
     async def test_cost_calculation_kimi(self) -> None:
         """Verify Kimi cost calculation accuracy."""
-        # Kimi (kimi-k2.6 FX-padded): 7.5 input + 30 output per million
+        # Kimi (kimi-k2.6 official RMB list): 6.5 input + 27 output per M
         cost = calculate_cost("kimi", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(37.5, abs=1e-6)
+        assert cost == pytest.approx(33.5, abs=1e-6)

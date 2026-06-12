@@ -285,8 +285,8 @@ class TestRouterUsageReserver:
 
         assert asyncio.run(harness()) is True
         assert captured["agent_name"] == "theme_investigator"
-        # 40_000 tokens × ¥30/M (kimi-k2.6 output list rate, FX-padded) = ¥1.2
-        assert captured["estimated_rmb"] == pytest.approx(1.2)
+        # 40_000 tokens × ¥27/M (kimi-k2.6 output realtime list) = ¥1.08
+        assert captured["estimated_rmb"] == pytest.approx(1.08)
 
     def test_reserve_false_on_budget_exceeded(
         self, monkeypatch: pytest.MonkeyPatch

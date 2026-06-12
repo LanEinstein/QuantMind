@@ -63,12 +63,12 @@ class CostRate:
 #                                    quota is assumed exhausted)
 # * qwen3.7-max       ¥12 / ¥36    (list price; the limited-time 50%-off
 #                                    ¥6/¥18 is intentionally ignored)
-# * kimi-k2.6         ¥7.5 / ¥30   (assumption: USD $0.95/$4.00 × FX 7.5,
-#                                    deliberately above the prevailing
-#                                    ~7.1-7.3 band so the table can only
-#                                    over-count; RMB list pending owner
-#                                    console verification —
-#                                    P0-10-amendment-2026-06-11 §6)
+# * kimi-k2.6         ¥6.5 / ¥27   (official RMB realtime list, owner-
+#                                    verified 2026-06-12 via
+#                                    platform.kimi.com/docs/pricing/batch;
+#                                    cache hit ¥2.75 and batch −40% are
+#                                    deliberately not priced in — cache-miss
+#                                    realtime is the conservative tier)
 MODEL_COST_RATES: dict[str, CostRate] = {
     "deepseek-v4-pro": CostRate(input_rmb_per_million=3.0, output_rmb_per_million=6.0),
     "deepseek-v4-flash": CostRate(
@@ -76,7 +76,7 @@ MODEL_COST_RATES: dict[str, CostRate] = {
     ),
     "qwen3.6-plus": CostRate(input_rmb_per_million=2.0, output_rmb_per_million=12.0),
     "qwen3.7-max": CostRate(input_rmb_per_million=12.0, output_rmb_per_million=36.0),
-    "kimi-k2.6": CostRate(input_rmb_per_million=7.5, output_rmb_per_million=30.0),
+    "kimi-k2.6": CostRate(input_rmb_per_million=6.5, output_rmb_per_million=27.0),
 }
 
 # Provider family → member models routed under that family (same

@@ -60,16 +60,16 @@ log = structlog.get_logger(component="services.theme_llm_client")
 _DEFAULT_AGENT_NAME = "theme_investigator"
 
 # Conservative tokens→RMB conversion for the pre-call reservation: price
-# EVERY estimated token at the kimi-k2.6 OUTPUT list rate (¥30/M, the
-# dearest direction — input is ¥7.5/M), so the reservation can only
-# over-cover. Kept ≥ MODEL_COST_RATES["kimi-k2.6"].output_rmb_per_million
-# by a drift test in tests/services/test_theme_llm_client.py — update
-# BOTH when the owner verifies the real kimi RMB list price
-# (P0-10-amendment-2026-06-11 §6). The actual spend is recorded by the
-# router's track_usage; the reservation is released by
+# EVERY estimated token at the kimi-k2.6 OUTPUT realtime list rate
+# (¥27/M, owner-verified 2026-06-12; the dearest direction — cache-miss
+# input is ¥6.5/M), so the reservation can only over-cover. Kept ≥
+# MODEL_COST_RATES["kimi-k2.6"].output_rmb_per_million by a drift test in
+# tests/services/test_theme_llm_client.py — update BOTH on any future
+# kimi reprice (P0-10-amendment-2026-06-11 §6). The actual spend is
+# recorded by the router's track_usage; the reservation is released by
 # :meth:`RouterUsageReserver.settle` (or by the cost_guard TTL if the
 # caller crashes).
-_DEFAULT_RMB_PER_MILLION_TOKENS = 30.0
+_DEFAULT_RMB_PER_MILLION_TOKENS = 27.0
 
 # Mirror of the theme_investigator thinking.max_tokens budget in
 # config/agent_models.yaml (drift-tested against the yaml in

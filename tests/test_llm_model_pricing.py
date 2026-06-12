@@ -26,18 +26,18 @@ from backend.llm.fallback import (
     track_usage,
 )
 
-# Official list prices (¥/M tokens, cache-miss input), verified 2026-06-11 —
-# EXCEPT kimi-k2.6, which is a deliberate over-estimate (USD $0.95/$4.00 ×
-# FX 7.5, above the prevailing band) pending owner console verification
-# (P0-10-amendment-2026-06-11 §6). When the owner confirms the real RMB
-# list, correct MODEL_COST_RATES (and the drift-guarded constants it
-# anchors) and THEN this table — not the other way around.
+# Official list prices (¥/M tokens, cache-miss realtime input).
+# deepseek/qwen verified 2026-06-11; kimi-k2.6 owner-verified 2026-06-12
+# via platform.kimi.com/docs/pricing/batch (realtime ¥6.5 in / ¥27 out;
+# cache hit ¥2.75 and batch −40% deliberately not priced in). On any
+# future reprice, correct MODEL_COST_RATES (and the drift-guarded
+# constants it anchors) and THEN this table — not the other way around.
 _EXPECTED_MODEL_RATES: dict[str, tuple[float, float]] = {
     "deepseek-v4-pro": (3.0, 6.0),
     "deepseek-v4-flash": (1.0, 2.0),
     "qwen3.6-plus": (2.0, 12.0),
     "qwen3.7-max": (12.0, 36.0),
-    "kimi-k2.6": (7.5, 30.0),
+    "kimi-k2.6": (6.5, 27.0),
 }
 
 
@@ -123,7 +123,7 @@ class TestTrackUsageModelAware:
         assert _cost_rmb_written(mock_redis) == pytest.approx(14.0)
 
     async def test_kimi_k26_uses_its_own_rate(self, mock_redis: AsyncMock) -> None:
-        # 1M + 1M at 7.5/30 → 37.5 RMB (thinking tokens bill as output).
+        # 1M + 1M at 6.5/27 → 33.5 RMB (thinking tokens bill as output).
         await track_usage(
             mock_redis,
             "thesis_reviewer",
@@ -132,7 +132,7 @@ class TestTrackUsageModelAware:
             1_000_000,
             model="kimi-k2.6",
         )
-        assert _cost_rmb_written(mock_redis) == pytest.approx(37.5)
+        assert _cost_rmb_written(mock_redis) == pytest.approx(33.5)
 
     async def test_unknown_model_string_falls_back_to_family_rate(
         self, mock_redis: AsyncMock

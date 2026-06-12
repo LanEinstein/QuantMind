@@ -27,7 +27,7 @@
 | deepseek-v4-flash | 1 | 2 | 0.02 | 1M | 同上 |
 | qwen3.6-plus | 2 | 12 | 0.2 | 256k 档 | 阿里云百炼(新户 90 天免费额度大概率已耗尽,「~¥0」假设过期) |
 | qwen3.7-max | **12 / 36 列价**(限时 5 折 6/18) | — | 5 折同享 | 1M(出 64k) | 阿里云百炼;GPQA 92.4 / SWE-Pro 60.6 全场第一 |
-| kimi-k2.6 | $0.95 ≈ **7.5**(假设) | $4.00 ≈ **30**(假设) | $0.16 ≈ 1.2 | 256k | platform.kimi.com 仅美元价;RMB 按 FX **7.5 上垫**(高于现行 7.1-7.3 区间,确保表只多算不少算)**待 owner 控制台核实**;K2.5→K2.6 涨价 58%/33% |
+| kimi-k2.6 | **6.5**(实价) | **27**(实价) | 2.75 | 256k | **2026-06-12 owner 提供官方人民币价目**(platform.kimi.com/docs/pricing/batch,实时档;batch 为 6 折不入表):初版 FX 7.5 上垫假设 7.5/30 已按 §6 授权路径校准为实价 6.5/27 |
 
 owner `AskUserQuestion` 2026-06-11 四问拍板:
 
@@ -72,7 +72,7 @@ owner `AskUserQuestion` 2026-06-11 四问拍板:
 
 ## 6. 遗留 follow-up(本 amendment 记录,不实施)
 
-- **kimi RMB 实价校准**:当前 7.5/30 为 FX 上垫假设。owner 在 Moonshot 控制台核实后,改 `backend/llm/fallback.py::MODEL_COST_RATES["kimi-k2.6"]` + 重启(无需新 amendment,本 amendment 已授权按官方实价校准)。**注意不止一行**:若实价高于 30 输出档,§4.5 的防漂移测试会红(`theme_llm_client._DEFAULT_RMB_PER_MILLION_TOKENS` / `thesis_advisory._DEFAULT_ESTIMATED_RMB` 需同步上调)——测试红即改全,这是设计行为,防止预留口径静默过期。
+- **kimi RMB 实价校准 ✅ 已完成(2026-06-12)**:owner 提供官方价目页(platform.kimi.com/docs/pricing/batch)→ 实时档 6.5/27(缓存命中 2.75 / batch 6 折不入表),按本条授权路径校准 `MODEL_COST_RATES` + `theme_llm_client._DEFAULT_RMB_PER_MILLION_TOKENS`(30→27)+ thesis 预留 0.40 不变(worst-case 降至 ≈¥0.34,headroom 合理),防漂移测试同步。后续 Moonshot 再调价仍走此路径。
 - **kimi ¥4/日 cap 语义错位**(review 发现,本次不改机制):该 cap 在 router 只拦 **escalation** 分支,而当前生产无 tiered routing、kimi 全是 primary 调用(intelligence_officer/bull/bear + 新 thesis/theme)→ cap 实际不约束任何运行时调用,仅 `get_kimi_budget_state` 状态/告警会在共享 kimi 桶 >¥4 时变 hard_breach(成本面板红灯属预期,owner 已接受该日支出)。若未来要让 ¥4 cap 真正约束 primary kimi,或如实上调/退役该常量(CLAUDE.md §2.10),走独立 amendment。
 - **theme research cron 接线时**(Phase Z):建议镜像 `reserve_thesis_review_slot`/`reserve_anomaly_llm_slot` 在 cost_guard 增加 `reserve_theme_research_slot`(dedup + 日 run 数 cap),并由 cron wrapper 在 `investigate()` 返回后调用 `RouterUsageReserver.settle()`(否则预留靠 1h TTL 自然过期,可能在 09:35 辩论窗挤占额度)。
 - 旧 9-agent 管线与双线并跑的去留是独立决策点(owner 已表态成本可接受,故本次不动);若未来停用走独立 amendment。

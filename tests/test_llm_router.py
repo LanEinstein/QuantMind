@@ -381,13 +381,13 @@ class TestTrackUsage:
     async def test_kimi_split_cost(self, mock_redis: AsyncMock) -> None:
         await track_usage(mock_redis, "test_agent", "kimi", 1_000_000, 1_000_000)
         pipe = mock_redis.pipeline.return_value
-        # Kimi (kimi-k2.6 FX-padded assumption, P0-10-amendment-2026-06-11):
-        # 7.5 input + 30 output = 37.5 RMB
+        # Kimi (kimi-k2.6 official RMB realtime list, owner-verified
+        # 2026-06-12): 6.5 input + 27 output = 33.5 RMB
         cost_calls = [
             c for c in pipe.hincrbyfloat.call_args_list if c.args[1] == "cost_rmb"
         ]
         assert len(cost_calls) == 1
-        assert abs(cost_calls[0].args[2] - 37.5) < 0.001
+        assert abs(cost_calls[0].args[2] - 33.5) < 0.001
 
     async def test_redis_none_does_not_crash(self) -> None:
         await track_usage(None, "test", "deepseek", 100, 200)

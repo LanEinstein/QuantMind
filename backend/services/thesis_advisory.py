@@ -51,10 +51,11 @@ _THESIS_REVIEW_LABEL = "thesis"
 # ``thesis_reviewer`` agent on kimi-k2.6 (P0-10-amendment-2026-06-11) at the
 # TRUE worst case: the call passes no max_tokens, so the provider request is
 # defaults.max_tokens 4096 PLUS the router's kimi thinking growth 8000 =
-# 12,096 output-billable tokens × ¥30/M ≈ ¥0.363, plus ~2.5k prompt × ¥7.5/M
-# ≈ ¥0.019 → reserve ¥0.40 of headroom (kept ≥ the formula by a drift test in
-# tests/services/test_theme_llm_client.py). ≤10 reviews/day keeps the
-# transient reservation ≪ the ¥100/day hard cap.
+# 12,096 output-billable tokens × ¥27/M ≈ ¥0.327, plus ~2.5k prompt × ¥6.5/M
+# ≈ ¥0.016 → reserve ¥0.40 of headroom (kept ≥ the formula by a drift test in
+# tests/services/test_theme_llm_client.py; kimi RMB list owner-verified
+# 2026-06-12). ≤10 reviews/day keeps the transient reservation ≪ the
+# ¥100/day hard cap.
 _DEFAULT_ESTIMATED_RMB = 0.40
 
 
