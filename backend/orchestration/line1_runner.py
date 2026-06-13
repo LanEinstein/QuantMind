@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -43,7 +43,11 @@ from backend.budget_policy.policy import (
     BudgetTier,
     BudgetTierPolicy,
 )
-from backend.candidate_selector.selector import CandidateSelector, QuantCandidate
+from backend.candidate_selector.selector import (
+    AdvisorySignal,
+    CandidateSelector,
+    QuantCandidate,
+)
 from backend.integrations.feishu.renderer import BuySignalTemplate, MessageRenderer
 from backend.integrations.feishu.signal_rationale import BuySignalRationale
 from backend.marketdata_snapshot import MarketDataSnapshot
@@ -300,6 +304,21 @@ class Line1ContextProvider(Protocol):
 
 
 @runtime_checkable
+class AdvisoryProvider(Protocol):
+    """O-003: resolve MiroFish-forecast advisory signals for a candidate set.
+
+    Returns the bounded re-rank inputs the :class:`CandidateSelector`
+    consumes, or ``None`` when no usable forecast exists (the selector
+    then runs the pure-quant path). Implementations must be fail-open:
+    any gap (no forecast, stale, malformed, IO error) returns ``None`` so
+    MiroFish can only reorder an already-qualified set, never gate it.
+    """
+
+    async def __call__(
+        self, codes: Sequence[str], *, trade_date: str
+    ) -> Sequence[AdvisorySignal] | None: ...
+
+
 class ThesisWriter(Protocol):
     """Persists a buy-time :class:`PositionThesis` (W-001).
 
@@ -380,6 +399,7 @@ class Line1Runner:
         digest_outbox: OutboxRepository | None = None,
         thesis_writer: ThesisWriter | None = None,
         style_sink: StyleNameplateSink | None = None,
+        advisory_provider: AdvisoryProvider | None = None,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -409,6 +429,10 @@ class Line1Runner:
         # AC-001: register the deterministic buy-time style so the fill stamps
         # the position nameplate. Optional — None leaves entry_style None.
         self._style_sink = style_sink
+        # O-003: MiroFish sector-forecast bounded re-rank input. Optional and
+        # fail-open — None (or any resolution gap) leaves the pure-quant order
+        # untouched, so removing MiroFish never changes the qualified set.
+        self._advisory_provider = advisory_provider
 
     async def run(
         self,
@@ -465,7 +489,19 @@ class Line1Runner:
             for c in screen.candidates
             if c.code in affordable_codes and c.code not in held_codes
         ]
-        selection = self._selector.select(quant)
+        # O-003: MiroFish forecast bounded re-rank input (≤1-percentile, never
+        # evicts the top ≥min_quant names). Fail-open — None leaves the
+        # pure-quant order bit-identical, so removing MiroFish only changes
+        # ordering, never the qualified set (P0-8-amendment-2026-05-24 §2.3).
+        # Resolve the forecast boundary DETERMINISTICALLY from the replayable
+        # frame date (day after T-1), never wall-clock ``now`` — so the
+        # advisory is bit-exact replayable (R0 PIT red line ①). The provider
+        # consumes the most recent forecast strictly before it = the T-1 17:00
+        # forecast co-dated with this frame (codex O-003 P2 + review panel).
+        advisory = await self._resolve_advisory(
+            [c.code for c in quant], _selection_day_from_frame(frame.trade_date)
+        )
+        selection = self._selector.select(quant, advisory=advisory)
         if not selection.shortlist:
             return self._short(sid, Line1Outcome.EMPTY_SHORTLIST, tier=assessment.tier)
 
@@ -973,6 +1009,24 @@ class Line1Runner:
         # Unreachable (the shortlist is non-empty), kept fail-closed.
         return Line1RunResult(outcome=Line1Outcome.EMPTY_SHORTLIST, **common)
 
+    async def _resolve_advisory(
+        self, codes: Sequence[str], trade_date: str
+    ) -> Sequence[AdvisorySignal] | None:
+        """Best-effort MiroFish advisory; ``None`` on any gap (pure-quant path).
+
+        Never raises and never gates selection — a provider error or absent
+        forecast simply yields ``None`` so the selector keeps the pure-quant
+        order (red-line: MiroFish can reorder but never change the qualified
+        set).
+        """
+        if self._advisory_provider is None or not codes or not trade_date:
+            return None
+        try:
+            return await self._advisory_provider(codes, trade_date=trade_date)
+        except Exception as exc:  # noqa: BLE001 — advisory is never load-bearing
+            log.warning("advisory_resolve_failed", error=str(exc))
+            return None
+
     @staticmethod
     def _short(
         signal_id: str, outcome: Line1Outcome, *, tier: BudgetTier | None = None
@@ -985,6 +1039,25 @@ _CONCENTRATION_EXCEPTION_GRANTED = "concentration_exception_granted"
 """RiskEngine check-5 marker (mirrors ``backend.risk.engine``): a passed=True
 ``position_limit`` row carrying this string means the over-15% ETF
 concentration exception was granted (P0-7-amendment-2026-05-24 §2.3 / U-C4)."""
+
+
+def _selection_day_from_frame(frame_trade_date: str) -> str:
+    """Deterministic forecast-boundary ISO date = the day AFTER the T-1 frame.
+
+    The advisory provider consumes the most recent ``MIROFISH-FORECAST``
+    strictly BEFORE this date, so the T-1 forecast (``trade_date`` ==
+    ``frame.trade_date``) is the one selected. Deriving the boundary purely
+    from the replayable ``frame.trade_date`` (a compact ``YYYYMMDD``) — never
+    wall-clock ``now`` — keeps the advisory **bit-exact replayable**: an
+    offline ``replay <signal_id>`` re-runs against the same frame and
+    re-derives the same forecast + staleness verdict (R0 PIT red line ①).
+    A malformed frame date yields ``""`` → no advisory (fail-open).
+    """
+    try:
+        frame_day = datetime.strptime(frame_trade_date, "%Y%m%d").date()
+    except ValueError:
+        return ""
+    return (frame_day + timedelta(days=1)).isoformat()
 
 
 def _concentration_exception_granted(plan: InstructionPlan) -> bool:

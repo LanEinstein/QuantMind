@@ -35,7 +35,11 @@ from backend.broker.models import (
     UniverseConfig,
 )
 from backend.budget_policy.policy import BudgetTierConfig, BudgetTierPolicy
-from backend.candidate_selector.selector import CandidateSelector, SelectorConfig
+from backend.candidate_selector.selector import (
+    AdvisorySignal,
+    CandidateSelector,
+    SelectorConfig,
+)
 from backend.data.data_quality import DataQualityState
 from backend.integrations.feishu.renderer import MessageRenderer
 from backend.marketdata_snapshot import MarketDataSnapshot
@@ -472,6 +476,8 @@ def _make_runner(
     thesis_writer: object | None = None,
     style_sink: object | None = None,
     sim_reject: bool = False,
+    advisory_provider: object | None = None,
+    selector: CandidateSelector | None = None,
 ) -> Line1Runner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -497,7 +503,8 @@ def _make_runner(
     return Line1Runner(
         screener=Screener(ExclusionRules()),
         budget_policy=_budget_policy(),
-        selector=CandidateSelector(
+        selector=selector
+        or CandidateSelector(
             SelectorConfig(
                 version="u-c1/v1",
                 final_shortlist_size=5,
@@ -520,6 +527,7 @@ def _make_runner(
         digest_outbox=digest_outbox,
         thesis_writer=thesis_writer,
         style_sink=style_sink,
+        advisory_provider=advisory_provider,
     )
 
 
@@ -1569,3 +1577,139 @@ def test_runner_is_import_clean() -> None:
                     f"line1_runner imports forbidden backend.{parts[1]} "
                     f"({node.module}) — orchestration isolation broken"
                 )
+
+
+# ---------------------------------------------------------------------------
+# O-003 — MiroFish forecast bounded re-rank advisory wiring
+# ---------------------------------------------------------------------------
+
+
+class _SpyAdvisory:
+    """Records the (codes, trade_date) the runner resolves advisory for."""
+
+    def __init__(
+        self, signals: list[AdvisorySignal] | None = None, *, boom: bool = False
+    ) -> None:
+        self.signals = signals
+        self.boom = boom
+        self.calls: list[tuple[tuple[str, ...], str]] = []
+
+    async def __call__(self, codes, *, trade_date):  # noqa: ANN001, ANN201
+        self.calls.append((tuple(codes), trade_date))
+        if self.boom:
+            raise RuntimeError("advisory provider down")
+        return self.signals
+
+
+async def test_advisory_provider_called_with_trade_date_and_codes(
+    builder, tmp_path
+) -> None:
+    # O-003: the runner resolves the advisory over the affordable quant codes,
+    # keyed by the selection day (T), before selecting.
+    spy = _SpyAdvisory(signals=None)
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        advisory_provider=spy,
+    )
+    await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert len(spy.calls) == 1
+    codes, trade_date = spy.calls[0]
+    # Deterministic boundary = day AFTER the frame date (20260514 → 2026-05-15),
+    # derived from the replayable frame, NOT wall-clock now.
+    assert trade_date == "2026-05-15"
+    assert set(codes) == {"600000", "600004", "600006"}
+
+
+async def test_advisory_boundary_is_replayable_independent_of_now(
+    builder, tmp_path
+) -> None:
+    # PIT replay (R0 red line ①): the forecast boundary must depend ONLY on the
+    # frame, not the wall-clock — replaying with a different ``now`` (same
+    # frame) must resolve the identical advisory boundary date.
+    from datetime import timedelta
+
+    seen: list[str] = []
+
+    async def _spy(codes, *, trade_date):  # noqa: ANN001, ANN201
+        seen.append(trade_date)
+        return None
+
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        advisory_provider=_spy,
+    )
+    await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    await runner.run(  # same frame, a "replay" run weeks later
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW + timedelta(days=21),
+    )
+    assert seen == ["2026-05-15", "2026-05-15"]  # boundary unchanged by now
+
+
+async def test_advisory_provider_failure_fails_open(builder, tmp_path) -> None:
+    # A raising provider must NOT crash the run — pure-quant path proceeds.
+    spy = _SpyAdvisory(boom=True)
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        advisory_provider=spy,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) == 3  # unchanged from the no-advisory path
+
+
+async def test_advisory_reorders_shortlist_within_bound(builder, tmp_path) -> None:
+    # A bullish signal on the weakest quant name pulls it up the order; the
+    # qualified SET is unchanged (only ordering differs) — red-line check.
+    selector = CandidateSelector(
+        SelectorConfig(
+            version="o-003/v1",
+            final_shortlist_size=5,
+            min_quant_slots=1,
+            max_percentile_shift=0.9,  # generous so the pull realizes
+            advisory_weight=1.0,
+            feature_def_hash="h",
+        )
+    )
+    # 600006 is the weakest quant (lowest base momentum) → pull it up hard.
+    spy = _SpyAdvisory(
+        signals=[AdvisorySignal(code="600006", advisory_score=1.0)]
+    )
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        advisory_provider=spy,
+        selector=selector,
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    # Same membership as pure quant; 600006 no longer last.
+    assert set(result.shortlist) == {"600000", "600004", "600006"}
+    assert result.shortlist.index("600006") < 2

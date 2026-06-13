@@ -373,6 +373,16 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         / "knowledge_graph"
         / "kg.sqlite3"
     )
+    # O-003 PIT pin: the EOD pipeline persists the code→sector map it used
+    # (co-dated with the forecast) into this store; the next-morning Line-1
+    # advisory loads it back by date so the bounded re-rank is replayable.
+    from backend.data.industry_map_store import IndustryMapStore
+
+    industry_map_store = IndustryMapStore(
+        os.environ.get(
+            "QUANTMIND_INDUSTRY_MAP_ROOT", "data/industry_map"
+        )
+    )
     mirofish_eod_runner = MiroFishEodRunner(
         inputs_provider=LiveDigestInputsProvider(
             tushare_factory=_eod_tushare_factory,
@@ -383,8 +393,10 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         forecaster=SectorForecaster(_forecast_llm_call),
         redis_client=redis_pool,  # type: ignore[arg-type]
         related_sectors_provider=build_kg_related_sectors_provider(_kg_db_path),
+        industry_map_sink=industry_map_store.save,
     )
     application.state.mirofish_eod_runner = mirofish_eod_runner
+    application.state.industry_map_store = industry_map_store
 
     # Scheduler — ``held_codes_provider`` is a late-bound closure so the 30s
     # collector reads the broker's held codes at tick time (the broker
@@ -1203,6 +1215,26 @@ async def _init_line2_runners(
 
     style_sink = broker if isinstance(broker, MockBroker) else None
 
+    # O-003: MiroFish forecast → bounded re-rank advisory. Reads the T-1
+    # MIROFISH-FORECAST- evidence + the PIT-pinned code→sector map the EOD
+    # pipeline persisted co-dated with that forecast (replayable; not a
+    # fresh live fetch). Fail-open — any gap leaves the pure-quant order
+    # bit-identical (the selector never changes the qualified set).
+    from backend.orchestration.forecast_advisory_provider import (
+        ForecastAdvisoryProvider,
+    )
+
+    async def _load_industry_map(forecast_date: str) -> dict[str, str]:
+        store = getattr(application.state, "industry_map_store", None)
+        if store is None:
+            return {}
+        return await asyncio.to_thread(store.load, forecast_date)
+
+    forecast_advisory_provider = ForecastAdvisoryProvider(
+        mongodb=getattr(application.state, "mongodb", None),
+        industry_map_loader=_load_industry_map,
+    )
+
     line1_runner = Line1Runner(
         screener=screener,
         budget_policy=budget_policy,
@@ -1223,6 +1255,8 @@ async def _init_line2_runners(
         thesis_writer=position_thesis_store,
         # AC-001: stamp the buy-time style on the position nameplate.
         style_sink=style_sink,
+        # O-003: MiroFish forecast bounded re-rank input (fail-open).
+        advisory_provider=forecast_advisory_provider,
     )
     application.state.line1_runner = line1_runner
 

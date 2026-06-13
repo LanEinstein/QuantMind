@@ -336,6 +336,7 @@ class MiroFishEodRunner:
         redis_client: redis.asyncio.Redis | None = None,
         related_sectors_provider: RelatedSectorsProvider | None = None,
         ledger: ForecastCalibrationLedger | None = None,
+        industry_map_sink: Callable[[str, Mapping[str, str]], None] | None = None,
         now_fn: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self._inputs_provider = inputs_provider
@@ -345,6 +346,10 @@ class MiroFishEodRunner:
         self._redis = redis_client
         self._related_provider = related_sectors_provider
         self._ledger = ledger
+        # O-003 PIT pin: persist the exact code→sector map this digest used,
+        # co-dated with the forecast, so the next morning's advisory re-rank
+        # is replayable (loads the same map by date, not a fresh live fetch).
+        self._industry_map_sink = industry_map_sink
         self._now_fn = now_fn or (lambda: dt.datetime.now(tz=SHANGHAI))
         self._log = log
 
@@ -403,6 +408,18 @@ class MiroFishEodRunner:
         except Exception as exc:  # noqa: BLE001 — degrade to no digest
             self._log.warning("digest_build_failed", error=str(exc))
             return None
+
+        # O-003 PIT pin: persist the code→sector map this digest used,
+        # co-dated with the forecast, BEFORE the forecast is written so a
+        # later replay loads the same map by date (best-effort; a sink
+        # failure never blocks the digest/forecast).
+        if self._industry_map_sink is not None and inputs.industry_by_code:
+            try:
+                self._industry_map_sink(
+                    digest.trade_date, inputs.industry_by_code
+                )
+            except Exception as exc:  # noqa: BLE001 — pin is best-effort
+                self._log.warning("industry_map_pin_failed", error=str(exc))
 
         for builder in (build_market_digest_evidence, build_news_digest_evidence):
             try:
