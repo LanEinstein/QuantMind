@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from backend.agents_team.persona_registry import TraderPersonaRegistry
 from backend.audit.store import AuditStore, InMemoryAuditCollection
 from backend.broker.models import (
     AccountInfo,
@@ -55,7 +56,7 @@ from backend.monitoring.add_position import (
     make_add_context,
     parse_held_series,
 )
-from backend.monitoring.anomaly import AnomalyDetector
+from backend.monitoring.anomaly import AnomalyConfig, AnomalyDetector
 from backend.monitoring.degrade import partition_by_suspension
 from backend.monitoring.sell_signal import evaluate_sell_intents, make_sell_context
 from backend.risk.circuit_breaker import CircuitBreaker
@@ -246,10 +247,25 @@ class DoubleLineResult:
     sell_msgs: tuple[str, ...]
     add_msgs: tuple[str, ...]
     stub_calls: int
+    # T-003/T-005: the anomaly scan's reproducibility lineage + fired kinds, so
+    # a full-stack test can PROVE the v2 path was exercised (not just that the
+    # core detectors happened to fire).
+    anomaly_feature_version: str = ""
+    anomaly_kinds: tuple[str, ...] = ()
 
 
-async def _run_double_line(builder: InstructionPlanBuilder) -> DoubleLineResult:
-    """Run BOTH lines once on the fixture snapshot; return the rendered wire."""
+async def _run_double_line(
+    builder: InstructionPlanBuilder,
+    *,
+    trader_personas: tuple = (),
+    anomaly_config: object = None,
+) -> DoubleLineResult:
+    """Run BOTH lines once on the fixture snapshot; return the rendered wire.
+
+    ``trader_personas`` (T-002) and ``anomaly_config`` (T-003 full stack) default
+    to the MVP behaviour (no traders, core 4 detectors) so the N-005 gate tests
+    are bit-identical; the T-005 full-stack test injects both.
+    """
     snap = _snapshot()
     renderer = MessageRenderer()
     risk_engine = _risk_engine()
@@ -288,7 +304,7 @@ async def _run_double_line(builder: InstructionPlanBuilder) -> DoubleLineResult:
             is_in_halt_cooldown=False, halt_until=None,
         ),
         stock_meta=_stock_meta(lead.code, RiskBoard.SH_MAIN, lead.name),
-        now=_NOW, llm_router=stub,
+        now=_NOW, llm_router=stub, trader_personas=trader_personas,
     )
     debate = await run_shortlist(ctx, [brief], redis_client=_FakeRedis())
     fmo = to_fund_manager_output(debate.state)
@@ -344,7 +360,9 @@ async def _run_double_line(builder: InstructionPlanBuilder) -> DoubleLineResult:
         )
 
     partition = partition_by_suspension(held_codes, {})  # no suspensions
-    scan = AnomalyDetector().scan(snap, partition.active_codes, "LINE2-MON-20260515-1")
+    scan = AnomalyDetector(anomaly_config).scan(
+        snap, partition.active_codes, "LINE2-MON-20260515-1"
+    )
     sell_intents = evaluate_sell_intents(scan, held, name_by_code=names)
 
     def _etf_meta(code: str) -> RiskStockMetadata:
@@ -406,6 +424,8 @@ async def _run_double_line(builder: InstructionPlanBuilder) -> DoubleLineResult:
     return DoubleLineResult(
         buy_msg=buy_msg, sell_msgs=tuple(sell_msgs), add_msgs=tuple(add_msgs),
         stub_calls=stub.calls,
+        anomaly_feature_version=scan.manifest.feature_code_version,
+        anomaly_kinds=tuple(s.kind.value for s in scan.signals),
     )
 
 
@@ -480,3 +500,60 @@ async def test_n_day_preflight_no_reset_triggers(
     assert outcome.trading_days_walked == 5
     assert outcome.reset_triggers_fired == ()
     assert runs["count"] == 5
+
+
+# ---------------------------------------------------------------------------
+# T-005 — full-stack 联调: the SAME dual-line gate with the T-001/T-002 trader
+# personas + the T-003 full anomaly stack BOTH enabled, proving they compose
+# without breaking the single construction point / 14-check / render path.
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+async def test_full_stack_two_line_e2e(builder) -> None:
+    """≥2 trader personas (T-002) + full anomaly stack (T-003) compose end-to-end.
+
+    The traders enrich the debate (3 analysts + 2 traders + fund_manager = 6 LLM
+    calls) yet the BUY is still a deterministically-sized VALIDATED plan (the
+    builder derives volume — single construction point intact); the enabled
+    anomaly stack still flows its Line-2 SELL through the monitoring construction
+    point + 14-check + renderer."""
+    personas = TraderPersonaRegistry.from_lockfile(
+        _REPO_ROOT / "config" / "prompts" / "traders.lock.json",
+        repo_root=_REPO_ROOT,
+        require_full_coverage=True,
+    ).personas()
+    assert len(personas) >= 2
+
+    result = await _run_double_line(
+        builder,
+        trader_personas=personas,
+        anomaly_config=AnomalyConfig(full_anomaly_stack=True),
+    )
+    # Line-1: the traders did not break the deterministic BUY path.
+    assert result.buy_msg is not None
+    assert "【QuantMind 买入信号 · 合规】" in result.buy_msg
+    # 3 analysts + 2 traders + fund_manager = 6 stubbed LLM calls.
+    assert result.stub_calls == 6
+    # Line-2: the full anomaly stack still drives the monitoring SELL.
+    assert result.sell_msgs
+    assert any("持仓监控 · 卖出信号" in m for m in result.sell_msgs)
+    # PROVE the T-003 path was actually exercised (codex T-005 P2): the manifest
+    # must carry the v2 feature version AND the IsolationForest detector must
+    # have fired on the crash bar — not just the core N-001 detectors.
+    assert result.anomaly_feature_version == "monitoring.anomaly/v2"
+    assert "isolation_forest" in result.anomaly_kinds
+
+
+async def test_full_stack_preserves_mvp_gate(builder) -> None:
+    """The default call path (no traders, core detectors) is unchanged — the
+    N-005 MVP gate stays bit-identical (4 LLM calls), so the new knobs are
+    strictly additive."""
+    result = await _run_double_line(builder)
+    assert result.stub_calls == 4
+    assert result.buy_msg is not None
+    # The core path stays on the v1 feature version (no full-stack kinds).
+    assert result.anomaly_feature_version == "monitoring.anomaly/v1"
+    assert "isolation_forest" not in result.anomaly_kinds
+    assert "changepoint" not in result.anomaly_kinds
