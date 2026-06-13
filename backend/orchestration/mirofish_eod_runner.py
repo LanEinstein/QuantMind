@@ -337,6 +337,9 @@ class MiroFishEodRunner:
         related_sectors_provider: RelatedSectorsProvider | None = None,
         ledger: ForecastCalibrationLedger | None = None,
         industry_map_sink: Callable[[str, Mapping[str, str]], None] | None = None,
+        sector_return_sink: (
+            Callable[[str, Mapping[str, float]], None] | None
+        ) = None,
         now_fn: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self._inputs_provider = inputs_provider
@@ -350,6 +353,10 @@ class MiroFishEodRunner:
         # co-dated with the forecast, so the next morning's advisory re-rank
         # is replayable (loads the same map by date, not a fresh live fetch).
         self._industry_map_sink = industry_map_sink
+        # O-005 calibration input: pin this day's per-sector daily return
+        # (deterministic sector heat) so the ledger can later sum a forecast's
+        # horizon window of realized returns and score it.
+        self._sector_return_sink = sector_return_sink
         self._now_fn = now_fn or (lambda: dt.datetime.now(tz=SHANGHAI))
         self._log = log
 
@@ -357,13 +364,16 @@ class MiroFishEodRunner:
         """Execute the pipeline once; every step degrades independently."""
         requested = self._now_fn().astimezone(SHANGHAI).date().isoformat()
 
-        calibration_note = await self._score_due_forecasts(requested)
+        # Build the digest FIRST so today's per-sector returns are pinned
+        # (O-005 sink) before scoring — a forecast whose horizon ends today
+        # can then be scored this run, not delayed to the next (codex O-005
+        # P2). Scoring uses the digest's effective trade_date as ``as_of``.
         digest = await self._build_and_persist_digest(requested)
+        as_of = digest.trade_date if digest is not None else requested
+        calibration_note = await self._score_due_forecasts(as_of)
         if digest is not None:
             await self._forecast_and_persist(digest, calibration_note)
-        await self._write_eod_review_row(
-            digest.trade_date if digest is not None else requested
-        )
+        await self._write_eod_review_row(as_of)
 
     # -- step 1: O-005 calibration -------------------------------------------
 
@@ -420,6 +430,17 @@ class MiroFishEodRunner:
                 )
             except Exception as exc:  # noqa: BLE001 — pin is best-effort
                 self._log.warning("industry_map_pin_failed", error=str(exc))
+
+        # O-005 calibration pin: persist this day's per-sector daily return
+        # (deterministic sector heat) for the forecast ledger to sum later.
+        if self._sector_return_sink is not None and digest.sector_heat:
+            try:
+                self._sector_return_sink(
+                    digest.trade_date,
+                    {h.sector: h.mean_pct_chg for h in digest.sector_heat},
+                )
+            except Exception as exc:  # noqa: BLE001 — pin is best-effort
+                self._log.warning("sector_return_pin_failed", error=str(exc))
 
         for builder in (build_market_digest_evidence, build_news_digest_evidence):
             try:

@@ -147,6 +147,7 @@ def _runner(
     caller: _Caller | None = None,
     redis: _FakeRedis | None = None,
     ledger: Any = None,
+    sector_return_sink: Any = None,
 ) -> tuple[MiroFishEodRunner, _DigestWriter, _MiroWriter]:
     digest_writer = _DigestWriter()
     miro_writer = _MiroWriter()
@@ -160,6 +161,7 @@ def _runner(
         forecaster=forecaster,
         redis_client=redis,  # type: ignore[arg-type]
         ledger=ledger,
+        sector_return_sink=sector_return_sink,
         now_fn=lambda: _NOW,
     )
     return runner, digest_writer, miro_writer
@@ -262,3 +264,40 @@ class TestEodRunner:
             "sector_forecast",
             "eod_review",
         ]
+
+
+class TestSectorReturnPin:
+    @pytest.mark.asyncio
+    async def test_sink_called_with_sector_returns(self) -> None:
+        # O-005: the EOD pipeline pins this day's per-sector daily return
+        # (deterministic sector heat) for the calibration ledger.
+        pinned: list[tuple[str, dict[str, float]]] = []
+
+        def _sink(trade_date: str, returns: dict[str, float]) -> None:
+            pinned.append((trade_date, dict(returns)))
+
+        runner, _, _ = _runner(
+            caller=_Caller(_forecast_raw()),
+            redis=_FakeRedis(),
+            sector_return_sink=_sink,
+        )
+        await runner.run()
+        assert len(pinned) == 1
+        trade_date, returns = pinned[0]
+        assert trade_date == TRADE_DATE
+        assert "半导体" in returns  # the _Inputs fixture sector
+
+    @pytest.mark.asyncio
+    async def test_sink_failure_never_blocks(self) -> None:
+        def _boom(trade_date: str, returns: dict[str, float]) -> None:
+            raise RuntimeError("pin failed")
+
+        runner, digest_writer, miro_writer = _runner(
+            caller=_Caller(_forecast_raw()),
+            redis=_FakeRedis(),
+            sector_return_sink=_boom,
+        )
+        await runner.run()
+        # The digest + forecast + EOD row still complete.
+        assert len(digest_writer.written) == 2
+        assert any(e.path == "sector_forecast" for e in miro_writer.written)

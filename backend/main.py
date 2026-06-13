@@ -377,11 +377,35 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     # (co-dated with the forecast) into this store; the next-morning Line-1
     # advisory loads it back by date so the bounded re-rank is replayable.
     from backend.data.industry_map_store import IndustryMapStore
+    from backend.data.sector_return_store import SectorReturnStore
+    from backend.mirofish.forecast_ledger import (
+        ForecastLedger,
+        ForecastOutcomeStore,
+    )
+    from backend.orchestration.forecast_ledger_adapters import (
+        MongoForecastReader,
+        make_realized_return_provider,
+    )
 
     industry_map_store = IndustryMapStore(
+        os.environ.get("QUANTMIND_INDUSTRY_MAP_ROOT", "data/industry_map")
+    )
+    # O-005 calibration: pin daily sector returns + score due forecasts.
+    sector_return_store = SectorReturnStore(
+        os.environ.get("QUANTMIND_SECTOR_RETURN_ROOT", "data/sector_returns")
+    )
+    forecast_outcome_store = ForecastOutcomeStore(
         os.environ.get(
-            "QUANTMIND_INDUSTRY_MAP_ROOT", "data/industry_map"
+            "QUANTMIND_FORECAST_OUTCOMES_PATH",
+            "data/mirofish/forecast_outcomes.jsonl",
         )
+    )
+    forecast_ledger = ForecastLedger(
+        forecast_reader=MongoForecastReader(mongodb=mongodb_service),
+        realized_return_provider=make_realized_return_provider(
+            sector_return_store.load
+        ),
+        outcome_store=forecast_outcome_store,
     )
     mirofish_eod_runner = MiroFishEodRunner(
         inputs_provider=LiveDigestInputsProvider(
@@ -393,10 +417,14 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         forecaster=SectorForecaster(_forecast_llm_call),
         redis_client=redis_pool,  # type: ignore[arg-type]
         related_sectors_provider=build_kg_related_sectors_provider(_kg_db_path),
+        ledger=forecast_ledger,
         industry_map_sink=industry_map_store.save,
+        sector_return_sink=sector_return_store.save,
     )
     application.state.mirofish_eod_runner = mirofish_eod_runner
     application.state.industry_map_store = industry_map_store
+    application.state.sector_return_store = sector_return_store
+    application.state.forecast_outcome_store = forecast_outcome_store
 
     # Scheduler — ``held_codes_provider`` is a late-bound closure so the 30s
     # collector reads the broker's held codes at tick time (the broker
