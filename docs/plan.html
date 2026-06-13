@@ -806,6 +806,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
       </table>
       <h3 style="margin-top:18px">修订记录</h3>
       <ul class="revision">
+        <li>2026-06-13 session #83 — <strong>Phase O 全 done:MiroFish 核心</strong>(边界沿用 <code>P0-8-amendment-2026-05-24-mirofish-advisory-core</code>,无新 amendment;5 feature commit 本地未 push)。owner 命题:对照官方实现(666ghj/MiroFish,AGPL-3.0+Zep Cloud 托管+OASIS 多 agent 社会仿真)+ 系统终极目标『稳定可观的真实落袋收益』,先想清 MiroFish 最合适角色再审计计划。<strong>结论</strong>:官方重栈不可复现/无成本上限/数据出域,与本系统 127.0.0.1+PIT+¥100 cap 硬冲突 → 绝不 vendor/接运行时;`backend/mirofish/` 已是『轻量 LLM 因果推演适配器』正确抽象。<strong>MiroFish 角色锁定 = Line-1 建议层(evidence-only 有界重排,量化始终资格权威)+ 场外信息辩论背景 + 可证伪校准闭环</strong>。<strong>计划优化</strong>:原 O-001..O-004 方向正确但缺『预测是否可证伪』闭环 → 新增 <strong>O-005 校准账本</strong>(度量先行);O-001 口径收紧为零 LLM 确定性。<strong>O-001</strong>(<code>f93cb2b</code>)零 LLM 确定性信息汇总文档(多域新闻+指数趋势/历史+全市场板块热度〔日线×行业映射派生〕+确定性情绪代理+KG 关联板块;PIT bit-exact;仅 NEWS-/MARKET- evidence)。<strong>O-002</strong>(<code>a8d91ee</code>)板块涨概率预测 evidence-only(有界 score+因果链+未校准概率+不确定性,防幻觉+全 fail-closed;payload 入 MIROFISH-FORECAST- 文档内;cost_guard slot trade_date-dedup 防节假日重付;17:00 EOD pipeline 接线)。<strong>O-003</strong>(<code>5ee2c2f</code>)CandidateSelector 有界重排接线(纯函数 advisory_mapping 零 mirofish import + 复用 ≤1分位 fail-closed;T-1 forecast + PIT-pin 行业图;选择日确定性派生 frame.trade_date 非 wall-clock;对抗测试钉死合格集不变+保≥3量化+replay 确定)。<strong>O-004</strong>(<code>da9f2dc</code>)场外信息进辩论(TeamContext.off_market_context 注入 prompt 标注背景非指令,LLM 仍只写 4 字段;off_market_provider query 级双界防陈旧;replace 注入 Protocol 不动;全 fail-open)。<strong>O-005</strong>(<code>282f713</code>)确定性证伪闭环(命中率+Brier 打分+append-only outcome store+trailing note;SectorReturnStore 日期 pin;按 horizon 交易日窗口求和缺日排除无假 outcome;EOD 先 pin 后打分到期即评;零 LLM/零决策字段/不改 selector 行为)。门禁:每任务 codex review(O-002/O-005 撞 timeout→回退 /code-review high 3-finder panel)修完所有 P2/P3;<strong>全量 5694 passed/90.53% cov</strong>+ruff+mypy strict+redline 全绿。安全地基红线一条未破(MiroFish 仍只写 evidence by-construction / candidate_selector 零 mirofish-llm import / LLM 不写决策 / PIT 全 frame-anchored / 单一构造点 / 127.0.0.1)。下一站 = Phase T(交易员与全栈)。push 待 owner 授权。</li>
         <li>2026-06-12 session #82 — <strong>Phase AD 全 done:前端驾驶舱与实盘交互</strong>(<code>P1-2.A-amendment-2026-06-12</code>;feature <code>60eb7cc</code>〔AD-001..AD-006 捆绑〕,本地未 push)。<strong>AD-005(红线核心)</strong>=第 3 写端点 POST /api/manual-trades + ExternalExecutionEvent 独立域(UT- id 与 QM- 正则空间不相交、绝不伪造 InstructionPlan)+ ManualTradeApplier(复用 apply_external_fill、幂等键 external_trade_id、MANUAL_TRADE_APPLIED broker event + recovery 回放)+ 飞书『已记录』renderer(对抗证必 no_pattern_match)+ Trade.origin 三分流(就绪度只读 system_suggested)+ 纯 sim 403。<strong>AD-001</strong>=EquityPoint 真相源 KPI + 8 门就绪度 gauge(GET /api/performance/equity-kpis + 纯函数 equity_kpis.py + 短窗年化降权 + policy 分段)。<strong>AD-002</strong>=自动驾驶链路 7 段时间轴(只读复用现有 GET)。<strong>AD-003</strong>=自进化透明面板 + GET /api/evolution/history(实验含失败 + intent 历史 + 当前 manifest)。<strong>AD-004</strong>=风格 badge(⚡短线/🏛价值)贯穿 InstructionPlans/Portfolio/thesis,display-only。<strong>AD-006</strong>=redline 写端点 2→3 + FeishuMessageKind 6→7;无新顶级页/WS 类(Z-001 页锁不变)。codex review 1 P1+4 P2 全修 + verify PASS;<strong>owner 锁定的 Playwright 前端体检</strong>(vite preview + 全 /api mock)5 页 AD panel 全渲染零 console/page error 无布局溢出 → AD 范围零缺陷直接通过。5543 passed/91% + 前端 vitest 170+type-check+build + ruff + 新模块 mypy strict + redline 全绿。安全地基红线全留(仅 3 写端点/LLM 不写决策/单一镜像/append-only/PIT 可复现/UT-⊥QM-/127.0.0.1)。模拟盘自动驾驶 v4(Z/AA/R-002/AB/AC/AD)全 ship 序完成。<strong>新增前端体检备忘录</strong>(owner 2026-06-12):含前端构建任务 build 后须 codex/Playwright 体检闭环(写入 AD lane + AD-006)。下一站 = owner 决策(运行期激活验证 / 存量 O·Q·T / AB gap)。</li>
         <li>2026-06-12 session #81 — <strong>Phase AC 全 done:风格分型与价值线</strong>(<code>P0-8-amendment-2026-06-12</code>;feature <code>64c6534</code>〔AC-001..AC-007 捆绑〕,本地未 push)。<strong>AC-001</strong>=确定性 StyleClassifier(SHORT_TERM/VALUE,纯零 LLM 可 replay)+ PositionThesis.style(legacy 兼容)+ 持仓铭牌 entry_style(per-code pending→成交 stamp→事件 payload 持久→recovery 重建)。<strong>AC-002/003</strong>=三层价值线(中层 event-study CAR/Amihud/容量;底层大势主线+regime;表层 KG 独立共振计数+公告日 PIT 基本面+弹性)→ 确定性合成 value_score∈[0,1]。<strong>AC-004</strong>=题材四级赋权(SOP schema v1→v2 扩 theme_tier,1.0/0.75/0.5/0.25 序约束 immutable clamp,人工 pin 确认 tier;v2 prompt inactive 待 gate)。<strong>AC-005</strong>=受约束槽位分配(价值≤2/量化≥3,价值槽三层得分排序;None→bit-identical;强量化永不被挤)。<strong>AC-006</strong>=per-style 软止盈带(VALUE 只拓宽永不收紧)接线 intraday v11→v12,env 默认 OFF;<strong>硬风控 style-invariant 对抗钉死</strong>。<strong>AC-007</strong>=CLAUDE.md + redline [AC-007] + 飞书 style_badge(display-only)。codex review 3 P2 + verify ×4 3 P2(含顺修既存 W-001 thesis bug)全修+回归→COMMIT-SAFE;5508 passed/90.88% cov 全门禁绿。安全地基红线全留(LLM 不进运行时数据路径/单一构造点/仅 2 写端点)。下一站 = Phase AD 前端驾驶舱。</li>
         <li>2026-06-12 session #80 — <strong>Phase AB 全 done:客观自进化</strong>(<code>P2-2-amendment-2026-06-12</code>;feature <code>990733e</code>〔AB-001..AB-008 捆绑〕,✅ 已 push origin/main)。<strong>AB-001</strong>=ExperimentRegistry(append-only 含失败,design 级 content-addressed 防洗白,多重检验校正源)。<strong>AB-002</strong>=ObjectivePromotionEngine(纯函数 9 gate:分层双门槛/锁定 bootstrap CI/deflated Sharpe/8 门不劣化/anti-gaming/oracle;位等 replay;LLM 零参与)。<strong>AB-003</strong>=PromotionIntent(sim 模式门)+ ActivationManifest + next_boot.lock 原子 staging(2h 黑窗)+ boot consume-once 自动回退 + <strong>apply 时复查模式(codex P1)</strong> + 外部 supervisor 脚本;零 git。<strong>AB-004</strong>=相对 counterfactual auto-demote + 10 日冷却。<strong>AB-005</strong>=28 名冻结集(raise 不论分数)+ immutable clamp 白名单 + 只紧不松。<strong>AB-006</strong>=prompt 禁类 lint(GEPA 出炉即拦)+ 字节捕获完整性 + 骨架 frozen。<strong>AB-007</strong>=harsh fill(harsh-or-equal 契约)+ 进化 sub-budget(¥10 双层不绕 cap)+ 22:00 cron 真接线(skip→DEGRADED 审计);<strong>已知 gap:ChallengerReplayer 未实现 → dispatcher 未挂(audit 留痕)</strong>。<strong>AB-008</strong>=对抗 5 族 + redline [AB-008]。codex 1 P1+3 P2 全修+回归;5374 passed 全门禁绿。下一站 = Phase AC(AC-001 StyleClassifier)。</li>
@@ -906,6 +907,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
 
     // Session log — newest first. Each session start/end must write here.
     const SESSION_LOG = [
+      {
+        date: "2026-06-13",
+        session: "#83 Phase O full:MiroFish 核心(O-001 信息汇总文档 + O-002 板块涨概率预测 evidence-only + O-003 CandidateSelector 有界重排接线 + O-004 场外信息进辩论 + O-005 板块预测校准账本)",
+        owner: "Claude Fable 5",
+        state_in: "续 #82(Phase AD 全 done 已 push)。owner 要求:先想清 MiroFish 在系统中最合适的角色(对照官方实现 666ghj/MiroFish + 系统终极目标『稳定可观的真实落袋收益』),再检查 Phase O 计划是否合适/需优化,给出可落地计划→修订 plan.html→执行。调研结论:**官方 MiroFish = AGPL-3.0 + Zep Cloud 托管 + OASIS 多 agent 社会仿真,不可复现/无成本上限/数据出域,与本系统 127.0.0.1+PIT 可复现+¥100 cap 硬冲突 → 绝不 vendor/接运行时**;本系统 `backend/mirofish/` 已是『轻量 LLM 因果推演适配器』的正确抽象。立足真实收益目标审计计划:原 O-001..O-004 方向正确(evidence-only/有界重排/量化资格权威 by-construction),但**缺『预测是否可证伪』的闭环** → 新增 O-005 校准账本(度量先行)。O-001 口径收紧为零 LLM 确定性(原稿未明确,降成本+保 PIT)。amendment 边界沿用既有 P0-8-amendment-2026-05-24(MiroFish 升 Line-1 建议核心仍 evidence-only),无需新 amendment。",
+        actions: "**O-001**(`f93cb2b`):`backend/mirofish/info_digest.py` 零 LLM 确定性聚合(5源新闻多域+指数趋势/20日历史+全市场板块热度〔日线×stock_basic 行业映射内部派生〕+确定性情绪代理〔市场广度/涨跌停代理计数/跨域新闻 echo〕+KG 关联板块),渲染顺序稳定→PIT 同输入 bit-exact;`digest_evidence.py` 窄写器仅 NEWS-/MARKET- 前缀幂等。codex 2 P2 修(同重要度保最新头条/vol_20d 全 20 日收益)。**O-002**(`a8d91ee`):`sector_forecast.py` LLM 层读 digest→有界 score[-1,1]+因果链+未校准概率+不确定性,严格解析防幻觉(超 vocab 丢弃)+全 fail-closed→None(量化路径永不依赖);结构化 payload 入 MIROFISH-FORECAST- evidence 文档内(evidence-only 不破);output_writer 第3 sector_forecast path;cost_guard `reserve_sector_forecast_slot`(dedup keyed by trade_date 14天 TTL 防节假日重付 + per-UTC-day cap + ¥100 真预留 + 非付费 skip 释放 marker);`mirofish_eod_runner.py` 17:00 EOD pipeline(score→digest→forecast→audit row 各步独立降级)接 scheduler/main。codex 1 P2(dedup keyed by UTC→trade_date)+verify follow-on(非付费释放)修。**O-003**(`5ee2c2f`):纯函数 `candidate_selector/advisory_mapping.py`(sector-score→AdvisorySignal,零 mirofish/llm import)复用既有 `select(advisory=)` ≤1分位 fail-closed 重排;`forecast_advisory_provider.py` 读 T-1 forecast + PIT-pin 行业图(`data/industry_map_store.py` 日期 artifact,EOD 同日 pin,replay 可复现非现取);选择日**确定性派生自 frame.trade_date 非 wall-clock now**(bit-exact 可复现);对抗测试钉死合格集不变+保≥3量化+replay 确定性。codex 2 轮+/code-review high 3-finder panel 修(T-1 lookup 错日/unpinned 行业图破 PIT/wall-clock replay 非确定)。**O-004**(`da9f2dc`):TeamContext 加 `off_market_context`(frozen default '' → bit-identical);`_off_market_section` 注入 analyst+fund_manager prompt(标注背景非指令,LLM 仍只写 4 允许字段,方向仍只来自 fund_manager JSON);`off_market_provider.py` 从 MIROFISH-FORECAST/MARKET-DIGEST/NEWS-DIGEST evidence 装配有界 briefing,query 级 [selection-MAX_AGE,selection) 双界防陈旧注入;line1_runner 每 run 一次按确定性边界解析 → `dataclasses.replace` 注入各候选 TeamContext(Protocol 不动),全 fail-open。codex 1 P2(陈旧 evidence 注入)修。**O-005**(`282f713`,新增):`forecast_ledger.py` 纯量化打分(方向命中率+Brier)+append-only JSONL outcome store(trade_date 幂等+corrupt-tail-safe)+trailing note INSUFFICIENT_DATA 下限;`data/sector_return_store.py` 日期 per-sector 日收益 artifact(EOD pin);`forecast_ledger_adapters.py` MongoForecastReader + realized-return provider 按 horizon 交易日窗口求和(某 sector 缺任一日则**排除非零填**,无假 outcome);EOD **先 build digest〔pin 今日收益〕后打分**(到期当日即评非延后);backlog 旧→新追加→trailing 窗口保最新。零 LLM/零决策字段/不改 selector 行为(度量先行,权重调整留将来 amendment)。codex 3 修(打分顺序/缺 sector 假 outcome/追加序)。**门禁全绿**:每任务 commit 前 codex review(O-002/O-005 撞 timeout→回退 /code-review high 3-finder panel,印证 [[feedback_codex_rate_limit_fallback]])修完所有 P2/P3;**全量 5694 passed/13 skipped,coverage 90.53%**(基线 5556→+138)+ ruff + 新模块 mypy strict + redline 全绿。安全地基红线一条未破:MiroFish 仍只写 evidence_collection(by-construction)/ candidate_selector 零 mirofish-llm-agents import / LLM 不写决策字段(方向仍 fund_manager JSON)/ PIT 可复现(选择日+行业图+sector 收益全 frame-anchored 非 wall-clock)/ InstructionPlan 单一构造点 / 127.0.0.1。",
+        commit: "5 feature commit(`f93cb2b` O-001 + `a8d91ee` O-002 + `5ee2c2f` O-003 + `da9f2dc` O-004 + `282f713` O-005)+ 本 docs 收尾。**push origin main 待 owner 授权**(全 5 feature commit 本地未 push;`M CLAUDE.md` owner 在途未碰)。",
+        next: "**Phase O ✅ 全 done(O-001..O-005,5 feature commit 本地未 push,待 owner 授权)。** MiroFish 角色锁定 = **Line-1 建议层(evidence-only 有界重排,量化始终资格权威)+ 场外信息辩论背景 + 可证伪校准闭环**;官方 OASIS/Zep 重栈永不接运行时(AGPL/不可复现/数据出域,与红线冲突)。**下一站(协议:最早含 todo 字母 Phase)= Phase T(交易员与全栈,T-001..T-005)**:≥2 交易员人格卡 frozen git + 接多轮 bull/bear 辩论 + 全异动栈 + Reflexion/FinMem exemplars(≤3/prompt)+ qlib 评估全栈联调。T 全 done 后 → **仅剩『整体测试』阶段**(需跑系统,owner『先完整开发后整体测试』):R-003(45 日 shadow+人工 gate 语义,实盘前)/ S-004(7 天 shadow 真值)/ I-002(45 交易日滚动验收)/ I-003(feishu_interactive 启用 gate)/ U-E5(端到端真发真回填,owner-gated)。**⚠️ Phase O 运行期激活待 owner 重启**:17:00 EOD pipeline(digest→forecast→校准)+ Line-1 advisory 消费 forecast + 辩论 off-market 注入随重启自动生效;首启需积累 forecast 后 advisory/校准才有数据(空态优雅:advisory=None 纯量化照跑 / 校准 INSUFFICIENT_DATA / 辩论无 briefing)。**遗留接线(整体测试期)**:① 真实 LLM 调用成本验证(forecast 每日 1 次 ¥100 cap 内;intelligence_officer=kimi);② sector 收益 pin 需 EOD 连续运行积累;③ AD/AC 既有遗留(manual-trades owner-prod-auth 过期/三层 value_score 真实数据/AB ChallengerReplayer)不变。前端体检备忘录不触发(Phase O 无前端构建)。权威指针=本条。",
+      },
       {
         date: "2026-06-12",
         session: "#82 Phase AD full:前端驾驶舱与实盘交互(AD-001 EquityPoint KPI+8门就绪度 gauge + AD-002 自动驾驶链路时间轴 + AD-003 自进化透明面板 + AD-004 风格 badge 贯穿 + AD-005 第3写端点 manual-trades + AD-006 收尾)",
@@ -3431,48 +3441,59 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "7745d83", session_date: "2026-05-31", notes: "redline-check.sh 加 [P-002] portfolio_allocation 隔离(全 5 式 + 不被 backend/risk import)+ [P-004] FeishuMessageKind=6;M-004 单一构造点每次运行(确认绿)。dry_run_double_line.py _run_line1 注入 load_allocation_policy → dry-run 真走 P-003 逆波动率 clamp(4 依赖测试绿)。codex 报 1 P2(P-002 grep 漏 name-level/relative 式)已修(改用 N-005 全式 + planted-violation 自检)。digest/止盈 dry-run 演示因 DRY_RUN 渲染模式 + 已单测覆盖未重复(见 review summary scope 说明)。"
       },
       {
-        id: "O-001", phase: "O MiroFish 核心", status: "todo", priority: "P1",
-        title: "信息汇总文档生成(趋势/情绪/政治舆论/板块热度/关联板块 + 指数/历史)",
-        summary: "聚合多域 5 源新闻 + 国内外大盘指数/板块涨跌 + 历史 → 真实信息汇总文档,作 MiroFish 输入 + 辩论输入(场外信息之一)。",
+        id: "O-001", phase: "O MiroFish 核心", status: "done", priority: "P1",
+        title: "信息汇总文档生成(趋势/情绪/政治舆论/板块热度/关联板块 + 指数/历史;零 LLM 确定性聚合)",
+        summary: "聚合多域 5 源新闻 + 国内外大盘指数/板块涨跌 + 历史 → 真实信息汇总文档,作 MiroFish 输入 + 辩论输入(场外信息之一)。**确定性零 LLM**:板块热度从全市场快照日线 + stock_basic 行业映射内部派生(涨跌幅/成交/广度,不引入新数据源);情绪用确定性代理(市场广度 + 涨跌停计数 + 跨域新闻 echo);LLM 解读全部留给 O-002。",
         scope: "backend/mirofish/info_digest.py",
         depends: "N-005",
-        acceptance: "信息汇总文档含趋势/情绪/政治舆论/板块热度/关联板块 + 指数/历史;仅入 evidence(NEWS-/MARKET- 前缀)。",
-        tests: "多域聚合 + 文档结构 + evidence 前缀合规。",
+        acceptance: "信息汇总文档含趋势/情绪/政治舆论/板块热度/关联板块 + 指数/历史;仅入 evidence(NEWS-/MARKET- 前缀);零 LLM 调用;板块热度确定性可复现(同输入 bit-exact)。",
+        tests: "多域聚合 + 文档结构 + evidence 前缀合规 + 零 LLM(注入式数据 provider)+ 板块热度确定性。",
         sources: "P0-8(多域 5 源), P0-8-amendment-2026-05-24",
-        commit: "", session_date: "", notes: "场外信息 = 信息汇总文档 + MiroFish 报告。"
+        commit: "f93cb2b", session_date: "2026-06-13", notes: "场外信息 = 信息汇总文档 + MiroFish 报告。2026-06-13 口径收紧:O-001 零 LLM(原稿未明确),trend/sentiment 用确定性代理,降成本 + 保 PIT 可复现。"
       },
       {
-        id: "O-002", phase: "O MiroFish 核心", status: "todo", priority: "P1",
-        title: "MiroFish 板块涨概率预测(evidence-only)+ P0-8 amendment 落地",
-        summary: "MiroFish 输入信息汇总文档 → 输出板块涨概率 + 因果链 + 有界 sector-score + 不确定性;仍只写 evidence_collection(MIROFISH- 前缀,output_writer by-construction 无 RiskCheckSummary 管线)。",
-        scope: "backend/mirofish/sector_forecast.py, backend/mirofish/output_writer.py(复用)",
+        id: "O-002", phase: "O MiroFish 核心", status: "done", priority: "P1",
+        title: "MiroFish 板块涨概率预测(evidence-only)+ P0-8 amendment 落地 + EOD 接线",
+        summary: "MiroFish 输入信息汇总文档 → 输出板块涨概率 + 因果链 + 有界 sector-score + 不确定性;仍只写 evidence_collection(MIROFISH- 前缀,output_writer by-construction 无 RiskCheckSummary 管线)。**结构化 forecast payload(sector_scores 有界 + horizon + 不确定性)存于 MIROFISH- evidence 文档内**(amendment §2.3 'CandidateSelector 读 evidence' 的设计通道);cost_guard 预留 slot + 全 boundary fail-closed(预算拒/parse 失败 → 无 forecast,量化兜底);接 17:00 EOD job(现 events=() 空转 → digest→forecast→evidence)。",
+        scope: "backend/mirofish/sector_forecast.py, backend/mirofish/output_writer.py(复用扩展), backend/data/scheduler.py(EOD job 接线), backend/services/cost_guard.py(新 reserve slot)",
         depends: "O-001",
-        acceptance: "MiroFish 输出 sector-score + 因果链 + 不确定性 + 仅 evidence(MIROFISH-)+ 写零决策/候选/size/方向字段。",
-        tests: "evidence-only by-construction + sector-score 有界 + 无 RiskCheckSummary 管线。",
-        sources: "P0-8-amendment-2026-05-24",
-        commit: "", session_date: "", notes: "升核心但 evidence-only 不变;by-construction 强制保留。"
+        acceptance: "MiroFish 输出 sector-score + 因果链 + 不确定性 + 仅 evidence(MIROFISH-)+ 写零决策/候选/size/方向字段;sector-score 钳制有界;LLM 概率字段标注 uncalibrated;cost_guard 拒绝时静默降级;EOD job 真跑 digest→forecast。",
+        tests: "evidence-only by-construction + sector-score 有界 + 无 RiskCheckSummary 管线 + 预算拒降级 + parse 失败降级 + EOD 接线。",
+        sources: "P0-8-amendment-2026-05-24, P1-7-amendment(真·预留)",
+        commit: "a8d91ee", session_date: "2026-06-13", notes: "升核心但 evidence-only 不变;by-construction 强制保留。forecast payload 在 evidence 文档内 = 不破『MiroFish 仍只写 evidence_collection』红线。"
       },
       {
-        id: "O-003", phase: "O MiroFish 核心", status: "todo", priority: "P1",
+        id: "O-003", phase: "O MiroFish 核心", status: "done", priority: "P1",
         title: "CandidateSelector 接 MiroFish 有界重排(≤1 分位,保 ≥3 量化)+ 对抗测试",
-        summary: "CandidateSelector 接 MiroFish sector-score 在已合格集内有界重排(rank 偏移 ≤1 分位);top-N 截断后仍保 ≥3 量化名额;MiroFish 永不否决板块/静默剪枝;缺席量化兜底。",
-        scope: "backend/candidate_selector/selector.py(扩展)",
+        summary: "CandidateSelector 接 MiroFish sector-score 在已合格集内有界重排(rank 偏移 ≤1 分位);top-N 截断后仍保 ≥3 量化名额;MiroFish 永不否决板块/静默剪枝;缺席量化兜底。**实现口径:复用 selector.select(advisory=) 既有 AdvisorySignal slot(M-001 已建,fail-closed 越界整体丢弃);sector-score→per-code AdvisorySignal 映射为纯函数(code→行业映射注入),由 orchestration(line1_runner)读 T-1 EOD MIROFISH- evidence 后构造传入 — candidate_selector 不 import mirofish,模块隔离不破**。",
+        scope: "backend/candidate_selector/advisory_mapping.py(新,纯函数), backend/orchestration/line1_runner.py(接线)",
         depends: "O-002",
-        acceptance: "有界重排 ≤1 分位 + top-N 后保 ≥3 量化 + 移除 MiroFish 合格集不变(仅排序)+ 缺席兜底。",
-        tests: "对抗测试:MiroFish 给板块低分不能否决 + 重排不能 top-N 后挤掉量化名额 + 缺席兜底。",
+        acceptance: "有界重排 ≤1 分位 + top-N 后保 ≥3 量化 + 移除 MiroFish 合格集不变(仅排序)+ 缺席兜底(advisory=None bit-identical)+ candidate_selector 仍零 mirofish/llm/agents import。",
+        tests: "对抗测试:MiroFish 给板块低分不能否决 + 重排不能 top-N 后挤掉量化名额 + 缺席兜底 + 模块隔离 AST。",
         sources: "P0-8-amendment-2026-05-24 §2.3, R0 §8, Codex round-2 §2",
-        commit: "", session_date: "", notes: "Codex:重排在 top-N 截断后仍须保 ≥3 量化;不能间接挤掉名额。"
+        commit: "5ee2c2f", session_date: "2026-06-13", notes: "Codex:重排在 top-N 截断后仍须保 ≥3 量化;不能间接挤掉名额。PIT:T 日 09:35 用 T-1 17:00 forecast(可观测,无前视)。"
       },
       {
-        id: "O-004", phase: "O MiroFish 核心", status: "todo", priority: "P2",
+        id: "O-004", phase: "O MiroFish 核心", status: "done", priority: "P2",
         title: "场外信息进多 agent 辩论输入",
-        summary: "信息汇总文档 + MiroFish 报告(场外信息)与候选股信息结合进辩论;agent 据此收敛 ≤5。",
-        scope: "backend/agents_team/agents.py(扩展)",
+        summary: "信息汇总文档 + MiroFish 报告(场外信息)与候选股信息结合进辩论;agent 据此收敛 ≤5。实现口径:沿 _thesis_evidence_contexts 既有模式,TeamContext 加 off-market evidence 文本字段(MIROFISH-/NEWS-/MARKET- 近期 evidence,截断上限),注入 _analyst_context/_fund_manager_context;LLM 仍只写允许文本字段。",
+        scope: "backend/agents_team/agents.py + state.py(扩展), backend/orchestration/line1_runner.py(evidence 拉取注入)",
         depends: "O-003",
-        acceptance: "场外信息进辩论输入 + 辩论收敛 ≤5 + LLM 仍不写决策字段。",
-        tests: "场外信息注入辩论 + 收敛 ≤5 + 决策字段 provenance-clean。",
+        acceptance: "场外信息进辩论输入 + 辩论收敛 ≤5 + LLM 仍不写决策字段 + evidence 缺席时辩论照跑(fail-open 注入层)。",
+        tests: "场外信息注入辩论 + 收敛 ≤5 + 决策字段 provenance-clean + 缺席不阻塞。",
         sources: "R0 §1, P0-8-amendment-2026-05-24",
-        commit: "", session_date: "", notes: "辩论用场外信息作 evidence,不据其直接写决策字段。"
+        commit: "da9f2dc", session_date: "2026-06-13", notes: "辩论用场外信息作 evidence,不据其直接写决策字段。"
+      },
+      {
+        id: "O-005", phase: "O MiroFish 核心", status: "done", priority: "P1",
+        title: "板块预测校准账本(确定性证伪闭环:留痕→到期对账→trailing 命中率/Brier)",
+        summary: "对照系统终极目标(真实落袋收益)补 O 缺口:无校准的板块涨概率若系统性带偏 shortlist 排序会安静损耗收益。**确定性零 LLM**打分器:每份 forecast(O-002 evidence payload 自带 horizon)到期后按全市场快照真实板块收益对账(方向命中率 + Brier),outcome 落 `mirofish_forecast_outcomes`(append-only);trailing 校准统计(近 N 份)回灌下一份 EOD evidence content,owner 据数据决断保留/关闭 advisory 重排。纯度量、零行为变更、不动决策边界(无新 amendment)。",
+        scope: "backend/mirofish/forecast_ledger.py(新,确定性), backend/data/scheduler.py(EOD job 先打分后预测)",
+        depends: "O-002",
+        acceptance: "到期 forecast 确定性打分(同输入 bit-exact)+ outcome append-only + trailing 统计入 EOD evidence + 零 LLM + 不改 selector 行为 + 数据不足时 INSUFFICIENT_DATA 不报伪精度。",
+        tests: "打分确定性 + horizon 边界(未到期不打分)+ append-only(重打分幂等)+ trailing 窗口 + 缺数据降级。",
+        sources: "P0-8-amendment-2026-05-24(evidence-only), R0 新红线①(PIT 可复现), P0-6(可度量验收哲学)",
+        commit: "282f713", session_date: "2026-06-13", notes: "2026-06-13 新增(owner『立足真实收益目标检查计划』):MiroFish 价值必须可证伪,否则是装饰。度量先行,权重调整(若数据支持)留给将来 amendment。"
       },
       {
         id: "Q-001", phase: "Q 知识图谱", status: "done", priority: "P1",
