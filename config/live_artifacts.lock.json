@@ -1,11 +1,13 @@
 {
   "version": "1.0",
-  "updated_at": "2026-06-11T00:00:00+08:00",
+  "updated_at": "2026-06-13T00:00:00+08:00",
   "approved": {
     "strategy_code": [],
     "feature_def": [],
     "prompt_version": [
-      "a40927ee4b7dc58a857b0c92ea4bada4a3a53af5f143686c6a9c81a71d114bf7"
+      "a40927ee4b7dc58a857b0c92ea4bada4a3a53af5f143686c6a9c81a71d114bf7",
+      "591da6689fcee65f97db98e7db5f297e9ab0c1cb4217f9d1c510bb4d5b4cc6ee",
+      "eba6906bf4931ea22f4a3aaee1a9c856b6dd3eca1a25ff1fc7d0281248ca9f53"
     ],
     "anomaly_model": [],
     "rag_index": []

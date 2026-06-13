@@ -215,21 +215,31 @@ def test_from_lockfile_round_trip(tmp_path: Path) -> None:
 
 def test_shipped_lockfile_loads_and_denies_unapproved() -> None:
     """The in-repo config/live_artifacts.lock.json must load and deny anything
-    not explicitly pinned. Y-006 pins exactly one artifact — the theme-research
-    SOP prompt version (PROMPT_VERSION) authorized by P0-8-amendment-2026-06-01;
-    every other kind stays empty (deny-all) and an unapproved hash is refused."""
+    not explicitly pinned. The PROMPT_VERSION kind pins exactly the
+    theme-research SOP (Y-006, P0-8-amendment-2026-06-01) plus the two trader
+    persona cards (T-001, P0-10-amendment-2026-05-24); every other kind stays
+    empty (deny-all) and an unapproved hash is refused."""
     reg = LiveArtifactRegistry.from_lockfile("config/live_artifacts.lock.json")
     # The attacker's hash + an unrelated strategy hash are denied across all kinds.
     for kind in ArtifactKind:
         assert reg.is_approved(kind, _APPROVED_STRATEGY) is False
         assert reg.is_approved(kind, _UNAPPROVED_STRATEGY) is False
-    # Only the theme SOP prompt is pinned, and only under PROMPT_VERSION.
+    # The pinned PROMPT_VERSION set: theme SOP + the two T-001 persona cards.
     theme_sop_sha = hashlib.sha256(
         Path("config/prompts/theme_research/v1.yaml").read_bytes()
     ).hexdigest()
+    persona_shas = {
+        hashlib.sha256(Path(p).read_bytes()).hexdigest()
+        for p in (
+            "config/prompts/trader_momentum/v1.yaml",
+            "config/prompts/trader_mean_reversion/v1.yaml",
+        )
+    }
     assert reg.is_approved(ArtifactKind.PROMPT_VERSION, theme_sop_sha) is True
     assert reg.is_approved(ArtifactKind.STRATEGY_CODE, theme_sop_sha) is False
-    assert reg.approved(ArtifactKind.PROMPT_VERSION) == frozenset({theme_sop_sha})
+    assert reg.approved(ArtifactKind.PROMPT_VERSION) == frozenset(
+        {theme_sop_sha, *persona_shas}
+    )
     assert reg.approved(ArtifactKind.STRATEGY_CODE) == frozenset()
 
 

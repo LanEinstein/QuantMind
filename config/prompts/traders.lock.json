@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-06-13T00:00:00+08:00",
+  "personas": {
+    "trader_momentum": {
+      "active_version": "v1",
+      "versions": {
+        "v1": {
+          "path": "config/prompts/trader_momentum/v1.yaml",
+          "sha256": "591da6689fcee65f97db98e7db5f297e9ab0c1cb4217f9d1c510bb4d5b4cc6ee",
+          "pinned_at": "2026-06-13T00:00:00+08:00",
+          "pinned_by": "T-001 amendment P0-10-2026-05-24 §2.1/§2.2"
+        }
+      }
+    },
+    "trader_mean_reversion": {
+      "active_version": "v1",
+      "versions": {
+        "v1": {
+          "path": "config/prompts/trader_mean_reversion/v1.yaml",
+          "sha256": "eba6906bf4931ea22f4a3aaee1a9c856b6dd3eca1a25ff1fc7d0281248ca9f53",
+          "pinned_at": "2026-06-13T00:00:00+08:00",
+          "pinned_by": "T-001 amendment P0-10-2026-05-24 §2.1/§2.2"
+        }
+      }
+    }
+  }
+}
