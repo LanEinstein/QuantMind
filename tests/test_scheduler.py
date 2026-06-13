@@ -590,6 +590,57 @@ class TestMiroFishEodCronJob:
         await scheduler._run_mirofish_eod_job()
 
     @pytest.mark.asyncio
+    async def test_eod_pipeline_supersedes_legacy_write(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        # O-002: with the full pipeline injected, the 17:00 job delegates
+        # to it and the legacy minimal EOD write must NOT also run.
+        writer = AsyncMock()
+        pipeline = AsyncMock()
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            mirofish_writer=writer,
+            eod_pipeline=pipeline,
+        )
+        await s._run_mirofish_eod_job()
+        pipeline.assert_awaited_once()
+        writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_eod_pipeline_failure_swallowed(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        pipeline = AsyncMock(side_effect=RuntimeError("pipeline down"))
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            eod_pipeline=pipeline,
+        )
+        # Must not raise — the cron job survives a pipeline crash.
+        await s._run_mirofish_eod_job()
+
+    @pytest.mark.asyncio
+    async def test_eod_cron_registered_with_pipeline_only(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            eod_pipeline=AsyncMock(),
+        )
+        await s.start()
+        assert s._scheduler is not None
+        assert s._scheduler.get_job("mirofish_eod_review_job") is not None
+        await s.stop()
+
+    @pytest.mark.asyncio
     async def test_eod_job_swallows_writer_failure(
         self, mock_deps: dict[str, AsyncMock]
     ) -> None:

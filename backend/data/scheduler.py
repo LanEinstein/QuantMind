@@ -85,6 +85,7 @@ class DataScheduler:
         news_interval_seconds: int = 300,
         mirofish_writer: MiroFishEvidenceWriter | None = None,
         held_codes_provider: Callable[[], Awaitable[list[str]]] | None = None,
+        eod_pipeline: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._market_data = market_data
         self._news_crawler = news_crawler
@@ -106,6 +107,11 @@ class DataScheduler:
         # is permitted so dev environments without the MiroFish stack
         # still boot — the EOD job becomes a no-op in that case.
         self._mirofish_writer = mirofish_writer
+        # O-002: when the full EOD pipeline (digest → forecast → audit
+        # row, backend.orchestration.mirofish_eod_runner) is wired in
+        # main.py, the 17:00 job delegates to it; ``None`` keeps the
+        # legacy minimal EOD-review write so dev envs are unaffected.
+        self._eod_pipeline = eod_pipeline
         self._scheduler: AsyncIOScheduler | None = None
         self._log = log
 
@@ -177,7 +183,9 @@ class DataScheduler:
         # C-006: 17:00 mon-fri Asia/Shanghai — MiroFish EOD review writes
         # one ``MIROFISH-EOD-{YYYYMMDD}`` row into evidence_collection.
         # Wired conditionally because dev envs may not have the writer.
-        if self._mirofish_writer is not None:
+        # O-002: with an injected ``eod_pipeline`` the same cron runs the
+        # full digest → forecast → audit-row pipeline instead.
+        if self._mirofish_writer is not None or self._eod_pipeline is not None:
             self._scheduler.add_job(
                 self._run_mirofish_eod_job,
                 "cron",
@@ -427,6 +435,18 @@ class DataScheduler:
         collide on the unique ``evidence_id`` index, which is the
         intended fail-closed branch (one EOD row per trade_date).
         """
+        # O-002: the injected full pipeline (digest → forecast → audit
+        # row) supersedes the legacy minimal write when wired. It owns
+        # its own per-step degradation; the outer guard only ensures a
+        # pipeline crash never kills the APScheduler job.
+        if self._eod_pipeline is not None:
+            try:
+                await self._eod_pipeline()
+            except Exception as exc:  # noqa: BLE001 — cron must survive
+                self._log.warning(
+                    "mirofish_eod_pipeline_failed", error=str(exc)
+                )
+            return
         if self._mirofish_writer is None:
             return
         # Lazy import to keep the runtime-level dependency thin —

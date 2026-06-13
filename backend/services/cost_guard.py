@@ -128,6 +128,26 @@ _THESIS_REVIEW_COUNT_KEY_PREFIX = "llm:thesis_review"
 _THESIS_REVIEW_DEDUP_KEY_PREFIX = "llm:thesis_review:dedup"
 _THESIS_REVIEW_TTL_SECONDS = 36 * 3600
 
+# MiroFish sector-forecast LLM gate (O-002 / P0-8-amendment-2026-05-24).
+# The 17:00 EOD pipeline fires ONE forecast call per TRADE DATE; the dedup
+# marker is keyed by trade_date (NOT the rerun's UTC day) so a holiday /
+# vendor-lag fallback to a prior trading day cannot re-pay for the same
+# ``MIROFISH-FORECAST-{trade_date}`` on a later calendar day (codex O-002
+# P2 — Mongo's unique-id rejection only fires AFTER the paid call). The
+# count key is a per-UTC-day fail-closed backstop, and the spend reserves
+# on the unified ``llm:usage`` counter so the forecast cannot bypass the
+# ¥100/day hard cap. Mirrors the W-002 thesis-review gate.
+_DEFAULT_MAX_SECTOR_FORECAST_LLM_PER_DAY = 2
+"""Max MiroFish sector-forecast LLM calls per UTC day (1 cron + 1 manual
+re-run headroom). Override via ``QUANTMIND_MAX_SECTOR_FORECAST_LLM_PER_DAY``."""
+_SECTOR_FORECAST_COUNT_KEY_PREFIX = "llm:sector_forecast"
+_SECTOR_FORECAST_DEDUP_KEY_PREFIX = "llm:sector_forecast:dedup"
+_SECTOR_FORECAST_COUNT_TTL_SECONDS = 36 * 3600
+# Dedup marker lives long enough to span the longest A-share holiday
+# cluster (golden week / spring festival ≈ 9 calendar days of fallback
+# reruns to the same prior trade date) + slack.
+_SECTOR_FORECAST_DEDUP_TTL_SECONDS = 14 * 24 * 3600
+
 
 # ---------------------------------------------------------------------------
 # State envelopes
@@ -523,6 +543,17 @@ def get_max_thesis_review_llm_per_day() -> int:
     )
 
 
+def get_max_sector_forecast_llm_per_day() -> int:
+    """Max MiroFish sector-forecast LLM calls per UTC day (O-002)."""
+    return int(
+        _read_env_float(
+            "QUANTMIND_MAX_SECTOR_FORECAST_LLM_PER_DAY",
+            float(_DEFAULT_MAX_SECTOR_FORECAST_LLM_PER_DAY),
+            minimum=0.0,
+        )
+    )
+
+
 def _utc_date_str(today: datetime.date | None = None) -> str:
     base = today or datetime.datetime.now(tz=datetime.UTC).date()
     return base.isoformat()
@@ -726,6 +757,11 @@ async def reset_daily_gate_counters(
         # spuriously deduped out of reviewing.
         _thesis_review_count_key(date_str),
         _thesis_review_dedup_key(date_str),
+        # O-002: only the per-UTC-day forecast cap counter is a transient
+        # daily gate. The dedup marker is keyed by trade_date (durable
+        # idempotency across UTC days), so it is NOT cleared here — a
+        # fresh trading day is a NEW trade_date with its own marker.
+        _sector_forecast_count_key(date_str),
     )
     try:
         await redis_client.delete(*keys)
@@ -813,6 +849,103 @@ async def reserve_thesis_review_slot(
         await _safe_decr(redis_client, count_key)
         await _safe_srem(redis_client, dedup_key, trigger_key)
         return None
+
+
+async def reserve_sector_forecast_slot(
+    redis_client: redis.asyncio.Redis,
+    *,
+    trigger_key: str,
+    estimated_rmb: float,
+    today: datetime.date | None = None,
+) -> BudgetReservation | None:
+    """Gate the OPTIONAL daily MiroFish sector-forecast LLM call (O-002).
+
+    The 17:00 EOD pipeline fires at most one forecast per trade date. The call
+    is non-decision advisory (it only writes ``evidence_collection`` with the
+    ``MIROFISH-`` prefix), so any limit simply **skips** it — this function
+    never raises (the caller treats ``None`` as "do not call the LLM"). The
+    spend reserves on the SAME ``llm:usage:{utc_date}`` counter as every other
+    LLM path so the ¥100/day hard cap cannot be bypassed (P1-7-amendment §2.4).
+
+    Returns a :class:`BudgetReservation` when permitted, or ``None`` when it
+    must be skipped — already forecast today for this ``trigger_key`` (dedup,
+    e.g. a same-day cron re-run), the daily forecast cap is exhausted, or the
+    ¥100 reservation refuses. Mirrors :func:`reserve_thesis_review_slot`.
+    """
+    date_str = _utc_date_str(today)
+    # Dedup keyed by the TRADE DATE (trigger_key), not the rerun's UTC day,
+    # so a holiday/vendor-lag fallback cannot re-pay for the same forecast.
+    dedup_key = _sector_forecast_dedup_key(trigger_key)
+    count_key = _sector_forecast_count_key(date_str)
+
+    try:
+        added = int(await redis_client.sadd(dedup_key, trigger_key))
+    except Exception as exc:  # noqa: BLE001 — fail-closed: skip optional LLM
+        log.warning(
+            "sector_forecast_dedup_failed", trigger=trigger_key, error=str(exc)
+        )
+        return None
+    await _safe_expire(
+        redis_client, dedup_key, _SECTOR_FORECAST_DEDUP_TTL_SECONDS
+    )
+    if added == 0:
+        # Already forecast for this trade date (possibly on an earlier UTC
+        # day via fallback) — dedup skip.
+        return None
+
+    cap = get_max_sector_forecast_llm_per_day()
+    try:
+        new_count = int(await redis_client.incr(count_key))
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        log.warning(
+            "sector_forecast_count_failed", trigger=trigger_key, error=str(exc)
+        )
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        return None
+    await _safe_expire(
+        redis_client, count_key, _SECTOR_FORECAST_COUNT_TTL_SECONDS
+    )
+    if new_count > cap:
+        await _safe_decr(redis_client, count_key)
+        # No paid call happened — release the durable trade-date marker so a
+        # later retry (next UTC day / after budget frees) is not blocked for
+        # the 14-day dedup TTL (codex O-002 verify). The marker must mean
+        # "a forecast was actually paid for", not "we tried once".
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        log.info("sector_forecast_cap_reached", cap=cap, attempted=new_count)
+        return None
+
+    try:
+        return await reserve_budget(
+            redis_client,
+            agent_name=f"mirofish:sector_forecast:{trigger_key}"[:64],
+            estimated_rmb=estimated_rmb,
+            today=today,
+        )
+    except DailyBudgetExceededError:
+        await _safe_decr(redis_client, count_key)
+        # Non-paid skip → release the durable marker so the same trade_date
+        # can be re-attempted once the daily budget frees up.
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        log.info("sector_forecast_budget_skip", trigger=trigger_key)
+        return None
+    except Exception as exc:  # noqa: BLE001 — fail-closed: never raise here
+        log.warning(
+            "sector_forecast_reserve_failed", trigger=trigger_key, error=str(exc)
+        )
+        await _safe_decr(redis_client, count_key)
+        await _safe_srem(redis_client, dedup_key, trigger_key)
+        return None
+
+
+def _sector_forecast_count_key(date_str: str) -> str:
+    """Per-UTC-day forecast-call cap counter (fail-closed backstop)."""
+    return f"{_SECTOR_FORECAST_COUNT_KEY_PREFIX}:{date_str}"
+
+
+def _sector_forecast_dedup_key(trade_date: str) -> str:
+    """Per-TRADE-DATE dedup marker (durable across UTC days / reruns)."""
+    return f"{_SECTOR_FORECAST_DEDUP_KEY_PREFIX}:{trade_date}"
 
 
 async def reserve_anomaly_llm_slot(

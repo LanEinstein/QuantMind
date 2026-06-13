@@ -337,6 +337,55 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
 
     mirofish_writer = MiroFishEvidenceWriter(mongodb_service)
 
+    # O-002: full 17:00 EOD pipeline (O-001 digest → O-002 sector
+    # forecast → legacy audit row). Advisory/evidence-only by
+    # construction; every step degrades independently inside the runner.
+    # The LLM caller late-binds ``app.state.llm_router`` at cron time so
+    # the data-layer init order (router wires later) is irrelevant.
+    from pathlib import Path as _EodPath
+
+    from backend.mirofish.digest_evidence import InfoDigestEvidenceWriter
+    from backend.mirofish.sector_forecast import SectorForecaster
+    from backend.orchestration.mirofish_eod_runner import (
+        LiveDigestInputsProvider,
+        MiroFishEodRunner,
+        build_kg_related_sectors_provider,
+    )
+
+    async def _forecast_llm_call(system_prompt: str, user_content: str) -> str:
+        router = getattr(application.state, "llm_router", None)
+        if router is None:
+            raise RuntimeError("llm_router not initialized yet")
+        from backend.agents.base import call_agent
+
+        return await call_agent(
+            router, "intelligence_officer", system_prompt, user_content
+        )
+
+    def _eod_tushare_factory():  # type: ignore[no-untyped-def]
+        from backend.data.tushare_client import TushareClient
+
+        return TushareClient()
+
+    _kg_db_path = (
+        _EodPath(__file__).resolve().parents[1]
+        / "data"
+        / "knowledge_graph"
+        / "kg.sqlite3"
+    )
+    mirofish_eod_runner = MiroFishEodRunner(
+        inputs_provider=LiveDigestInputsProvider(
+            tushare_factory=_eod_tushare_factory,
+            news_crawler=news_crawler,
+        ),
+        digest_writer=InfoDigestEvidenceWriter(mongodb_service),
+        mirofish_writer=mirofish_writer,
+        forecaster=SectorForecaster(_forecast_llm_call),
+        redis_client=redis_pool,  # type: ignore[arg-type]
+        related_sectors_provider=build_kg_related_sectors_provider(_kg_db_path),
+    )
+    application.state.mirofish_eod_runner = mirofish_eod_runner
+
     # Scheduler — ``held_codes_provider`` is a late-bound closure so the 30s
     # collector reads the broker's held codes at tick time (the broker
     # registry is attached to app.state in _init_trading_layer, after this
@@ -356,6 +405,7 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
         news_interval_seconds=config.news.refresh_interval_seconds,
         mirofish_writer=mirofish_writer,
         held_codes_provider=_held_position_codes,
+        eod_pipeline=mirofish_eod_runner.run,
     )
     await scheduler.start()
 

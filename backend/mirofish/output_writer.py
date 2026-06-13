@@ -33,9 +33,10 @@ prefix-allowlist guard too.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
@@ -44,10 +45,14 @@ from backend.models.evidence import EvidencePrefix, validate_evidence_id
 if TYPE_CHECKING:
     from backend.data.database import MongoDBService
     from backend.mirofish.schemas import EventDescription, SimulationResult
+    from backend.mirofish.sector_forecast import SectorForecast
 
 log = structlog.get_logger(component="mirofish.output_writer")
 
-MiroFishPath = Literal["event_driven", "eod_review"]
+# O-002 adds the third path: the daily sector forecast. It is uncapped
+# like eod_review (one row per trade_date via the unique evidence_id);
+# the event_driven cap=1 stays untouched.
+MiroFishPath = Literal["event_driven", "eod_review", "sector_forecast"]
 
 # P0-8 §1.5 — events with importance_score >= this threshold are
 # considered "HIGH severity" and qualify to trigger the event_driven
@@ -93,10 +98,16 @@ class MiroFishEvidence:
     )
     event_title: str = ""
     simulation_summary: str = ""
+    # O-002: machine-readable sector-forecast payload, present only on
+    # the ``sector_forecast`` path. Living INSIDE the evidence document
+    # keeps the "MiroFish writes only evidence_collection" red line
+    # intact while giving O-003 (bounded rerank) and O-005 (calibration
+    # ledger) a typed channel to read.
+    forecast: Mapping[str, Any] | None = None
 
     def to_mongo(self) -> dict[str, object]:
         """Project the DTO to a Mongo-insertable dict."""
-        return {
+        doc: dict[str, object] = {
             "evidence_id": self.evidence_id,
             "prefix": EvidencePrefix.MIROFISH.value,
             "path": self.path,
@@ -109,6 +120,9 @@ class MiroFishEvidence:
             "event_title": self.event_title,
             "simulation_summary": self.simulation_summary,
         }
+        if self.forecast is not None:
+            doc["forecast"] = dict(self.forecast)
+        return doc
 
 
 def is_high_severity_event(event: EventDescription) -> bool:
@@ -201,6 +215,51 @@ def build_event_evidence(
         sectors=event.sectors,
         event_title=event.title,
         simulation_summary=result.event_summary if result is not None else "",
+    )
+
+
+def make_forecast_evidence_id(trade_date: str) -> str:
+    """``MIROFISH-FORECAST-{YYYYMMDD}`` — unique per trade date (O-002)."""
+    yyyymmdd = trade_date.replace("-", "")
+    return f"MIROFISH-FORECAST-{yyyymmdd}"
+
+
+def build_sector_forecast_evidence(
+    forecast: SectorForecast,
+    *,
+    calibration_note: str = "",
+) -> MiroFishEvidence:
+    """Build the daily sector-forecast evidence DTO (O-002).
+
+    The human-readable ``content`` renders the research view (sector
+    scores + causal chains + uncertainty + the uncalibrated-probability
+    disclaimer); the machine-readable ``forecast`` payload carries the
+    typed entries for O-003/O-005. ``calibration_note`` lets the O-005
+    ledger inject the trailing hit-rate/Brier line so every forecast doc
+    shows how well past forecasts actually did.
+    """
+    lines = [
+        f"MiroFish 板块推演({forecast.trade_date},未来 "
+        f"{forecast.horizon_days} 个交易日,研究观点非交易指令)",
+        "概率为未经校准的 LLM 主观估计;O-005 校准账本按真实板块收益对账。",
+    ]
+    if calibration_note:
+        lines.append(f"历史校准: {calibration_note}")
+    for e in forecast.entries:
+        lines.append(
+            f"- {e.sector}: score {e.score:+.2f}, "
+            f"P(涨) {e.probability_up:.0%} (uncalibrated), "
+            f"不确定性 {e.uncertainty} — {e.causal_chain}"
+        )
+    return MiroFishEvidence(
+        evidence_id=make_forecast_evidence_id(forecast.trade_date),
+        path="sector_forecast",
+        severity=0,
+        content="\n".join(lines),
+        trade_date=forecast.trade_date,
+        sectors=tuple(e.sector for e in forecast.entries),
+        simulation_summary="板块涨概率推演",
+        forecast=forecast.to_payload(),
     )
 
 
@@ -394,7 +453,9 @@ __all__ = [
     "MiroFishPath",
     "build_eod_evidence",
     "build_event_evidence",
+    "build_sector_forecast_evidence",
     "is_high_severity_event",
     "make_eod_evidence_id",
     "make_event_evidence_id",
+    "make_forecast_evidence_id",
 ]
