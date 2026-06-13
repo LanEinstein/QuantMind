@@ -67,6 +67,18 @@ dev = [
     "mypy>=1.14,<2",
     "pandas-stubs>=2.2,<3",
 ]
+# T-003 full-anomaly-stack OPTIONAL deps (P0-10-amendment-line2-2026-06-13).
+# NOT default deps: the Line-2 detector lazy-imports every one of them and
+# fail-closes to the four core (stdlib-only) detectors when absent (mirrors the
+# R-002 optional backtest oracle). scikit-learn powers IsolationForest;
+# ruptures powers the change-point detector; hmmlearn is reserved for the
+# deferred HMM-regime detector. None is required to boot or run with the stack
+# disabled (the default). Install with: pip install -e '.[anomaly-stack]'.
+anomaly-stack = [
+    "scikit-learn>=1.4,<2",
+    "ruptures>=1.1,<2",
+    "hmmlearn>=0.3,<1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]

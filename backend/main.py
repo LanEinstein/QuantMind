@@ -54,6 +54,24 @@ log = structlog.get_logger()
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
+
+def _anomaly_detector_from_env() -> Any:
+    """Build the Line-2 ``AnomalyDetector`` honouring the T-003 full-stack gate.
+
+    ``QUANTMIND_LINE2_FULL_ANOMALY_STACK_ENABLED=1`` enables the IsolationForest
+    + ruptures change-point detectors (P0-10-amendment-line2-2026-06-13); the
+    default OFF is byte-identical to the N-001 MVP (config hash + manifest
+    feature version unchanged). The env gate is the only switch — the config is
+    runtime-immutable, so enabling it requires a restart.
+    """
+    from backend.monitoring.anomaly import AnomalyConfig, AnomalyDetector
+
+    enabled = (
+        os.environ.get("QUANTMIND_LINE2_FULL_ANOMALY_STACK_ENABLED", "0").strip()
+        == "1"
+    )
+    return AnomalyDetector(AnomalyConfig(full_anomaly_stack=enabled))
+
 # P0-6-amendment-2026-05-25 §2.2 — which go-live tier's acceptance gate the
 # startup + switch paths evaluate. This env var ONLY selects which tier's gate
 # to evaluate; it NEVER bypasses the gate's ``allowed`` verdict (amendment §4
@@ -773,7 +791,6 @@ async def _init_line2_runners(
     from backend.broker.models import CircuitBreakerConfig
     from backend.integrations.feishu.renderer import MessageRenderer
     from backend.marketdata_snapshot import SnapshotStore
-    from backend.monitoring.anomaly import AnomalyDetector
     from backend.orchestration.instruction_dispatcher import (
         InstructionDispatcher,
     )
@@ -960,7 +977,7 @@ async def _init_line2_runners(
         )
 
     daily_runner = Line2DailyRunner(
-        anomaly_detector=AnomalyDetector(),
+        anomaly_detector=_anomaly_detector_from_env(),
         builder=builder,
         renderer=renderer,
         coordinator=coordinator,
@@ -1677,7 +1694,6 @@ async def _init_line2_runners(
         open_tickets: tuple[Any, ...], risk_config: Any,
     ) -> None:
         """Drive the ≤5-slot rotation once over the shared T-1 frame (V-004)."""
-        from backend.monitoring.anomaly import AnomalyDetector
         from backend.services.rotation_context_provider import (
             ProductionRotationProvider,
             compute_qualified_codes,
@@ -1715,7 +1731,7 @@ async def _init_line2_runners(
             run_state=run_state, code_contexts=contexts, name_by_code=names,
             snapshot_at=frame.fetch_time_utc,
         )
-        scan = AnomalyDetector().scan(
+        scan = _anomaly_detector_from_env().scan(
             frame, [p.code.split(".")[0].strip() for p in run_state.positions], sid
         )
         rotations_today = sum(

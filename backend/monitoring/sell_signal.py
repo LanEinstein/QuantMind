@@ -58,12 +58,17 @@ log = structlog.get_logger(component="monitoring.sell_signal")
 _LOT = 100
 
 # DOWN-direction kinds that warrant a risk exit. Volume z-score is excluded
-# (ambiguous without price context) — precision over recall.
+# (ambiguous without price context) — precision over recall. The T-003
+# full-stack kinds (IsolationForest multivariate outlier + ruptures
+# change-point) are DOWN-gated risk-exit triggers too; they only fire when the
+# env-gated stack is enabled (P0-10-amendment-line2-2026-06-13).
 SELL_TRIGGER_KINDS: frozenset[AnomalyKind] = frozenset(
     {
         AnomalyKind.PRICE_ZSCORE,
         AnomalyKind.EWMA_DEVIATION,
         AnomalyKind.BOLLINGER_BREAKOUT,
+        AnomalyKind.ISOLATION_FOREST,
+        AnomalyKind.CHANGEPOINT,
     }
 )
 

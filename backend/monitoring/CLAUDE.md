@@ -18,7 +18,7 @@
 
 ## 本模块红线
 1. **纯量化轮询(零 LLM 决策)**;LLM 仅在**触发式异动**(去重 + `max_anomaly_llm_per_day`),写**同一** `llm:usage:{utc_date}` 计数器(防绕过 ¥20 cap)。
-2. MVP 仅 z-score/EWMA/布林 + 量能 z-score;全栈(IsolationForest/HMM/ruptures/OFI)Phase T,**按需加**(精度 > 模型多样性,防告警疲劳);autoencoder deferred。
+2. 核心 4 检测器 z-score/EWMA/布林 + 量能 z-score(always-on)。**T-003 全异动栈**(`P0-10-amendment-line2-2026-06-13`,**按需加**精度 > 模型多样性):新增 **IsolationForest 多变量**(sklearn,已装,确定性 fit-predict 固定种子,仅当 latest 为窗内最异常点才 flag)+ **ruptures 变点**(可选 lazy-import,缺依赖 fail-closed 返 None);二者 `AnomalyKind.{ISOLATION_FOREST,CHANGEPOINT}` 接入 SAME SELL-trigger 路径,**env 门控 OFF 默认**(`AnomalyConfig.full_anomaly_stack`,OFF = config_hash/manifest 与 v1 **byte-identical**,enable 时 feature 版本 v2)。**deferred**:HMM regime(确定性 index regime 已权威熊市禁补,advisory HMM 进决策路径风险>价值)/ OFI·VPIN(缺微结构馈线)/ autoencoder(过拟)。**离线训练并持久化的异动模型**若未来引入 → 必经 `LiveArtifactRegistry.ANOMALY_MODEL` pin。
 3. SELL 读 **`available_volume`(T+1 已结算)**,非总持仓。
 4. 补仓 = 固定分数(Van Tharp)+ ATR 移动止损;要求 oversold + 量能企稳 + 无破位 + 仓位余量;**禁马丁格尔;熊市(regime)禁补**;经 RiskEngine 14-check + 飞书人工。
 5. 停牌持仓 → SELL/ADD **干净降级**(非失败订单);suspension 作快照字段;接 `backend.data.suspension`。

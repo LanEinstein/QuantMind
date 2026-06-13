@@ -50,8 +50,12 @@ from backend.marketdata_snapshot import (
 log = structlog.get_logger(component="monitoring.anomaly")
 
 # Pinned feature-code version — bump when the detector maths changes so a
-# stale replay manifest fails closed instead of silently recomputing.
+# stale replay manifest fails closed instead of silently recomputing. The
+# base (v1) covers the four MVP detectors; v2 additionally covers the T-003
+# full-anomaly-stack detectors and is used ONLY when the stack is enabled, so
+# the disabled path stays byte-identical to N-001 (replay manifests unchanged).
 FEATURE_CODE_VERSION: str = "monitoring.anomaly/v1"
+FEATURE_CODE_VERSION_FULL_STACK: str = "monitoring.anomaly/v2"
 
 # Canonical CSV market-frame header (single source of truth with the Line-1
 # screener — both lines read the same K snapshot per trade_date).
@@ -75,6 +79,9 @@ class AnomalyKind(StrEnum):
     VOLUME_ZSCORE = "volume_zscore"
     EWMA_DEVIATION = "ewma_deviation"
     BOLLINGER_BREAKOUT = "bollinger_breakout"
+    # T-003 full-anomaly-stack kinds (env-gated; off by default).
+    ISOLATION_FOREST = "isolation_forest"
+    CHANGEPOINT = "changepoint"
     ROTATION = "rotation"
     """Not an anomaly-detector output — the deterministic ≤5-slot rotation SELL
     (Phase V-004) reuses this enum to tag its monitoring-class SELL intent so it
@@ -115,6 +122,15 @@ class AnomalyConfig:
     ewma_span: int = 10
     ewma_k: float = 3.0
     bollinger_k: float = 2.0
+    # T-003 full anomaly stack (IsolationForest + ruptures change-point).
+    # OFF by default → the detector is bit-for-bit identical to the N-001 MVP
+    # (config_hash + manifest feature version unchanged). Enable per
+    # P0-10-amendment-line2-2026-06-13 (owner + 45d shadow + restart).
+    full_anomaly_stack: bool = False
+    isoforest_contamination: float = 0.04
+    isoforest_estimators: int = 128
+    isoforest_random_state: int = 20260613
+    ruptures_penalty: float = 4.0
 
     @property
     def min_bars(self) -> int:
@@ -279,16 +295,167 @@ def bollinger_breakout(
     return None
 
 
+# ---------------------------------------------------------------------------
+# T-003 full-anomaly-stack detectors (env-gated; deterministic / fail-closed).
+# See P0-10-amendment-line2-2026-06-13-full-anomaly-stack.md.
+# ---------------------------------------------------------------------------
+
+
+def _isoforest_features(
+    closes: tuple[float, ...], amounts: tuple[float, ...], window: int
+) -> list[list[float]] | None:
+    """Build the per-bar [return, volume-z, |return|] feature rows (or None).
+
+    Needs ``window + 1`` return-bars (so the IsolationForest baseline has
+    ``window`` rows + the latest test row). Volume is z-normalised over the
+    same span; a degenerate (flat) volume baseline yields a 0.0 column rather
+    than dividing by zero. Returns oldest→newest; the last row is the test bar.
+    """
+    rets = _returns(closes)
+    if len(rets) < window + 1 or len(amounts) < window + 2:
+        return None
+    ret_window = rets[-(window + 1):]
+    amt_window = amounts[-(window + 1):]
+    amt_mu = statistics.fmean(amt_window)
+    amt_sigma = statistics.pstdev(amt_window)
+    rows: list[list[float]] = []
+    for ret, amt in zip(ret_window, amt_window, strict=True):
+        vz = (amt - amt_mu) / amt_sigma if amt_sigma > 0.0 else 0.0
+        rows.append([ret, vz, abs(ret)])
+    return rows
+
+
+def isolation_forest_anomaly(
+    closes: tuple[float, ...],
+    amounts: tuple[float, ...],
+    *,
+    window: int,
+    contamination: float,
+    n_estimators: int,
+    random_state: int,
+) -> tuple[float, AnomalyDirection] | None:
+    """Multivariate IsolationForest flag on the latest bar (deterministic).
+
+    Fits a fixed-``random_state`` IsolationForest over the ``window``-bar PIT
+    feature matrix and flags the latest bar iff it is predicted an outlier.
+    ``score`` is the absolute anomaly score (``-decision_function``). Returns
+    ``None`` on insufficient history, a degenerate baseline, OR if scikit-learn
+    is unavailable (fail-closed — never raises, never blocks the core detectors).
+    Direction is the sign of the latest return (UP if ``≥0`` else DOWN).
+    """
+    rows = _isoforest_features(closes, amounts, window)
+    if rows is None:
+        return None
+    try:
+        import numpy as np  # noqa: PLC0415 — lazy: keep the OFF/hot path light
+        from sklearn.ensemble import (  # type: ignore[import-untyped]  # noqa: PLC0415
+            IsolationForest,
+        )
+
+        x = np.asarray(rows, dtype=float)
+        clf = IsolationForest(
+            n_estimators=n_estimators,
+            contamination=contamination,
+            random_state=random_state,
+            bootstrap=False,
+        )
+        clf.fit(x)
+        predictions = clf.predict(x)
+        scores = clf.decision_function(x)
+    except Exception as exc:  # noqa: BLE001 — fail-closed (missing dep / fit error)
+        log.warning("isoforest_unavailable", error=str(exc))
+        return None
+    # Precision-first: flag the latest bar ONLY when it is both an outlier
+    # (``predict == -1``) AND the single MOST anomalous point in the window
+    # (``argmin`` of the decision function). The contamination parameter always
+    # forces ~k points to ``-1``; requiring the latest to be the global minimum
+    # avoids flagging a calm position just because it sits on the boundary.
+    if predictions[-1] != -1 or int(np.argmin(scores)) != len(scores) - 1:
+        return None
+    magnitude = abs(float(scores[-1]))
+    if not math.isfinite(magnitude):
+        return None
+    last_ret = rows[-1][0]
+    direction = AnomalyDirection.UP if last_ret >= 0 else AnomalyDirection.DOWN
+    return magnitude, direction
+
+
+def ruptures_changepoint(
+    closes: tuple[float, ...], *, window: int, penalty: float
+) -> tuple[float, AnomalyDirection] | None:
+    """Flag a structural change-point in the latest bar of the return series.
+
+    Lazy-imports ``ruptures`` (an OPTIONAL dependency — mirrors the R-002
+    backtest-oracle optional-dep pattern); when it is absent the detector
+    fail-closes to ``None`` so the system runs fully on the core detectors
+    until the dep is installed. Flags
+    iff a detected break-point lands on the most recent bar; ``score`` is the
+    absolute mean-shift across that break in σ units. Returns ``None`` on
+    insufficient history / no recent break / any error (never raises).
+    """
+    rets = _returns(closes)
+    if len(rets) < window:
+        return None
+    series = rets[-window:]
+    try:
+        import numpy as np  # noqa: PLC0415
+        import ruptures  # type: ignore[import-not-found]  # noqa: PLC0415
+
+        signal = np.asarray(series, dtype=float).reshape(-1, 1)
+        # jump=1 searches EVERY bar (Pelt's default jump=5 puts candidate
+        # break-points on a 5-bar grid, which the recency check below could
+        # never match for the latest bar — codex T-003 P2).
+        algo = ruptures.Pelt(model="rbf", min_size=2, jump=1).fit(signal)
+        breaks = algo.predict(pen=penalty)
+    except Exception as exc:  # noqa: BLE001 — fail-closed (missing dep / fit error)
+        log.warning("ruptures_unavailable", error=str(exc))
+        return None
+    # ``breaks`` ends with len(series); a real break-point is any earlier index.
+    interior = [b for b in breaks if 0 < b < len(series)]
+    if not interior:
+        return None
+    last_break = interior[-1]
+    # Only flag when the break is RECENT (within the final 2 bars) — a stale
+    # mid-window break is not actionable for a held position (precision-first).
+    if last_break < len(series) - 2:
+        return None
+    before = series[:last_break]
+    after = series[last_break:]
+    if not before or not after:
+        return None
+    sigma = statistics.pstdev(series)
+    if sigma <= 0.0:
+        return None
+    shift = (statistics.fmean(after) - statistics.fmean(before)) / sigma
+    if not math.isfinite(shift):
+        return None
+    direction = AnomalyDirection.UP if shift >= 0 else AnomalyDirection.DOWN
+    return abs(shift), direction
+
+
 class AnomalyDetector:
     """Pure, deterministic Line-2 anomaly scan over one PIT snapshot."""
 
     def __init__(self, config: AnomalyConfig | None = None) -> None:
         self._cfg = config or AnomalyConfig()
 
+    def _feature_version(self) -> str:
+        """v2 when the full stack is enabled, else the byte-identical v1."""
+        return (
+            FEATURE_CODE_VERSION_FULL_STACK
+            if self._cfg.full_anomaly_stack
+            else FEATURE_CODE_VERSION
+        )
+
     def _config_hash(self) -> str:
-        """Stable sha256 of the effective detector config (manifest lineage)."""
+        """Stable sha256 of the effective detector config (manifest lineage).
+
+        When the full stack is DISABLED the payload is byte-identical to the
+        N-001 MVP (no new keys, base feature version) so replay manifests are
+        unchanged; the T-003 keys are added ONLY when the stack is enabled.
+        """
         payload = {
-            "feature_code_version": FEATURE_CODE_VERSION,
+            "feature_code_version": self._feature_version(),
             "window": self._cfg.window,
             "zscore_threshold": self._cfg.zscore_threshold,
             "volume_zscore_threshold": self._cfg.volume_zscore_threshold,
@@ -296,6 +463,12 @@ class AnomalyDetector:
             "ewma_k": self._cfg.ewma_k,
             "bollinger_k": self._cfg.bollinger_k,
         }
+        if self._cfg.full_anomaly_stack:
+            payload["full_anomaly_stack"] = True
+            payload["isoforest_contamination"] = self._cfg.isoforest_contamination
+            payload["isoforest_estimators"] = self._cfg.isoforest_estimators
+            payload["isoforest_random_state"] = self._cfg.isoforest_random_state
+            payload["ruptures_penalty"] = self._cfg.ruptures_penalty
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
 
@@ -344,7 +517,7 @@ class AnomalyDetector:
             created_at=datetime.now(tz=UTC),
             snapshot_ids=(snapshot.snapshot_id,),
             consumed_rows=tuple(consumed),
-            feature_code_version=FEATURE_CODE_VERSION,
+            feature_code_version=self._feature_version(),
             config_hashes={"anomaly_config": self._config_hash()},
             join_filter_params={"held_codes": sorted(held)},
         )
@@ -433,6 +606,65 @@ class AnomalyDetector:
                     detail=(
                         f"Bollinger breakout {bb[0]:.2f}σ {bb[1].value} "
                         f"(>{cfg.bollinger_k}σ band, {cfg.window}d)"
+                    ),
+                )
+            )
+
+        # T-003 full-anomaly-stack detectors — only when enabled. Each
+        # self-gates / fail-closes to None (insufficient history, degenerate
+        # baseline, or a missing optional dep) so an enabled stack never blocks
+        # the core detectors above.
+        if cfg.full_anomaly_stack:
+            out.extend(self._detect_full_stack(row, last_price))
+        return out
+
+    def _detect_full_stack(
+        self, row: _ParsedRow, last_price: float
+    ) -> list[AnomalySignal]:
+        """T-003 IsolationForest + ruptures change-point on one held code."""
+        cfg = self._cfg
+        out: list[AnomalySignal] = []
+
+        iso = isolation_forest_anomaly(
+            row.closes,
+            row.amounts,
+            window=cfg.window,
+            contamination=cfg.isoforest_contamination,
+            n_estimators=cfg.isoforest_estimators,
+            random_state=cfg.isoforest_random_state,
+        )
+        if iso is not None:
+            out.append(
+                AnomalySignal(
+                    code=row.code,
+                    kind=AnomalyKind.ISOLATION_FOREST,
+                    direction=iso[1],
+                    score=round(iso[0], 4),
+                    threshold=cfg.isoforest_contamination,
+                    last_price=last_price,
+                    detail=(
+                        f"IsolationForest outlier score={iso[0]:.3f} "
+                        f"{iso[1].value} (contamination={cfg.isoforest_contamination}, "
+                        f"{cfg.window}d multivariate)"
+                    ),
+                )
+            )
+
+        cp = ruptures_changepoint(
+            row.closes, window=cfg.window, penalty=cfg.ruptures_penalty
+        )
+        if cp is not None:
+            out.append(
+                AnomalySignal(
+                    code=row.code,
+                    kind=AnomalyKind.CHANGEPOINT,
+                    direction=cp[1],
+                    score=round(cp[0], 4),
+                    threshold=cfg.ruptures_penalty,
+                    last_price=last_price,
+                    detail=(
+                        f"ruptures change-point mean-shift {cp[0]:.2f}σ "
+                        f"{cp[1].value} (pen={cfg.ruptures_penalty}, {cfg.window}d)"
                     ),
                 )
             )
@@ -536,6 +768,7 @@ def _parse_floats(raw: str) -> tuple[float, ...] | None:
 
 __all__ = [
     "FEATURE_CODE_VERSION",
+    "FEATURE_CODE_VERSION_FULL_STACK",
     "AnomalyConfig",
     "AnomalyDetector",
     "AnomalyDetectorError",
@@ -546,6 +779,8 @@ __all__ = [
     "SkipReason",
     "bollinger_breakout",
     "ewma_deviation",
+    "isolation_forest_anomaly",
     "price_zscore",
+    "ruptures_changepoint",
     "volume_zscore",
 ]
