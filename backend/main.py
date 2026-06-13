@@ -1274,6 +1274,33 @@ async def _init_line2_runners(
         mongodb=getattr(application.state, "mongodb", None),
     )
 
+    # T-001/T-002: load the ≥2 frozen trader persona cards. The cards are
+    # pinned governance config (each SHA256 approved as a PROMPT_VERSION in the
+    # LiveArtifactRegistry, ≥2 required), so this is FAIL-CLOSED: a missing /
+    # checksum-drifted / unapproved / under-covered lock aborts boot rather than
+    # silently disabling the trader path and hiding a prompt-governance error
+    # (codex T-002 P2) — mirroring how PromptRegistry / LiveArtifactRegistry /
+    # secrets_validator fail-close the boot path. Disabling the traders is an
+    # amendment to the lock, never a silent runtime degrade.
+    from backend.agents_team.persona_registry import (
+        TraderPersona,
+        TraderPersonaRegistry,
+    )
+    from backend.strategy_evolution.live_artifact_registry import (
+        LiveArtifactRegistry,
+    )
+
+    _live_artifacts = LiveArtifactRegistry.from_lockfile(
+        "config/live_artifacts.lock.json"
+    )
+    trader_personas: tuple[TraderPersona, ...] = TraderPersonaRegistry.from_lockfile(
+        "config/prompts/traders.lock.json",
+        registry=_live_artifacts,
+        require_pinned=True,
+        require_full_coverage=True,
+    ).personas()
+    log.info("trader_personas_loaded", count=len(trader_personas))
+
     line1_runner = Line1Runner(
         screener=screener,
         budget_policy=budget_policy,
@@ -1298,6 +1325,8 @@ async def _init_line2_runners(
         advisory_provider=forecast_advisory_provider,
         # O-004: off-market briefing injected into the debate (fail-open).
         off_market_provider=off_market_provider,
+        # T-002: ≥2 trader personas injected into the debate (fail-open).
+        trader_personas=trader_personas,
     )
     application.state.line1_runner = line1_runner
 

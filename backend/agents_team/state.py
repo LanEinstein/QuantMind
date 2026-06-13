@@ -34,6 +34,7 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict, runtime_checkable
 
+from backend.agents_team.persona_registry import TraderPersona
 from backend.broker.models import AccountInfo, Position  # noqa: TID251
 from backend.risk.daily_state import DailyTradingState  # noqa: TID251
 from backend.risk.engine import RiskEngine  # noqa: TID251
@@ -91,6 +92,12 @@ class TeamState(TypedDict, total=False):
     fund_manager_reasoning: str
     debate_history: str
     debate_round_count: int
+    # T-002: ≥2 trader personas' advisory text (何时买/买多少倾向), aggregated by
+    # the single deterministic traders fan-in node. Pure free text fed to the
+    # fund_manager's deliberation — never a numeric order field, never a
+    # direction proposal (the fund_manager stays the sole proposer; the builder
+    # derives volume/limit_price deterministically, R0 §4).
+    trader_advice: str
 
     # fund_manager's BUY/SELL/HOLD proposal (sole proposer of direction).
     direction: str
@@ -130,6 +137,11 @@ class TeamContext:
     concentration_exception: bool = False
     now: dt.datetime | None = None
     llm_router: LLMCompleter | None = None
+    # T-002: the ≥2 frozen trader persona cards (from TraderPersonaRegistry).
+    # Empty by default (MVP / no registry) → the traders fan-in node is a no-op
+    # and the debate is bit-identical to before. When populated, each persona
+    # contributes one advisory text block to the fund_manager's deliberation.
+    trader_personas: tuple[TraderPersona, ...] = ()
     # O-004: off-market evidence (MiroFish sector forecast + multi-domain
     # news/index digest) injected as analyst/fund_manager briefing TEXT.
     # Empty by default (MVP / offline) → the debate is bit-identical to
@@ -166,6 +178,7 @@ def make_initial_state(candidate: CandidateBrief) -> TeamState:
         fund_manager_reasoning="",
         debate_history="",
         debate_round_count=0,
+        trader_advice="",
         direction="",
         fund_manager_parse_ok=False,
         risk_passed=False,

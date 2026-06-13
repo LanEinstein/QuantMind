@@ -334,6 +334,10 @@ _PROD_THINKING_TABLE: dict[str, tuple[str, int, str]] = {
     # kimi-k2.6 with thinking; single-shot calls, so no rounds retained.
     "thesis_reviewer": ("enabled", 8_000, "none"),
     "theme_investigator": ("enabled", 10_000, "none"),
+    # ≥2 交易员 agent (T-001/T-002, P0-10-amendment-2026-05-24): advisory-only
+    # free text, no JSON confidence contract → thinking disabled.
+    "trader_momentum": ("disabled", 0, "none"),
+    "trader_mean_reversion": ("disabled", 0, "none"),
     # Phase 5B exit shadow-test baseline — kimi-only clone of
     # fund_manager (no routing block) consumed only by
     # backend.services.shadow_runner. Same thinking config so the

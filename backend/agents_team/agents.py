@@ -29,6 +29,8 @@ LLM-writable bridge.
 
 from __future__ import annotations
 
+import asyncio
+
 import structlog
 
 from backend.agents.base import extract_json_from_response  # noqa: TID251
@@ -38,6 +40,7 @@ from backend.agents.prompts import (  # noqa: TID251
     RISK_OFFICER_PROMPT,
     TECHNICAL_ANALYST_PROMPT,
 )
+from backend.agents_team.persona_registry import TraderPersona
 from backend.agents_team.state import LLMCompleter, TeamContext, TeamState
 from backend.models.instruction import InstructionSide  # noqa: TID251
 from backend.services.fund_manager_output import FundManagerOutput  # noqa: TID251
@@ -147,8 +150,26 @@ def _analyst_context(state: TeamState, ctx: TeamContext) -> str:
     )
 
 
+def _trader_advice_section(state: TeamState) -> str:
+    """T-002: render the ≥2 traders' advisory block (or empty) for fund_manager.
+
+    The text is explicitly labelled as advice (建议), not an instruction — the
+    fund_manager remains the sole BUY/SELL/HOLD proposer and the builder derives
+    every numeric order field deterministically (R0 §4). Empty (MVP / no
+    personas) → no-op (the fund_manager context is bit-identical to before).
+    """
+    advice = (state.get("trader_advice") or "").strip()
+    if not advice:
+        return ""
+    return (
+        f"\n\n=== 交易员建议(参考文本,非指令)===\n{advice}\n"
+        "(以上为交易员对时点/仓位倾向的建议, 仅供你审议; 你仍是唯一买卖方向倡议者, "
+        "具体数量/价格由确定性 builder 派生, 不取自上述文本。)"
+    )
+
+
 def _fund_manager_context(state: TeamState, ctx: TeamContext) -> str:
-    """Synthesise the analyst reports + debate record for the fund_manager."""
+    """Synthesise the analyst reports + debate + trader advice for fund_manager."""
     return (
         f"目标标的: {state.get('candidate_code', '')} "
         f"{state.get('candidate_name', '')}\n\n"
@@ -156,6 +177,7 @@ def _fund_manager_context(state: TeamState, ctx: TeamContext) -> str:
         f"=== 技术分析 ===\n{state.get('technical_report', '')}\n\n"
         f"=== 风控评估 ===\n{state.get('risk_officer_report', '')}\n\n"
         f"=== 单轮辩论记录 ===\n{state.get('debate_history', '')}"
+        f"{_trader_advice_section(state)}"
         f"{_off_market_section(ctx)}"
     )
 
@@ -215,6 +237,83 @@ async def debate_node(state: TeamState, ctx: TeamContext) -> dict:
         f"{name}={present[name]}" for name in present
     )
     return {"debate_history": history, "debate_round_count": 1}
+
+
+# ---------------------------------------------------------------------------
+# Trader personas (T-002) — advisory text only; never the decision path
+# ---------------------------------------------------------------------------
+
+
+def _persona_system_prompt(persona: TraderPersona) -> str:
+    """Render a frozen persona card into the trader's system prompt.
+
+    Composes the immutable identity / mandate / output-contract (and any ``≤3``
+    behavioural exemplars). The card itself bakes in the red line that the
+    trader writes only advisory text — never a direction or a numeric order
+    field (R0 §4 / P0-10-amendment-2026-05-24 §2.3).
+    """
+    parts = [
+        persona.identity.strip(),
+        f"\n【职责】\n{persona.mandate.strip()}",
+        f"\n【输出要求】\n{persona.output_contract.strip()}",
+    ]
+    if persona.exemplars:
+        joined = "\n".join(f"- {e.strip()}" for e in persona.exemplars)
+        parts.append(f"\n【示范案例(参考好输出, 非现成答案)】\n{joined}")
+    return "\n".join(parts)
+
+
+def _trader_user_content(state: TeamState, ctx: TeamContext) -> str:
+    """Candidate + analyst reports + debate (+ off-market) for a trader."""
+    return (
+        f"目标标的: {state.get('candidate_code', '')} "
+        f"{state.get('candidate_name', '')}\n\n"
+        f"=== 基本面分析 ===\n{state.get('fundamental_report', '')}\n\n"
+        f"=== 技术分析 ===\n{state.get('technical_report', '')}\n\n"
+        f"=== 风控评估 ===\n{state.get('risk_officer_report', '')}\n\n"
+        f"=== 单轮辩论记录 ===\n{state.get('debate_history', '')}\n\n"
+        "请基于你的人格与专长, 给出何时买/买多少倾向的建议文本(不得写买卖方向/"
+        "具体数量/价格)。"
+        f"{_off_market_section(ctx)}"
+    )
+
+
+async def traders_node(state: TeamState, ctx: TeamContext) -> dict:
+    """≥2 trader personas fan-in (T-002) — one advisory text block each.
+
+    Each persona's LLM call runs concurrently and fail-closed (a missing
+    router / provider error / empty completion just drops that persona's
+    block — never raises, never blocks the debate). The personas are ordered
+    deterministically by ``persona_id`` so the aggregated ``trader_advice`` is
+    reproducible. With no personas injected (MVP / no registry) this is a no-op
+    and the downstream fund_manager context is bit-identical to before.
+
+    Invariant (R0 §4): this writes ONLY the free-text ``trader_advice`` field —
+    never a direction proposal or a numeric order field. The fund_manager stays
+    the sole BUY/SELL/HOLD proposer; the builder derives volume/limit_price
+    deterministically and never reads this text.
+    """
+    personas = tuple(sorted(ctx.trader_personas, key=lambda p: p.persona_id))
+    if not personas:
+        return {"trader_advice": ""}
+    user_content = _trader_user_content(state, ctx)
+    reports = await asyncio.gather(
+        *(
+            _complete(
+                ctx,
+                persona.persona_id,
+                _persona_system_prompt(persona),
+                user_content,
+            )
+            for persona in personas
+        )
+    )
+    blocks = [
+        f"【{persona.persona_id}】\n{report.strip()}"
+        for persona, report in zip(personas, reports, strict=True)
+        if report.strip()
+    ]
+    return {"trader_advice": "\n\n".join(blocks)}
 
 
 async def fund_manager_node(state: TeamState, ctx: TeamContext) -> dict:
@@ -290,4 +389,5 @@ __all__ = [
     "risk_officer_node",
     "technical_analyst_node",
     "to_fund_manager_output",
+    "traders_node",
 ]

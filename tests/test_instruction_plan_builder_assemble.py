@@ -654,6 +654,58 @@ class TestBuySellPath:
         assert plan.instruction_id.split("-")[4] == "BUY"
 
     @pytest.mark.asyncio
+    async def test_trader_numbers_in_proposal_text_never_set_order_fields(
+        self,
+        audit_store: AuditStore,
+        all_records_present: MandatoryAgentRecords,
+        risk_engine: RiskEngine,
+        fat_account: AccountInfo,
+        empty_positions: tuple[Position, ...],
+        daily_state: DailyTradingState,
+        stock_meta: RiskStockMetadata,
+        quiet_breaker: CircuitBreaker,
+        clean_data_quality: DataQualityState,
+        policy: UniversePolicy,
+        passing_signal: WatchlistMarketSignal,
+        data_snapshot: DataSnapshot,
+    ) -> None:
+        """T-002 single-construction-point adversarial (R0 §4): a trader's
+        advisory numbers reach the builder only via ``proposal_text`` (the
+        LLM-writable bridge), yet ``volume`` / ``limit_price`` are derived
+        deterministically from the context — never parsed out of that text."""
+        ctx = _build_context(
+            risk_engine=risk_engine,
+            fat_account=fat_account,
+            empty_positions=empty_positions,
+            daily_state=daily_state,
+            stock_meta=stock_meta,
+            quiet_breaker=quiet_breaker,
+            clean_data_quality=clean_data_quality,
+            policy=policy,
+            passing_signal=passing_signal,
+            data_snapshot=data_snapshot,
+            proposed_volume=200,
+        )
+        builder = InstructionPlanBuilder(audit_store=audit_store)
+        result = await builder.assemble_plan(
+            fund_manager_output=FundManagerOutput(
+                side=InstructionSide.BUY,
+                proposal_text=(
+                    "动量交易员建议: 立即买入 5000 股满仓, 限价 99.99, 下单 50 手"
+                ),
+            ),
+            mandatory_records=all_records_present,
+            context=ctx,
+        )
+        assert isinstance(result, BuilderPlan)
+        plan = result.plan
+        # Deterministic sizing wins: the trader's 5000 / 99.99 / 50 are ignored.
+        assert plan.volume == 200
+        assert plan.volume != 5000
+        assert plan.limit_price == 4.5
+        assert plan.limit_price != 99.99
+
+    @pytest.mark.asyncio
     async def test_buy_rejected_by_engine_emits_rejected_plan(
         self,
         audit_store: AuditStore,

@@ -43,6 +43,7 @@ from backend.agents_team.agents import (
     fundamental_analyst_node,
     risk_officer_node,
     technical_analyst_node,
+    traders_node,
 )
 from backend.agents_team.nodes import (
     builder_node,
@@ -65,11 +66,12 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(component="agents_team.graph")
 
-# Conservative per-debate cost estimate reserved BEFORE any LLM call
-# (actual 4-agent debate ≈ ¥0.4-0.8; reserve ¥1.0 of headroom). The
-# reservation — not this estimate's accuracy — is what keeps spend under the
-# ¥20 hard cap: settle releases it and track_usage records the real cost.
-_DEBATE_COST_ESTIMATE_RMB = 1.0
+# Conservative per-debate cost estimate reserved BEFORE any LLM call. The
+# debate is now 4 mandatory agents + ≥2 trader personas (T-002) ≈ ¥0.6-1.2;
+# reserve ¥1.5 of headroom. The reservation — not this estimate's accuracy —
+# is what keeps spend under the ¥100 hard cap: settle releases it and
+# track_usage records the real cost.
+_DEBATE_COST_ESTIMATE_RMB = 1.5
 
 
 def _bind(node: Any, ctx: TeamContext) -> Any:
@@ -104,6 +106,7 @@ def build_team_graph(
     graph.add_node("technical_analyst", _bind(technical_analyst_node, ctx))
     graph.add_node("risk_officer", _bind(risk_officer_node, ctx))
     graph.add_node("debate", _bind(debate_node, ctx))
+    graph.add_node("traders", _bind(traders_node, ctx))
     graph.add_node("fund_manager", _bind(fund_manager_node, ctx))
     graph.add_node("risk_gate", _bind(risk_gate_node, ctx))
     graph.add_node("builder", _bind(builder_node, ctx))
@@ -116,8 +119,13 @@ def build_team_graph(
     graph.add_edge("fundamental_analyst", "debate")
     graph.add_edge("technical_analyst", "debate")
     graph.add_edge("risk_officer", "debate")
+    # debate → traders (≥2 personas, advisory text) → fund_manager. The traders
+    # sit BEFORE the fund_manager so their advice informs its deliberation, and
+    # AFTER the debate so they see the analyst reports. They never feed a tool
+    # node — only the fund_manager (sole proposer) reads their text (R0 §4).
+    graph.add_edge("debate", "traders")
+    graph.add_edge("traders", "fund_manager")
     # Decision → deterministic tool gates → END.
-    graph.add_edge("debate", "fund_manager")
     graph.add_edge("fund_manager", "risk_gate")
     graph.add_edge("risk_gate", "builder")
     graph.add_edge("builder", END)

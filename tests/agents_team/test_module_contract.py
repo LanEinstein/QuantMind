@@ -76,11 +76,27 @@ class TestGraphTopology:
             "technical_analyst",
             "risk_officer",
             "debate",
+            "traders",
             "fund_manager",
             "risk_gate",
             "builder",
         ):
             assert n in nodes, f"node {n} missing from graph"
+
+    @pytest.mark.unit
+    def test_traders_feed_fund_manager_not_tool_nodes(self) -> None:
+        """T-002: debate → traders → fund_manager; the traders node never has an
+        outgoing edge to a deterministic tool node (R0 §4)."""
+        graph = build_team_graph(_ctx()).get_graph()
+        edges = {(e.source, e.target) for e in graph.edges}
+        assert ("debate", "traders") in edges
+        assert ("traders", "fund_manager") in edges
+        tool_nodes = {"risk_gate", "builder"}
+        for e in graph.edges:
+            if e.source == "traders":
+                assert e.target not in tool_nodes, (
+                    f"traders node feeds tool node {e.target}"
+                )
 
     @pytest.mark.unit
     def test_tool_nodes_run_after_fund_manager(self) -> None:
@@ -98,6 +114,7 @@ class TestGraphTopology:
         graph = build_team_graph(_ctx()).get_graph()
         agent_nodes = {
             "fundamental_analyst", "technical_analyst", "risk_officer", "debate",
+            "traders",
         }
         tool_nodes = {"risk_gate", "builder"}
         for e in graph.edges:

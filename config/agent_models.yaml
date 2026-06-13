@@ -183,6 +183,36 @@ agents:
     frequency: "per_trading_day"
     task: "综合所有Agent报告，输出最终买卖信号"
 
+  # ≥2 交易员 agent (T-001/T-002, P0-10-amendment-2026-05-24 §2.1/§2.4):
+  # advisory-only 文本建议 (何时买/买多少倾向), 喂给 fund_manager 审议; 永不倡议
+  # 方向 (fund_manager 唯一), 永不输出 volume/price (builder 确定性派生, 单一构造
+  # 点不破). thinking disabled (自由文本, 无 JSON confidence 契约 → 不做分层路由).
+  # 模型分工镜像分析师: momentum=deepseek-v4-pro (动量/趋势/价量数值) /
+  # mean_reversion=qwen3.6-plus (估值偏离/安全边际). 路由 runtime 不可改 + 重启生效.
+  trader_momentum:
+    name: "动量交易员"
+    provider: deepseek
+    model: deepseek-v4-pro
+    fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
+    frequency: "per_trading_day"
+    task: "动量/趋势/入场时点建议(advisory文本，永不写方向/数量/价格)"
+
+  trader_mean_reversion:
+    name: "均值回归交易员"
+    provider: qwen
+    model: qwen3.6-plus
+    fallback: { provider: deepseek, model: deepseek-v4-pro }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
+    frequency: "per_trading_day"
+    task: "均值回归/估值偏离/仓位管理建议(advisory文本，永不写方向/数量/价格)"
+
   # P0-10-amendment-2026-06-11: dedicated entries for the two
   # reasoning-heavy seams, decoupled from ``intelligence_officer`` (which
   # the legacy 9-agent pipeline + MiroFish keep sharing). Both run on

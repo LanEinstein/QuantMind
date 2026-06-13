@@ -37,6 +37,7 @@ import structlog
 
 from backend.agents_team.agents import to_fund_manager_output
 from backend.agents_team.graph import run_shortlist
+from backend.agents_team.persona_registry import TraderPersona
 from backend.agents_team.state import CandidateBrief, TeamContext, TeamState
 from backend.budget_policy.policy import (
     BudgetCandidate,
@@ -417,6 +418,7 @@ class Line1Runner:
         style_sink: StyleNameplateSink | None = None,
         advisory_provider: AdvisoryProvider | None = None,
         off_market_provider: OffMarketProvider | None = None,
+        trader_personas: tuple[TraderPersona, ...] = (),
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -454,6 +456,12 @@ class Line1Runner:
         # Optional and fail-open — None (or any gap) leaves the debate
         # bit-identical; the LLM still writes only the four allowed fields.
         self._off_market_provider = off_market_provider
+        # T-002: the ≥2 frozen trader persona cards (TraderPersonaRegistry).
+        # Empty by default (offline / not wired) → the traders fan-in node is a
+        # no-op and the debate is bit-identical. Each persona contributes one
+        # advisory text block to the fund_manager's deliberation; the builder
+        # still derives volume/limit_price deterministically (R0 §4).
+        self._trader_personas = trader_personas
 
     async def run(
         self,
@@ -757,6 +765,14 @@ class Line1Runner:
         if off_market_context:
             team_context = replace(
                 team_context, off_market_context=off_market_context
+            )
+        # T-002: inject the ≥2 frozen trader personas into the (frozen)
+        # TeamContext via replace — keeps the provider Protocol untouched. Empty
+        # (not wired) is a no-op (bit-identical debate); the fund_manager stays
+        # the sole proposer and the builder derives the order numbers (R0 §4).
+        if self._trader_personas:
+            team_context = replace(
+                team_context, trader_personas=self._trader_personas
             )
         debate = await run_shortlist(
             team_context, [lead_ctx.brief], redis_client=self._redis
