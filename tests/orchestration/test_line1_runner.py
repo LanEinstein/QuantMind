@@ -170,11 +170,13 @@ class _StubRouter:
         self.calls = 0
         self._action = action
         self._silent = silent
+        self.user_contents: list[str] = []
 
     async def complete(
         self, agent_name: str, messages: list[dict[str, str]], **_: Any
     ) -> Any:
         self.calls += 1
+        self.user_contents.append(messages[-1]["content"])
         if self._silent:
             content = ""
         elif agent_name == "fund_manager":
@@ -477,6 +479,7 @@ def _make_runner(
     style_sink: object | None = None,
     sim_reject: bool = False,
     advisory_provider: object | None = None,
+    off_market_provider: object | None = None,
     selector: CandidateSelector | None = None,
 ) -> Line1Runner:
     audit = AuditStore(
@@ -528,6 +531,7 @@ def _make_runner(
         thesis_writer=thesis_writer,
         style_sink=style_sink,
         advisory_provider=advisory_provider,
+        off_market_provider=off_market_provider,
     )
 
 
@@ -1713,3 +1717,96 @@ async def test_advisory_reorders_shortlist_within_bound(builder, tmp_path) -> No
     # Same membership as pure quant; 600006 no longer last.
     assert set(result.shortlist) == {"600000", "600004", "600006"}
     assert result.shortlist.index("600006") < 2
+
+
+# ---------------------------------------------------------------------------
+# O-004 — off-market briefing injected into the debate
+# ---------------------------------------------------------------------------
+
+
+class _SpyOffMarket:
+    def __init__(self, text: str = "", *, boom: bool = False) -> None:
+        self.text = text
+        self.boom = boom
+        self.calls: list[tuple[tuple[str, ...], str]] = []
+
+    async def __call__(self, codes, *, trade_date):  # noqa: ANN001, ANN201
+        self.calls.append((tuple(codes), trade_date))
+        if self.boom:
+            raise RuntimeError("off-market provider down")
+        return self.text
+
+
+async def test_off_market_called_with_boundary_and_codes(builder, tmp_path) -> None:
+    spy = _SpyOffMarket(text="")
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        off_market_provider=spy,
+    )
+    await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=_StubRouter(action="买入")),
+        now=_NOW,
+    )
+    assert len(spy.calls) == 1
+    codes, trade_date = spy.calls[0]
+    assert trade_date == "2026-05-15"  # deterministic frame-derived boundary
+    assert set(codes) == {"600000", "600004", "600006"}
+
+
+async def test_off_market_text_reaches_debate(builder, tmp_path) -> None:
+    brief = "【板块推演】半导体 score +0.60 (uncalibrated)"
+    router = _StubRouter(action="买入")
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        off_market_provider=_SpyOffMarket(text=brief),
+    )
+    await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    # The off-market briefing reached at least one debate LLM call.
+    assert any(brief in uc for uc in router.user_contents)
+    assert any("场外信息" in uc for uc in router.user_contents)
+
+
+async def test_off_market_failure_fails_open(builder, tmp_path) -> None:
+    router = _StubRouter(action="买入")
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+        off_market_provider=_SpyOffMarket(boom=True),
+    )
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    # The run completes normally; no off-market block in the prompts.
+    assert result.outcome is Line1Outcome.ROUTED
+    assert all("场外信息" not in uc for uc in router.user_contents)
+
+
+async def test_no_off_market_provider_is_bit_identical(builder, tmp_path) -> None:
+    router = _StubRouter(action="买入")
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=FakeFeishuSender(),
+        builder=builder,
+        tmp_path=tmp_path,
+    )
+    await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert all("场外信息" not in uc for uc in router.user_contents)

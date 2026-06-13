@@ -117,8 +117,25 @@ async def _complete(
 # ---------------------------------------------------------------------------
 
 
-def _analyst_context(state: TeamState) -> str:
-    """Minimal candidate context for the three analyst agents (MVP)."""
+def _off_market_section(ctx: TeamContext) -> str:
+    """O-004: render the injected off-market briefing block (or empty).
+
+    Pure text appended to the prompt. The block is labelled as background
+    evidence for deliberation, NOT an instruction — the LLM still writes
+    only the four allowed text fields, never a decision/numeric field.
+    """
+    text = (ctx.off_market_context or "").strip()
+    if not text:
+        return ""
+    return (
+        "\n\n=== 场外信息(背景研判,非交易指令)===\n"
+        f"{text}\n"
+        "(以上为市场/板块/资讯背景,仅供你分析参考,不得据此直接写买卖方向/数量/价格。)"
+    )
+
+
+def _analyst_context(state: TeamState, ctx: TeamContext) -> str:
+    """Minimal candidate context + off-market briefing for the analysts."""
     return (
         f"目标标的: {state.get('candidate_code', '')} "
         f"{state.get('candidate_name', '')}\n"
@@ -126,10 +143,11 @@ def _analyst_context(state: TeamState) -> str:
         f"数量={state.get('proposed_volume', 0)} "
         f"限价={state.get('proposed_limit_price', 0.0)}\n"
         "请基于你的专业领域给出分析报告。"
+        f"{_off_market_section(ctx)}"
     )
 
 
-def _fund_manager_context(state: TeamState) -> str:
+def _fund_manager_context(state: TeamState, ctx: TeamContext) -> str:
     """Synthesise the analyst reports + debate record for the fund_manager."""
     return (
         f"目标标的: {state.get('candidate_code', '')} "
@@ -138,6 +156,7 @@ def _fund_manager_context(state: TeamState) -> str:
         f"=== 技术分析 ===\n{state.get('technical_report', '')}\n\n"
         f"=== 风控评估 ===\n{state.get('risk_officer_report', '')}\n\n"
         f"=== 单轮辩论记录 ===\n{state.get('debate_history', '')}"
+        f"{_off_market_section(ctx)}"
     )
 
 
@@ -149,7 +168,10 @@ def _fund_manager_context(state: TeamState) -> str:
 async def fundamental_analyst_node(state: TeamState, ctx: TeamContext) -> dict:
     """Mandatory agent #1 — fundamental analysis report (P0-10 §2.3)."""
     report = await _complete(
-        ctx, "fundamental_analyst", FUNDAMENTAL_ANALYST_PROMPT, _analyst_context(state)
+        ctx,
+        "fundamental_analyst",
+        FUNDAMENTAL_ANALYST_PROMPT,
+        _analyst_context(state, ctx),
     )
     return {"fundamental_report": report}
 
@@ -157,7 +179,7 @@ async def fundamental_analyst_node(state: TeamState, ctx: TeamContext) -> dict:
 async def technical_analyst_node(state: TeamState, ctx: TeamContext) -> dict:
     """Mandatory agent #2 — technical analysis report (P0-10 §2.3)."""
     report = await _complete(
-        ctx, "technical_analyst", TECHNICAL_ANALYST_PROMPT, _analyst_context(state)
+        ctx, "technical_analyst", TECHNICAL_ANALYST_PROMPT, _analyst_context(state, ctx)
     )
     return {"technical_report": report}
 
@@ -170,7 +192,7 @@ async def risk_officer_node(state: TeamState, ctx: TeamContext) -> dict:
     fund_manager's deliberation.
     """
     report = await _complete(
-        ctx, "risk_officer", RISK_OFFICER_PROMPT, _analyst_context(state)
+        ctx, "risk_officer", RISK_OFFICER_PROMPT, _analyst_context(state, ctx)
     )
     return {"risk_officer_report": report}
 
@@ -189,9 +211,8 @@ async def debate_node(state: TeamState, ctx: TeamContext) -> dict:
         "technical_analyst": bool(state.get("technical_report")),
         "risk_officer": bool(state.get("risk_officer_report")),
     }
-    history = (
-        "[单轮辩论] 参与方报告就绪状态: "
-        + ", ".join(f"{name}={present[name]}" for name in present)
+    history = "[单轮辩论] 参与方报告就绪状态: " + ", ".join(
+        f"{name}={present[name]}" for name in present
     )
     return {"debate_history": history, "debate_round_count": 1}
 
@@ -205,7 +226,7 @@ async def fund_manager_node(state: TeamState, ctx: TeamContext) -> dict:
     only free text + the direction proposal — never a numeric order field.
     """
     raw = await _complete(
-        ctx, "fund_manager", FUND_MANAGER_PROMPT, _fund_manager_context(state)
+        ctx, "fund_manager", FUND_MANAGER_PROMPT, _fund_manager_context(state, ctx)
     )
     direction, reasoning, parse_ok = _parse_fund_manager(raw)
     return {

@@ -1235,6 +1235,17 @@ async def _init_line2_runners(
         industry_map_loader=_load_industry_map,
     )
 
+    # O-004: off-market briefing (MiroFish forecast + multi-domain digest)
+    # injected into the debate prompts as deliberation background. Fail-open;
+    # the LLM still writes only the four allowed text fields.
+    from backend.orchestration.off_market_provider import (
+        OffMarketBriefingProvider,
+    )
+
+    off_market_provider = OffMarketBriefingProvider(
+        mongodb=getattr(application.state, "mongodb", None),
+    )
+
     line1_runner = Line1Runner(
         screener=screener,
         budget_policy=budget_policy,
@@ -1257,6 +1268,8 @@ async def _init_line2_runners(
         style_sink=style_sink,
         # O-003: MiroFish forecast bounded re-rank input (fail-open).
         advisory_provider=forecast_advisory_provider,
+        # O-004: off-market briefing injected into the debate (fail-open).
+        off_market_provider=off_market_provider,
     )
     application.state.line1_runner = line1_runner
 

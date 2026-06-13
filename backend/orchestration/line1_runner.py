@@ -28,7 +28,7 @@ subpackage), so the single debate edge stays direct.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -319,6 +319,22 @@ class AdvisoryProvider(Protocol):
     ) -> Sequence[AdvisorySignal] | None: ...
 
 
+class OffMarketProvider(Protocol):
+    """O-004: resolve the off-market briefing TEXT for the debate.
+
+    Returns a bounded human-readable block (MiroFish sector forecast +
+    multi-domain news/index digest) for the analyst/fund_manager prompts,
+    or ``""`` when no usable evidence exists. Implementations must be
+    fail-open: any gap returns ``""`` so the debate runs unchanged. The
+    text is deliberation background only — the LLM still writes only the
+    four allowed text fields, never a decision/numeric field.
+    """
+
+    async def __call__(
+        self, codes: Sequence[str], *, trade_date: str
+    ) -> str: ...
+
+
 class ThesisWriter(Protocol):
     """Persists a buy-time :class:`PositionThesis` (W-001).
 
@@ -400,6 +416,7 @@ class Line1Runner:
         thesis_writer: ThesisWriter | None = None,
         style_sink: StyleNameplateSink | None = None,
         advisory_provider: AdvisoryProvider | None = None,
+        off_market_provider: OffMarketProvider | None = None,
     ) -> None:
         self._screener = screener
         self._budget = budget_policy
@@ -433,6 +450,10 @@ class Line1Runner:
         # fail-open — None (or any resolution gap) leaves the pure-quant order
         # untouched, so removing MiroFish never changes the qualified set.
         self._advisory_provider = advisory_provider
+        # O-004: off-market briefing TEXT injected into the debate prompts.
+        # Optional and fail-open — None (or any gap) leaves the debate
+        # bit-identical; the LLM still writes only the four allowed fields.
+        self._off_market_provider = off_market_provider
 
     async def run(
         self,
@@ -514,6 +535,15 @@ class Line1Runner:
         if hasattr(provider, "prime_allocation"):
             provider.prime_allocation([by_code[c] for c in selection.shortlist])
 
+        # O-004: resolve the off-market briefing TEXT ONCE for the run (the
+        # MiroFish forecast + multi-domain digest are market-wide), keyed by
+        # the same deterministic boundary as the advisory. Threaded into every
+        # candidate's TeamContext so each debate sees the same background.
+        # Fail-open: "" leaves the debate bit-identical.
+        off_market_context = await self._resolve_off_market(
+            list(selection.shortlist), _selection_day_from_frame(frame.trade_date)
+        )
+
         # 4-6. Walk the shortlist: debate → assemble (single construction
         # point) → route each candidate; REJECT/HOLD/DEGRADE/non-BUY falls
         # through to the next. Collect the VALIDATED BUY basket (cash threaded
@@ -539,6 +569,7 @@ class Line1Runner:
                     seq=seq,
                     now=now,
                     snapshot_id=snapshot_id,
+                    off_market_context=off_market_context,
                 )
             except DailyBudgetExceededError as exc:
                 # ¥100 reservation OR max_debates_per_day cap refused this
@@ -672,6 +703,7 @@ class Line1Runner:
         seq: int,
         now: datetime,
         snapshot_id: str = "",
+        off_market_context: str = "",
     ) -> _CandidateResult:
         """Debate + assemble (single construction point) + route one candidate.
 
@@ -718,8 +750,16 @@ class Line1Runner:
                 notice_chars=len(notice),
             )
             return _CandidateResult(outcome=Line1Outcome.QUOTE_DEGRADED)
+        # O-004: inject the off-market briefing into the (frozen) TeamContext
+        # via replace — keeps the provider Protocol untouched. Empty context
+        # (MVP / fail-open) is a no-op (bit-identical debate).
+        team_context = lead_ctx.team_context
+        if off_market_context:
+            team_context = replace(
+                team_context, off_market_context=off_market_context
+            )
         debate = await run_shortlist(
-            lead_ctx.team_context, [lead_ctx.brief], redis_client=self._redis
+            team_context, [lead_ctx.brief], redis_client=self._redis
         )
         fmo = to_fund_manager_output(debate.state)
         records = _mandatory_records_from_state(
@@ -1026,6 +1066,23 @@ class Line1Runner:
         except Exception as exc:  # noqa: BLE001 — advisory is never load-bearing
             log.warning("advisory_resolve_failed", error=str(exc))
             return None
+
+    async def _resolve_off_market(
+        self, codes: Sequence[str], trade_date: str
+    ) -> str:
+        """Best-effort off-market briefing TEXT; ``""`` on any gap (O-004).
+
+        Never raises and never gates the debate — a provider error or absent
+        evidence yields ``""`` so the debate runs bit-identical to the
+        no-evidence path. The text is deliberation background only.
+        """
+        if self._off_market_provider is None or not codes or not trade_date:
+            return ""
+        try:
+            return await self._off_market_provider(codes, trade_date=trade_date)
+        except Exception as exc:  # noqa: BLE001 — briefing is never load-bearing
+            log.warning("off_market_resolve_failed", error=str(exc))
+            return ""
 
     @staticmethod
     def _short(

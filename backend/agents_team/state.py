@@ -130,6 +130,12 @@ class TeamContext:
     concentration_exception: bool = False
     now: dt.datetime | None = None
     llm_router: LLMCompleter | None = None
+    # O-004: off-market evidence (MiroFish sector forecast + multi-domain
+    # news/index digest) injected as analyst/fund_manager briefing TEXT.
+    # Empty by default (MVP / offline) → the debate is bit-identical to
+    # before. It is evidence for deliberation only; the LLM still writes
+    # only the four allowed text fields, never a decision/numeric field.
+    off_market_context: str = ""
 
 
 @dataclass(frozen=True)
