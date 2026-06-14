@@ -65,10 +65,28 @@ secrets_validator_ok credential_count=8 warning_count=0
 owner_authorization_ok owner_identifier=<owner> granted_date=YYYY-MM-DD
 mongo_connected uri=mongodb://localhost:27017/quantmind
 redis_connected url=redis://localhost:6379/0
+trader_personas_loaded count=2
 orchestration_layer_initialized feishu_client=True decision_chat_wired=True
-brokerscheduler_started crons=4
+broker_scheduler_started
 analysis_scheduler_started mode=fast_slow
 ```
+
+> **Phase T boot note.** `trader_personas_loaded count=2` is the
+> T-001/T-002 fail-closed load of the frozen trader persona cards from
+> `config/prompts/traders.lock.json`. If the pinned cards cannot be
+> loaded the lifespan **aborts** (fail-closed) rather than booting
+> without them — a missing `trader_personas_loaded` line means the
+> backend never came up. See §2.1 for the full Phase O+T activation
+> state.
+>
+> **Cron count.** `broker_scheduler_started` registers **13** cron jobs
+> (audit `brokerscheduler_started` payload lists them):
+> `eod_pipeline`, `intraday_mtm`, `mirofish_postclose` (17:00 EOD
+> MiroFish digest→forecast→calibration), `advance_day`,
+> `evolution_shadow_run` (22:00), `line1_runner`, `line2_daily_runner`,
+> `line2_intraday_runner`, `thesis_review_runner`,
+> `sim_auto_reconciliation`, `daily_attribution_review`,
+> `weekend_deep_review`, `holiday_catchup_review`.
 
 If any of those lines is missing or replaced with a `*_error`
 counterpart, **stop immediately**:
@@ -78,6 +96,40 @@ sudo systemctl stop quantmind
 ```
 
 and consult §10 of the incident playbook.
+
+## §2.1 Phase O + T runtime activation state
+
+The MVP (Phase K–N) double-line loop boots without any of the Phase
+O/T research features. Each one has its own activation switch; know
+which are live before reading the daily numbers, otherwise an empty
+advisory / `INSUFFICIENT_DATA` calibration looks like a fault when it
+is the documented cold-start state.
+
+| Feature | Phase | Activation | Default | Cold-start behaviour |
+|---------|-------|------------|---------|----------------------|
+| **Trader persona cards** (≥2) | T-001/T-002 | Automatic at boot — `trader_personas_loaded count=2`. Load failure is **fail-closed** (lifespan aborts). | ON (pinned cards in `config/prompts/traders.lock.json`) | Debate grows 4→6 LLM calls/round (+¥0.2–0.4/debate). Traders write **advisory text only**; `fund_manager` is still the sole direction proposer. |
+| **Full anomaly stack** (IsolationForest + ruptures) | T-003 | `pip install -e '.[anomaly-stack]'` (sklearn already present; ruptures/hmmlearn from the extra) **AND** `QUANTMIND_LINE2_FULL_ANOMALY_STACK_ENABLED=1`. Run 45-day shadow before trusting. | OFF — byte-identical to N-001 (config hash + manifest feature v1 unchanged) | With the env unset, Line-2 monitoring is exactly the MVP detector. Enabling bumps the manifest feature version to v2. Zero LLM either way. |
+| **MiroFish 17:00 EOD pipeline** (digest→forecast→calibration) | O-001..O-005 | Automatic — `mirofish_postclose` cron (see §2 cron list). | ON (cron registered) | First days: no sector-return history → forecast advisory `None` (pure-quant selection runs unchanged) + calibration `INSUFFICIENT_DATA`. Fills in as EOD runs accumulate. MiroFish output is **evidence-only**; the quant `CandidateSelector` is always the eligibility authority. |
+| **Off-market context in debate** | O-004 | Automatic once forecasts exist. | ON | Empty briefing until MiroFish forecasts accumulate; LLM still writes only the 4 permitted fields. |
+| **Reflexion / FinMem exemplars** (≤3) | T-004 | Offline GEPA/FinMem proposes → owner pins the new `PROMPT_VERSION` → restart. **Never auto-applied.** | OFF (no pinned new card) | Personas run with their frozen v1 exemplars until an owner pins a successor. |
+
+Sanity check after a fresh boot:
+
+```bash
+journalctl -u quantmind | grep -E "trader_personas_loaded|broker_scheduler_started"
+# Expect: trader_personas_loaded count=2  (else boot aborted — investigate)
+#         broker_scheduler_started        (13 jobs in the audit payload)
+
+# Anomaly stack state (only meaningful once the optional deps are installed)
+echo "anomaly stack env = ${QUANTMIND_LINE2_FULL_ANOMALY_STACK_ENABLED:-unset(=OFF)}"
+python -c "import ruptures" 2>/dev/null && echo "ruptures: installed" || echo "ruptures: NOT installed (extra not pulled)"
+```
+
+> **I-002 scope note.** None of the OFF-by-default features above need
+> to be enabled for the 45-day acceptance run. Enabling the anomaly
+> stack or pinning new exemplars mid-window changes the config hash and
+> can perturb the acceptance metrics — treat each as its own
+> shadow-then-enable decision, not a flip-on during I-002.
 
 ## §3. Daily 16:30 acceptance verification
 
@@ -326,9 +378,13 @@ Three independent budget guards:
 
 | Guard | Threshold | Action on breach |
 |-------|-----------|------------------|
-| Daily hard cap | ¥20 / day | Full LLM circuit breaker (1h reset trigger candidate). Resets at 00:00 Asia/Shanghai. |
+| Daily hard cap | ¥100 / day | Full LLM circuit breaker (1h reset trigger candidate). Resets at 00:00 Asia/Shanghai. Soft pre-warn at 70% = ¥70 (closes Kimi escalation first). |
 | Monthly soft | ¥440 / month | 50% / 80% / 100% audit-only milestones. No service interruption. |
 | Kimi daily cap | ¥4 / day | Kimi escalation blocked; DeepSeek + Qwen continue. |
+
+> Per **P1-7-amendment-2026-05-26** the daily hard cap was raised ¥20 → ¥100
+> (the sole full-LLM circuit-breaker threshold; soft ratio 0.7 = ¥70). Code:
+> `backend/services/cost_guard.py::_DEFAULT_DAILY_BUDGET_RMB = 100.0`.
 
 Operator response:
 
@@ -341,7 +397,7 @@ curl -s http://127.0.0.1:8001/api/cost/breakdown | \
     jq '.data.spent_breakdown.daily.hourly'
 ```
 
-If the daily ¥20 hard cap trips, an audit event +
+If the daily ¥100 hard cap trips, an audit event +
 `acceptance_reset_triggered` Feishu alert fire simultaneously. The
 backend pauses LLM calls for the rest of the day; the next 00:00
 reset resumes service. There is **no operator override** for the
