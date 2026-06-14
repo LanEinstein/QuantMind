@@ -5,6 +5,37 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+# Owner production-runtime env vars that must never leak into the hermetic
+# test suite. The owner's shell carries the live-trading / I-002 long-run
+# staging env (interactive overlay on, pilot tier, decision chat + owner
+# allowlist, prod authorization). A unit/integration test that silently
+# resolves to feishu_interactive / pilot / prod because of an ambient export
+# is not hermetic — that is exactly the test-isolation drift that turned 3
+# orchestration tests red once the owner staged U-E5 / I-002.
+_OWNER_PROD_RUNTIME_ENV = (
+    "FEISHU_INTERACTIVE_ENABLED",
+    "FEISHU_DECISION_CHAT_ID",
+    "FEISHU_OWNER_OPEN_ID",
+    "QUANTMIND_FEISHU_TIER",
+    "QUANTMIND_PROD_RUN",
+    "QUANTMIND_OWNER_PROD_AUTHORIZATION",
+)
+
+
+@pytest.fixture(autouse=True)
+def _scrub_owner_prod_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the default-off baseline for owner production-runtime env vars.
+
+    Runs before every test (``autouse``) and clears the vars in
+    :data:`_OWNER_PROD_RUNTIME_ENV` so the suite behaves identically whether
+    or not the owner's shell exports them. Tests that exercise the
+    interactive / pilot / prod paths set the relevant var themselves; their
+    ``monkeypatch.setenv`` wins because it is applied after this fixture and
+    unwound in LIFO order at teardown.
+    """
+    for name in _OWNER_PROD_RUNTIME_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 SAMPLE_YAML = """\
 providers:
   deepseek:
