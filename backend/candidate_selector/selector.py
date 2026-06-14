@@ -45,6 +45,8 @@ from typing import Any
 import structlog
 import yaml
 
+from backend.utils.decision_compare import decision_compare
+
 log = structlog.get_logger(component="candidate_selector")
 
 # The three-tier value_score a candidate must clear to be VALUE-style. Mirrors
@@ -360,7 +362,10 @@ class CandidateSelector:
         value_pool = [
             code
             for code in non_reserved
-            if (vs := vscore(code)) is not None and vs >= value_gate
+            # Fixed-point gate (AE-003): a borderline value_score must not
+            # cross the gate differently across numpy versions (NEP 50).
+            if (vs := vscore(code)) is not None
+            and decision_compare(vs, value_gate, ">=")
         ]
         # Value slots ordered by three-tier score desc, code asc tie-break.
         value_pool.sort(key=lambda code: (-(vscore(code) or 0.0), code))

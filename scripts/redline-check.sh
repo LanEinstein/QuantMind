@@ -1668,6 +1668,49 @@ else
   green "  ok    style + value-line pure-deterministic (no LLM stack, no InstructionPlan)"
 fi
 
+# ----------------------------------------------------------------------
+# BACKTEST / P2-2-amendment-2026-06-14-deterministic-backtest-harness —
+# the offline harness (AE-003/AE-004) must (a) stay import-isolated (no
+# llm/agents/agents_team/mirofish/api/broker; strategy_evolution only via
+# harsh_fill_model), (b) never look ahead (qlib `Ref` with a negative /
+# forward offset reads the future = bug), and (c) keep its decision path on
+# the fixed-point decision_compare — a bare float threshold comparison can
+# flip across numpy versions (NEP 50). The AST pytest
+# (tests/backtest/test_module_contract.py) is authoritative; these greps are
+# the standalone-CI fast gate.
+# ----------------------------------------------------------------------
+echo
+yellow "[BACKTEST] backend/backtest isolation + Ref look-ahead + decision_compare"
+BT_FAIL=0
+if [ -d backend/backtest ]; then
+  _BT_NAMES='llm|agents_team|agents|mirofish|api|broker'
+  BT_IMP="$(grep -rnE \
+    "import +backend\.($_BT_NAMES)\b|from +backend\.($_BT_NAMES)\b|from +backend +import +[^#]*\b($_BT_NAMES)\b|from +\.+($_BT_NAMES)\b|from +\.+ +import +[^#]*\b($_BT_NAMES)\b" \
+    backend/backtest --include='*.py' 2>/dev/null || true)"
+  if [ -n "$BT_IMP" ]; then
+    red "  FAIL  backend/backtest imports a forbidden subpackage:"
+    printf '%s\n' "$BT_IMP" | sed 's/^/        /'
+    BT_FAIL=1
+  fi
+  BT_REF="$(grep -rnE 'Ref\([^)]*,[[:space:]]*-[0-9]' backend/backtest --include='*.py' 2>/dev/null || true)"
+  if [ -n "$BT_REF" ]; then
+    red "  FAIL  backend/backtest uses a look-ahead Ref (negative offset):"
+    printf '%s\n' "$BT_REF" | sed 's/^/        /'
+    BT_FAIL=1
+  fi
+  BT_FLOAT="$(grep -rnE '(<|>|<=|>=|==|!=)[[:space:]]*-?[0-9]+\.[0-9]|-?[0-9]+\.[0-9]+[[:space:]]*(<|>|<=|>=|==|!=)' backend/backtest --include='*.py' 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+  if [ -n "$BT_FLOAT" ]; then
+    red "  FAIL  backend/backtest has a bare float threshold comparison (use decision_compare):"
+    printf '%s\n' "$BT_FLOAT" | sed 's/^/        /'
+    BT_FAIL=1
+  fi
+fi
+if [ "$BT_FAIL" -ne 0 ]; then
+  FAIL=$((FAIL + 1))
+else
+  green "  ok    backend/backtest isolated + no look-ahead + fixed-point decisions"
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   green "All redline checks passed."

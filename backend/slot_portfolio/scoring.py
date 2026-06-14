@@ -36,6 +36,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from backend.utils.decision_compare import decision_compare
+
 # The deterministic components the ship-first replacement (composite) score is
 # built from. Provenance tag only — directions ① (theme) / ② (thesis) append
 # their own component names here via amendment when they merge (§1.6).
@@ -195,17 +197,22 @@ def evaluate_incumbent_weakness(
 
     # Condition 4 — current Line-1 percentile in the weak band (<= P40). A
     # non-finite percentile fails closed to "not weak".
-    percentile_weak = (
-        _is_pct(incumbent.line1_percentile)
-        and incumbent.line1_percentile <= config.max_line1_percentile
+    # Threshold comparisons go through the fixed-point ``decision_compare``
+    # (AE-003) so a borderline gate cannot flip on a numpy-version (NEP 50)
+    # float-repr change — the rotation decision must replay bit-exact.
+    percentile_weak = _is_pct(incumbent.line1_percentile) and decision_compare(
+        incumbent.line1_percentile, config.max_line1_percentile, "<="
     )
 
     # Condition 5 — rank deteriorated by >= min since entry/last rebalance.
     rank_deteriorated = (
         _is_pct(incumbent.line1_percentile)
         and _is_pct(incumbent.entry_percentile)
-        and (incumbent.entry_percentile - incumbent.line1_percentile)
-        >= config.min_rank_deterioration_pct
+        and decision_compare(
+            incumbent.entry_percentile - incumbent.line1_percentile,
+            config.min_rank_deterioration_pct,
+            ">=",
+        )
     )
 
     # Condition 6 — >= 1 of three deterministic confirmations.
@@ -216,15 +223,19 @@ def evaluate_incumbent_weakness(
         and incumbent.score_mad_20d > 0.0
         and math.isfinite(incumbent.score_median_20d)
         and math.isfinite(incumbent.composite_score)
-        and (incumbent.score_median_20d - incumbent.composite_score)
-        >= config.score_below_median_mad_mult * incumbent.score_mad_20d
+        and decision_compare(
+            incumbent.score_median_20d - incumbent.composite_score,
+            config.score_below_median_mad_mult * incumbent.score_mad_20d,
+            ">=",
+        )
     )
     # 6b: Line-2 deterministic anomaly flag.
     anomaly_confirmation = incumbent.anomaly_flag_active
     # 6c: drawdown from a local high past the soft threshold.
-    drawdown_confirmation = (
-        math.isfinite(incumbent.drawdown_from_local_high)
-        and incumbent.drawdown_from_local_high >= config.drawdown_soft_threshold
+    drawdown_confirmation = math.isfinite(
+        incumbent.drawdown_from_local_high
+    ) and decision_compare(
+        incumbent.drawdown_from_local_high, config.drawdown_soft_threshold, ">="
     )
     has_confirmation = (
         score_below_median_mad or anomaly_confirmation or drawdown_confirmation
@@ -274,13 +285,19 @@ def evaluate_challenger_margin(
         and math.isfinite(challenger.composite_score)
         and math.isfinite(incumbent.composite_score)
     )
-    percentile_strong = finite and challenger.line1_percentile >= config.min_percentile
-    rank_lead_sufficient = finite and (
-        challenger.line1_percentile - incumbent.line1_percentile
-    ) >= config.min_rank_lead_pct
-    composite_margin_sufficient = finite and (
-        challenger.composite_score - incumbent.composite_score
-    ) >= config.min_composite_score_margin
+    percentile_strong = finite and decision_compare(
+        challenger.line1_percentile, config.min_percentile, ">="
+    )
+    rank_lead_sufficient = finite and decision_compare(
+        challenger.line1_percentile - incumbent.line1_percentile,
+        config.min_rank_lead_pct,
+        ">=",
+    )
+    composite_margin_sufficient = finite and decision_compare(
+        challenger.composite_score - incumbent.composite_score,
+        config.min_composite_score_margin,
+        ">=",
+    )
 
     wins_by_margin = (
         challenger.qualified
