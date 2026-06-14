@@ -38,6 +38,25 @@ export default defineConfig({
       },
     },
   },
+  // Mirror the dev-server proxy so `vite preview` (production bundle, no
+  // file watchers — avoids the inotify ENOSPC that blocks `vite dev` on
+  // this host) can still reach the live backend on :8001 for a real
+  // data review. 127.0.0.1-only, same single backend origin as dev.
+  preview: {
+    host: '127.0.0.1',
+    port: 9276,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8001',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/ws': {
+        target: 'ws://localhost:8001',
+        ws: true,
+      },
+    },
+  },
   build: {
     target: 'es2020',
     outDir: 'dist',
