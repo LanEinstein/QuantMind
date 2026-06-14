@@ -25,6 +25,18 @@ log = structlog.get_logger(component="database")
 QuoteType = IndexQuote | StockQuote
 
 
+def _iso_date(trade_date: str) -> str:
+    """Compact Tushare ``YYYYMMDD`` -> ISO ``YYYY-MM-DD`` (AE-001).
+
+    Existing ``kline_daily`` readers key on an ISO date; a non-8-digit value is
+    returned unchanged so a caller that already passes ISO is not corrupted.
+    """
+    td = trade_date.strip()
+    if len(td) == 8 and td.isdigit():
+        return f"{td[:4]}-{td[4:6]}-{td[6:8]}"
+    return td
+
+
 class ReplicaSetUnavailableError(RuntimeError):
     """Raised when Mongo is not configured as a replica-set member.
 
@@ -649,6 +661,54 @@ class MongoDBService:
             return result.upserted_count + getattr(result, "modified_count", 0)
         except Exception as exc:
             self._log.warning("save_kline_failed", error=str(exc))
+            return 0
+
+    async def save_daily_frame(self, trade_date: str, df: pd.DataFrame) -> int:
+        """Bulk upsert a full-market daily frame keyed ``(code, date)``.
+
+        Secondary structured-row sink for the offline historical ingest
+        (AE-001 / P0-8-amendment-2026-06-14 §2.2): the *authoritative* PIT
+        layer is the byte-exact ``SnapshotStore``; ``kline_daily`` is a query
+        convenience derived from it, and it must serve the *existing* readers
+        (``MarketMetaProvider.get_prev_close``, daily attribution at
+        ``main.py``) which key on the bare 6-digit ``code`` and an ISO
+        ``YYYY-MM-DD`` ``date``. So the Tushare ``ts_code`` (``600519.SH``) is
+        normalised to ``code`` (``600519``, same split as ``screener.py``) and
+        the compact ``trade_date`` (``20180102``) to ISO ``date``
+        (``2018-01-02``); the original ``ts_code`` is preserved on the doc. A
+        re-ingest of the same day upserts in place (idempotent). Returns the
+        operation count.
+        """
+        if df is None or df.empty:
+            return 0
+
+        date_iso = _iso_date(trade_date)
+        coll = self._db["kline_daily"]
+        ops = []
+        for _, row in df.iterrows():
+            doc = row.to_dict()
+            ts_code = str(doc.get("ts_code", "")).strip()
+            if not ts_code:
+                continue
+            code = ts_code.split(".")[0]
+            doc["ts_code"] = ts_code
+            doc["code"] = code
+            doc["date"] = date_iso
+            ops.append(
+                UpdateOne(
+                    {"code": code, "date": date_iso},
+                    {"$set": doc},
+                    upsert=True,
+                )
+            )
+
+        if not ops:
+            return 0
+        try:
+            result = await coll.bulk_write(ops, ordered=False)
+            return result.upserted_count + getattr(result, "modified_count", 0)
+        except Exception as exc:
+            self._log.warning("save_daily_frame_failed", error=str(exc))
             return 0
 
     async def save_financial_data(self, data: FinancialData) -> None:

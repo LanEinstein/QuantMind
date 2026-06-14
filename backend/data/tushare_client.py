@@ -259,6 +259,39 @@ class TushareClient:
         self._check_trade_date(trade_date)
         return await self._fetch("fund_daily", {"trade_date": trade_date})
 
+    async def trade_cal(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        exchange: str = "SSE",
+    ) -> pd.DataFrame:
+        """Exchange trading calendar for a date range (``cal_date`` / ``is_open``).
+
+        Calendar **enumeration aid** for the offline bulk historical ingest
+        (P0-8-amendment-2026-06-14): it lets the job iterate only real
+        trading days instead of calling the full-market ``daily`` endpoint on
+        every weekend/holiday (~190 wasted, rate-limited calls over 11 years)
+        and avoids conflating a holiday-empty frame with a fetch failure. This
+        is the Tushare *official SDK* (not the akshare 节假日 API barred by
+        P0-6 §1.4), and it is offline batch only — the runtime trading
+        calendar stays the static ``config/holidays.yaml`` (A-007 hot-reload
+        disabled). ``trade_cal`` is a calendar lookup, not one of the
+        persisted-snapshot data endpoints (daily / adj_factor / daily_basic /
+        stock_basic / index_daily / fund_daily, amendment §2.1).
+        """
+        self._check_trade_date(start_date)
+        self._check_trade_date(end_date)
+        return await self._fetch(
+            "trade_cal",
+            {
+                "exchange": exchange,
+                "start_date": start_date,
+                "end_date": end_date,
+                "is_open": "1",
+            },
+        )
+
     async def stock_basic(
         self,
         *,

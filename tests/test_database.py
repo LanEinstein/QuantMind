@@ -405,3 +405,61 @@ class TestReplicaSetFence:
         service = MongoDBService(db)
         with pytest.raises(ReplicaSetUnavailableError):
             await service.assert_replica_set()
+
+
+# ---------------------------------------------------------------------------
+# AE-001 — save_daily_frame (offline historical ingest secondary row writer)
+# ---------------------------------------------------------------------------
+
+
+def test_iso_date_normalisation() -> None:
+    from backend.data.database import _iso_date
+
+    assert _iso_date("20180102") == "2018-01-02"
+    assert _iso_date(" 20180102 ") == "2018-01-02"
+    assert _iso_date("2018-01-02") == "2018-01-02"  # already ISO → unchanged
+
+
+@pytest.mark.asyncio
+async def test_save_daily_frame_bulk_upserts(
+    service: MongoDBService, mock_db: MagicMock
+) -> None:
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"ts_code": ["600519.SH", "000001.SZ"], "close": [1700.0, 10.5]}
+    )
+    await service.save_daily_frame("20180102", df)
+    coll = mock_db["kline_daily"]
+    coll.bulk_write.assert_awaited_once()
+    ops = coll.bulk_write.call_args.args[0]
+    assert len(ops) == 2  # one upsert per delivered code
+    # Keys must match the shape existing kline_daily readers query:
+    # bare 6-digit code + ISO date (codex AE-001 P1).
+    filters = [op._filter for op in ops]
+    assert {"code": "600519", "date": "2018-01-02"} in filters
+    assert {"code": "000001", "date": "2018-01-02"} in filters
+    # The original Tushare ts_code is preserved on the document.
+    set_docs = [op._doc["$set"] for op in ops]
+    assert any(d.get("ts_code") == "600519.SH" for d in set_docs)
+
+
+@pytest.mark.asyncio
+async def test_save_daily_frame_empty_returns_zero(
+    service: MongoDBService,
+) -> None:
+    import pandas as pd
+
+    assert await service.save_daily_frame("20180102", pd.DataFrame()) == 0
+
+
+@pytest.mark.asyncio
+async def test_save_daily_frame_skips_rows_without_ts_code(
+    service: MongoDBService, mock_db: MagicMock
+) -> None:
+    import pandas as pd
+
+    df = pd.DataFrame({"ts_code": ["", "600519.SH"], "close": [1.0, 2.0]})
+    await service.save_daily_frame("20180102", df)
+    ops = mock_db["kline_daily"].bulk_write.call_args.args[0]
+    assert len(ops) == 1  # the blank-code row is skipped

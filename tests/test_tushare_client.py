@@ -64,6 +64,9 @@ class _FakePro:
     def fund_daily(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("fund_daily", **kwargs)
 
+    def trade_cal(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("trade_cal", **kwargs)
+
 
 class _RaisingPro(_FakePro):
     """Every endpoint raises — exercises fallback / fail-closed."""
@@ -183,6 +186,29 @@ class TestFullMarketPull:
         client = TushareClient(pro=pro, token=VALID_TOKEN)
         await client.fund_daily("20260522")
         assert pro.calls == [("fund_daily", {"trade_date": "20260522"})]
+
+    @pytest.mark.asyncio
+    async def test_trade_cal_open_days(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.trade_cal(start_date="20150101", end_date="20151231")
+        assert pro.calls == [
+            (
+                "trade_cal",
+                {
+                    "exchange": "SSE",
+                    "start_date": "20150101",
+                    "end_date": "20151231",
+                    "is_open": "1",
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_trade_cal_rejects_bad_date(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError):
+            await client.trade_cal(start_date="2015", end_date="20151231")
 
 
 # ---------------------------------------------------------------------------
