@@ -67,10 +67,10 @@ def _anomaly_detector_from_env() -> Any:
     from backend.monitoring.anomaly import AnomalyConfig, AnomalyDetector
 
     enabled = (
-        os.environ.get("QUANTMIND_LINE2_FULL_ANOMALY_STACK_ENABLED", "0").strip()
-        == "1"
+        os.environ.get("QUANTMIND_LINE2_FULL_ANOMALY_STACK_ENABLED", "0").strip() == "1"
     )
     return AnomalyDetector(AnomalyConfig(full_anomaly_stack=enabled))
+
 
 # P0-6-amendment-2026-05-25 §2.2 — which go-live tier's acceptance gate the
 # startup + switch paths evaluate. This env var ONLY selects which tier's gate
@@ -108,9 +108,7 @@ def _resolve_feishu_tier() -> GoLiveTier:
 _PILOT_LLM_TIMEOUT_CEILING = 0.05
 
 
-def _build_pilot_probe(
-    application: FastAPI, broker: object
-) -> PilotReadinessProbe:
+def _build_pilot_probe(application: FastAPI, broker: object) -> PilotReadinessProbe:
     """Wire the live PILOT readiness probe from the running app's surfaces.
 
     Each live check is fail-closed: a missing ``app.state`` dependency or a
@@ -137,9 +135,7 @@ def _build_pilot_probe(
         return isinstance(broker, MockBroker)
 
     async def _reconciliation_clear() -> bool:
-        repo = getattr(
-            application.state, "reconciliation_ticket_repository", None
-        )
+        repo = getattr(application.state, "reconciliation_ticket_repository", None)
         if repo is None:
             return False
         return not await repo.list_all_open()
@@ -149,9 +145,7 @@ def _build_pilot_probe(
         # (P0-6-amendment-2026-05-29 §1). Fail-closed when market_data is
         # unwired or any canary's both quote legs are down.
         market_data = getattr(application.state, "market_data", None)
-        return await canary_quotes_reachable(
-            market_data, MANDATORY_ETF_CANARIES
-        )
+        return await canary_quotes_reachable(market_data, MANDATORY_ETF_CANARIES)
 
     async def _llm_timeout_ok() -> bool:
         # cond10a — live daily timeout rate within ceiling, with a single
@@ -319,9 +313,7 @@ async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     # (Codex Cycle 1 P1 — found by running review against the I-001
     # orchestration wiring).
     mongo_uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
-    mongo_client = motor.AsyncIOMotorClient(
-        mongo_uri, uuidRepresentation="standard"
-    )
+    mongo_client = motor.AsyncIOMotorClient(mongo_uri, uuidRepresentation="standard")
     db = mongo_client["quantmind"]
     mongodb_service = MongoDBService(db)
     try:
@@ -819,9 +811,7 @@ async def _init_line2_runners(
     mode_router = getattr(application.state, "mode_router", None)
     builder = InstructionPlanBuilder(
         audit_store=audit_store,
-        mode_switch_probe=(
-            mode_router.mode_state if mode_router is not None else None
-        ),
+        mode_switch_probe=(mode_router.mode_state if mode_router is not None else None),
     )
 
     route_mode = resolve_route_mode(getattr(application.state, "run_mode", None))
@@ -884,9 +874,7 @@ async def _init_line2_runners(
     from backend.services.mongo_repositories import MongoInstructionPlanRepository
 
     _dispatch_plan_repo = (
-        MongoInstructionPlanRepository(_outbox_db)
-        if _outbox_db is not None
-        else None
+        MongoInstructionPlanRepository(_outbox_db) if _outbox_db is not None else None
     )
     dispatcher = InstructionDispatcher(
         feishu_client=getattr(application.state, "feishu_client", None),
@@ -934,9 +922,7 @@ async def _init_line2_runners(
         / "fired_triggers.jsonl"
     )
 
-    async def _line2_reject_alert(
-        *, code: str, kind: str, instruction_id: str
-    ) -> None:
+    async def _line2_reject_alert(*, code: str, kind: str, instruction_id: str) -> None:
         """Surface a RiskEngine-REJECTED Line-2 SELL on the alert channel.
 
         Resolved lazily off app.state because the AlertDispatcher is built
@@ -997,9 +983,7 @@ async def _init_line2_runners(
 
     _adaptive_dd = (
         DrawdownCalibrationConfig()
-        if os.environ.get(
-            "QUANTMIND_LINE2_ADAPTIVE_DRAWDOWN_ENABLED", "0"
-        ).strip()
+        if os.environ.get("QUANTMIND_LINE2_ADAPTIVE_DRAWDOWN_ENABLED", "0").strip()
         == "1"
         else None
     )
@@ -1008,10 +992,7 @@ async def _init_line2_runners(
     # drawdown above is also enabled (P0-7-amendment-2026-06-03-regime-conditioned-
     # drawdown).
     _regime_dd_enabled = (
-        os.environ.get(
-            "QUANTMIND_LINE2_REGIME_DRAWDOWN_ENABLED", "0"
-        ).strip()
-        == "1"
+        os.environ.get("QUANTMIND_LINE2_REGIME_DRAWDOWN_ENABLED", "0").strip() == "1"
     )
     # D1-c — regime-conditioned take-profit r_multiple (BEAR locks earlier /
     # BULL lets winners run). GATED default-OFF; independent of the two gates
@@ -1020,9 +1001,7 @@ async def _init_line2_runners(
     # takeprofit).
     _regime_tp = (
         TakeProfitCalibrationConfig()
-        if os.environ.get(
-            "QUANTMIND_LINE2_REGIME_TAKEPROFIT_ENABLED", "0"
-        ).strip()
+        if os.environ.get("QUANTMIND_LINE2_REGIME_TAKEPROFIT_ENABLED", "0").strip()
         == "1"
         else None
     )
@@ -1031,12 +1010,7 @@ async def _init_line2_runners(
     # tier ledger. GATED default-OFF; independent of the gates above. None →
     # single-target v7 semantics exactly
     # (P0-10-amendment-line2-2026-06-04-tiered-takeprofit).
-    if (
-        os.environ.get(
-            "QUANTMIND_LINE2_TIERED_TAKEPROFIT_ENABLED", "0"
-        ).strip()
-        == "1"
-    ):
+    if os.environ.get("QUANTMIND_LINE2_TIERED_TAKEPROFIT_ENABLED", "0").strip() == "1":
         from pathlib import Path as _LedgerPath
 
         from backend.monitoring.intraday_calibration import (
@@ -1066,16 +1040,11 @@ async def _init_line2_runners(
     # the 10-15 trading-day shadow the owner mandated
     # (P0-7-amendment-2026-06-04-entry-anchored-chandelier).
     _chand_on = (
-        os.environ.get(
-            "QUANTMIND_LINE2_ENTRY_ANCHORED_STOP_ENABLED", "0"
-        ).strip()
+        os.environ.get("QUANTMIND_LINE2_ENTRY_ANCHORED_STOP_ENABLED", "0").strip()
         == "1"
     )
     _chand_shadow = (
-        os.environ.get(
-            "QUANTMIND_LINE2_ENTRY_ANCHORED_STOP_SHADOW", "0"
-        ).strip()
-        == "1"
+        os.environ.get("QUANTMIND_LINE2_ENTRY_ANCHORED_STOP_SHADOW", "0").strip() == "1"
     )
     # The episode store is ALWAYS built + synced (decision-inert, append-only,
     # one membership reconcile per tick) so entry dates accumulate from deploy
@@ -1103,12 +1072,7 @@ async def _init_line2_runners(
     # E3 — sell-into-strength family (炸板/冲高回落/放量滞涨/乖离超买 + 封死
     # 涨停豁免). GATED default-OFF
     # (P0-10-amendment-line2-2026-06-04-sell-into-strength).
-    if (
-        os.environ.get(
-            "QUANTMIND_LINE2_SELL_INTO_STRENGTH_ENABLED", "0"
-        ).strip()
-        == "1"
-    ):
+    if os.environ.get("QUANTMIND_LINE2_SELL_INTO_STRENGTH_ENABLED", "0").strip() == "1":
         from backend.monitoring.intraday_triggers import StrengthSellConfig
 
         _strength = StrengthSellConfig()
@@ -1117,10 +1081,7 @@ async def _init_line2_runners(
     # E4 — STALE_EXIT time stop; E5 — next-day re-entry after a delivered
     # discretionary sell. Independently GATED default-OFF
     # (P0-10-amendment-line2-2026-06-04-reentry-and-time-stop).
-    if (
-        os.environ.get("QUANTMIND_LINE2_STALE_EXIT_ENABLED", "0").strip()
-        == "1"
-    ):
+    if os.environ.get("QUANTMIND_LINE2_STALE_EXIT_ENABLED", "0").strip() == "1":
         from backend.monitoring.intraday_triggers import StaleExitConfig
 
         _stale = StaleExitConfig()
@@ -1135,9 +1096,7 @@ async def _init_line2_runners(
     # AC-006 — per-style soft take-profit band. GATED default-OFF
     # (P0-8-amendment-2026-06-12 §1.5). When on, a VALUE-style hold (entry_style
     # nameplate, AC-001) gets a wider TP target; protective stops stay invariant.
-    if (
-        os.environ.get("QUANTMIND_LINE2_STYLE_SOFT_ENABLED", "0").strip() == "1"
-    ):
+    if os.environ.get("QUANTMIND_LINE2_STYLE_SOFT_ENABLED", "0").strip() == "1":
         from backend.monitoring.intraday_triggers import StyleSoftConfig
 
         _style_soft = StyleSoftConfig()
@@ -1246,9 +1205,7 @@ async def _init_line2_runners(
     )
     position_thesis_store: Any = None
     try:
-        position_thesis_store = PositionThesisStore(
-            f"{thesis_state_root}/theses.jsonl"
-        )
+        position_thesis_store = PositionThesisStore(f"{thesis_state_root}/theses.jsonl")
         application.state.position_thesis_store = position_thesis_store
     except Exception as exc:  # noqa: BLE001 — thesis must never block Line-1 BUY
         log.warning("position_thesis_store_init_failed", error=str(exc))
@@ -1373,9 +1330,7 @@ async def _init_line2_runners(
             intent_store=RotationIntentStore(
                 f"{rotation_state_root}/rotation_intents.jsonl"
             ),
-            entry_store=EntryRankStore(
-                f"{rotation_state_root}/entry_ranks.jsonl"
-            ),
+            entry_store=EntryRankStore(f"{rotation_state_root}/entry_ranks.jsonl"),
             builder=builder,
             renderer=renderer,
             coordinator=coordinator,
@@ -1567,8 +1522,7 @@ async def _init_line2_runners(
         # each feature only when ITS gate is on, so enabling the exemption never
         # implicitly turns on THESIS_QUANT_BREAK (and vice-versa).
         _break_on = (
-            os.environ.get("QUANTMIND_THESIS_QUANT_BREAK_ENABLED", "0").strip()
-            == "1"
+            os.environ.get("QUANTMIND_THESIS_QUANT_BREAK_ENABLED", "0").strip() == "1"
         )
         _exempt_on = (
             os.environ.get(
@@ -1585,9 +1539,7 @@ async def _init_line2_runners(
                 # must NEVER disable the existing drawdown / ATR / ADD monitoring.
                 # Both features are optional + degrade to empty (prior behaviour).
                 try:
-                    _held = {
-                        p.code.split(".")[0].strip() for p in run_state.positions
-                    }
+                    _held = {p.code.split(".")[0].strip() for p in run_state.positions}
                     for _c, _t in _store.open_theses().items():
                         if _c in _held:
                             raw_theses[_c] = _t
@@ -1690,8 +1642,12 @@ async def _init_line2_runners(
                 log.warning("rotation_step_failed", error=str(exc))
 
     async def _run_rotation_step(
-        now: datetime, frame: Any, risk_engine: Any, policy: Any,
-        open_tickets: tuple[Any, ...], risk_config: Any,
+        now: datetime,
+        frame: Any,
+        risk_engine: Any,
+        policy: Any,
+        open_tickets: tuple[Any, ...],
+        risk_config: Any,
     ) -> None:
         """Drive the ≤5-slot rotation once over the shared T-1 frame (V-004)."""
         from backend.services.rotation_context_provider import (
@@ -1728,7 +1684,9 @@ async def _init_line2_runners(
             expected_trade_date=_expected_frame_trade_date(now),
         )
         line2_provider = Line2DailyProvider(
-            run_state=run_state, code_contexts=contexts, name_by_code=names,
+            run_state=run_state,
+            code_contexts=contexts,
+            name_by_code=names,
             snapshot_at=frame.fetch_time_utc,
         )
         scan = _anomaly_detector_from_env().scan(
@@ -1757,8 +1715,12 @@ async def _init_line2_runners(
             ),
         )
         await rotation_runner.run(
-            screen=screen, provider=provider, qualified_codes=qualified,
-            now=now, trade_date=trade_date, signal_id=sid,
+            screen=screen,
+            provider=provider,
+            qualified_codes=qualified,
+            now=now,
+            trade_date=trade_date,
+            signal_id=sid,
         )
 
     # W-002 — Line-2 post-close thesis review (17:30 cron). LLM advisory in the
@@ -1805,13 +1767,13 @@ async def _init_line2_runners(
                 # W-002 P2): feeding yesterday's verdict back as "current
                 # evidence" would make the health labels self-reinforcing and
                 # crowd out fresh market / news / MiroFish evidence.
-                cursor = coll.find(
-                    {"stock_codes": code, "path": {"$ne": "thesis_review"}}
-                ).sort("created_at", -1).limit(3)
+                cursor = (
+                    coll.find({"stock_codes": code, "path": {"$ne": "thesis_review"}})
+                    .sort("created_at", -1)
+                    .limit(3)
+                )
                 docs = await cursor.to_list(length=3)
-                out[code] = " | ".join(
-                    str(d.get("content", "")) for d in docs
-                )[:2000]
+                out[code] = " | ".join(str(d.get("content", "")) for d in docs)[:2000]
             except Exception as exc:  # noqa: BLE001 — advisory context best-effort
                 log.warning("thesis_evidence_context_failed", code=code, error=str(exc))
         return out
@@ -1850,9 +1812,7 @@ async def _init_line2_runners(
             return
         contexts = await _thesis_evidence_contexts(mongodb, sorted(targets))
         reviewer = ThesisAdvisoryReviewer(router=router, redis_client=redis)
-        writer = (
-            ThesisReviewEvidenceWriter(mongodb) if mongodb is not None else None
-        )
+        writer = ThesisReviewEvidenceWriter(mongodb) if mongodb is not None else None
         runner = Line2ThesisReviewRunner(
             client=reviewer,
             evidence_writer=writer,
@@ -2019,9 +1979,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                     MongoPromotionIntentLedger,
                 )
 
-                _terminal = intent_status_for_activation(
-                    activation_result.status
-                )
+                _terminal = intent_status_for_activation(activation_result.status)
                 _intent_ledger = MongoPromotionIntentLedger(db)
                 if _terminal is not None:
                     await _intent_ledger.record_status(
@@ -2143,9 +2101,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     from backend.services.acceptance_report import WindowResetState
 
     try:
-        _historical_events = read_jsonl(
-            application.state.audit_jsonl_path
-        )
+        _historical_events = read_jsonl(application.state.audit_jsonl_path)
     except Exception as exc:  # noqa: BLE001 — never block startup on read
         log.warning("acceptance_reset_hydrate_read_failed", error=str(exc))
         _historical_events = []
@@ -2159,9 +2115,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         and _e.reason_namespace == "acceptance_reset_trigger"
     ]
     _latest_reset = (
-        max(_reset_candidates, key=lambda e: e.timestamp)
-        if _reset_candidates
-        else None
+        max(_reset_candidates, key=lambda e: e.timestamp) if _reset_candidates else None
     )
     if _latest_reset is not None:
         _payload = _latest_reset.payload or {}
@@ -2389,9 +2343,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
             tickets=ticket_repo,
             applier=reconciliation_applier,
             audit=audit_store,
-            alert_dispatcher=getattr(
-                application.state, "alert_dispatcher", None
-            ),
+            alert_dispatcher=getattr(application.state, "alert_dispatcher", None),
             now=now,
         )
 
@@ -2459,9 +2411,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
             db["broker_events"]
             .find(
                 {
-                    "event_type": {
-                        "$in": ["order_filled", "execution_report_applied"]
-                    },
+                    "event_type": {"$in": ["order_filled", "execution_report_applied"]},
                     "occurred_at": {
                         "$gte": fill_day_start,
                         "$lt": fill_day_end,
@@ -2477,9 +2427,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                 direction = str(payload.get("direction") or "")
             else:
                 code = str(payload.get("stock_code") or "")
-                direction = (
-                    "BUY" if payload.get("side_is_buy") else "SELL"
-                )
+                direction = "BUY" if payload.get("side_is_buy") else "SELL"
             volume = int(payload.get("volume") or 0)
             price = float(payload.get("fill_price") or 0.0)
             if volume <= 0 or price <= 0.0 or len(code) != 6:
@@ -2490,8 +2438,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
             todays.append(
                 _DurableFill(
                     trade_id=str(
-                        event_doc.get("trade_id")
-                        or f"seq-{event_doc.get('sequence')}"
+                        event_doc.get("trade_id") or f"seq-{event_doc.get('sequence')}"
                     ),
                     order_id=str(event_doc.get("order_id") or "unknown"),
                     code=code,
@@ -2506,18 +2453,14 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                     # into fill_price); recorded as 0 — the VWAP basis is
                     # the execution-quality signal here.
                     slippage_cost=0.0,
-                    traded_at=(
-                        occurred if isinstance(occurred, datetime) else now
-                    ),
+                    traded_at=(occurred if isinstance(occurred, datetime) else now),
                 )
             )
 
         vwap_by_code: dict[str, float] = {}
         for code in sorted({t.code for t in todays}):
             try:
-                doc = await db["kline_daily"].find_one(
-                    {"code": code, "date": date_iso}
-                )
+                doc = await db["kline_daily"].find_one({"code": code, "date": date_iso})
             except Exception as exc:  # noqa: BLE001 — null beats a crash
                 log.warning(
                     "daily_attribution_kline_read_failed",
@@ -2536,9 +2479,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                 vwap_by_code[code] = vwap
 
         entry_cost_by_code: dict[str, float] = {}
-        thesis_store = getattr(
-            application.state, "position_thesis_store", None
-        )
+        thesis_store = getattr(application.state, "position_thesis_store", None)
         if thesis_store is not None:
             try:
                 # Open theses + theses CLOSED today (codex Phase-AA P2):
@@ -2546,9 +2487,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                 # BEFORE this 18:00 job, which is exactly the SELL set
                 # whose holding-return attribution matters most.
                 theses = dict(thesis_store.open_theses())
-                closed_today = getattr(
-                    thesis_store, "closed_theses_on", None
-                )
+                closed_today = getattr(thesis_store, "closed_theses_on", None)
                 if closed_today is not None:
                     for code, thesis in closed_today(date_iso).items():
                         theses.setdefault(code, thesis)
@@ -2557,9 +2496,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                     if price > 0.0:
                         entry_cost_by_code[str(code)] = price
             except Exception as exc:  # noqa: BLE001 — entry cost is optional
-                log.warning(
-                    "daily_attribution_thesis_read_failed", error=str(exc)
-                )
+                log.warning("daily_attribution_thesis_read_failed", error=str(exc))
 
         # Pre-registered counterfactuals: today's HOLD plans + rejected
         # orders — they existed at decision time, so they are the ONLY
@@ -2588,8 +2525,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                 counterfactuals.append(
                     CounterfactualEntry(
                         signal_id=str(
-                            plan_doc.get("signal_id")
-                            or plan_doc["instruction_id"]
+                            plan_doc.get("signal_id") or plan_doc["instruction_id"]
                         ),
                         kind=kind,
                         pre_registered=True,
@@ -2597,9 +2533,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                     )
                 )
         except Exception as exc:  # noqa: BLE001 — counterfactuals optional
-            log.warning(
-                "daily_attribution_plans_read_failed", error=str(exc)
-            )
+            log.warning("daily_attribution_plans_read_failed", error=str(exc))
 
         day_start = datetime.combine(
             trade_date, datetime.min.time(), tzinfo=SHANGHAI_TZ
@@ -2691,9 +2625,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                 LiveArtifactRegistry,
             )
 
-            LiveArtifactRegistry.from_lockfile(
-                Path("config/live_artifacts.lock.json")
-            )
+            LiveArtifactRegistry.from_lockfile(Path("config/live_artifacts.lock.json"))
             artifact_ok = True
         except Exception as exc:  # noqa: BLE001
             log.warning("ops_gate_artifact_probe_failed", error=str(exc))
@@ -2734,9 +2666,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
             snapshot_checksum_valid=checksum_valid,
             latest_snapshot_trade_date=snapshot_date,
             last_trading_date=(
-                week.last_trading_date.isoformat()
-                if week is not None
-                else None
+                week.last_trading_date.isoformat() if week is not None else None
             ),
             artifact_registry_ok=artifact_ok,
             disk_free_bytes=disk_free,
@@ -2832,6 +2762,60 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     async def _holiday_catchup_review_callback(now: datetime) -> None:
         await _run_weekly_review(now, "holiday_catchup")
 
+    # AE-005 — wire the 5th (deterministic, zero-LLM) quant-parameter evolution
+    # lane onto app.state so the 22:00 cron stops空-running DEGRADED. The lane
+    # draws a Sobol batch per evolvable family, funnels it through the historical
+    # prefilter + per-candidate verify, and emits forward-shadow MANDATES (never
+    # an activation — the 45-day frozen forward shadow + a human pin stay the
+    # only promotion path). The PIT BarSource + weighted ScoreProvider are
+    # owner-gated (AE-001 ingestion); until wired, the factory fail-closes and
+    # the lane records an honest "data unavailable" skip.
+    _evo_mongodb = getattr(application.state, "mongodb", None)
+    _evo_db = getattr(_evo_mongodb, "_db", None)
+    if _evo_db is not None:
+        from backend.services.quant_backtest_runner import PitQuantRunnerFactory
+        from backend.strategy_evolution.experiment_registry import (
+            MongoExperimentRegistry,
+        )
+        from backend.strategy_evolution.quant_lane_runner import (
+            QuantParamEvolutionLane,
+            default_first_batch_families,
+        )
+
+        _default_quant_seed = 20260615
+        try:
+            _quant_seed = int(
+                os.environ.get(
+                    "QUANTMIND_QUANT_EVOLUTION_SEED", str(_default_quant_seed)
+                )
+            )
+        except ValueError:
+            # Fail-open: a malformed seed env must never crash the lifespan
+            # (this function's contract is degrade, not crash). Fall back to the
+            # default base seed and warn.
+            log.warning(
+                "quant_evolution_seed_invalid_env",
+                value=os.environ.get("QUANTMIND_QUANT_EVOLUTION_SEED"),
+                fallback=_default_quant_seed,
+            )
+            _quant_seed = _default_quant_seed
+        _quant_window = (
+            os.environ.get("QUANTMIND_BACKTEST_WINDOW_START", "2015-01-05"),
+            os.environ.get("QUANTMIND_BACKTEST_WINDOW_END", "2026-06-01"),
+        )
+        application.state.evolution_quant_lane = QuantParamEvolutionLane(
+            registry=MongoExperimentRegistry(_evo_db),
+            runner_factory=PitQuantRunnerFactory(
+                window_start=_quant_window[0],
+                window_end=_quant_window[1],
+                runner_builder=None,  # owner-gated real PIT + factor wiring
+            ),
+            families=default_first_batch_families(),
+            seed=_quant_seed,
+        )
+    else:
+        application.state.evolution_quant_lane = None
+
     async def _evolution_shadow_run_callback(now: datetime) -> str | None:
         """22:00 cron — AB-007 evolution lane (R-004 absorbed).
 
@@ -2854,16 +2838,36 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         if redis_client is None:
             log.warning("evolution_run_skipped_no_redis")
             return "skipped_no_redis"
-        reservation = await reserve_evolution_run(
-            redis_client, estimated_rmb=5.0
-        )
+        reservation = await reserve_evolution_run(redis_client, estimated_rmb=5.0)
         if reservation is None:
             log.info("evolution_run_skipped_budget")
             return "skipped_budget"
         try:
-            dispatcher = getattr(
-                application.state, "evolution_dispatcher", None
-            )
+            # AE-005 — the deterministic quant-parameter lane (5th lane). It
+            # runs every night the lane is wired: a real run that draws Sobol
+            # candidates, registers honest trials, and funnels each through
+            # evaluate_promotion → forward-shadow mandates (NEVER an auto
+            # promotion). A zero-LLM quant backtest is compute-bound, not
+            # ¥100-cap-bound, but it still settles through reserve/settle for
+            # an audit trail. Infra glitches fail-open (skip), not crash.
+            quant_lane = getattr(application.state, "evolution_quant_lane", None)
+            if quant_lane is not None:
+                try:
+                    report = await quant_lane.run_nightly(now=now)
+                except Exception as exc:  # noqa: BLE001 — fail-open infra glitch
+                    log.warning("quant_param_evolution_error", error=str(exc))
+                    return "quant_lane_error"
+                for batch_eval in report.batch_evaluations:
+                    log.info(
+                        "quant_param_evolution_batch",
+                        dashboard=batch_eval.dashboard.summary(),
+                    )
+                log.info("quant_param_evolution_ran", summary=report.summary())
+                if report.integrity_breached:
+                    return "quant_lane_sentinel_integrity_breached"
+                return f"quant_lane_ran:mandates={report.total_mandates}"
+
+            dispatcher = getattr(application.state, "evolution_dispatcher", None)
             if dispatcher is None:
                 # Codex AB P2 — return the skip signal so the scheduler
                 # audits DEGRADED instead of stamping a SUCCESS row for
@@ -3073,9 +3077,7 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # 8. Repositories for the GET surfaces (G-003 / G-004 / G-006 /
     # G-007 endpoints). Each repo is a thin Mongo adapter that
     # accepts already-validated Pydantic DTOs.
-    application.state.instruction_plan_repository = (
-        MongoInstructionPlanRepository(db)
-    )
+    application.state.instruction_plan_repository = MongoInstructionPlanRepository(db)
 
     # ``ticket_repo`` / ``mongo_daily_store`` / ``snapshot_lookup`` were
     # bound earlier (before the BrokerScheduler closures + start()) per
@@ -3144,14 +3146,12 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
 
     renderer = MessageRenderer()
 
-    application.state.execution_report_orchestrator = (
-        ExecutionReportOrchestrator(
-            applier=execution_applier,
-            plan_lookup=application.state.instruction_plan_repository,
-            feishu=feishu_client,
-            renderer=renderer,
-            audit=audit_store,
-        )
+    application.state.execution_report_orchestrator = ExecutionReportOrchestrator(
+        applier=execution_applier,
+        plan_lookup=application.state.instruction_plan_repository,
+        feishu=feishu_client,
+        renderer=renderer,
+        audit=audit_store,
     )
 
     # AD-005 — ManualTradeApplier + ManualTradeService (3rd write endpoint).
@@ -3174,16 +3174,14 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     )
 
     if decision_chat:
-        application.state.reconciliation_orchestrator = (
-            ReconciliationOrchestrator(
-                feishu=feishu_client,
-                renderer=renderer,
-                ticket_repo=ticket_repo,
-                daily_store=daily_store,
-                applier=reconciliation_applier,
-                decision_chat_id=decision_chat,
-                snapshot_lookup=snapshot_lookup,
-            )
+        application.state.reconciliation_orchestrator = ReconciliationOrchestrator(
+            feishu=feishu_client,
+            renderer=renderer,
+            ticket_repo=ticket_repo,
+            daily_store=daily_store,
+            applier=reconciliation_applier,
+            decision_chat_id=decision_chat,
+            snapshot_lookup=snapshot_lookup,
         )
     else:
         # No decision chat configured — the ReconciliationOrchestrator
@@ -3253,9 +3251,7 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
         # AnalysisServices so intelligence_officer's event-driven path
         # writes MIROFISH- evidence to evidence_collection in the
         # default startup, not just in tests.
-        mirofish_writer=getattr(
-            application.state, "mirofish_writer", None
-        ),
+        mirofish_writer=getattr(application.state, "mirofish_writer", None),
         pipeline_config=PipelineConfig(),
     )
     application.state.mirofish_simulator = mirofish_simulator
@@ -3284,9 +3280,7 @@ async def _init_analysis_scheduler(application: FastAPI) -> None:
     # forbidden per P0-9.
     if policy is not None:
         try:
-            await _seed_watchlist_from_policy(
-                application.state.watchlist, policy
-            )
+            await _seed_watchlist_from_policy(application.state.watchlist, policy)
         except Exception as exc:
             log.warning("watchlist_seed_failed", error=str(exc))
 
@@ -3340,9 +3334,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     from backend.logging_config import configure_logging
 
-    configure_logging(
-        log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO")
-    )
+    configure_logging(log_dir="logs", level=os.environ.get("LOG_LEVEL", "INFO"))
 
     # Resolve LOG_AUDIT_PATH once at the very top of lifespan so every
     # audit-write path lands in the same file. Codex cycle 2 P2 fix —
@@ -3553,9 +3545,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # 45 trading days of stability + strategy checks.
     if application.state.feishu_client is not None:
         gate = getattr(application.state, "acceptance_service", None)
-        startup_tier = getattr(
-            application.state, "feishu_go_live_tier", None
-        ) or _resolve_feishu_tier()
+        startup_tier = (
+            getattr(application.state, "feishu_go_live_tier", None)
+            or _resolve_feishu_tier()
+        )
         gate_decision = (
             await gate.can_switch_to_feishu_on(startup_tier)
             if gate is not None
@@ -3654,12 +3647,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         # the alert chat is also re-validated here so a misconfigured
         # alert==decision chat aborts startup before any inbound
         # message can mutate state.
-        decision_chat_env = os.environ.get(
-            "FEISHU_DECISION_CHAT_ID", ""
-        ).strip()
-        alert_chat_env = os.environ.get(
-            "FEISHU_ALERT_CHAT_ID", ""
-        ).strip()
+        decision_chat_env = os.environ.get("FEISHU_DECISION_CHAT_ID", "").strip()
+        alert_chat_env = os.environ.get("FEISHU_ALERT_CHAT_ID", "").strip()
         if not decision_chat_env:
             raise SystemExit(
                 "Refusing to start: FEISHU_INTERACTIVE_ENABLED=true but "
@@ -3706,14 +3695,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 log.warning(
                     "feishu_message_dropped_wrong_chat",
                     expected_decision_chat_fp=(
-                        decision_chat_env[:6] + "***"
-                        if decision_chat_env
-                        else ""
+                        decision_chat_env[:6] + "***" if decision_chat_env else ""
                     ),
                     received_chat_fp=(
-                        message.chat_id[:6] + "***"
-                        if message.chat_id
-                        else ""
+                        message.chat_id[:6] + "***" if message.chat_id else ""
                     ),
                 )
                 return
@@ -3733,9 +3718,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                     resource_type="feishu_inbound_message",
                     resource_id=message.message_id,
                     payload={
-                        "sender_fingerprint": compute_fingerprint(
-                            message.sender_id
-                        ),
+                        "sender_fingerprint": compute_fingerprint(message.sender_id),
                         "reason": "sender_not_in_owner_allowlist",
                     },
                     outcome=AuditOutcome.BLOCKED,
@@ -3744,9 +3727,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 )
                 return
             if reconciliation_orch is not None:
-                reply_outcome = await reconciliation_orch.handle_reply(
-                    message.text
-                )
+                reply_outcome = await reconciliation_orch.handle_reply(message.text)
                 if reply_outcome.handled:
                     return
             if execution_orch is not None:

@@ -196,3 +196,11 @@ exclude = ['^backend/backtest/rqalpha_entry/']
 [[tool.mypy.overrides]]
 module = ["rqalpha.*", "rqalpha_entry.*"]
 ignore_missing_imports = true
+
+# scipy ships no type stubs in this env; the AE-005 honest-search producer
+# (backend/strategy_evolution/quant_param_search.py) uses scipy.stats.qmc.Sobol
+# for the pre-declared space-filling design. Its determinism is validated by
+# the bit-identical-sequence tests, not by main-env mypy.
+[[tool.mypy.overrides]]
+module = ["scipy.*"]
+ignore_missing_imports = true
