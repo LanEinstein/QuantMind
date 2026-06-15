@@ -172,3 +172,33 @@ def test_no_lookahead_ref() -> None:
 def test_lookahead_ref_detector_rejects_synthetic() -> None:
     assert _lookahead_refs(ast.parse("y = Ref(close, -1)\n"))
     assert not _lookahead_refs(ast.parse("y = Ref(close, 1)\n"))
+
+
+# -- rqalpha_entry exclusion (R-002-amendment-2026-06-14 §2.5) -----------
+
+
+def test_decision_path_lints_exclude_rqalpha_entry() -> None:
+    """The venv-only entry must NOT be scanned by the deterministic-path lints.
+
+    ``rqalpha_entry`` runs in the oracle venv (imports rqalpha, does float
+    friction math) and is not part of the NEP-50-sensitive decision path. The
+    ``_PKG.glob("*.py")`` used above is non-recursive, so it is naturally
+    excluded — lock that here so a future switch to ``rglob`` cannot silently
+    drag the entry (and its legitimate rqalpha import) into the lint.
+    """
+    entry = _PKG / "rqalpha_entry"
+    assert entry.is_dir(), "rqalpha_entry package missing"
+    assert list(entry.glob("*.py")), "rqalpha_entry has no modules"
+    # The scan source is _PKG.glob("*.py") (non-recursive): every scanned path
+    # is a direct child of backend/backtest, never under rqalpha_entry/.
+    scanned_paths = list(_PKG.glob("*.py"))
+    assert all(p.parent == _PKG for p in scanned_paths)
+    assert all("rqalpha_entry" not in p.parts for p in scanned_paths)
+
+
+def test_pit_export_backend_data_import_is_allowed() -> None:
+    """pit_export legitimately imports backend.data (the [BACKTEST] allowlist
+    forbids only llm/agents/api/broker) — assert it is NOT flagged."""
+    targets = [t for f, t in _all_targets() if f == "pit_export.py"]
+    assert targets, "pit_export.py not scanned"
+    assert not any(_is_forbidden(t) for t in targets)

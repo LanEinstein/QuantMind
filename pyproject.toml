@@ -186,3 +186,13 @@ markers = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# backend/backtest/rqalpha_entry/ runs ONLY in the isolated oracle venv
+# (R-002-amendment-2026-06-14): it imports rqalpha, which is absent from the
+# main env (no stubs), and is never imported by any main-env module. Type
+# safety there is validated by actually running it in the venv (the
+# integration test), not by main-env mypy.
+exclude = ['^backend/backtest/rqalpha_entry/']
+
+[[tool.mypy.overrides]]
+module = ["rqalpha.*", "rqalpha_entry.*"]
+ignore_missing_imports = true

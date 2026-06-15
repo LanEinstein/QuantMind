@@ -16,31 +16,60 @@ forbidden → non-commercial, Apache 2.0 terms apply. Consequences baked
 into this module:
 
 * rqalpha is an OPTIONAL runtime dependency — never vendored, no code
-  copied (the Y-001 "NOASSERTION 不抄" discipline);
-* the import is lazy and confined to :class:`RqalphaBacktestRunner`;
-  an absent install degrades to ``ORACLE_UNAVAILABLE`` (fail-closed:
-  unavailable is NOT a pass — the promotion gate must treat it as
-  "not cross-checked");
+  copied (the Y-001 "NOASSERTION 不抄" discipline). It is never imported
+  in this (main-env) module: it runs out-of-process in an isolated venv
+  (``QUANTMIND_RQALPHA_VENV_PYTHON``) whose numpy/pandas are newer than
+  the main env's. An absent / non-executable venv (or any subprocess
+  failure) degrades to ``ORACLE_UNAVAILABLE`` (fail-closed: unavailable
+  is NOT a pass — the promotion gate must treat it as "not
+  cross-checked");
 * if QuantMind ever commercialises, rqalpha must be re-licensed or
   removed (tracked here so the constraint is greppable).
 
-Realtime isolation is enforced three ways: ruff TID251 already bans
-this package from importing the trading stack; the redline ``[R-002]``
-grep confines the string ``rqalpha`` to this file; and
+Realtime isolation is enforced four ways (R-002-amendment-2026-06-14):
+ruff TID251 bans this package from importing the trading stack; the
+redline ``[R-002]`` grep confines the string ``rqalpha`` to the
+allowlist ``{backtest_oracle.py, backend/backtest/rqalpha_entry/*}``
+(the venv entry, run only by subprocess, never imported);
 ``tests/strategy_evolution/test_module_contract.py`` AST-verifies no
-module outside ``backend/strategy_evolution`` imports this module.
+main-env module imports the oracle module *or* the entry; and the
+oracle never touches the realtime path (test-time / 22:00-cron only).
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import os
+import signal
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 log = structlog.get_logger(component="strategy_evolution.backtest_oracle")
+
+DEFAULT_VENV_ENV_VAR = "QUANTMIND_RQALPHA_VENV_PYTHON"
+"""Env var holding the isolated oracle-venv python path (owner-set; R-002
+amendment 2026-06-14). Absent / non-executable -> ORACLE_UNAVAILABLE."""
+
+DEFAULT_VENV_PYTHON = "/home/ps/rqalpha-smoke-venv/bin/python"
+"""Fallback venv python when the env var is unset (the owner-verified path)."""
+
+DEFAULT_SUBPROCESS_TIMEOUT_S = 180.0
+"""Hard wall-clock bound for one oracle backtest. A 45-day window is
+seconds-to-minutes; a hang -> kill the process group -> ORACLE_UNAVAILABLE."""
+
+_ENTRY_MODULE = "rqalpha_entry"
+"""Top-level module name the venv runs (``python -m rqalpha_entry``); the
+subprocess ``PYTHONPATH`` points at ``backend/backtest`` so it resolves there
+WITHOUT importing any ``backend.*`` (the venv has no backend install)."""
 
 EQUITY_TOLERANCE_BPS = 25.0
 """Max per-day |equity diff| in basis points of the MockBroker equity
@@ -93,6 +122,12 @@ class BacktestRunResult(BaseModel):
     strategy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     equity_curve: tuple[EquityDay, ...]
     fill_count: int = Field(ge=0)
+    engine_fingerprint: Mapping[str, str] | None = None
+    """Engine library versions (numpy/pandas/BLAS/...) captured from the run.
+    The oracle venv's numpy/pandas are *newer* than the main env's, so a
+    divergence could be a version artefact — pinning the fingerprint here makes
+    that attributable instead of masquerading as logic drift (R-002 amendment
+    §2.4). ``None`` for engines that do not report it (e.g. the MockBroker)."""
 
 
 class DayDiff(BaseModel):
@@ -324,43 +359,290 @@ async def run_differential_check(
     )
 
 
-class RqalphaBacktestRunner:
-    """The production rqalpha adapter (lazy import; optional dep).
+@dataclass(frozen=True)
+class SubprocessOutcome:
+    """Result of one oracle-subprocess launch (immutable)."""
 
-    rqalpha is NOT installed by default (NOASSERTION license — see the
-    module docstring). Until the owner installs it (non-commercial
-    Apache 2.0 terms), :meth:`run` raises
-    :class:`OracleUnavailableError` and the differential degrades to
-    ``ORACLE_UNAVAILABLE``. The adapter is deliberately thin: strategy
-    translation into an rqalpha run config belongs to Phase AB's
-    experiment harness, which owns the data bundle + Mod configuration.
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+
+
+@runtime_checkable
+class SubprocessRunner(Protocol):
+    """Injectable subprocess seam — production spawns the venv, tests fake."""
+
+    async def __call__(
+        self,
+        *,
+        argv: list[str],
+        env: Mapping[str, str],
+        cwd: str,
+        timeout_s: float,
+    ) -> SubprocessOutcome: ...
+
+
+@runtime_checkable
+class ExportManifestLike(Protocol):
+    """What :meth:`PitExporter.export` returns — only the pinned sha is read."""
+
+    @property
+    def bars_sha256(self) -> str: ...
+
+
+@runtime_checkable
+class PitExporter(Protocol):
+    """Injectable PIT same-source exporter (Option B).
+
+    Writes the self-contained ``spec.json`` + ``bars.csv`` the venv entry reads
+    into ``workdir`` and returns a manifest carrying the pinned ``bars_sha256``.
+    Production wires ``backend.backtest.pit_export.SnapshotPitExporter`` (which
+    reads the K-002 PIT store); the runner stays import-clean of ``backend.data``
+    by depending on this Protocol only.
+    """
+
+    def export(self, spec: BacktestSpec, workdir: Path) -> ExportManifestLike: ...
+
+
+async def _default_subprocess_runner(
+    *,
+    argv: list[str],
+    env: Mapping[str, str],
+    cwd: str,
+    timeout_s: float,
+) -> SubprocessOutcome:
+    """Spawn the venv subprocess in its own session; kill the group on timeout.
+
+    ``start_new_session=True`` puts the child in a fresh process group so a
+    hung rqalpha (and any thread it spawned) is killed wholesale via
+    :func:`os.killpg` — a bare ``proc.kill()`` would orphan grandchildren.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=dict(env),
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_s
+        )
+    except TimeoutError:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=10.0)
+        except TimeoutError:
+            pass
+        return SubprocessOutcome(
+            returncode=None, stdout=b"", stderr=b"", timed_out=True
+        )
+    return SubprocessOutcome(
+        returncode=proc.returncode,
+        stdout=stdout or b"",
+        stderr=stderr or b"",
+        timed_out=False,
+    )
+
+
+def _default_entry_pythonpath() -> Path:
+    """``<repo>/backend/backtest`` — where the venv resolves ``rqalpha_entry``."""
+    # this file: <repo>/backend/strategy_evolution/backtest_oracle.py
+    return Path(__file__).resolve().parents[1] / "backtest"
+
+
+class RqalphaBacktestRunner:
+    """Production rqalpha adapter — runs rqalpha in an isolated venv subprocess.
+
+    R-002-amendment-2026-06-14: rqalpha's numpy/pandas are newer than the main
+    env's, so it MUST run out-of-process in its own venv
+    (``QUANTMIND_RQALPHA_VENV_PYTHON``). :meth:`run` exports the same-source PIT
+    data (Option B, via the injected :class:`PitExporter`), launches
+    ``python -m rqalpha_entry`` in the venv, and parses ``result.json``. Every
+    failure — venv absent / non-executable, export failure, timeout, non-zero
+    exit, missing / corrupt / mis-hashed result — raises
+    :class:`OracleUnavailableError`, so the differential degrades to
+    ``ORACLE_UNAVAILABLE`` (fail-closed: unavailable is never a pass). rqalpha
+    stays an OPTIONAL, never-vendored dependency (NOASSERTION license).
     """
 
     ENGINE = "rqalpha"
 
+    def __init__(
+        self,
+        *,
+        exporter: PitExporter,
+        venv_python: str | None = None,
+        timeout_s: float = DEFAULT_SUBPROCESS_TIMEOUT_S,
+        subprocess_runner: SubprocessRunner | None = None,
+        entry_pythonpath: Path | None = None,
+    ) -> None:
+        self._exporter = exporter
+        self._venv_python = venv_python or os.environ.get(
+            DEFAULT_VENV_ENV_VAR, DEFAULT_VENV_PYTHON
+        )
+        self._timeout_s = timeout_s
+        self._run_subprocess = subprocess_runner or _default_subprocess_runner
+        self._pythonpath = entry_pythonpath or _default_entry_pythonpath()
+
     async def run(self, spec: BacktestSpec) -> BacktestRunResult:
-        try:
-            import rqalpha  # type: ignore[import-not-found]  # noqa: F401 — availability probe (optional dep)
-        except ImportError as exc:
+        venv = Path(self._venv_python)
+        if not venv.exists() or not os.access(venv, os.X_OK):
             raise OracleUnavailableError(
-                "rqalpha is not installed (optional dependency; "
-                "NOASSERTION license — non-commercial Apache 2.0 use "
-                "only, never vendored). Install + configure the data "
-                "bundle to enable the differential oracle."
+                f"oracle venv python not found / not executable: {venv} "
+                f"(set {DEFAULT_VENV_ENV_VAR}); rqalpha is an optional "
+                "never-vendored dependency"
+            )
+        with tempfile.TemporaryDirectory(prefix="qm_rqalpha_") as tmp:
+            workdir = Path(tmp)
+            try:
+                manifest = self._exporter.export(spec, workdir)
+            except Exception as exc:  # noqa: BLE001 - export failure => unavailable
+                raise OracleUnavailableError(
+                    f"PIT same-source export failed: {exc}"
+                ) from exc
+
+            outcome = await self._run_subprocess(
+                argv=[
+                    self._venv_python,
+                    "-m",
+                    _ENTRY_MODULE,
+                    "--workdir",
+                    str(workdir),
+                ],
+                env=self._subprocess_env(),
+                cwd=str(workdir),
+                timeout_s=self._timeout_s,
+            )
+            if outcome.timed_out:
+                raise OracleUnavailableError(
+                    f"oracle subprocess exceeded {self._timeout_s}s "
+                    "(process group killed)"
+                )
+            if outcome.returncode != 0:
+                raise OracleUnavailableError(
+                    f"oracle subprocess exit {outcome.returncode}: "
+                    f"{_tail(outcome.stderr)}"
+                )
+            return self._parse_result(workdir, spec, manifest.bars_sha256)
+
+    # -- internal ------------------------------------------------------
+    def _subprocess_env(self) -> dict[str, str]:
+        """Clean env: pin PYTHONPATH to the entry parent + single-thread BLAS.
+
+        ``PYTHONPATH`` is *replaced* (not extended) so the venv never resolves
+        ``backend.*``; ``OMP/OPENBLAS/MKL_NUM_THREADS=1`` makes the run
+        deterministic and keeps the version fingerprint comparable (amendment
+        §2.4)."""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(self._pythonpath)
+        env["OMP_NUM_THREADS"] = "1"
+        env["OPENBLAS_NUM_THREADS"] = "1"
+        env["MKL_NUM_THREADS"] = "1"
+        return env
+
+    def _parse_result(
+        self, workdir: Path, spec: BacktestSpec, expected_bars_sha256: str
+    ) -> BacktestRunResult:
+        result_path = workdir / "result.json"
+        checksum_path = workdir / "result.json.sha256"
+        if not result_path.exists():
+            raise OracleUnavailableError(
+                "oracle subprocess produced no result.json"
+            )
+        # The sidecar is REQUIRED (the entry writes it before publishing
+        # result.json). A present result.json without its sidecar means a
+        # half-written / crashed run -> fail-closed, never adopt unverified.
+        if not checksum_path.exists():
+            raise OracleUnavailableError(
+                "oracle result.json has no checksum sidecar "
+                "(half-written / crashed run)"
+            )
+        raw = result_path.read_bytes()
+        expected = checksum_path.read_text(encoding="utf-8").strip()
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != expected:
+            raise OracleUnavailableError(
+                f"result.json checksum {actual[:12]} != sidecar "
+                f"{expected[:12]} (half-written / corrupt)"
+            )
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise OracleUnavailableError(
+                f"oracle result.json is not valid JSON: {exc}"
             ) from exc
-        # Phase AB wires the actual run config (data bundle path, Mod
-        # set mirroring MockBroker friction, strategy file translation).
-        # Landing a half-configured run here would produce a curve that
-        # diverges for config reasons and train operators to ignore the
-        # oracle — fail-closed until AB completes the harness.
-        raise OracleUnavailableError(
-            "rqalpha run harness lands with Phase AB (experiment "
-            "pipeline owns the data bundle + Mod config); the "
-            "differential stays ORACLE_UNAVAILABLE until then."
+        try:
+            result = self._to_run_result(doc)
+        except Exception as exc:  # noqa: BLE001 - malformed result => unavailable
+            raise OracleUnavailableError(
+                f"oracle result.json failed validation: {exc}"
+            ) from exc
+        if result.engine != self.ENGINE:
+            raise OracleUnavailableError(
+                f"oracle result reports engine {result.engine!r}, not "
+                f"{self.ENGINE!r} — a cross-engine differential must come "
+                "from the rqalpha subprocess (refusing a mislabelled result)"
+            )
+        if result.strategy_hash != spec.strategy_hash:
+            raise OracleUnavailableError(
+                f"oracle ran strategy {result.strategy_hash[:12]}, not the "
+                f"requested {spec.strategy_hash[:12]}"
+            )
+        if doc.get("bars_sha256") != expected_bars_sha256:
+            raise OracleUnavailableError(
+                "oracle ran against different bars than were exported "
+                f"({str(doc.get('bars_sha256'))[:12]} != "
+                f"{expected_bars_sha256[:12]}) — PIT same-source broken"
+            )
+        log.info(
+            "backtest_oracle_run_ok",
+            strategy_hash=spec.strategy_hash[:12],
+            fill_count=result.fill_count,
+            compared_days=len(result.equity_curve),
+            engine_fingerprint=dict(result.engine_fingerprint or {}),
+        )
+        return result
+
+    @staticmethod
+    def _to_run_result(doc: Mapping[str, Any]) -> BacktestRunResult:
+        curve = tuple(
+            EquityDay(
+                trade_date=str(row["trade_date"]),
+                total_equity=float(row["total_equity"]),
+            )
+            for row in doc["equity_curve"]
+        )
+        fingerprint = doc.get("env_fingerprint")
+        return BacktestRunResult(
+            engine=str(doc["engine"]),
+            engine_version=str(doc["engine_version"]),
+            strategy_hash=str(doc["strategy_hash"]),
+            equity_curve=curve,
+            fill_count=int(doc["fill_count"]),
+            engine_fingerprint=(
+                {str(k): str(v) for k, v in fingerprint.items()}
+                if isinstance(fingerprint, Mapping)
+                else None
+            ),
         )
 
 
+def _tail(data: bytes, *, limit: int = 400) -> str:
+    """Last ``limit`` chars of a stderr blob for an error message."""
+    text = data.decode("utf-8", errors="replace")
+    return text[-limit:]
+
+
 __all__ = [
+    "DEFAULT_SUBPROCESS_TIMEOUT_S",
+    "DEFAULT_VENV_ENV_VAR",
+    "DEFAULT_VENV_PYTHON",
     "DIVERGENT_DAY_RATIO_CEILING",
     "EQUITY_TOLERANCE_BPS",
     "MIN_OVERLAP_RATIO",
@@ -370,9 +652,13 @@ __all__ = [
     "DayDiff",
     "DifferentialReport",
     "EquityDay",
+    "ExportManifestLike",
     "OracleUnavailableError",
     "OracleVerdict",
+    "PitExporter",
     "RqalphaBacktestRunner",
+    "SubprocessOutcome",
+    "SubprocessRunner",
     "compare_equity_curves",
     "run_differential_check",
 ]

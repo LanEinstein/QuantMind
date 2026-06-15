@@ -175,11 +175,23 @@ class TestRunDifferentialCheck:
 
 class TestRqalphaRunner:
     @pytest.mark.asyncio
-    async def test_runner_is_unavailable_without_install(self) -> None:
-        """rqalpha is an optional dep (NOASSERTION license, never
-        vendored) — absent install must degrade, never crash."""
-        with pytest.raises(OracleUnavailableError):
-            await RqalphaBacktestRunner().run(_spec())
+    async def test_runner_is_unavailable_without_venv(self) -> None:
+        """rqalpha is an optional dep (NOASSERTION license, never vendored)
+        running in an isolated venv — an absent / non-executable venv must
+        degrade to UNAVAILABLE (fail-closed), never crash. The subprocess
+        plumbing's other failure paths are covered with fakes in
+        ``test_rqalpha_runner_subprocess``."""
+
+        class _NoopExporter:
+            def export(self, spec: object, workdir: object) -> object:
+                raise AssertionError("export must not run when venv is absent")
+
+        runner = RqalphaBacktestRunner(
+            exporter=_NoopExporter(),  # type: ignore[arg-type]
+            venv_python="/nonexistent/oracle/python",
+        )
+        with pytest.raises(OracleUnavailableError, match="venv"):
+            await runner.run(_spec())
 
 
 class TestCodexP1Fixes:

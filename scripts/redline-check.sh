@@ -1590,14 +1590,19 @@ fi
 # authoritative guard and this grep is the standalone-CI fast gate.
 # ----------------------------------------------------------------------
 echo
-yellow "[R-002] rqalpha confined to backend/strategy_evolution/ (imports: oracle adapter only)"
-# Prose mentions are allowed inside the evolution package (the sibling
-# modules cross-reference the oracle); the AST contract test pins the
-# actual IMPORT to backtest_oracle.py alone.
+yellow "[R-002] rqalpha confined to the test-time oracle (strategy_evolution + backtest)"
+# R-002-amendment-2026-06-14: the string allowlist widens from the single
+# oracle adapter to the two AST-proven realtime-isolated packages —
+# backend/strategy_evolution/ (the oracle adapter) and backend/backtest/
+# (the harness package hosting the venv subprocess entry + PIT exporter +
+# JSON protocol). The authoritative guard is the AST contract
+# (tests/strategy_evolution/test_module_contract.py), which pins the actual
+# rqalpha IMPORT to {backtest_oracle.py, backend/backtest/rqalpha_entry/*};
+# this grep is the standalone-CI fast gate (prose mentions allowed).
 R002_OUT="$(grep -rln 'rqalpha' backend/ --include='*.py' 2>/dev/null \
-  | grep -v '^backend/strategy_evolution/' || true)"
+  | grep -vE '^backend/(strategy_evolution|backtest)/' || true)"
 if [ -n "$R002_OUT" ]; then
-  red "  FAIL  rqalpha referenced outside the oracle adapter:"
+  red "  FAIL  rqalpha referenced outside the oracle packages:"
   printf '%s\n' "$R002_OUT" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 else
@@ -1678,13 +1683,18 @@ fi
 # flip across numpy versions (NEP 50). The AST pytest
 # (tests/backtest/test_module_contract.py) is authoritative; these greps are
 # the standalone-CI fast gate.
+#
+# rqalpha_entry/ is EXCLUDED from these lints (R-002-amendment-2026-06-14
+# §2.5): it runs in the oracle venv, legitimately imports rqalpha + does
+# float friction math, and is NOT part of the deterministic decision path.
+# --exclude-dir keeps it off the import-isolation / Ref / bare-float greps.
 # ----------------------------------------------------------------------
 echo
 yellow "[BACKTEST] backend/backtest isolation + Ref look-ahead + decision_compare"
 BT_FAIL=0
 if [ -d backend/backtest ]; then
   _BT_NAMES='llm|agents_team|agents|mirofish|api|broker'
-  BT_IMP="$(grep -rnE \
+  BT_IMP="$(grep -rnE --exclude-dir=rqalpha_entry \
     "import +backend\.($_BT_NAMES)\b|from +backend\.($_BT_NAMES)\b|from +backend +import +[^#]*\b($_BT_NAMES)\b|from +\.+($_BT_NAMES)\b|from +\.+ +import +[^#]*\b($_BT_NAMES)\b" \
     backend/backtest --include='*.py' 2>/dev/null || true)"
   if [ -n "$BT_IMP" ]; then
@@ -1692,13 +1702,13 @@ if [ -d backend/backtest ]; then
     printf '%s\n' "$BT_IMP" | sed 's/^/        /'
     BT_FAIL=1
   fi
-  BT_REF="$(grep -rnE 'Ref\([^)]*,[[:space:]]*-[0-9]' backend/backtest --include='*.py' 2>/dev/null || true)"
+  BT_REF="$(grep -rnE --exclude-dir=rqalpha_entry 'Ref\([^)]*,[[:space:]]*-[0-9]' backend/backtest --include='*.py' 2>/dev/null || true)"
   if [ -n "$BT_REF" ]; then
     red "  FAIL  backend/backtest uses a look-ahead Ref (negative offset):"
     printf '%s\n' "$BT_REF" | sed 's/^/        /'
     BT_FAIL=1
   fi
-  BT_FLOAT="$(grep -rnE '(<|>|<=|>=|==|!=)[[:space:]]*-?[0-9]+\.[0-9]|-?[0-9]+\.[0-9]+[[:space:]]*(<|>|<=|>=|==|!=)' backend/backtest --include='*.py' 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+  BT_FLOAT="$(grep -rnE --exclude-dir=rqalpha_entry '(<|>|<=|>=|==|!=)[[:space:]]*-?[0-9]+\.[0-9]|-?[0-9]+\.[0-9]+[[:space:]]*(<|>|<=|>=|==|!=)' backend/backtest --include='*.py' 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
   if [ -n "$BT_FLOAT" ]; then
     red "  FAIL  backend/backtest has a bare float threshold comparison (use decision_compare):"
     printf '%s\n' "$BT_FLOAT" | sed 's/^/        /'

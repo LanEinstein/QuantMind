@@ -15,6 +15,10 @@ import pathlib
 EVOLUTION_ROOT = pathlib.Path("backend/strategy_evolution")
 BACKEND_ROOT = pathlib.Path("backend")
 ORACLE_MODULE = "backend.strategy_evolution.backtest_oracle"
+# R-002-amendment-2026-06-14: the venv-only subprocess entry legitimately
+# imports rqalpha (it runs in the oracle venv, never imported by the main env).
+ENTRY_ROOT = pathlib.Path("backend/backtest/rqalpha_entry")
+ENTRY_MODULE = "backend.backtest.rqalpha_entry"
 
 
 def _imports_of(path: pathlib.Path) -> set[str]:
@@ -48,7 +52,9 @@ class TestOracleRealtimeIsolation:
             f"realtime path imports the backtest oracle: {offenders}"
         )
 
-    def test_rqalpha_import_confined_to_oracle_adapter(self) -> None:
+    def test_rqalpha_import_confined_to_allowlist(self) -> None:
+        # R-002 allowlist (amendment 2026-06-14): the oracle adapter +
+        # the venv-only subprocess entry. Nothing else may name rqalpha.
         offenders: list[str] = []
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             imports = _imports_of(path)
@@ -56,10 +62,37 @@ class TestOracleRealtimeIsolation:
                 name == "rqalpha" or name.startswith("rqalpha.")
                 for name in imports
             ):
-                if path != EVOLUTION_ROOT / "backtest_oracle.py":
-                    offenders.append(str(path))
+                if path == EVOLUTION_ROOT / "backtest_oracle.py":
+                    continue
+                if ENTRY_ROOT in path.parents:
+                    continue
+                offenders.append(str(path))
         assert offenders == [], (
-            f"rqalpha imported outside the oracle adapter: {offenders}"
+            f"rqalpha imported outside the R-002 allowlist: {offenders}"
+        )
+
+    def test_no_main_env_module_imports_the_venv_entry(self) -> None:
+        """The entry runs ONLY as a subprocess (``python -m rqalpha_entry``).
+
+        If any main-env module imported ``backend.backtest.rqalpha_entry`` (or
+        the top-level ``rqalpha_entry``), pytest collection would drag rqalpha
+        into the main env — which has no rqalpha — and the import would crash.
+        """
+        offenders: list[str] = []
+        for path in sorted(BACKEND_ROOT.rglob("*.py")):
+            if ENTRY_ROOT in path.parents:
+                continue
+            imports = _imports_of(path)
+            if any(
+                name == ENTRY_MODULE
+                or name.startswith(ENTRY_MODULE + ".")
+                or name == "rqalpha_entry"
+                or name.startswith("rqalpha_entry.")
+                for name in imports
+            ):
+                offenders.append(str(path))
+        assert offenders == [], (
+            f"main-env module imports the venv-only entry: {offenders}"
         )
 
     def test_rqalpha_import_in_adapter_is_lazy(self) -> None:
