@@ -39,7 +39,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 """Lowercase 64-char hex SHA256 — matches ``hashlib.sha256().hexdigest()`` and
@@ -117,13 +123,51 @@ class LiveArtifactLockFile(BaseModel):
     """Root of ``config/live_artifacts.lock.json``.
 
     Tolerates an all-empty ``approved`` so the repo ships before any artifact
-    is pinned; that bootstrap state denies everything (fail-closed)."""
+    is pinned; that bootstrap state denies everything (fail-closed).
+
+    ``params`` is the AE-006 (AB-003-amendment-2026-06-14) schema v2 block:
+    an optional ``{name: value}`` map of evolved quantitative parameters
+    pinned by the human-gate. The registry itself ignores it — it only
+    gates approved HASHES — but the field MUST be modelled so a v2 lockfile
+    parses past ``extra="forbid"``. The :class:`RuntimeParamStore` reads and
+    re-validates ``params`` (whitelist + clamp + group + frozen baseline) at
+    boot. A v1 lockfile omits the key entirely → ``params == {}`` → the
+    runtime is byte-identical to the pre-AE-006 system (the §4 red line).
+    """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    version: Literal["1.0"]
+    version: Literal["1.0", "2.0"]
     updated_at: datetime
     approved: ApprovedHashes = ApprovedHashes()
+    params: dict[str, float] = Field(default_factory=dict)
+
+
+def load_lockfile(lock_path: Path | str) -> LiveArtifactLockFile:
+    """Locate + parse + fail-closed-validate the live-artifact lockfile.
+
+    Single source of truth for loading ``config/live_artifacts.lock.json``,
+    shared by :class:`LiveArtifactRegistry` (the approved-hash gate) and the
+    :class:`~backend.strategy_evolution.runtime_param_store.RuntimeParamStore`
+    (the schema v2 ``params`` block, AE-006) so the two never drift on file
+    location, parse, or error taxonomy. A missing file fails closed (a deploy
+    must ship the lock file — even the empty bootstrap one); malformed JSON or
+    a schema violation fails closed too.
+    """
+    lock_path = Path(lock_path)
+    if not lock_path.is_file():
+        raise LiveArtifactLockFileNotFoundError(
+            f"live-artifact lock file not found at {lock_path}; ship "
+            f"config/live_artifacts.lock.json (empty is valid) before boot"
+        )
+    try:
+        return LiveArtifactLockFile.model_validate_json(
+            lock_path.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise LiveArtifactLockFileMalformedError(
+            f"{lock_path} failed schema validation: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +246,7 @@ class LiveArtifactRegistry:
         the empty bootstrap one) so a misconfigured deploy cannot silently
         admit nothing-OR-everything depending on a default.
         """
-        lock_path = Path(lock_path)
-        if not lock_path.is_file():
-            raise LiveArtifactLockFileNotFoundError(
-                f"live-artifact lock file not found at {lock_path}; ship "
-                f"config/live_artifacts.lock.json (empty is valid) before boot"
-            )
-        try:
-            lock = LiveArtifactLockFile.model_validate_json(
-                lock_path.read_text(encoding="utf-8")
-            )
-        except (json.JSONDecodeError, ValidationError) as exc:
-            raise LiveArtifactLockFileMalformedError(
-                f"{lock_path} failed schema validation: {exc}"
-            ) from exc
-        return cls.from_lock(lock)
+        return cls.from_lock(load_lockfile(lock_path))
 
 
 __all__ = [
@@ -228,4 +258,5 @@ __all__ = [
     "LiveArtifactLockFileNotFoundError",
     "LiveArtifactRegistry",
     "LiveArtifactRegistryError",
+    "load_lockfile",
 ]

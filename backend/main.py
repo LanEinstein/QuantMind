@@ -1146,6 +1146,7 @@ async def _init_line2_runners(
     from backend.candidate_selector.selector import (
         CandidateSelector,
         load_selector_config,
+        selector_config_with_params,
     )
     from backend.orchestration.line1_runner import Line1Runner
     from backend.screening.screener import Screener
@@ -1275,10 +1276,21 @@ async def _init_line2_runners(
     ).personas()
     log.info("trader_personas_loaded", count=len(trader_personas))
 
+    # AE-006 — overlay the evolvable allocation.value_slot_quota from the
+    # boot-loaded RuntimeParamStore (set just after apply_pending_activation).
+    # Empty store ⇒ unchanged config ⇒ byte-identical selector.
+    _param_store = getattr(application.state, "runtime_param_store", None)
+    _pinned_params = (
+        _param_store.as_mapping() if _param_store is not None else None
+    )
     line1_runner = Line1Runner(
         screener=screener,
         budget_policy=budget_policy,
-        selector=CandidateSelector(load_selector_config(selector_yaml)),
+        selector=CandidateSelector(
+            selector_config_with_params(
+                load_selector_config(selector_yaml), _pinned_params
+            )
+        ),
         builder=builder,
         renderer=renderer,
         coordinator=coordinator,
@@ -1993,6 +2005,42 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
                     "activation_intent_status_update_failed",
                     error=str(exc),
                 )
+
+    # 2a-pre2. AE-006 — load the RuntimeParamStore from the POST-activation
+    # live lockfile (AB-003-amendment-2026-06-14 §2.2). Re-validates the pinned
+    # ``params`` block (clamp + group + frozen baseline); an empty / v1 lockfile
+    # ⇒ an empty store ⇒ every consumer falls back to its frozen code default
+    # (byte-identical runtime). A validation failure here is fail-SAFE: the
+    # activation write-path already re-validated + auto-rolled-back any bad
+    # param, so an invalid block can only come from manual tampering — fall back
+    # to an EMPTY store (known-good defaults, never the bad param) + a loud
+    # DEGRADED audit, rather than bricking boot or silently applying an
+    # out-of-clamp param (§2.2 "回落默认 + 大声 audit").
+    from backend.strategy_evolution.runtime_param_store import (
+        RuntimeParamStore,
+    )
+
+    try:
+        runtime_param_store = RuntimeParamStore.from_lockfile(
+            "config/live_artifacts.lock.json"
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to safe defaults
+        log.error("runtime_param_store_load_failed", error=str(exc))
+        await audit_store.write(
+            event_type=AuditEventType.SYSTEM_INTERRUPTED,
+            actor=AuditActor.SYSTEM,
+            resource_type="runtime_param_store",
+            resource_id="live_artifacts.lock.json",
+            payload={"error": str(exc)[:480]},
+            outcome=AuditOutcome.DEGRADED,
+            reason_namespace="runtime_param_store_load_failed",
+        )
+        runtime_param_store = RuntimeParamStore.from_params({})
+    application.state.runtime_param_store = runtime_param_store
+    if runtime_param_store:
+        log.info(
+            "runtime_param_store_active", count=len(runtime_param_store)
+        )
 
     # 2a. AA-004 — policy manifest boot wiring (P2-2-amendment-2026-06-12
     # §1.6). Compute the deterministic policy hash, open a new segment

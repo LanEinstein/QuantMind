@@ -30,7 +30,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.review.ops_gate import ACTIVATION_BLACKOUT, next_market_open
 from backend.services.run_mode import feishu_interactive_enabled
-from backend.strategy_evolution.evolvable_params import validate_param_set
+from backend.strategy_evolution.evolvable_params import (
+    validate_param_set_for_activation,
+)
 from backend.strategy_evolution.live_artifact_registry import (
     ArtifactKind,
     LiveArtifactRegistry,
@@ -98,15 +100,20 @@ def build_activation_manifest(
     add: dict[ArtifactKind, tuple[str, ...]] | None = None,
     remove: dict[ArtifactKind, tuple[str, ...]] | None = None,
     params: dict[str, float] | None = None,
-    current_params: dict[str, float] | None = None,
     intent_id: str,
     created_at: datetime,
 ) -> ActivationManifest:
     """Build the target-state manifest (pure; whitelist-validated).
 
+    Params are validated through :func:`validate_param_set_for_activation`
+    (AE-006): clamp + group constraints + the §2.5 frozen-baseline monotone
+    check for safety-adjacent params. The baseline is the IMMUTABLE frozen
+    code default — never the currently-pinned value — so a sequence of
+    promotions can never creep a protective stop looser one step at a time.
+
     Raises:
         FrozenParamViolationError / ValueError: a param change touches the
-            frozen set or fails clamp/group validation (AB-005).
+            frozen set or fails clamp/group/baseline validation (AB-005 / §2.5).
     """
     target: dict[str, tuple[str, ...]] = {
         kind.value: tuple(sorted(current_approved.get(kind.value, ())))
@@ -121,9 +128,7 @@ def build_activation_manifest(
 
     target_params = dict(params or {})
     if target_params:
-        validation = validate_param_set(
-            target_params, current=current_params
-        )
+        validation = validate_param_set_for_activation(target_params)
         if not validation.passed:
             raise ValueError(
                 f"manifest params failed whitelist validation: "
@@ -166,15 +171,19 @@ def write_next_boot_lock(
             "(P2-2-amendment-2026-06-12 §2)"
         )
     if manifest.params:
-        # Codex AB P2 — there is no runtime consumption path for
-        # whitelisted param values yet (the AB experiment harness gap):
-        # staging one would report APPLIED while changing nothing.
-        # Reject loudly until the param-application schema lands.
-        raise ValueError(
-            "param-bearing manifests cannot be staged yet: the runtime "
-            "param-application path lands with the AB experiment "
-            "harness — a silent no-op promotion is worse than a refusal"
-        )
+        # AE-006 defence-in-depth gate #1 (the staging re-validation of
+        # AB-003-amendment-2026-06-14 §2.4). The runtime param-application
+        # path now exists (RuntimeParamStore), so a param-bearing manifest is
+        # staged — but only after re-clearing the whitelist + clamp + group +
+        # frozen-baseline checks. A directly-constructed manifest (bypassing
+        # build_activation_manifest) cannot smuggle an out-of-clamp param past
+        # staging; the boot apply re-validates again (gate #2).
+        validation = validate_param_set_for_activation(manifest.params)
+        if not validation.passed:
+            raise ValueError(
+                "staged manifest params failed re-validation: "
+                + "; ".join(validation.violations)
+            )
     next_open = next_market_open(now)
     if next_open is not None and next_open - now < ACTIVATION_BLACKOUT:
         raise ActivationWindowError(
@@ -286,22 +295,34 @@ def apply_pending_activation(
         )
 
     if manifest.params:
-        # Defence in depth behind the staging refusal (codex AB P2):
-        # a hand-crafted param-bearing staged lock must not report
-        # APPLIED while silently dropping the params.
-        bad_path = staged_path.with_suffix(".bad")
-        os.replace(staged_path, bad_path)
-        log.error(
-            "next_boot_lock_params_unsupported",
-            quarantined=str(bad_path),
-        )
-        return ActivationResult(
-            status=ActivationStatus.CORRUPT_STAGED_MANIFEST,
-            detail=(
-                "param-bearing manifest: no runtime param-application "
-                "path exists yet — refused (would be a silent no-op)"
-            ),
-        )
+        # AE-006 defence-in-depth gate #2 (boot re-validation, §2.4). The hash
+        # check above only proves the staged bytes are self-consistent — clamp
+        # / whitelist / group / frozen-baseline membership are NOT part of the
+        # hash, so a hand-crafted manifest with a valid hash but an out-of-clamp
+        # param must be caught HERE before it reaches the live lockfile. An
+        # invalid param quarantines the staged file (.bad) and leaves the live
+        # lockfile untouched (fail-closed); valid params flow into new_lock.
+        try:
+            validation = validate_param_set_for_activation(manifest.params)
+            param_ok = validation.passed
+            param_detail = "; ".join(validation.violations)
+        except Exception as exc:  # noqa: BLE001 — frozen-set hit → reject
+            param_ok = False
+            param_detail = str(exc)
+        if not param_ok:
+            bad_path = staged_path.with_suffix(".bad")
+            os.replace(staged_path, bad_path)
+            log.error(
+                "next_boot_lock_params_invalid",
+                quarantined=str(bad_path),
+                detail=param_detail,
+            )
+            return ActivationResult(
+                status=ActivationStatus.CORRUPT_STAGED_MANIFEST,
+                detail=(
+                    "param re-validation failed: " + param_detail
+                )[:512],
+            )
 
     previous_bytes = (
         live_path.read_bytes() if live_path.is_file() else None
@@ -311,18 +332,35 @@ def apply_pending_activation(
             prev_path, previous_bytes.decode("utf-8")
         )
 
-    new_lock = {
-        "version": "1.0",
+    # Byte-identical for the common no-param activation (version "1.0", no
+    # ``params`` key); v2 only when evolved params land (§2.1). Sorted keys
+    # keep the written lockfile deterministic for the AA-004 segment hash.
+    new_lock: dict[str, object] = {
+        "version": "2.0" if manifest.params else "1.0",
         "updated_at": manifest.created_at.isoformat(),
         "approved": {
             kind: list(hashes)
             for kind, hashes in sorted(manifest.approved.items())
         },
     }
+    if manifest.params:
+        new_lock["params"] = {
+            name: manifest.params[name]
+            for name in sorted(manifest.params)
+        }
     _atomic_write(live_path, json.dumps(new_lock, indent=2))
 
     try:
         LiveArtifactRegistry.from_lockfile(live_path)
+        # AE-006 — the RuntimeParamStore must also load + re-validate the
+        # freshly written params from disk (gate #3). A failure here triggers
+        # the SAME automatic rollback as a registry health-assert failure, so a
+        # bad param can never leave the live lockfile in a non-loadable state.
+        from backend.strategy_evolution.runtime_param_store import (
+            RuntimeParamStore,
+        )
+
+        RuntimeParamStore.from_lockfile(live_path)
     except Exception as exc:  # noqa: BLE001 — automatic rollback
         if previous_bytes is not None:
             _atomic_write(live_path, previous_bytes.decode("utf-8"))
@@ -336,7 +374,7 @@ def apply_pending_activation(
             status=ActivationStatus.ROLLED_BACK,
             manifest_hash=manifest.manifest_hash,
             intent_id=manifest.intent_id,
-            detail=f"registry health assert failed: {exc}"[:512],
+            detail=f"health assert failed: {exc}"[:512],
         )
 
     staged_path.unlink(missing_ok=True)

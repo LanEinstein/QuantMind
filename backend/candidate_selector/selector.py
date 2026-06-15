@@ -38,7 +38,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +89,15 @@ class AdvisorySignal:
 
 @dataclass(frozen=True)
 class SelectorConfig:
-    """Locked, git-versioned selector parameters + their content hash."""
+    """Locked, git-versioned selector parameters + their content hash.
+
+    ``value_slot_quota`` (AE-006 — the evolvable ``allocation.value_slot_quota``)
+    caps how many of the ≤2 OPEN (non-reserved) slots VALUE-style names may
+    take. ``None`` means "unbounded" — the open slots are filled by value exactly
+    as before, so a default-constructed / YAML-loaded config (no pinned param) is
+    bit-identical to the pre-AE-006 selector. A boot-time overlay from the
+    :class:`RuntimeParamStore` sets it to a pinned [0, 2] value.
+    """
 
     version: str
     final_shortlist_size: int
@@ -97,6 +105,7 @@ class SelectorConfig:
     max_percentile_shift: float
     advisory_weight: float
     feature_def_hash: str
+    value_slot_quota: int | None = None
 
 
 @dataclass(frozen=True)
@@ -372,7 +381,13 @@ class CandidateSelector:
         value_set = set(value_pool)
         short_pool = [code for code in non_reserved if code not in value_set]
 
-        value_taken = value_pool[:open_slots]
+        # AE-006 — cap value picks at the evolvable allocation.value_slot_quota.
+        # ``None`` ⇒ the open slots are all value-eligible (pre-AE-006 behavior,
+        # bit-identical). A pinned [0, 2] quota narrows how many open slots go to
+        # value; any slot the quota frees up falls back to the next 5-factor name.
+        quota = self._config.value_slot_quota
+        value_cap = open_slots if quota is None else max(0, min(open_slots, quota))
+        value_taken = value_pool[:value_cap]
         remaining = open_slots - len(value_taken)
         short_taken = short_pool[:remaining]
 
@@ -496,6 +511,33 @@ def load_selector_config(yaml_path: str | Path) -> SelectorConfig:
     return config
 
 
+def selector_config_with_params(
+    config: SelectorConfig, params: Mapping[str, float] | None
+) -> SelectorConfig:
+    """Overlay evolvable selector/allocation params on a loaded config (AE-006).
+
+    Only ``allocation.value_slot_quota`` is consumed today (the P1 first batch,
+    AB-003-amendment-2026-06-14 §2.3). An empty / ``None`` ``params`` returns the
+    config UNCHANGED, so a deploy with nothing pinned is byte-identical.
+
+    The selector factor weights (``selector.weight_*``) are deliberately NOT
+    overlaid here: their live mapping needs the real factor-scoring layer (the
+    screener composite uses a 4-factor blend, not these 5 abstract weights) —
+    the same owner-gate as the AE-005 backtest ``ScoreProvider``. Because they
+    have no wired consumer, the activation validator refuses to pin them at all
+    (``RUNTIME_CONSUMED_PARAMS``), so they can never reach this overlay.
+    """
+    p = params or {}
+    quota = p.get("allocation.value_slot_quota")
+    if quota is None:
+        return config
+    # The store's INT-clamp validation already rejected any non-integer value
+    # (validate_param_change rejects ``proposed != int(proposed)``), so a value
+    # reaching here is integer-valued — it just arrives as a float through the
+    # JSON params block. round() before int() guards the float repr (2.0 → 2).
+    return replace(config, value_slot_quota=int(round(quota)))
+
+
 def _hash_config(**fields: Any) -> str:
     """Stable sha256 of the effective config (LiveArtifactRegistry pin)."""
     blob = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -521,4 +563,5 @@ __all__ = [
     "QuantCandidate",
     "SelectorConfig",
     "load_selector_config",
+    "selector_config_with_params",
 ]

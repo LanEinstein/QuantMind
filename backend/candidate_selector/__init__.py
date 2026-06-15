@@ -15,6 +15,7 @@ from backend.candidate_selector.selector import (
     QuantCandidate,
     SelectorConfig,
     load_selector_config,
+    selector_config_with_params,
 )
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "QuantCandidate",
     "SelectorConfig",
     "load_selector_config",
+    "selector_config_with_params",
 ]

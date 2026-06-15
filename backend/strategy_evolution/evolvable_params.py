@@ -218,6 +218,63 @@ _TIER_ORDER = (
 
 SELECTOR_WEIGHT_SUM_TOLERANCE = 1e-6
 
+# AB-003-amendment-2026-06-14 §2.5 — the FROZEN code default used as the
+# monotone baseline for safety-adjacent params at ACTIVATION time. The
+# "stops only tighten" check (codex/D1) must compare a proposed value against
+# this IMMUTABLE baseline, NOT against the last-pinned (possibly already
+# evolved) value — otherwise a sequence of promotions could each "only
+# tighten vs the previous step" yet creep all the way to ``clamp_max``,
+# loosening a protective SELL one notch at a time. Anchoring on the frozen
+# code default makes the loosest reachable value the original default, so
+# evolution can only ever make a safety-adjacent stop TIGHTER than ship.
+#
+# Each entry is the literal default of the production dataclass that owns the
+# parameter (verified at AE-006): a change to either side is a code change +
+# amendment + restart. A safety-adjacent param WITHOUT a registered baseline
+# is refused at activation (fail-closed) — its real default + consumer must
+# be wired (and its baseline registered here) by a future amendment first.
+FROZEN_BASELINE: MappingProxyType[str, float] = MappingProxyType(
+    {
+        # backend.monitoring.add_position.AddPositionConfig.atr_stop_mult
+        "line2.atr_stop_mult": 2.0,
+        # backend.position_thesis.config default time_stop_trade_days
+        "line2.time_stop_trade_days": 30.0,
+    }
+)
+"""Frozen monotone baselines for safety-adjacent params (§2.5).
+
+A safety-adjacent param missing from this map is NOT activatable: see
+:func:`validate_param_set_for_activation`."""
+
+# AE-006 — the params with an END-TO-END wired runtime consumer. Lifting the
+# blanket param refusal (the AB-era "no runtime consumption path → reject"
+# guard) for the one wired param must NOT silently re-open activation for
+# params that still have no consumer: pinning one would land in the lockfile,
+# load into the RuntimeParamStore, and log "active" while changing nothing —
+# the "silent no-op promotion is worse than a refusal" failure the old guard
+# existed to prevent (and the worst case, a safety-adjacent stop). So the
+# activation path admits ONLY params plumbed to a live consumer.
+#
+# Wired today (P1, AB-003-amendment-2026-06-14 §2.3):
+#   * allocation.value_slot_quota → CandidateSelector via
+#     selector_config_with_params (its take-effect is then gated on the
+#     orthogonal AC-005 value-scoring feed, but the plumbing is complete).
+# NOT wired (refused at activation until their consumer lands by amendment):
+#   * selector.weight_* — needs the real factor-scoring layer (owner-gated,
+#     same gate as the AE-005 backtest ScoreProvider; the screener composite
+#     uses a 4-factor blend, not these 5 abstract weights).
+#   * theme.tierN_weight — the theme research runtime layer is offline.
+#   * line2.* — no store reader exists.
+RUNTIME_CONSUMED_PARAMS: frozenset[str] = frozenset(
+    {
+        "allocation.value_slot_quota",
+    }
+)
+"""Params with a wired, boot-reachable runtime consumer (AE-006).
+
+The activation validator refuses any other param so a human pin can never be a
+silent no-op. Wiring a new consumer + adding its name here is one amendment."""
+
 
 class FrozenParamViolationError(ValueError):
     """A candidate change touched the frozen non-evolvable set."""
@@ -338,9 +395,72 @@ def validate_param_set(
     )
 
 
+def validate_param_set_for_activation(
+    proposed: dict[str, float],
+) -> ParamValidation:
+    """Validate a candidate set on the ACTIVATION path (§2.5, fail-closed).
+
+    Identical to :func:`validate_param_set` EXCEPT the monotone "stops only
+    tighten" baseline for safety-adjacent params is forced to the IMMUTABLE
+    :data:`FROZEN_BASELINE` (the frozen code default), never the last-pinned
+    value. This is the single source of truth for staging
+    (``write_next_boot_lock``), boot apply (``apply_pending_activation``) and
+    the :class:`~backend.strategy_evolution.runtime_param_store.RuntimeParamStore`
+    boot load, so the same proposed set is judged identically at every gate.
+
+    It ALSO refuses any param outside :data:`RUNTIME_CONSUMED_PARAMS` — a param
+    with no wired runtime consumer would land in the lockfile + store and log
+    "active" while changing nothing (a silent no-op promotion, worse than a
+    refusal). And a safety-adjacent param with no registered
+    :data:`FROZEN_BASELINE` entry is a hard violation — refusing to activate it
+    (rather than silently skipping the monotone check) keeps a yet-unwired
+    safety knob from being loosened by a hand-crafted manifest.
+
+    Raises:
+        FrozenParamViolationError: a proposed name is in the frozen
+            non-evolvable set (red-line class; propagated from
+            :func:`validate_param_change`).
+    """
+    baseline: dict[str, float] = {}
+    extra_violations: list[str] = []
+    for name in proposed:
+        # Consumed-param gate (skip frozen names — they raise below with the
+        # stronger FrozenParamViolationError, no need for a redundant message).
+        if (
+            name not in RUNTIME_CONSUMED_PARAMS
+            and name not in FROZEN_NON_EVOLVABLE
+        ):
+            extra_violations.append(
+                f"{name}: no runtime consumer wired — activating it would be a "
+                f"silent no-op (worse than a refusal); wire its consumer + add "
+                f"it to RUNTIME_CONSUMED_PARAMS via an amendment first"
+            )
+        spec = EVOLVABLE_WHITELIST.get(name)
+        if spec is None or not spec.safety_adjacent:
+            continue
+        if name not in FROZEN_BASELINE:
+            extra_violations.append(
+                f"{name}: safety-adjacent param has no registered frozen "
+                f"baseline (§2.5) — cannot be activated until its real "
+                f"default + consumer are wired by an amendment"
+            )
+            continue
+        baseline[name] = FROZEN_BASELINE[name]
+
+    result = validate_param_set(proposed, current=baseline)
+    if not extra_violations:
+        return result
+    return ParamValidation(
+        passed=False,
+        violations=tuple(extra_violations) + result.violations,
+    )
+
+
 __all__ = [
     "EVOLVABLE_WHITELIST",
+    "FROZEN_BASELINE",
     "FROZEN_NON_EVOLVABLE",
+    "RUNTIME_CONSUMED_PARAMS",
     "SELECTOR_WEIGHT_SUM_TOLERANCE",
     "ClampKind",
     "EvolvableParamSpec",
@@ -349,4 +469,5 @@ __all__ = [
     "TightenDirection",
     "validate_param_change",
     "validate_param_set",
+    "validate_param_set_for_activation",
 ]

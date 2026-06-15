@@ -251,34 +251,6 @@ class TestCodexABFixes:
         assert not (tmp_path / NEXT_BOOT_LOCK_NAME).exists()
         assert (tmp_path / "next_boot.lock.frozen").exists()
 
-    def test_param_bearing_manifest_refused_at_staging(
-        self, tmp_path: Path
-    ) -> None:
-        lock = _seed_live_lock(tmp_path)
-        manifest = _manifest(
-            lock, params={"line2.r_multiple": 1.2}
-        )
-        with pytest.raises(ValueError, match="param-bearing"):
-            write_next_boot_lock(
-                manifest, now=STAGE_TIME, lock_dir=tmp_path
-            )
-
-    def test_handcrafted_param_manifest_refused_at_apply(
-        self, tmp_path: Path
-    ) -> None:
-        lock = _seed_live_lock(tmp_path)
-        manifest = _manifest(lock, params={"line2.r_multiple": 1.2})
-        (tmp_path / NEXT_BOOT_LOCK_NAME).write_text(
-            manifest.model_dump_json()
-        )
-        result = apply_pending_activation(lock_dir=tmp_path)
-        assert (
-            result.status is ActivationStatus.CORRUPT_STAGED_MANIFEST
-        )
-        assert "param" in result.detail
-        live = json.loads((tmp_path / LIVE_LOCK_NAME).read_text())
-        assert live["approved"]["strategy_code"] == []
-
     def test_intent_status_mapping_respects_allowlist(self) -> None:
         from backend.strategy_evolution.activation import (
             intent_status_for_activation,
@@ -299,3 +271,117 @@ class TestCodexABFixes:
                 IntentStatus.PENDING,
                 terminal,
             ) in ALLOWED_INTENT_TRANSITIONS
+
+
+# The one param with end-to-end wired plumbing (AE-006 consumed set). Selector
+# weights / theme tiers / line2 params are deliberately NOT activatable yet.
+_VALID_PARAMS = {"allocation.value_slot_quota": 1.0}
+
+
+class TestAE006ParamLanding:
+    """AE-006 — lifts the two param rejections; lands params through the
+    schema v2 lockfile + RuntimeParamStore (AB-003-amendment-2026-06-14)."""
+
+    def test_valid_param_manifest_stages_now(self, tmp_path: Path) -> None:
+        # Previously refused (AB gap); now a wired param stages successfully.
+        lock = _seed_live_lock(tmp_path)
+        manifest = _manifest(lock, params=dict(_VALID_PARAMS))
+        path = write_next_boot_lock(
+            manifest, now=STAGE_TIME, lock_dir=tmp_path
+        )
+        revived = json.loads(path.read_text())
+        assert revived["params"]["allocation.value_slot_quota"] == 1.0
+
+    def test_out_of_clamp_param_refused_at_build(
+        self, tmp_path: Path
+    ) -> None:
+        # build_activation_manifest already validates → a clamp violation
+        # cannot even produce a manifest.
+        lock = _seed_live_lock(tmp_path)
+        with pytest.raises(ValueError, match="clamp"):
+            _manifest(lock, params={"allocation.value_slot_quota": 9.0})
+
+    def test_unwired_param_refused_at_build(self, tmp_path: Path) -> None:
+        # A whitelisted+in-clamp param with no wired consumer (selector
+        # weights) must NOT be activatable — silent no-op guard.
+        lock = _seed_live_lock(tmp_path)
+        with pytest.raises(ValueError, match="consumer"):
+            _manifest(
+                lock,
+                params={
+                    "selector.weight_momentum": 0.4,
+                    "selector.weight_volatility": 0.2,
+                    "selector.weight_liquidity": 0.15,
+                    "selector.weight_value": 0.15,
+                    "selector.weight_quality": 0.1,
+                },
+            )
+
+    def test_apply_lands_params_into_lockfile_v2(
+        self, tmp_path: Path
+    ) -> None:
+        lock = _seed_live_lock(tmp_path)
+        manifest = _manifest(lock, params=dict(_VALID_PARAMS))
+        write_next_boot_lock(manifest, now=STAGE_TIME, lock_dir=tmp_path)
+        result = apply_pending_activation(lock_dir=tmp_path)
+        assert result.status is ActivationStatus.APPLIED
+        live = json.loads((tmp_path / LIVE_LOCK_NAME).read_text())
+        assert live["version"] == "2.0"
+        assert live["params"]["allocation.value_slot_quota"] == 1.0
+        # The RuntimeParamStore must now read the landed params back.
+        from backend.strategy_evolution.runtime_param_store import (
+            RuntimeParamStore,
+        )
+
+        store = RuntimeParamStore.from_lockfile(tmp_path / LIVE_LOCK_NAME)
+        assert store.get("allocation.value_slot_quota", 99) == 1.0
+
+    def test_no_param_activation_is_byte_identical(
+        self, tmp_path: Path
+    ) -> None:
+        # The common path: no params ⇒ version "1.0" + NO params key, exactly
+        # as the pre-AE-006 writer produced (§4 red line 1).
+        lock = _seed_live_lock(tmp_path)
+        manifest = _manifest(lock)  # add strategy_code, no params
+        write_next_boot_lock(manifest, now=STAGE_TIME, lock_dir=tmp_path)
+        apply_pending_activation(lock_dir=tmp_path)
+        live = json.loads((tmp_path / LIVE_LOCK_NAME).read_text())
+        assert live["version"] == "1.0"
+        assert "params" not in live
+
+    def test_handcrafted_out_of_clamp_param_quarantined_at_apply(
+        self, tmp_path: Path
+    ) -> None:
+        # Defence-in-depth gate #2: a hand-crafted manifest with a VALID hash
+        # but an out-of-clamp param (clamp is not part of the hash) must be
+        # quarantined at apply, leaving the live lockfile untouched.
+        from backend.strategy_evolution.activation import (
+            compute_manifest_hash as cmh,
+        )
+
+        lock = _seed_live_lock(tmp_path)
+        manifest = _manifest(lock, params=dict(_VALID_PARAMS))
+        doc = json.loads(manifest.model_dump_json())
+        doc["params"]["allocation.value_slot_quota"] = 9.0  # out of [0, 2]
+        doc["manifest_hash"] = cmh(
+            {k: tuple(v) for k, v in doc["approved"].items()},
+            doc["params"],
+        )
+        (tmp_path / NEXT_BOOT_LOCK_NAME).write_text(json.dumps(doc))
+        result = apply_pending_activation(lock_dir=tmp_path)
+        assert result.status is ActivationStatus.CORRUPT_STAGED_MANIFEST
+        assert "re-validation" in result.detail
+        live = json.loads((tmp_path / LIVE_LOCK_NAME).read_text())
+        assert live["approved"]["strategy_code"] == []
+        assert "params" not in live
+        assert (tmp_path / "next_boot.lock.bad").exists()
+
+    def test_safety_adjacent_multistep_loosen_rejected_at_build(
+        self, tmp_path: Path
+    ) -> None:
+        # §2.5 — atr_stop_mult (frozen baseline 2.0, DOWN). A value inside the
+        # clamp [1, 4] but LOOSER than the frozen default is rejected, so a
+        # chain of promotions can never creep the stop wider one notch at a time.
+        lock = _seed_live_lock(tmp_path)
+        with pytest.raises(ValueError, match="stops only tighten"):
+            _manifest(lock, params={"line2.atr_stop_mult": 3.0})

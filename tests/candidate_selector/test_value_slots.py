@@ -6,6 +6,7 @@ from backend.candidate_selector.selector import (
     CandidateSelector,
     QuantCandidate,
     SelectorConfig,
+    selector_config_with_params,
 )
 
 
@@ -120,3 +121,76 @@ class TestValueSlotAllocation:
         )
         # nan score → not VALUE → 5-factor fallback
         assert result.value_selected == ()
+
+
+class TestAE006ValueSlotQuota:
+    """AE-006 — the evolvable allocation.value_slot_quota caps value picks."""
+
+    _QUANT = [
+        ("600001", 0.95), ("600002", 0.90), ("600003", 0.85),
+        ("600004", 0.80), ("600005", 0.50), ("600006", 0.40),
+    ]
+    _VS = {"600005": 0.72, "600006": 0.81}  # both VALUE-style
+
+    def test_quota_none_is_default_unbounded(self) -> None:
+        # Default config (quota None) ⇒ both open slots go to value names —
+        # bit-identical to the pre-AE-006 behaviour.
+        sel = CandidateSelector(_config())
+        result = sel.select(
+            _quant(*self._QUANT), value_scores=self._VS, value_gate=0.60
+        )
+        assert result.value_selected == ("600006", "600005")
+
+    def test_quota_one_caps_value_to_one(self) -> None:
+        cfg = selector_config_with_params(
+            _config(), {"allocation.value_slot_quota": 1.0}
+        )
+        sel = CandidateSelector(cfg)
+        result = sel.select(
+            _quant(*self._QUANT), value_scores=self._VS, value_gate=0.60
+        )
+        # Only the top value name; the freed open slot falls back to the next
+        # pure-quant (5-factor) name 600004.
+        assert result.value_selected == ("600006",)
+        assert "600004" in result.shortlist
+        assert set(result.shortlist) == {
+            "600001", "600002", "600003", "600006", "600004",
+        }
+
+    def test_quota_zero_admits_no_value_style(self) -> None:
+        cfg = selector_config_with_params(
+            _config(), {"allocation.value_slot_quota": 0.0}
+        )
+        sel = CandidateSelector(cfg)
+        result = sel.select(
+            _quant(*self._QUANT), value_scores=self._VS, value_gate=0.60
+        )
+        # A hard value cap: no value-style name enters. The only non-value open
+        # candidate (600004) fills one slot; the other open slot is left for a
+        # later rebalance rather than admitting a value name past the cap.
+        assert result.value_selected == ()
+        assert "600005" not in result.shortlist
+        assert "600006" not in result.shortlist
+        assert "600004" in result.shortlist
+
+
+class TestSelectorConfigWithParams:
+    def test_none_params_unchanged(self) -> None:
+        cfg = _config()
+        assert selector_config_with_params(cfg, None) is cfg
+        assert selector_config_with_params(cfg, {}) is cfg
+
+    def test_unrelated_params_leave_quota_none(self) -> None:
+        cfg = selector_config_with_params(
+            _config(), {"selector.weight_momentum": 0.4}
+        )
+        assert cfg.value_slot_quota is None
+
+    def test_quota_overlay_replaces_field(self) -> None:
+        cfg = selector_config_with_params(
+            _config(), {"allocation.value_slot_quota": 2.0}
+        )
+        assert cfg.value_slot_quota == 2
+        # other fields preserved
+        assert cfg.final_shortlist_size == 5
+        assert cfg.min_quant_slots == 3
