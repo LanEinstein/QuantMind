@@ -27,6 +27,18 @@ Module red lines (amendment §2.1 / §4 red line 1, enforced by redline
 
 from __future__ import annotations
 
+from backend.backtest.event_loop import (
+    BacktestClock,
+    BarSource,
+    ClockViolationError,
+    DayBar,
+)
+from backend.backtest.friction import (
+    FillEconomics,
+    FrictionError,
+    FrictionParams,
+    compute_fill_economics,
+)
 from backend.backtest.golden_replay import (
     GoldenReplayResult,
     ReplayDay,
@@ -37,14 +49,88 @@ from backend.backtest.golden_replay import (
     compare_to_golden,
     replay_equity_curve,
 )
+from backend.backtest.golden_vector import (
+    DecisionVector,
+    GoldenVectorResult,
+    VectorDivergence,
+    verify_decision_vectors,
+)
+from backend.backtest.harness import (
+    BacktestResult,
+    BacktestSpec,
+    run_backtest,
+    to_acceptance_report,
+)
+from backend.backtest.invariants import (
+    ExposureObservation,
+    InvariantReport,
+    InvariantVerdict,
+    InvariantViolation,
+    check_invariants,
+)
+from backend.backtest.portfolio import (
+    AppliedFill,
+    BacktestPortfolio,
+    EquitySnapshot,
+    OpeningLot,
+    PortfolioError,
+    PositionMark,
+)
+from backend.backtest.strategy import (
+    CodeHealth,
+    DailySignals,
+    DayDecision,
+    HeldPosition,
+    OrderIntent,
+    PortfolioView,
+    ScoreProvider,
+    StrategyConfig,
+    decide_day,
+)
 
 __all__ = [
+    "AppliedFill",
+    "BacktestClock",
+    "BacktestPortfolio",
+    "BacktestResult",
+    "BacktestSpec",
+    "BarSource",
+    "ClockViolationError",
+    "CodeHealth",
+    "DailySignals",
+    "DayBar",
+    "DayDecision",
+    "DecisionVector",
+    "EquitySnapshot",
+    "ExposureObservation",
+    "FillEconomics",
+    "FrictionError",
+    "FrictionParams",
     "GoldenReplayResult",
+    "GoldenVectorResult",
+    "HeldPosition",
+    "InvariantReport",
+    "InvariantVerdict",
+    "InvariantViolation",
+    "OpeningLot",
+    "OrderIntent",
+    "PortfolioError",
+    "PortfolioView",
+    "PositionMark",
     "ReplayDay",
     "ReplayEquityPoint",
     "ReplayFill",
     "ReplayPosition",
+    "ScoreProvider",
+    "StrategyConfig",
+    "VectorDivergence",
     "assert_conservation",
+    "check_invariants",
     "compare_to_golden",
+    "compute_fill_economics",
+    "decide_day",
     "replay_equity_curve",
+    "run_backtest",
+    "to_acceptance_report",
+    "verify_decision_vectors",
 ]
