@@ -87,6 +87,11 @@ SIZE_EXCLUDE_QUANTILE: float = 0.30
 # Forward-return label horizons (trading-bar based, in the code's own series).
 FORWARD_HORIZONS: tuple[int, ...] = (5, 10, 20)
 DEFAULT_REBALANCE_FREQ: int = 5  # weekly — a short-term rotation cadence
+# Non-test trailing bars prepended before test_start so the FIRST test
+# rebalance date has a full 20-day factor + liquidity window (needs >= 21
+# bars). These buffer bars are embargo/train (never test) — reading them is
+# not a covenant breach; only the test bars themselves are the sanctioned read.
+TEST_FEATURE_BUFFER_TD: int = 30
 
 
 @dataclass
@@ -196,29 +201,22 @@ def _passes_liquidity_price(cs: _CodeSeries, pos: int) -> bool:
     return 0 < last_price <= MAX_UNIT_PRICE_YUAN
 
 
-def build_panel(
-    split: LockedSplit,
-    store: SnapshotStore,
-    *,
-    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
-    max_rebalances: int = 0,
-) -> pd.DataFrame:
-    """Build the train_val factor panel (one row per rebalance-date × code)."""
-    # Feature window = train_val + embargo (embargo gives forward-label room),
-    # strictly excluding test. Build per-code series streaming once over dates.
-    feature_dates = [*split.train_val_dates, *split.embargo_dates]
-    split.assert_all_not_test(feature_dates)  # hard guard: never touch test
-
+def _ingest_series(
+    store: SnapshotStore, feature_dates: list[str]
+) -> dict[str, _CodeSeries]:
+    """Stream the 3 frames per day into per-code PIT series (oldest → newest)."""
     series: dict[str, _CodeSeries] = defaultdict(_CodeSeries)
     for i, day in enumerate(feature_dates):
         _ingest_day(store, day, series)
         if i % 250 == 0:
             log.info("panel_ingest_progress", day=day, codes=len(series))
+    return series
 
-    # Rebalance only on train_val dates (labels may extend into embargo).
-    rebalance_dates = list(split.train_val_dates[::rebalance_freq])
-    if max_rebalances:
-        rebalance_dates = rebalance_dates[:max_rebalances]
+
+def _build_rows(
+    series: dict[str, _CodeSeries], rebalance_dates: list[str]
+) -> list[dict[str, object]]:
+    """One row per (rebalance-date × surviving code): features <= d, labels > d."""
     rows: list[dict[str, object]] = []
     for day in rebalance_dates:
         # Cross-section: codes with a bar today that pass the per-code filters.
@@ -250,9 +248,65 @@ def build_panel(
             row.update(fwd)
             rows.append(row)
         log.info("panel_rebalance", day=day, cohort=len(cohort), rows=len(rows))
+    return rows
 
+
+def _panel_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+    """Assemble the tidy panel frame with the canonical column order."""
     cols = ["date", "code", *FACTOR_NAMES, *(f"fwd_ret_{h}d" for h in FORWARD_HORIZONS)]
     return pd.DataFrame(rows, columns=cols)
+
+
+def build_panel(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    max_rebalances: int = 0,
+) -> pd.DataFrame:
+    """Build the train_val factor panel (one row per rebalance-date × code)."""
+    # Feature window = train_val + embargo (embargo gives forward-label room),
+    # strictly excluding test. Build per-code series streaming once over dates.
+    feature_dates = [*split.train_val_dates, *split.embargo_dates]
+    split.assert_all_not_test(feature_dates)  # hard guard: never touch test
+    series = _ingest_series(store, feature_dates)
+    # Rebalance only on train_val dates (labels may extend into embargo).
+    rebalance_dates = list(split.train_val_dates[::rebalance_freq])
+    if max_rebalances:
+        rebalance_dates = rebalance_dates[:max_rebalances]
+    return _panel_frame(_build_rows(series, rebalance_dates))
+
+
+def build_test_panel(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+) -> pd.DataFrame:
+    """PHASE 4 ONE-SHOT — the SOLE sanctioned reader of the sacred test window.
+
+    Unlike :func:`build_panel` (which fails closed on any test date), this
+    deliberately reads test bars: at each test rebalance date ``d`` the features
+    use bars ``<= d`` (a :data:`TEST_FEATURE_BUFFER_TD` buffer of non-test
+    history before test_start, then test bars up to ``d``) and the forward-return
+    labels use test bars ``> d``. Rebalances ONLY on test dates. The test-set
+    covenant permits exactly one such evaluation, for the strategy frozen in
+    Phase 3 — never call this during strategy development.
+    """
+    pre_test = [*split.train_val_dates, *split.embargo_dates]  # all non-test
+    buffer = list(pre_test[-TEST_FEATURE_BUFFER_TD:])
+    feature_dates = [*buffer, *split.test_dates]
+    log.warning(
+        "phase4_test_panel_build",
+        note="reading the SACRED test window (one-shot, sanctioned)",
+        buffer_td=len(buffer),
+        test_td=len(split.test_dates),
+        test_start=split.test_dates[0],
+        test_end=split.test_dates[-1],
+    )
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.test_dates[::rebalance_freq])
+    return _panel_frame(_build_rows(series, rebalance_dates))
 
 
 def _quantile(values: list[float], q: float) -> float:
@@ -269,7 +323,13 @@ def main() -> None:
     parser.add_argument("--snapshot-root", default="data/marketdata_pit")
     parser.add_argument("--lock", default="config/research/test_set_lock.json")
     parser.add_argument("--rebalance-freq", type=int, default=DEFAULT_REBALANCE_FREQ)
-    parser.add_argument("--out", default="data/factor_research/panel_train_val.csv")
+    parser.add_argument(
+        "--mode",
+        choices=("train_val", "test"),
+        default="train_val",
+        help="test = PHASE 4 ONE-SHOT sanctioned read of the sacred test window",
+    )
+    parser.add_argument("--out", default="")
     parser.add_argument(
         "--max-rebalances", type=int, default=0, help="0=all (else cap, smoke run)"
     )
@@ -279,16 +339,23 @@ def main() -> None:
     store = SnapshotStore(args.snapshot_root)
     log.info(
         "panel_build_start",
+        mode=args.mode,
         train_val=len(split.train_val_dates),
         embargo=len(split.embargo_dates),
         test_sealed=len(split.test_dates),
     )
-    panel = build_panel(
-        split,
-        store,
-        rebalance_freq=args.rebalance_freq,
-        max_rebalances=args.max_rebalances,
-    )
+    if args.mode == "test":
+        panel = build_test_panel(split, store, rebalance_freq=args.rebalance_freq)
+        default_out = "data/factor_research/panel_test.csv"
+    else:
+        panel = build_panel(
+            split,
+            store,
+            rebalance_freq=args.rebalance_freq,
+            max_rebalances=args.max_rebalances,
+        )
+        default_out = "data/factor_research/panel_train_val.csv"
+    args.out = args.out or default_out
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # CSV (not parquet) — no pyarrow/fastparquet dependency, human-inspectable.

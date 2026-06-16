@@ -113,6 +113,30 @@ def group_by_date(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {str(d): sub for d, sub in panel.groupby(panel["date"].astype(str))}
 
 
+def _benchmark_leg(
+    benchmark: dict[str, float],
+    bench_dates: list[str],
+    bench_pos: dict[str, int],
+    d: str,
+    horizon: int,
+) -> float:
+    """CSI300 return over the same ``horizon`` trading bars as the strategy leg.
+
+    Measured on the benchmark's own calendar (``d`` → the bar ``horizon`` trading
+    days later), so it matches the strategy's ``fwd_ret_{horizon}d`` holding
+    window exactly for *every* rebalance — including the last — instead of
+    spanning rebalance-to-rebalance (which equals the horizon only when no period
+    is skipped, and left the final period uncompensated). Returns 0.0 when ``d``
+    or its ``+horizon`` bar falls outside the benchmark calendar.
+    """
+    i = bench_pos.get(d)
+    if i is None or i + horizon >= len(bench_dates):
+        return 0.0
+    b0 = benchmark[bench_dates[i]]
+    b1 = benchmark[bench_dates[i + horizon]]
+    return (b1 / b0 - 1.0) if b0 > 0 and b1 > 0 else 0.0
+
+
 def backtest(
     panel: pd.DataFrame,
     weights: dict[str, float],
@@ -139,6 +163,9 @@ def backtest(
     if groups is None:
         groups = group_by_date(panel)
     dates = sorted(groups)
+    # Benchmark calendar (for horizon-exact CSI300 legs — see _benchmark_leg).
+    bench_dates = sorted(benchmark) if benchmark is not None else []
+    bench_pos = {dt: i for i, dt in enumerate(bench_dates)}
 
     prev_basket: set[str] = set()
     net_rets: list[float] = []
@@ -146,7 +173,7 @@ def backtest(
     used_dates: list[str] = []
     bench_rets: list[float] = []
 
-    for i, d in enumerate(dates):
+    for d in dates:
         g = groups[d].dropna(subset=[fwd_col, *weighted])
         if len(g) < top_n:
             continue
@@ -160,12 +187,10 @@ def backtest(
         turnovers.append(turnover)
         used_dates.append(d)
         prev_basket = basket
-        # Benchmark over the same holding period (this rebalance → the next).
-        if benchmark is not None and i + 1 < len(dates):
-            b0, b1 = benchmark.get(d), benchmark.get(dates[i + 1])
-            bench_rets.append((b1 / b0 - 1.0) if b0 and b1 and b0 > 0 else 0.0)
-        elif benchmark is not None:
-            bench_rets.append(0.0)
+        if benchmark is not None:
+            bench_rets.append(
+                _benchmark_leg(benchmark, bench_dates, bench_pos, d, horizon)
+            )
 
     return _summarize(net_rets, bench_rets, turnovers, used_dates, horizon)
 

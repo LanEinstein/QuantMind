@@ -7,6 +7,7 @@ import pytest
 
 from scripts.factor_research.factor_lib import FACTOR_NAMES
 from scripts.factor_research.portfolio_backtest import (
+    _benchmark_leg,
     backtest,
     equal_weights,
     group_by_date,
@@ -71,6 +72,18 @@ def test_equal_weights_sum_to_one() -> None:
     w = equal_weights()
     assert set(w) == set(FACTOR_NAMES)
     assert sum(w.values()) == pytest.approx(1.0)
+
+
+def test_benchmark_leg_is_horizon_exact_including_last_period() -> None:
+    # The benchmark leg must span exactly `horizon` trading bars on the
+    # benchmark calendar (matching fwd_ret_{h}d) — not rebalance-to-rebalance.
+    bench = {f"2020010{i}": 100.0 * 1.01**i for i in range(8)}
+    bdates = sorted(bench)
+    bpos = {d: i for i, d in enumerate(bdates)}
+    for d in bdates[:6]:  # i + 2 in range -> exact 2-bar return
+        assert _benchmark_leg(bench, bdates, bpos, d, 2) == pytest.approx(1.01**2 - 1)
+    assert _benchmark_leg(bench, bdates, bpos, bdates[6], 2) == 0.0  # +2 out of range
+    assert _benchmark_leg(bench, bdates, bpos, "19990101", 2) == 0.0  # unknown date
 
 
 def test_empty_panel_is_safe() -> None:
