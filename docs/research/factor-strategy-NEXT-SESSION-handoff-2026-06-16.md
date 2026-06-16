@@ -32,7 +32,22 @@ PY=/home/ps/anaconda3/envs/zhanglan/bin/python
 
 ---
 
-## 2. 已完成(Phase 1+2 全done,Phase 3 6/7 模块done)
+## ⚑ Phase 3 全 done(2026-06-16 更新)— 终选策略已冻结(git-anchored)
+
+**Phase 3 = 7/7 模块 done。最后一个 `weight_search.py` 已落 commit `189af2e`**(feature;含 `portfolio_backtest` 加 `net_returns`/`orient`/`group_by_date`;review summary `docs/reviews/factor-weight-search-code-review-summary.md`)。本地未 push。
+
+**终选策略(唯一,冻结供 Phase 4 一次性测试;本节即 git 时间戳的预承诺证据 —— 在读 test 之前已锁定,杜绝 data-snooping)**:
+- **权重**(因子序 = `ret_5d, ret_20d, vol_20d, max_20d, ep_ttm, turn_20d, amihud_20d`):`ep_ttm=0.211 / amihud_20d=0.183 / turn_20d=0.173 / vol_20d=0.163 / max_20d=0.163 / ret_5d=0.089 / ret_20d=0.018`。= **分散型『避开投机』组合**(价值 ep_ttm 最高 + 流动性 + 低换手/低波),动量 ret_20d 近乎归零(0.018)—— 搜索自动剔除了现役误配的动量。
+- **inner-val 样本内**(2023-01→2025-04,cutoff 20221230 + purge 4;108 调仓期):Sharpe **+1.23** / 累计 +63% / **超额 +70.77% vs 沪深300** / MDD **11.55%** / 换手 0.44。top_n=10 稳健对照 Sharpe +1.07。
+- **动量 incumbent**(top-5 按高 ret_20d = 现役押注):Sharpe **−1.35** / **−93.86%** —— 实证现役 `momentum_20d 0.40` 方向灾难性误配。
+- **诚实披露**(全 512 池):PBO **0.127**(<0.2 = 选择未强过拟)/ SPA p=**0.002**(强胜 incumbent)/ DSR **0.066**(**不过** 0.95 floor —— 512 试验去偏严苛 + 候选高相关致保守)/ MinBTL admits False(日历校准,周频保守底,非策略级拒)。
+- **关键诚实判断**:val 漂亮(Sharpe 1.23)但 DSR 不过 → **不美化、不偷看 test 凑线**。最终判决 = Phase 4 锁定测试集一次性评估(§6.2),非这些门。产物 `data/factor_research/weight_search_result.json`(gitignored;权重已记于本节供复现)。
+
+**下一步 = §6.2 Phase 4 一次性测试**(需先写 `build_factor_panel --mode test`,唯一允许读 test 的地方)。⚠️ 读 test = 一次性、不可逆、烧测试集的契约时刻;策略已 git 冻结(commit `189af2e` + 本节),可放心一次性评估。
+
+---
+
+## 2. 已完成(Phase 1+2 全done,**Phase 3 7/7 模块全done**)
 
 **所有 commit 已落本地,未 push(push 受 owner auth 门控)**:
 
@@ -46,6 +61,7 @@ PY=/home/ps/anaconda3/envs/zhanglan/bin/python
 | `edb0972` | feat: `factor_ic_study` |
 | `ffd52eb` | feat: `portfolio_backtest` + 面板改 CSV 输出 |
 | `bb3b4e2` | feat: `stats_disclosure`(DSR/PBO/SPA/MinBTL) |
+| `189af2e` | feat: **`weight_search`(Sobol simplex + 诚实择优,Phase 3 收尾)** + `portfolio_backtest` 加 net_returns/orient/group_by_date + review summary |
 
 `git log --oneline -8` 应见以上(`M CLAUDE.md` 是 owner 在途改动,**别碰别提交**)。
 
@@ -114,7 +130,9 @@ reversal: ret_5d −0.034(t−4.8)/ ret_20d −0.070(t−9.35)· low-vol: vol_20
 
 ## 6. 下一步(从这里开工)
 
-### 6.1 Phase 3 收尾:`weight_search.py`(最后一个模块)
+### 6.1 Phase 3 收尾:`weight_search.py`(最后一个模块)— ✅ **DONE(commit `189af2e`)**
+
+> 已完成。实现细节与终选结果见本文件顶部「⚑ Phase 3 全 done」节。codex-review 改动:① 诚实披露改用**全 512 候选池**(非 16 finalists,守 `disclose()` 契约);② `group_by_date` hoist(分组复用,512 回测可承受);③ 复用 `_kraemer_simplex`;④ `search()` 拆 helper <50 行;⑤ 因子序 fail-closed 钉死。下面是原始设计规格(供参考/复现)。
 
 **目标**:Sobol 预声明N 搜 7 因子非负权重(simplex,和=1);**内部 train/val 切分**(train 搜、val 择优,**绝不碰 test**);选出**唯一终选策略**;DSR/PBO/SPA 披露。
 
