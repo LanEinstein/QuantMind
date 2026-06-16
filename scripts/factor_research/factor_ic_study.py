@@ -140,12 +140,12 @@ def _fmt_report(summaries: list[ICSummary], corr: pd.DataFrame) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--panel", default="data/factor_research/panel_train_val.parquet"
+        "--panel", default="data/factor_research/panel_train_val.csv"
     )
     parser.add_argument("--out", default="data/factor_research/ic_study.md")
     args = parser.parse_args()
 
-    panel = pd.read_parquet(args.panel)
+    panel = pd.read_csv(args.panel)
     summaries = study(panel)
     corr = factor_correlation(panel)
     report = _fmt_report(summaries, corr)

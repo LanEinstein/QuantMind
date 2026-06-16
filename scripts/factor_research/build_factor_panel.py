@@ -44,16 +44,17 @@ strategy can add a PIT name source if the IC study shows it matters.
 from __future__ import annotations
 
 import argparse
+import io
 import math
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import structlog
-
-from backend.data.historical_ingest.serialization import parse_csv_bytes  # noqa: TID251
 
 # backend.data is a legitimate dependency of this offline research module
 # (board classification only); the per-line noqa keeps the global TID251 ban
@@ -102,8 +103,13 @@ class _CodeSeries:
     pos_of_date: dict[str, int] = field(default_factory=dict)
 
 
+@cache
 def _board_ok(code: str) -> bool:
-    """True iff the code is on the tradable board whitelist (PIT, code-based)."""
+    """True iff the code is on the tradable board whitelist (PIT, code-based).
+
+    Cached: the board of a code never changes, and it is queried once per
+    code per trading day (~13M times over the full build).
+    """
     try:
         board = classify_board(code)
     except (ForbiddenCodeError, UnknownCodeError):
@@ -125,49 +131,38 @@ def _ingest_day(
     basic_s = store.latest(vendor="tushare", endpoint="daily_basic", trade_date=day)
     if daily_s is None or adj_s is None or basic_s is None:
         return 0
-    # Column→ts_code dicts (avoids pandas .loc scalar-typing pain + faster than
-    # .iterrows). Values are floats from the numeric Tushare columns.
-    daily_df = parse_csv_bytes(daily_s.raw_payload)
-    adj_df = parse_csv_bytes(adj_s.raw_payload)
-    basic_df = parse_csv_bytes(basic_s.raw_payload)
-    close_map = dict(zip(daily_df["ts_code"], daily_df["close"], strict=False))
-    amount_map = dict(zip(daily_df["ts_code"], daily_df["amount"], strict=False))
-    adj_map = dict(zip(adj_df["ts_code"], adj_df["adj_factor"], strict=False))
-    turn_map = dict(zip(basic_df["ts_code"], basic_df["turnover_rate"], strict=False))
-    pe_map = dict(zip(basic_df["ts_code"], basic_df["pe_ttm"], strict=False))
-    cmv_map = dict(zip(basic_df["ts_code"], basic_df["circ_mv"], strict=False))
-
-    appended = 0
-    for ts_code in close_map:
-        code = str(ts_code).split(".")[0]
-        if not _board_ok(code) or ts_code not in adj_map:
-            continue
-        try:
-            raw_close = float(close_map[ts_code])
-            adj_close = raw_close * float(adj_map[ts_code])
-            amount = float(amount_map[ts_code])
-        except (ValueError, TypeError):
-            continue
-        if not (
-            math.isfinite(adj_close)
-            and math.isfinite(raw_close)
-            and math.isfinite(amount)
-        ):
-            continue  # halted / malformed — not a real tradable bar
-        cs = series[code]
+    # Parse only the needed columns (much faster than the full frame), then
+    # vectorised join + filter; the per-row loop runs over ~2k board-ok bars.
+    daily = pd.read_csv(
+        io.BytesIO(daily_s.raw_payload), usecols=["ts_code", "close", "amount"]
+    )
+    adj = pd.read_csv(io.BytesIO(adj_s.raw_payload), usecols=["ts_code", "adj_factor"])
+    basic = pd.read_csv(
+        io.BytesIO(basic_s.raw_payload),
+        usecols=["ts_code", "turnover_rate", "pe_ttm", "circ_mv"],
+    )
+    # inner-join daily↔adj (a real bar needs both); left-join daily_basic
+    # (turnover/pe/circ_mv may be NaN — handled fail-closed downstream).
+    m = daily.merge(adj, on="ts_code", how="inner").merge(
+        basic, on="ts_code", how="left"
+    )
+    m["code"] = m["ts_code"].astype(str).str.split(".").str[0]
+    m = m[m["code"].map(_board_ok)]
+    m["adj_close"] = m["close"] * m["adj_factor"]
+    m = m[
+        np.isfinite(m["adj_close"]) & np.isfinite(m["close"]) & np.isfinite(m["amount"])
+    ]
+    for r in m.itertuples(index=False):
+        cs = series[r.code]
         cs.pos_of_date[day] = len(cs.dates)
         cs.dates.append(day)
-        cs.adj_close.append(adj_close)
-        cs.raw_close.append(raw_close)
-        cs.amount.append(amount)
-        # turnover / pe_ttm / circ_mv may be NaN (loss-maker, halt, or no
-        # daily_basic row); kept as NaN and handled fail-closed downstream
-        # (factor_lib drops NaN factors; NaN circ_mv is excluded at cohort).
-        cs.turnover.append(float(turn_map.get(ts_code, math.nan)))
-        cs.pe_ttm.append(float(pe_map.get(ts_code, math.nan)))
-        cs.circ_mv.append(float(cmv_map.get(ts_code, math.nan)))
-        appended += 1
-    return appended
+        cs.adj_close.append(float(r.adj_close))
+        cs.raw_close.append(float(r.close))
+        cs.amount.append(float(r.amount))
+        cs.turnover.append(float(r.turnover_rate))
+        cs.pe_ttm.append(float(r.pe_ttm))
+        cs.circ_mv.append(float(r.circ_mv))
+    return len(m)
 
 
 def _forward_returns(adj_close: list[float], pos: int) -> dict[str, float | None]:
@@ -274,7 +269,7 @@ def main() -> None:
     parser.add_argument("--snapshot-root", default="data/marketdata_pit")
     parser.add_argument("--lock", default="config/research/test_set_lock.json")
     parser.add_argument("--rebalance-freq", type=int, default=DEFAULT_REBALANCE_FREQ)
-    parser.add_argument("--out", default="data/factor_research/panel_train_val.parquet")
+    parser.add_argument("--out", default="data/factor_research/panel_train_val.csv")
     parser.add_argument(
         "--max-rebalances", type=int, default=0, help="0=all (else cap, smoke run)"
     )
@@ -296,7 +291,8 @@ def main() -> None:
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    panel.to_parquet(out, index=False)
+    # CSV (not parquet) — no pyarrow/fastparquet dependency, human-inspectable.
+    panel.to_csv(out, index=False)
     log.info(
         "panel_build_done",
         rows=len(panel),
