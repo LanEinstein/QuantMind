@@ -793,7 +793,14 @@ class MongoDBService:
 
         coll = self._db["news_articles"]
         cursor = coll.find(query).sort("publish_time", DESCENDING).limit(limit)
-        return await cursor.to_list(length=limit)
+        docs = await cursor.to_list(length=limit)
+        # Mongo's ObjectId ``_id`` is not JSON/Pydantic serializable, so the
+        # read-only news API 500s on raw docs. Project it to a string ``id``
+        # and drop the ObjectId — build new dicts, never mutate cursor docs.
+        return [
+            {**{k: v for k, v in doc.items() if k != "_id"}, "id": str(doc["_id"])}
+            for doc in docs
+        ]
 
     # -- Trading signal persistence --
 

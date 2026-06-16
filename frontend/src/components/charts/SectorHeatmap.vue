@@ -39,8 +39,9 @@ const chartOption = computed(() => ({
     textStyle: { color: '#e0e0e0', fontSize: 12 },
     formatter: (params: { data: { name: string; changePct: number; leader: string } }) => {
       const d = params.data
-      const sign = d.changePct >= 0 ? '+' : ''
-      return `<b>${d.name}</b><br/>涨跌幅: ${sign}${d.changePct.toFixed(2)}%<br/>龙头: ${d.leader}`
+      const pct = Number(d.changePct ?? 0)
+      const sign = pct >= 0 ? '+' : ''
+      return `<b>${d.name}</b><br/>涨跌幅: ${sign}${pct.toFixed(2)}%<br/>龙头: ${d.leader}`
     },
   },
   series: [
@@ -56,8 +57,9 @@ const chartOption = computed(() => ({
         color: '#fff',
         fontSize: 12,
         formatter: (params: { data: { name: string; changePct: number } }) => {
-          const sign = params.data.changePct >= 0 ? '+' : ''
-          return `${params.data.name}\n${sign}${params.data.changePct.toFixed(2)}%`
+          const pct = Number(params.data.changePct ?? 0)
+          const sign = pct >= 0 ? '+' : ''
+          return `${params.data.name}\n${sign}${pct.toFixed(2)}%`
         },
       },
       itemStyle: {

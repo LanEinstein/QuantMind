@@ -90,7 +90,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import VChart from 'vue-echarts'
+import { use } from 'echarts/core'
+import { GraphChart } from 'echarts/charts'
+import { TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import { useSettingsStore } from '@/stores/settings'
+
+use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const store = useSettingsStore()
 

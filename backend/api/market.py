@@ -68,14 +68,20 @@ async def get_stock(request: Request, code: str) -> dict[str, Any]:
 
 @router.get("/api/market/sectors")
 async def get_sectors(request: Request) -> dict[str, Any]:
-    """Get sector performance overview."""
+    """Get sector performance overview.
+
+    Sector data is a best-effort akshare scrape; an upstream fetch failure is
+    an infra glitch (not data corruption), so we fail OPEN with an empty list
+    instead of a 500 that crashes the dashboard panel (CLAUDE.md §3:
+    fail-open for infra glitches, fail-closed for corruption).
+    """
     try:
         service = request.app.state.market_data
         sectors = await service.get_sector_overview()
         return _ok([s.model_dump(mode="json") for s in sectors])
     except DataFetchError as exc:
-        _err(str(exc))
-    return _ok([])
+        log.warning("sectors_unavailable", error=str(exc))
+        return _ok([])
 
 
 @router.get("/api/market/capital-flow")
