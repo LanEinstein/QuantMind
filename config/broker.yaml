@@ -3,16 +3,19 @@
 active: mock  # mock / qmt / vnpy
 
 mock:
-  # P1-2.A-amendment-2026-06-14: low-budget profitability test. 100,000 →
-  # 9,000. Changing this is an account lifecycle event (archive prior
-  # broker_events+broker_snapshots → restart re-seeds from config →
-  # go-live bakes the new baseline), NOT a bare edit — recovery.py uses
-  # snapshot/event initial_capital when they exist. ¥9k < small_max_cash_yuan
-  # (10,000) ⇒ SMALL budget tier: ETF concentration_exception unlocked +
-  # low-price-stock single-lot; individual stocks still ≤15%. See
-  # docs/decisions/P1-2.A-amendment-2026-06-14-initial-capital-9k-low-budget.md
-  # (prior ¥100k Normal-tier amendment: P1-2.A-amendment-2026-05-25).
-  initial_capital: 9000
+  # P1-2.A-amendment-2026-06-16: 9,000 → 100,000 for the simulation_auto
+  # profitability test. At ¥9k the 0.33 deploy envelope ÷ 5 names ≈ ¥594 <
+  # one 100-share lot of the selected ¥6–8 names → 0 lots → no trades →
+  # profitability unmeasurable. ¥100k ≥ small_max_cash_yuan (10,000) ⇒ NORMAL
+  # budget tier (三连 caps: single ≤15% / total ≤70% / single-instr ≤¥5万).
+  # Changing this is an account lifecycle event (archive prior
+  # broker_events+broker_snapshots → restart re-seeds from config), NOT a bare
+  # edit — recovery.py uses snapshot/event initial_capital when they exist. See
+  # docs/decisions/P1-2.A-amendment-2026-06-16-sim-capital-100k-for-profitability-test.md
+  # (parks P1-2.A-amendment-2026-06-14 ¥9k low-budget; restores the ¥100k
+  # Normal-tier baseline of P1-2.A-amendment-2026-05-25). Real-money feishu
+  # account capital is a separate future decision.
+  initial_capital: 100000
   # P0-4-amendment-2026-05-27 §2.3: owner's real broker commission is
   # 万分之1.5 (0.00015), floored at min_commission (5 CNY), double-sided.
   # 0.0003 placeholder → 0.00015. Runtime-immutable (P1-2.C / P0-7 §2
