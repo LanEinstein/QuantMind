@@ -121,6 +121,76 @@ def test_duplicate_code_fails_closed() -> None:
         SurvivorshipUniverse.from_stock_basic(listed, pd.DataFrame())
 
 
+def test_tushare_t_prefixed_delisted_code_accepted() -> None:
+    """Tushare disambiguates a *reused* 6-digit code by prefixing the older,
+    delisted security with a letter: ``T600018.SH`` 上港集箱(退) (delisted
+    2006) shares its digits with the currently-listed ``600018.SH`` 上港集团.
+
+    The builder must accept the ``T``-code as a DISTINCT survivorship entry —
+    not crash on the format, and not collide with the reused live code
+    (stripping the ``T`` would duplicate ``600018.SH`` and fail closed). This
+    is the lone non-standard code in the real Tushare delisted roster.
+    """
+    listed = pd.DataFrame(
+        {
+            "ts_code": ["600018.SH"],
+            "name": ["上港集团"],
+            "list_date": ["20061026"],
+            "delist_date": [None],
+            "list_status": ["L"],
+        }
+    )
+    delisted = pd.DataFrame(
+        {
+            "ts_code": ["T600018.SH"],
+            "name": ["上港集箱(退)"],
+            "list_date": ["20000719"],
+            "delist_date": ["20061020"],
+            "list_status": ["D"],
+        }
+    )
+    u = SurvivorshipUniverse.from_stock_basic(listed, delisted)
+    # Both retained as distinct codes (no collision, no silent drop).
+    assert u.all_codes() == frozenset({"600018.SH", "T600018.SH"})
+    # The delisted T-code WAS tradable in its 2005 window; the reused live
+    # code is not yet listed then (their lifecycles do not overlap).
+    early = u.tradable_asof("20050101")
+    assert "T600018.SH" in early
+    assert "600018.SH" not in early
+    # After the 2006 delist the T-code is gone; the live code trades in 2020.
+    late = u.tradable_asof("20200101")
+    assert "T600018.SH" not in late
+    assert "600018.SH" in late
+
+
+@pytest.mark.parametrize(
+    "bad_code",
+    [
+        "AB600018.SH",  # two-letter prefix — over-relaxation guard
+        "a600018.SH",  # lowercase prefix
+        "6000018.SH",  # 7 digits
+        "60018.SH",  # 5 digits
+        "600018.SS",  # unknown exchange suffix
+    ],
+)
+def test_only_single_uppercase_prefix_accepted(bad_code: str) -> None:
+    """The ``[A-Z]?`` relaxation must stay surgical: a single optional
+    uppercase letter only. Anything broader (multi-letter / lowercase /
+    wrong digit count / wrong suffix) must still fail closed — this pins the
+    boundary so a future edit cannot silently widen it into garbage."""
+    frame = pd.DataFrame(
+        {
+            "ts_code": [bad_code],
+            "name": ["x"],
+            "list_date": ["20000719"],
+            "delist_date": ["20061020"],
+            "list_status": ["D"],
+        }
+    )
+    with pytest.raises(ValueError, match="must look like"):
+        SurvivorshipUniverse.from_stock_basic(pd.DataFrame(), frame)
+
+
 def test_bad_date_fails_closed() -> None:
     listed = pd.DataFrame(
         {

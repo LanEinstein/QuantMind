@@ -23,7 +23,16 @@ from dataclasses import dataclass
 import pandas as pd
 
 _DATE_RE = re.compile(r"^\d{8}$")  # YYYYMMDD
-_TS_CODE_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
+# Standard A-share code is 6 digits + exchange suffix (600519.SH). Tushare
+# disambiguates a *reused* 6-digit code by prefixing the older, delisted
+# security with a letter — e.g. ``T600018.SH`` 上港集箱(退) (delisted 2006),
+# whose 600018 code was later reused by the currently-listed 上港集团
+# (600018.SH). Accept an optional single leading uppercase letter so that
+# delisted name is retained (survivorship-complete) and stays a DISTINCT code
+# from the live listing — stripping the prefix would collide with the reused
+# code and trip the duplicate fail-closed below. This ``T``-form is the lone
+# non-standard code in the real Tushare delisted roster (1 of 326).
+_TS_CODE_RE = re.compile(r"^[A-Z]?\d{6}\.(SH|SZ|BJ)$")
 
 
 def _norm_date(value: object, *, field: str, ts_code: str) -> str | None:

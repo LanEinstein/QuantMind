@@ -99,3 +99,11 @@ scripts/e2e_interactive_test.py
 
 # Q-002: materialised KG db is a runtime artifact (seed data files in data/kg_seed/ ARE tracked)
 data/knowledge_graph/
+
+# Factor-strategy research (2026-06-16): bulk PIT snapshot store + dry-run +
+# derived factor panels are large local research artifacts, never committed.
+# The byte-exact PIT layer lives here; the locked test-set split
+# (config/research/test_set_lock.json) and research code ARE tracked.
+data/marketdata_pit/
+data/pit_dryrun/
+data/factor_research/
