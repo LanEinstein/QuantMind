@@ -67,7 +67,7 @@ class TestConfigLoaderHappy:
             REPO_ROOT / "config" / "risk.yaml",
         )
         assert policy.method == INVERSE_VOLATILITY
-        assert policy.deploy_fraction == 0.33
+        assert policy.deploy_fraction == 0.6  # P0-7-amendment-2026-06-16 (was 0.33)
         assert policy.per_name_target_pct == 0.10
         assert policy.cash_buffer_pct == 0.05
         assert policy.vol_lookback == 20
@@ -200,7 +200,7 @@ class TestPolicyConvenienceMethods:
     @pytest.mark.unit
     def test_deployable_cash_delegates(self) -> None:
         d = self._policy().deployable_cash(30000.0, 100000.0)
-        assert d == pytest.approx(9900.0)  # 0.33 * 30000
+        assert d == pytest.approx(18000.0)  # 0.6 * 30000 (P0-7-amendment-2026-06-16)
 
     @pytest.mark.unit
     def test_target_cash_delegates_with_policy_caps(self) -> None:

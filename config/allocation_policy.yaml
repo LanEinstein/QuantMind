@@ -2,7 +2,9 @@
 # 治理: docs/decisions/P0-7-amendment-2026-05-30-portfolio-allocation.md
 allocation:
   method: inverse_volatility   # 逆波动率加权;σ 缺/≤ε 自动等权兜底
-  deploy_fraction: 0.33        # 单日最多部署「可用现金」的比例(稳健分批)
+  deploy_fraction: 0.6         # 单日最多部署「可用现金」的比例。P0-7-amendment-2026-06-16:
+                               # 0.33→0.6 提速部署、减小模拟盈利测试早期现金拖累(实盘前改回 0.33)。
+                               # 上限 ≤0.7(首日 tranche 须 < RiskEngine 70% 总仓红线 check#08)。
   per_name_target_pct: 0.10    # 单只目标权重上限(< 15% 硬顶)
   cash_buffer_pct: 0.05        # 部署后保留 ≥ 该比例×总资产 的现金缓冲
   vol_lookback: 20             # 波动率窗口(对齐 screening volatility_20d)
