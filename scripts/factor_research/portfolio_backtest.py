@@ -40,7 +40,14 @@ _PERIODS_PER_YEAR_BASE: int = 252
 
 @dataclass(frozen=True)
 class BacktestResult:
-    """Net-of-cost portfolio-sort backtest outcome."""
+    """Net-of-cost portfolio-sort backtest outcome.
+
+    ``net_returns`` is the per-rebalance-period net (post-cost) return series,
+    time-aligned to ``dates``. It is the raw input the multiple-testing
+    disclosure (DSR / PBO-CSCV / SPA in :mod:`stats_disclosure`) consumes — the
+    summary scalars are all derived from it, so exposing it lets the weight
+    search assemble per-candidate return matrices without re-running backtests.
+    """
 
     n_periods: int
     total_return: float
@@ -54,16 +61,35 @@ class BacktestResult:
     equity: tuple[float, ...]
     bench_equity: tuple[float, ...]
     dates: tuple[str, ...]
+    net_returns: tuple[float, ...]
 
 
-def oriented_rank(group: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
-    """Weighted composite of oriented (attractive-high) percentile ranks."""
+def oriented_rank(
+    group: pd.DataFrame,
+    weights: dict[str, float],
+    *,
+    orient: dict[str, bool] | None = None,
+) -> pd.Series:
+    """Weighted composite of oriented (attractive-high) percentile ranks.
+
+    ``orient`` optionally overrides a factor's registry orientation
+    (``{factor: attractive_high}``). Its only use is constructing the live
+    *momentum* incumbent — scoring ``ret_20d`` as attractive-HIGH (the live
+    ``screener.FACTOR_WEIGHTS`` bet) rather than the registry's reversal
+    orientation — so the SPA disclosure can test candidates against it. With
+    ``orient=None`` every factor uses its literature-prior registry orientation.
+    """
     score = pd.Series(0.0, index=group.index)
     for factor, w in weights.items():
         if w == 0 or factor not in group.columns:
             continue
         r = group[factor].rank(pct=True)
-        if not FACTORS_BY_NAME[factor].attractive_high:
+        attractive_high = (
+            orient[factor]
+            if orient is not None and factor in orient
+            else FACTORS_BY_NAME[factor].attractive_high
+        )
+        if not attractive_high:
             r = 1.0 - r  # attractive-low → invert
         score = score + w * r
     return score
@@ -77,6 +103,16 @@ def load_benchmark(path: str) -> dict[str, float]:
     )
 
 
+def group_by_date(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Per-date sub-frames keyed by YYYYMMDD trade date.
+
+    Grouping is weighting-independent, so a search that backtests many
+    weightings over the same panel should group once and pass the result into
+    :func:`backtest` (``groups=``) rather than re-grouping per candidate.
+    """
+    return {str(d): sub for d, sub in panel.groupby(panel["date"].astype(str))}
+
+
 def backtest(
     panel: pd.DataFrame,
     weights: dict[str, float],
@@ -85,11 +121,24 @@ def backtest(
     horizon: int = DEFAULT_HORIZON,
     top_n: int = DEFAULT_TOP_N,
     cost: float = ROUND_TRIP_COST,
+    orient: dict[str, bool] | None = None,
+    groups: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
-    """Backtest ``weights`` over the panel; return net-of-cost statistics."""
+    """Backtest ``weights`` over the panel; return net-of-cost statistics.
+
+    ``orient`` is forwarded to :func:`oriented_rank` to override factor
+    orientation (used only for the momentum incumbent — see that function).
+    ``groups`` optionally supplies the date→sub-frame mapping from
+    :func:`group_by_date`; when a search reuses one panel across many
+    weightings, grouping once and passing it in avoids re-grouping per call.
+    """
     fwd_col = f"fwd_ret_{horizon}d"
     weighted = [f for f, w in weights.items() if w > 0 and f in panel.columns]
-    dates = sorted(panel["date"].astype(str).unique())
+    # Group by date once (not a full-column scan per period); a search reusing
+    # the panel across candidates passes a precomputed mapping (groups=).
+    if groups is None:
+        groups = group_by_date(panel)
+    dates = sorted(groups)
 
     prev_basket: set[str] = set()
     net_rets: list[float] = []
@@ -98,10 +147,10 @@ def backtest(
     bench_rets: list[float] = []
 
     for i, d in enumerate(dates):
-        g = panel[panel["date"].astype(str) == d].dropna(subset=[fwd_col, *weighted])
+        g = groups[d].dropna(subset=[fwd_col, *weighted])
         if len(g) < top_n:
             continue
-        g = g.assign(_score=oriented_rank(g, weights))
+        g = g.assign(_score=oriented_rank(g, weights, orient=orient))
         g = g.sort_values(["_score", "code"], ascending=[False, True])
         picks = g.head(top_n)
         basket = set(picks["code"].astype(str))
@@ -130,7 +179,21 @@ def _summarize(
 ) -> BacktestResult:
     n = len(net_rets)
     if n == 0:
-        return BacktestResult(0, 0, 0, 0, 0, 0, 0, 0, 0, (1.0,), (1.0,), ())
+        return BacktestResult(
+            n_periods=0,
+            total_return=0.0,
+            annual_return=0.0,
+            sharpe=0.0,
+            max_drawdown=0.0,
+            bench_total_return=0.0,
+            excess_vs_bench=0.0,
+            avg_turnover=0.0,
+            win_rate=0.0,
+            equity=(1.0,),
+            bench_equity=(1.0,),
+            dates=(),
+            net_returns=(),
+        )
     arr = np.array(net_rets, dtype=float)
     equity = np.cumprod(1.0 + arr)
     total = float(equity[-1] - 1.0)
@@ -159,6 +222,7 @@ def _summarize(
         equity=tuple(float(x) for x in equity),
         bench_equity=tuple(float(x) for x in bench_eq),
         dates=tuple(dates),
+        net_returns=tuple(float(x) for x in arr),
     )
 
 

@@ -9,6 +9,7 @@ from scripts.factor_research.factor_lib import FACTOR_NAMES
 from scripts.factor_research.portfolio_backtest import (
     backtest,
     equal_weights,
+    group_by_date,
     oriented_rank,
 )
 
@@ -86,3 +87,40 @@ def test_empty_panel_is_safe() -> None:
     res = backtest(empty, {"ep_ttm": 1.0})
     assert res.n_periods == 0
     assert res.total_return == 0
+    assert res.net_returns == ()
+
+
+def test_net_returns_aligned_and_reconstruct_equity() -> None:
+    # net_returns must be per-period, time-aligned to dates, and compound to
+    # the reported equity / total_return (so disclosure can consume it raw).
+    panel = _panel()
+    res = backtest(panel, {"ep_ttm": 1.0}, horizon=5, top_n=5)
+    assert len(res.net_returns) == res.n_periods
+    assert len(res.dates) == res.n_periods
+    equity = 1.0
+    for r in res.net_returns:
+        equity *= 1.0 + r
+    assert equity == pytest.approx(1.0 + res.total_return)
+    assert res.equity[-1] == pytest.approx(1.0 + res.total_return)
+
+
+def test_precomputed_groups_match_internal_grouping() -> None:
+    # Passing groups=group_by_date(panel) (the search hot path) must give a
+    # bit-identical result to letting backtest group internally.
+    panel = _panel()
+    internal = backtest(panel, {"ep_ttm": 1.0}, horizon=5, top_n=5)
+    shared = backtest(
+        panel, {"ep_ttm": 1.0}, horizon=5, top_n=5, groups=group_by_date(panel)
+    )
+    assert internal == shared
+
+
+def test_orient_override_flips_momentum_incumbent() -> None:
+    # ret_20d is attractive-LOW in the registry (reversal). The momentum
+    # incumbent override scores it attractive-HIGH → opposite top pick.
+    g = _panel(n_dates=1)
+    g = g[g["date"] == "20200100"]
+    reversal = oriented_rank(g, {"ret_20d": 1.0})
+    momentum = oriented_rank(g, {"ret_20d": 1.0}, orient={"ret_20d": True})
+    assert g.loc[reversal.idxmax(), "code"] == "600000"  # lowest raw ret_20d
+    assert g.loc[momentum.idxmax(), "code"] == "600024"  # highest raw ret_20d
