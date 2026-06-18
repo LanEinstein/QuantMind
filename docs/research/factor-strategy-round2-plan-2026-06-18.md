@@ -225,3 +225,18 @@ PIT 数据扩充摄取落地 + **真实重活摄取已跑**:
 - **真实摄取结果(data/marketdata_pit,字节级)**:`index_weight` 125 月(**2016-01-29→2026-05-29**;Tushare CSI300 权重无 2015 数据=供应商边界 → benchmark-relative 权重窗口自 2016 起)/ `fina_indicator_vip` 45 报告期(2015Q1→2026Q1)/ `index_member_all` 1(申万成分 in/out date)/ `stock_basic` L+D rosters / **45 per-period fina coverage manifests**(最差 completeness 99.83%,9 码当期未报=fail-closed→None)。exit 0 零失败。
 - **真跑暴露并修的 2 坑**:① 退市股仍在 listed roster 使 delist_date 列浮点化(`20260610`→`20260610.0`)→ `_read_roster_frame` dtype=str 读;② index_weight 2015 无数据 → `CSI300_WEIGHT_FIRST_MONTH=201601` floor 跳过。
 - **下一步 = R2-2**(新因子库 趋势/质量/成长 + 行业+市值中性化;fina PIT **ann_date + vintage 审计** join;消费 fina 日期列须消费端显式 dtype)。
+
+### R2-2 ✅ DONE(2026-06-18;feature `847ea7a`/`175aee7`/`8f38cd7`/`54dd15b`/`281cfd0`/`32efcde`;本地未 push)
+新因子族(趋势/质量/成长)+ 行业/市值中性化 + 基本面 PIT 摄入落地 + **真实 train_val 面板构建 + IC 诊断已跑**:
+- 新模块(全 PIT、确定性、纯量化、import 隔离):`fundamentals_pit.py`(vintage-aware fina reader,**真 PIT**:多 vintage 按 ann_date<d 选 as-known 值 + vintage 审计)/ `industry_pit.py`(申万 L1 in/out date PIT,**严禁 stock_basic.industry**)/ `neutralize.py`(因子 ~ 行业哑变量+log市值 截面 OLS 残差,fail-closed)/ `r2_factor_diagnostics.py`(诊断 runner);扩 `factor_lib.py`(R2 独立 registry:mom_12_1/dist_high/trend_slope/roe/gpm/np_yoy/rev_yoy;**round-1 七因子 byte-unchanged**)+ `build_factor_panel.py`(`build_panel_r2` train_val-only,`--factor-set r2`)+ `factor_ic_study.py`(向后兼容扩 factor_names/by_name)。
+- **设计判定**:① **不动** governance `EconomicMechanism` enum(模块自述加 mechanism 须 amendment);growth 用诚实研究标签 `"growth_premium"`(不在 enum → 未来晋升机制门 fail-closed,until amendment);② 真实面板 = **326854 行 / 3003 码 / 498 调仓日 2015-02→2025-04**(= round-1);③ 测试集零碰(fundamentals ann_date<d≤train_val_end<test_start 天然 PIT 安全)。
+- **codex(`codex review --uncommitted`,gpt 0.137):无 P0/P1**;P2(`r2+mode=test` 会静默产训练数据)+ P3(neutralize 把 pandas `pd.NA` 当真行业)**全修 + 加测试**。门禁:**154 测试绿** + ruff + mypy --strict + redline 全清。
+- **诚实诊断结论(train_val 样本内,`docs/research/factor-strategy-round2-r2-2-factor-diagnostics-2026-06-18.md`)**:
+  - **质量 = 真·新正交 alpha 留**:roe(t+6.94)/gpm(t+3.75)过 |t|≥3 且中性化后存活(roe_neut t+5.92,gpm_neut t+4.40),与 round-1 反转/波动簇低共线(roe↔ep_ttm 0.46 唯一显著重叠)。
+  - **成长 = 中性化后增强留(中性化形)**:np_yoy/rev_yoy 原始弱(t 2.35/2.88),**行业+市值中性化后翻倍**(np_yoy_neut t+4.59,rev_yoy_neut t+5.58)= 去 sector/size artefact 后的净成长溢价;两者互相关 0.52 算一轴。
+  - **动量/52周高 = 无信号丢**:mom_12_1(t+1.10)/dist_high(t+0.77)原始+中性化全平 → **直接实证 Phase-1 survey「A 股动量弱/缺失」**;`trend_slope` t−7.51 **反号(reversal 伪装)**,与 round-1 反转簇冗余 → 丢。
+  - **「跟不上牛市」不靠因子修**:横截面动量缺失、趋势=反转 → round-1 FAIL 根因须靠 **R2-3 基准相对构造**(对 CSI300 权重做 beta≈1、行业/市值中性 tilt)解决,**非新因子**。
+  - **amihud 中性化翻号**:raw amihud≈size proxy;size 中性后残差=经典非流动性溢价(翻正)→ 别与显式 size 控制双重计 raw 方向。
+  - **PIT 完整性强、行业覆盖是真缺口**:vintage 污染仅 **0.10%**(median ann lag 54d)→ ann_date gating 稳;**行业覆盖仅 66.3%**(`index_member_all` 是当前 SW 表,长退市/重分类码无 PIT L1 → 中性化 None,raw 保留)→ R2-3 须补历史完整 SW 表或 bound/披露 no-industry sleeve。
+  - **R2-3 carry-forward 集** = round-1 七 ＋ 质量 roe/gpm ＋ 成长 np_yoy/rev_yoy(中性化形);**丢** mom_12_1/dist_high/trend_slope。`*_neut` 列 = 构造就绪输入。
+- **下一步 = R2-3**(基准相对构造:主动权重 builder + 约束后再投影 + TE 控制 + 买卖分拆保守成本 + active-exposure 披露;消费 R2-2 PIT 因子面板 raw+neutralized + `index_weight` 基准权重)+ 多空/中性参考臂。
