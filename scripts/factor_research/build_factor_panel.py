@@ -51,6 +51,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -69,8 +70,14 @@ from backend.services.universe_policy import BOARD_WHITELIST
 
 from .factor_lib import (
     FACTOR_NAMES,
+    R2_FACTOR_NAMES,
     compute_factor_vector,
+    compute_fundamental_factors,
+    compute_trend_factors,
 )
+from .fundamentals_pit import FundamentalsPIT
+from .industry_pit import IndustryPIT
+from .ingest_round2_data import report_periods
 from .locked_split import LockedSplit
 
 log = structlog.get_logger(component="factor_research.build_panel")
@@ -98,6 +105,7 @@ TEST_FEATURE_BUFFER_TD: int = 30
 class _CodeSeries:
     """One code's PIT series over the feature window (oldest → newest)."""
 
+    ts_code: str = ""  # full Tushare code (600519.SH) for fundamentals/industry join
     dates: list[str] = field(default_factory=list)
     adj_close: list[float] = field(default_factory=list)  # raw * adj_factor (hfq)
     raw_close: list[float] = field(default_factory=list)  # unadjusted, for price filter
@@ -122,9 +130,7 @@ def _board_ok(code: str) -> bool:
     return board.value in BOARD_WHITELIST
 
 
-def _ingest_day(
-    store: SnapshotStore, day: str, series: dict[str, _CodeSeries]
-) -> int:
+def _ingest_day(store: SnapshotStore, day: str, series: dict[str, _CodeSeries]) -> int:
     """Parse one day's 3 frames and append to each code's series.
 
     Returns the number of codes appended. A code is appended only when it has
@@ -159,6 +165,8 @@ def _ingest_day(
     ]
     for r in m.itertuples(index=False):
         cs = series[r.code]
+        if not cs.ts_code:  # set once — the full code never changes per 6-digit
+            cs.ts_code = str(r.ts_code)
         cs.pos_of_date[day] = len(cs.dates)
         cs.dates.append(day)
         cs.adj_close.append(float(r.adj_close))
@@ -213,26 +221,40 @@ def _ingest_series(
     return series
 
 
+def _cohort(
+    series: dict[str, _CodeSeries], day: str
+) -> tuple[list[tuple[str, _CodeSeries, int]], float] | None:
+    """The day's investable cross-section + the bottom-30% market-cap cutoff.
+
+    Codes with a bar today that pass the liquidity / unit-price / finite-size
+    filters; ``None`` when the cross-section is too thin (<20) to rank. The
+    bottom-30% size cut (Liu-Stambaugh-Yuan shell mandate) is returned for the
+    caller to apply per code.
+    """
+    cohort: list[tuple[str, _CodeSeries, int]] = []
+    for code, cs in series.items():
+        pos = cs.pos_of_date.get(day)
+        if pos is None or not _passes_liquidity_price(cs, pos):
+            continue
+        if not math.isfinite(cs.circ_mv[pos]):  # need a size to rank on
+            continue
+        cohort.append((code, cs, pos))
+    if len(cohort) < 20:  # too thin a cross-section to rank
+        return None
+    cmvs = [cs.circ_mv[pos] for _, cs, pos in cohort]
+    return cohort, _quantile(cmvs, SIZE_EXCLUDE_QUANTILE)
+
+
 def _build_rows(
     series: dict[str, _CodeSeries], rebalance_dates: list[str]
 ) -> list[dict[str, object]]:
     """One row per (rebalance-date × surviving code): features <= d, labels > d."""
     rows: list[dict[str, object]] = []
     for day in rebalance_dates:
-        # Cross-section: codes with a bar today that pass the per-code filters.
-        cohort: list[tuple[str, _CodeSeries, int]] = []
-        for code, cs in series.items():
-            pos = cs.pos_of_date.get(day)
-            if pos is None or not _passes_liquidity_price(cs, pos):
-                continue
-            if not math.isfinite(cs.circ_mv[pos]):  # need a size to rank on
-                continue
-            cohort.append((code, cs, pos))
-        if len(cohort) < 20:  # too thin a cross-section to rank
+        selected = _cohort(series, day)
+        if selected is None:
             continue
-        # Bottom-30% market-cap exclusion (shell mandate), cross-sectional.
-        cmvs = [cs.circ_mv[pos] for _, cs, pos in cohort]
-        cmv_cut = _quantile(cmvs, SIZE_EXCLUDE_QUANTILE)
+        cohort, cmv_cut = selected
         for code, cs, pos in cohort:
             if cs.circ_mv[pos] < cmv_cut:
                 continue
@@ -309,6 +331,159 @@ def build_test_panel(
     return _panel_frame(_build_rows(series, rebalance_dates))
 
 
+# ===========================================================================
+# Round-2 panel (R2-2): round-1 factors + trend/quality/growth + the
+# neutralization inputs (PIT industry L1 + log market cap). Written to a
+# SEPARATE file (panel_train_val_r2.csv); the round-1 build_panel /
+# build_test_panel paths above are byte-for-byte unchanged.
+# ===========================================================================
+
+# Extra (non-factor) columns the round-2 panel carries for neutralization.
+R2_PANEL_EXTRA_COLS: tuple[str, ...] = ("industry_l1", "circ_mv", "log_circ_mv")
+
+
+class _FundamentalRecordLike(Protocol):
+    """Structural type for a PIT fundamentals record (decouples from the class)."""
+
+    def get(self, field: str) -> float | None: ...
+
+
+class _FundamentalsLookup(Protocol):
+    """Injected PIT fundamentals lookup (satisfied by ``FundamentalsPIT``)."""
+
+    def asof(
+        self, code: str, decision_date: str, *, extra_lag_days: int = 0
+    ) -> _FundamentalRecordLike | None: ...
+
+
+class _IndustryLookup(Protocol):
+    """Injected PIT industry lookup (satisfied by ``IndustryPIT``)."""
+
+    def l1_asof(self, code: str, decision_date: str) -> str | None: ...
+
+
+def _build_rows_r2(
+    series: dict[str, _CodeSeries],
+    rebalance_dates: list[str],
+    *,
+    fundamentals: _FundamentalsLookup,
+    industry: _IndustryLookup,
+    extra_lag_days: int,
+) -> list[dict[str, object]]:
+    """Round-2 rows: round-1 + trend + quality/growth + neutralization inputs.
+
+    Same investable cross-section + bottom-30% size cut as :func:`_build_rows`.
+    Fundamentals/industry are joined by the full ``ts_code`` as-of ``day`` (the
+    fundamentals lookup is ann_date-gated; the industry lookup is in/out-date
+    gated) — both PIT and never reading beyond ``day``.
+    """
+    rows: list[dict[str, object]] = []
+    for day in rebalance_dates:
+        selected = _cohort(series, day)
+        if selected is None:
+            continue
+        cohort, cmv_cut = selected
+        for code, cs, pos in cohort:
+            if cs.circ_mv[pos] < cmv_cut:
+                continue
+            closes = cs.adj_close[: pos + 1]
+            vec = compute_factor_vector(
+                closes=closes,
+                amounts=cs.amount[: pos + 1],
+                turnover_rates=cs.turnover[: pos + 1],
+                pe_ttm=cs.pe_ttm[pos],
+            )
+            record = fundamentals.asof(cs.ts_code, day, extra_lag_days=extra_lag_days)
+            circ = cs.circ_mv[pos]
+            row: dict[str, object] = {
+                "date": day,
+                "code": code,
+                "ts_code": cs.ts_code,
+            }
+            row.update(vec.as_dict())
+            row.update(compute_trend_factors(closes))
+            row.update(compute_fundamental_factors(record))
+            row["industry_l1"] = industry.l1_asof(cs.ts_code, day)
+            row["circ_mv"] = circ
+            row["log_circ_mv"] = (
+                math.log(circ) if (math.isfinite(circ) and circ > 0) else None
+            )
+            row.update(_forward_returns(cs.adj_close, pos))
+            rows.append(row)
+        log.info("panel_r2_rebalance", day=day, cohort=len(cohort), rows=len(rows))
+    return rows
+
+
+def _panel_frame_r2(rows: list[dict[str, object]]) -> pd.DataFrame:
+    """Assemble the round-2 panel frame with the canonical column order."""
+    cols = [
+        "date",
+        "code",
+        "ts_code",
+        *FACTOR_NAMES,
+        *R2_FACTOR_NAMES,
+        *R2_PANEL_EXTRA_COLS,
+        *(f"fwd_ret_{h}d" for h in FORWARD_HORIZONS),
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def build_panel_r2(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    fundamentals: _FundamentalsLookup,
+    industry: _IndustryLookup,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    max_rebalances: int = 0,
+    extra_lag_days: int = 0,
+) -> pd.DataFrame:
+    """Build the round-2 train_val panel (raw factors + neutralization inputs).
+
+    Same sacred-split discipline as :func:`build_panel` (feature window =
+    train_val + embargo, ``assert_all_not_test`` guard); fundamentals/industry
+    are PIT and gated by ``day`` so no test bar is ever read during development.
+    """
+    feature_dates = [*split.train_val_dates, *split.embargo_dates]
+    split.assert_all_not_test(feature_dates)  # hard guard: never touch test
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.train_val_dates[::rebalance_freq])
+    if max_rebalances:
+        rebalance_dates = rebalance_dates[:max_rebalances]
+    return _panel_frame_r2(
+        _build_rows_r2(
+            series,
+            rebalance_dates,
+            fundamentals=fundamentals,
+            industry=industry,
+            extra_lag_days=extra_lag_days,
+        )
+    )
+
+
+def _latest_snapshot_key(snapshot_root: str, endpoint: str) -> str:
+    """Highest ``trade_date`` stored for ``endpoint`` (for the as-of CLI default).
+
+    Reads the snapshot index directly (no backend import beyond the store path).
+    """
+    index_path = Path(snapshot_root) / "index.jsonl"
+    if not index_path.exists():
+        raise FileNotFoundError(f"snapshot index not found: {index_path}")
+    import json
+
+    keys: set[str] = set()
+    with index_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if rec.get("endpoint") == endpoint:
+                keys.add(str(rec["trade_date"]))
+    if not keys:
+        raise FileNotFoundError(f"no {endpoint} snapshot in {snapshot_root}")
+    return max(keys)
+
+
 def _quantile(values: list[float], q: float) -> float:
     """Lower-interpolated q-quantile (deterministic; empty → -inf)."""
     if not values:
@@ -329,6 +504,24 @@ def main() -> None:
         default="train_val",
         help="test = PHASE 4 ONE-SHOT sanctioned read of the sacred test window",
     )
+    parser.add_argument(
+        "--factor-set",
+        choices=("r1", "r2"),
+        default="r1",
+        help="r2 = round-2 panel (train_val only): +trend/quality/growth +"
+        " PIT industry/size for neutralization → panel_train_val_r2.csv",
+    )
+    parser.add_argument(
+        "--industry-asof",
+        default="",
+        help="index_member_all as-of key (default: latest stored snapshot)",
+    )
+    parser.add_argument(
+        "--fund-lag-days",
+        type=int,
+        default=0,
+        help="extra calendar-day lag on fundamentals availability (r2)",
+    )
     parser.add_argument("--out", default="")
     parser.add_argument(
         "--max-rebalances", type=int, default=0, help="0=all (else cap, smoke run)"
@@ -340,11 +533,47 @@ def main() -> None:
     log.info(
         "panel_build_start",
         mode=args.mode,
+        factor_set=args.factor_set,
         train_val=len(split.train_val_dates),
         embargo=len(split.embargo_dates),
         test_sealed=len(split.test_dates),
     )
-    if args.mode == "test":
+    if args.factor_set == "r2" and args.mode == "test":
+        # No sanctioned round-2 test-panel path exists (the test window stays
+        # sealed for round-2); r2 builds train_val only. Refuse rather than
+        # silently write train rows to a test output path (codex P2).
+        raise SystemExit(
+            "factor-set r2 has no sanctioned test path — the round-2 test "
+            "window is sealed; r2 builds train_val only. Refusing."
+        )
+    if args.factor_set == "r2":
+        # Fundamentals only need report periods whose end_date <= train_val end
+        # (later reports are announced after train_val and never selected as-of a
+        # train_val date — and asof's ann_date<d gate keeps it PIT regardless).
+        periods = report_periods(2015, split.train_val_dates[-1])
+        fundamentals = FundamentalsPIT.build(store, periods)
+        asof = args.industry_asof or _latest_snapshot_key(
+            args.snapshot_root, "index_member_all"
+        )
+        industry = IndustryPIT.build(store, asof)
+        log.info(
+            "panel_r2_inputs",
+            fina_periods=len(periods),
+            fina_codes=len(fundamentals.by_code),
+            industry_asof=asof,
+            industry_codes=len(industry.by_code),
+        )
+        panel = build_panel_r2(
+            split,
+            store,
+            fundamentals=fundamentals,
+            industry=industry,
+            rebalance_freq=args.rebalance_freq,
+            max_rebalances=args.max_rebalances,
+            extra_lag_days=args.fund_lag_days,
+        )
+        default_out = "data/factor_research/panel_train_val_r2.csv"
+    elif args.mode == "test":
         panel = build_test_panel(split, store, rebalance_freq=args.rebalance_freq)
         default_out = "data/factor_research/panel_test.csv"
     else:

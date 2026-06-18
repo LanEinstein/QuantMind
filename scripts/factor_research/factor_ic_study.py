@@ -28,10 +28,11 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from .factor_lib import FACTOR_NAMES, FACTORS_BY_NAME
+from .factor_lib import ALL_FACTORS_BY_NAME, FACTOR_NAMES, FactorDef
 
 FORWARD_COLS: tuple[str, ...] = ("fwd_ret_5d", "fwd_ret_10d", "fwd_ret_20d")
 _MIN_CROSS_SECTION = 20  # need at least this many code-pairs to rank a date
+_NEUT_SUFFIX = "_neut"
 
 
 @dataclass(frozen=True)
@@ -65,10 +66,24 @@ def rank_ic_series(panel: pd.DataFrame, factor: str, fwd_col: str) -> list[float
     return ics
 
 
-def summarize_ic(factor: str, fwd_col: str, ics: list[float]) -> ICSummary:
+def _expected_sign(factor: str, by_name: dict[str, FactorDef]) -> int:
+    """Literature prior sign for ``factor`` (a ``_neut`` variant shares its raw
+    factor's prior; an unregistered factor defaults to 0 = no prior)."""
+    base = factor[: -len(_NEUT_SUFFIX)] if factor.endswith(_NEUT_SUFFIX) else factor
+    fdef = by_name.get(base)
+    return fdef.expected_ic_sign if fdef is not None else 0
+
+
+def summarize_ic(
+    factor: str,
+    fwd_col: str,
+    ics: list[float],
+    *,
+    by_name: dict[str, FactorDef] = ALL_FACTORS_BY_NAME,
+) -> ICSummary:
     """Aggregate an IC series into mean / ICIR / t-stat / hit-rate."""
     n = len(ics)
-    expected = FACTORS_BY_NAME[factor].expected_ic_sign
+    expected = _expected_sign(factor, by_name)
     if n == 0:
         return ICSummary(factor, fwd_col, 0.0, 0.0, 0.0, 0.0, 0.0, 0, expected)
     arr = np.array(ics, dtype=float)
@@ -90,9 +105,11 @@ def summarize_ic(factor: str, fwd_col: str, ics: list[float]) -> ICSummary:
     )
 
 
-def factor_correlation(panel: pd.DataFrame) -> pd.DataFrame:
+def factor_correlation(
+    panel: pd.DataFrame, *, factor_names: tuple[str, ...] = FACTOR_NAMES
+) -> pd.DataFrame:
     """Mean cross-sectional rank correlation between factors (collinearity)."""
-    factors = [f for f in FACTOR_NAMES if f in panel.columns]
+    factors = [f for f in factor_names if f in panel.columns]
     per_date: list[pd.DataFrame] = []
     for _, group in panel.groupby("date", sort=True):
         sub = group[factors].dropna()
@@ -105,16 +122,29 @@ def factor_correlation(panel: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(per_date).groupby(level=0).mean().loc[factors, factors]
 
 
-def study(panel: pd.DataFrame) -> list[ICSummary]:
-    """Compute IC summaries for every factor × forward horizon."""
+def study(
+    panel: pd.DataFrame,
+    *,
+    factor_names: tuple[str, ...] = FACTOR_NAMES,
+    by_name: dict[str, FactorDef] = ALL_FACTORS_BY_NAME,
+) -> list[ICSummary]:
+    """Compute IC summaries for every factor × forward horizon present.
+
+    ``factor_names`` defaults to the round-1 seven (backward-compatible); the
+    round-2 diagnostic passes round-1 + round-2 + their ``_neut`` variants.
+    """
     out: list[ICSummary] = []
-    for factor in FACTOR_NAMES:
+    for factor in factor_names:
         if factor not in panel.columns:
             continue
         for fwd in FORWARD_COLS:
             if fwd not in panel.columns:
                 continue
-            out.append(summarize_ic(factor, fwd, rank_ic_series(panel, factor, fwd)))
+            out.append(
+                summarize_ic(
+                    factor, fwd, rank_ic_series(panel, factor, fwd), by_name=by_name
+                )
+            )
     return out
 
 
@@ -139,9 +169,7 @@ def _fmt_report(summaries: list[ICSummary], corr: pd.DataFrame) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--panel", default="data/factor_research/panel_train_val.csv"
-    )
+    parser.add_argument("--panel", default="data/factor_research/panel_train_val.csv")
     parser.add_argument("--out", default="data/factor_research/ic_study.md")
     args = parser.parse_args()
 
