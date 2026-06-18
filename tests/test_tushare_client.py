@@ -61,6 +61,12 @@ class _FakePro:
     def index_daily(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("index_daily", **kwargs)
 
+    def index_weight(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("index_weight", **kwargs)
+
+    def index_member_all(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("index_member_all", **kwargs)
+
     def fund_daily(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("fund_daily", **kwargs)
 
@@ -181,6 +187,68 @@ class TestFullMarketPull:
         ]
 
     @pytest.mark.asyncio
+    async def test_index_weight_by_date(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.index_weight("000300.SH", trade_date="20260529")
+        assert pro.calls == [
+            ("index_weight", {"index_code": "000300.SH", "trade_date": "20260529"})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_index_weight_by_month_range(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.index_weight(
+            "000300.SH", start_date="20260501", end_date="20260531"
+        )
+        assert pro.calls == [
+            (
+                "index_weight",
+                {
+                    "index_code": "000300.SH",
+                    "start_date": "20260501",
+                    "end_date": "20260531",
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_index_weight_rejects_bad_index_code(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="ts_code"):
+            await client.index_weight("CSI300", trade_date="20260529")
+
+    @pytest.mark.asyncio
+    async def test_index_weight_rejects_mixed_date_and_range(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="exactly one"):
+            await client.index_weight(
+                "000300.SH", trade_date="20260529", end_date="20260531"
+            )
+
+    @pytest.mark.asyncio
+    async def test_index_weight_rejects_neither_date_nor_range(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="exactly one"):
+            await client.index_weight("000300.SH")
+
+    @pytest.mark.asyncio
+    async def test_index_weight_rejects_inverted_range(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="start_date"):
+            await client.index_weight(
+                "000300.SH", start_date="20260531", end_date="20260501"
+            )
+
+    @pytest.mark.asyncio
+    async def test_index_member_all_full_pull(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.index_member_all()
+        assert pro.calls == [("index_member_all", {})]
+
+    @pytest.mark.asyncio
     async def test_fund_daily_full_market(self) -> None:
         pro = _FakePro()
         client = TushareClient(pro=pro, token=VALID_TOKEN)
@@ -241,9 +309,7 @@ class TestFallback:
     @pytest.mark.asyncio
     async def test_fallback_invoked_when_tushare_fails(self) -> None:
         fallback = _RecordingFallback()
-        client = TushareClient(
-            pro=_RaisingPro(), token=VALID_TOKEN, fallback=fallback
-        )
+        client = TushareClient(pro=_RaisingPro(), token=VALID_TOKEN, fallback=fallback)
         df = await client.daily("20260522")
         assert list(df["source"]) == ["fallback"]
         assert fallback.calls == [("daily", {"trade_date": "20260522"})]

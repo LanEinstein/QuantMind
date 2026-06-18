@@ -93,6 +93,8 @@ class TusharePro(Protocol):
     def adj_factor(self, **kwargs: Any) -> pd.DataFrame: ...
     def fina_indicator_vip(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_daily(self, **kwargs: Any) -> pd.DataFrame: ...
+    def index_weight(self, **kwargs: Any) -> pd.DataFrame: ...
+    def index_member_all(self, **kwargs: Any) -> pd.DataFrame: ...
     def fund_daily(self, **kwargs: Any) -> pd.DataFrame: ...
     def stock_basic(self, **kwargs: Any) -> pd.DataFrame: ...
 
@@ -253,6 +255,67 @@ class TushareClient:
             self._check_trade_date(end_date)
             params["end_date"] = end_date
         return await self._fetch("index_daily", params)
+
+    async def index_weight(
+        self,
+        index_code: str,
+        *,
+        trade_date: str = "",
+        start_date: str = "",
+        end_date: str = "",
+    ) -> pd.DataFrame:
+        """Index constituent weights for a date or date range (PIT).
+
+        Round-2 benchmark-relative input: ``index_weight('000300.SH',
+        start_date=m0, end_date=m1)`` returns the CSI300 ``con_code`` /
+        ``weight`` rows *published* in ``[m0, m1]`` (weights are released
+        ~monthly on a specific publish date that need not be a month-end, so a
+        single arbitrary ``trade_date`` can come back empty — query by month
+        range and persist whatever publish date lands inside). The caller
+        reads it as-of with an availability lag (round-2 plan §4.1) so a weight
+        published on ``d`` is never used to trade on ``d``.
+
+        Exactly one of ``trade_date`` or the ``start_date`` / ``end_date`` range
+        must be given (a mix is ambiguous and rejected fail-closed); a range
+        requires both ends and ``start_date <= end_date``.
+        """
+        self._check_ts_code(index_code)
+        is_range = bool(start_date or end_date)
+        if bool(trade_date) == is_range:
+            raise ValueError(
+                "index_weight needs exactly one of trade_date OR a "
+                "start_date/end_date range (got both or neither)"
+            )
+        params: dict[str, Any] = {"index_code": index_code}
+        if trade_date:
+            self._check_trade_date(trade_date)
+            params["trade_date"] = trade_date
+        else:
+            if not (start_date and end_date):
+                raise ValueError(
+                    "index_weight range needs both start_date and end_date"
+                )
+            self._check_trade_date(start_date)
+            self._check_trade_date(end_date)
+            if start_date > end_date:
+                raise ValueError(
+                    f"index_weight start_date {start_date} > end_date {end_date}"
+                )
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+        return await self._fetch("index_weight", params)
+
+    async def index_member_all(self) -> pd.DataFrame:
+        """申万 industry membership table with ``in_date`` / ``out_date`` (PIT).
+
+        One full pull of the whole 申万 (SW) classification: each row carries a
+        code's industry codes plus the dates it entered / left that industry, so
+        a backtest can reconstruct the **point-in-time** industry of any code on
+        any date (``in_date <= d < out_date``) — the survivorship-/look-ahead-
+        safe alternative to ``stock_basic.industry`` (current-only). Not
+        date-specific; the caller keys the snapshot by the as-of pull date.
+        """
+        return await self._fetch("index_member_all", {})
 
     async def fund_daily(self, trade_date: str) -> pd.DataFrame:
         """Full-market ETF/LOF daily OHLCV for a trade date."""
