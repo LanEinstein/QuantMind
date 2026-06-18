@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -63,6 +64,11 @@ log = structlog.get_logger(component="factor_research.ingest_round2")
 
 VENDOR = "tushare"
 CSI300_CODE = "000300.SH"
+# Tushare ``index_weight('000300.SH')`` has no data before 2016-01 (probed
+# 2026-06-18: 2015 returns 0 rows; first publish date 20160129). Months before
+# this are skipped — their emptiness is a permanent vendor limit, not a failure
+# to retry — so the benchmark-relative arm's weight history simply starts 2016.
+CSI300_WEIGHT_FIRST_MONTH = "201601"
 # Store-level endpoint tags. The L/D rosters share an as-of date, so they get
 # distinct tags (the snapshot key is (vendor, endpoint, trade_date)); the real
 # Tushare call is ``stock_basic`` with the list_status param either way.
@@ -272,10 +278,17 @@ async def ingest_index_weight(
     *,
     now: Callable[[], datetime],
     rate_limiter: RateLimiter | None = None,
+    first_month: str = CSI300_WEIGHT_FIRST_MONTH,
 ) -> list[EndpointResult]:
-    """One CSI300 weight snapshot per COMPLETE calendar month (keyed by month-end)."""
+    """One CSI300 weight snapshot per COMPLETE calendar month from ``first_month``.
+
+    Months before ``first_month`` are skipped (Tushare has no CSI300 weights
+    before 2016 — a permanent vendor limit, not a transient failure to retry).
+    """
     out: list[EndpointResult] = []
     for d in month_end_trade_dates(calendar):
+        if d[:6] < first_month:
+            continue
         month_start = d[:6] + "01"
         out.append(
             await _ingest_one(
@@ -395,10 +408,29 @@ def _read_frame(store: SnapshotStore, endpoint: str, trade_date: str) -> pd.Data
     return parse_csv_bytes(snapshot.raw_payload)
 
 
+def _read_roster_frame(store: SnapshotStore, endpoint: str, asof: str) -> pd.DataFrame:
+    """Read a stored roster as ALL-STRING columns (dates stay literal).
+
+    The stored bytes are clean (e.g. ``20260610``), but a roster's mostly-empty
+    ``delist_date`` column re-infers to ``float64`` under default ``read_csv``,
+    rendering ``20260610`` as ``20260610.0`` — which ``SurvivorshipUniverse``
+    rejects. ``dtype=str`` + ``keep_default_na=False`` keeps every 8-digit date a
+    literal string and an empty cell an empty string.
+    """
+    snapshot = store.latest(vendor=VENDOR, endpoint=endpoint, trade_date=asof)
+    if snapshot is None:
+        raise FileNotFoundError(f"no snapshot for {endpoint} as-of {asof}")
+    return pd.read_csv(
+        io.StringIO(snapshot.raw_payload.decode("utf-8")),
+        dtype=str,
+        keep_default_na=False,
+    )
+
+
 def load_survivorship(store: SnapshotStore, asof: str) -> SurvivorshipUniverse:
     """Build the survivorship universe from the stored L + D rosters."""
-    listed = _read_frame(store, EP_STOCK_BASIC_L, asof)
-    delisted = _read_frame(store, EP_STOCK_BASIC_D, asof)
+    listed = _read_roster_frame(store, EP_STOCK_BASIC_L, asof)
+    delisted = _read_roster_frame(store, EP_STOCK_BASIC_D, asof)
     return SurvivorshipUniverse.from_stock_basic(listed, delisted)
 
 
@@ -589,7 +621,11 @@ def main() -> None:
     last_date = calendar[-1] if calendar else asof
 
     if args.dry_run:
-        month_ends = month_end_trade_dates(calendar)
+        month_ends = [
+            d
+            for d in month_end_trade_dates(calendar)
+            if d[:6] >= CSI300_WEIGHT_FIRST_MONTH
+        ]
         periods = report_periods(args.first_year, last_date)
         print(
             f"[dry-run] calendar {len(calendar)} td "

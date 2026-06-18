@@ -171,19 +171,37 @@ class TestPersistence:
     async def test_index_weight_persists_per_month_end(self, tmp_path: Path) -> None:
         store = SnapshotStore(tmp_path)
         client = _FakeRound2Client()
-        # 3 complete months (the 4th, partial, would be dropped) → 3 snapshots.
-        calendar = ["20150105", "20150130", "20150227", "20150330", "20150402"]
+        # 3 complete months (the 4th, partial, dropped), all >= 2016 floor.
+        calendar = ["20160105", "20160130", "20160227", "20160330", "20160402"]
         results = await ingest_index_weight(client, store, calendar, now=_now)
         assert [r.status for r in results] == ["ingested", "ingested", "ingested"]
         snap = store.latest(
-            vendor="tushare", endpoint=EP_INDEX_WEIGHT, trade_date="20150130"
+            vendor="tushare", endpoint=EP_INDEX_WEIGHT, trade_date="20160130"
         )
         assert snap is not None
         assert snap.params == {
             "index_code": "000300.SH",
-            "start_date": "20150101",
-            "end_date": "20150130",
+            "start_date": "20160101",
+            "end_date": "20160130",
         }
+
+    @pytest.mark.asyncio
+    async def test_index_weight_skips_months_before_availability_floor(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        # 201511/201512 are below the 201601 floor → skipped (no snapshot, no fail).
+        calendar = ["20151130", "20151231", "20160129", "20160229", "20160301"]
+        results = await ingest_index_weight(client, store, calendar, now=_now)
+        assert [r.key for r in results] == ["20160129", "20160229"]
+        assert all(r.status == "ingested" for r in results)
+        assert (
+            store.latest(
+                vendor="tushare", endpoint=EP_INDEX_WEIGHT, trade_date="20151130"
+            )
+            is None
+        )
 
     @pytest.mark.asyncio
     async def test_byte_exact_checksum(self, tmp_path: Path) -> None:
@@ -257,6 +275,29 @@ class TestSurvivorshipCoverage:
         # PIT tradability: the delisted name is absent after its delist date.
         assert "600001.SH" in universe.tradable_asof("20050101")
         assert "600001.SH" not in universe.tradable_asof("20200101")
+
+    @pytest.mark.asyncio
+    async def test_load_survivorship_handles_float_inferred_delist_date(
+        self, tmp_path: Path
+    ) -> None:
+        # A recently-delisted code still in the LISTED roster makes that roster's
+        # delist_date column mostly-empty → a naive read_csv floatifies
+        # '20260610' to '20260610.0' (which SurvivorshipUniverse rejects). The
+        # dtype=str roster read must keep it a clean 8-digit string.
+        store = SnapshotStore(tmp_path)
+        listed = pd.DataFrame(
+            {
+                "ts_code": ["600519.SH", "688287.SH"],
+                "name": ["贵州茅台", "退市观典"],
+                "list_date": ["20010827", "20220525"],
+                "delist_date": ["", "20260610"],
+            }
+        )
+        client = _FakeRound2Client(listed=listed)
+        await ingest_stock_basic(client, store, "20260618", now=_now)
+        universe = load_survivorship(store, "20260618")  # must not raise
+        assert "688287.SH" in universe.tradable_asof("20250101")
+        assert "688287.SH" not in universe.tradable_asof("20260615")
 
     @pytest.mark.asyncio
     async def test_per_period_coverage_flags_listed_code_without_report(
