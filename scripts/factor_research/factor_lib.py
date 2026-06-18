@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 # Default windows (locked constants; reversal/vol/max at the ~1-month
 # horizon the A-share literature documents; the 5-day reversal respects the
@@ -325,23 +326,245 @@ def compute_factor_vector(
     )
 
 
+# ===========================================================================
+# Round-2 factor families (R2-2): trend / quality / growth.
+#
+# These fill the round-1 gap (the seven factors above are all
+# value/defensive/reversal — none can track a cap-weighted index in a
+# large-cap bull, the round-1 FAIL root cause). They live in a SEPARATE
+# registry (``R2_FACTORS``) so the round-1 panel/IC/weight-search modules that
+# key off ``FACTORS`` / ``ResearchFactorVector`` are byte-for-byte unaffected.
+#
+# Trend factors use existing price series (no new data). Quality/growth read
+# the PIT fundamentals (``fundamentals_pit`` — ann_date + vintage gated). Per
+# the Phase-1 survey A-share momentum is weak/≈0, so the trend family is
+# honestly tagged for regime/index tracking, NOT assumed to carry alpha; the
+# IC study confirms or refutes on real data.
+# ===========================================================================
+
+# Trend windows (locked constants).
+MOMENTUM_LOOKBACK: int = 252  # ~12 months
+MOMENTUM_SKIP: int = 21  # skip the most recent ~1 month (avoid reversal noise)
+HIGH_WINDOW: int = 250  # 52-week high lookback
+SLOPE_WINDOW: int = 60  # trend-slope regression window
+
+
+def momentum_skip(
+    closes: list[float],
+    lookback: int = MOMENTUM_LOOKBACK,
+    skip: int = MOMENTUM_SKIP,
+) -> float | None:
+    """``close[-1-skip] / close[-1-lookback] - 1`` — 12-1 momentum.
+
+    Skips the most recent ``skip`` bars so the well-documented short-term
+    reversal does not contaminate the medium-term trend signal. ``None`` when
+    history is too short, a window bar is non-finite, or the base is
+    non-positive.
+    """
+    if lookback <= skip or skip < 0 or len(closes) < lookback + 1:
+        return None
+    base = closes[-1 - lookback]
+    top = closes[-1 - skip]
+    if not (math.isfinite(base) and math.isfinite(top)) or base <= 0:
+        return None
+    return top / base - 1.0
+
+
+def distance_from_high(closes: list[float], window: int = HIGH_WINDOW) -> float | None:
+    """``close[-1] / max(close[-window:]) - 1`` — distance from the 52-week high.
+
+    George-Hwang nearness-to-high: a value near 0 (at the high) is the
+    attractive end. Always ``<= 0``. ``None`` when too short, any window bar is
+    non-finite, or the high is non-positive.
+    """
+    if window <= 0 or len(closes) < window:
+        return None
+    tail = closes[-window:]
+    if not _all_finite(tail):
+        return None
+    high = max(tail)
+    if high <= 0:
+        return None
+    return closes[-1] / high - 1.0
+
+
+def trend_slope(closes: list[float], window: int = SLOPE_WINDOW) -> float | None:
+    """OLS slope of ``log(close)`` vs the bar index over the trailing ``window``.
+
+    Units = average log-return per day (an uptrend → positive). Pure stdlib
+    least-squares. ``None`` when too short, any bar is non-finite or
+    non-positive (log undefined), or the design is degenerate.
+    """
+    if window <= 1 or len(closes) < window:
+        return None
+    tail = closes[-window:]
+    if not _all_finite(tail) or any(c <= 0 for c in tail):
+        return None
+    ys = [math.log(c) for c in tail]
+    n = window
+    mean_x = (n - 1) / 2.0
+    mean_y = statistics.fmean(ys)
+    num = sum((i - mean_x) * (y - mean_y) for i, y in enumerate(ys))
+    den = sum((i - mean_x) ** 2 for i in range(n))
+    if den <= 0:
+        return None
+    slope = num / den
+    return slope if math.isfinite(slope) else None
+
+
+@runtime_checkable
+class _FundamentalLike(Protocol):
+    """Structural type for a PIT fundamentals record (avoids a backend import).
+
+    Satisfied by :class:`fundamentals_pit.FundamentalRecord`; keeping it a
+    Protocol preserves this module's pure-stdlib runtime import graph.
+    """
+
+    def get(self, field: str) -> float | None: ...
+
+
+# Round-2 factor name → raw ``fina_indicator_vip`` field it reads.
+FUNDAMENTAL_FACTOR_FIELDS: dict[str, str] = {
+    "roe": "roe",
+    "gpm": "grossprofit_margin",
+    "np_yoy": "netprofit_yoy",
+    "rev_yoy": "or_yoy",
+}
+
+
+def compute_trend_factors(closes: list[float]) -> dict[str, float | None]:
+    """The three trend factors for one code as-of a date (raw values)."""
+    return {
+        "mom_12_1": momentum_skip(closes),
+        "dist_high": distance_from_high(closes),
+        "trend_slope": trend_slope(closes),
+    }
+
+
+def compute_fundamental_factors(
+    record: _FundamentalLike | None,
+) -> dict[str, float | None]:
+    """The quality/growth factors from a PIT fundamentals record (raw values).
+
+    A ``None`` record (no fundamentals known as-of the date) → all ``None``
+    fail-closed; a non-finite field → ``None`` (never a fabricated value).
+    """
+    out: dict[str, float | None] = {}
+    for name, field in FUNDAMENTAL_FACTOR_FIELDS.items():
+        value = record.get(field) if record is not None else None
+        out[name] = value if (value is not None and math.isfinite(value)) else None
+    return out
+
+
+# The round-2 registry. ``mechanism`` matches an ``EconomicMechanism`` value
+# where one exists (momentum_continuation / quality_premium); the growth
+# family is honestly tagged ``"growth_premium"`` which is INTENTIONALLY not yet
+# a registered mechanism — the live promotion gate (has_valid_mechanism) will
+# reject a growth-weighted strategy fail-closed until a future amendment adds
+# GROWTH_PREMIUM. R2-2 is offline research and never invokes that gate.
+R2_FACTORS: tuple[FactorDef, ...] = (
+    FactorDef(
+        name="mom_12_1",
+        min_history=MOMENTUM_LOOKBACK + 1,
+        attractive_high=True,
+        mechanism="momentum_continuation",
+        expected_ic_sign=1,
+        description="12-1 month momentum (skip recent month). A-share momentum "
+        "is weak/≈0 (survey §2.9): role = regime/index tracking, not assumed alpha.",
+    ),
+    FactorDef(
+        name="dist_high",
+        min_history=HIGH_WINDOW,
+        attractive_high=True,
+        mechanism="momentum_continuation",
+        expected_ic_sign=1,
+        description="Distance from 250d high (<=0; near 0 = near high) — "
+        "George-Hwang 52-week-high; weak A-share prior, honestly tested.",
+    ),
+    FactorDef(
+        name="trend_slope",
+        min_history=SLOPE_WINDOW,
+        attractive_high=True,
+        mechanism="momentum_continuation",
+        expected_ic_sign=1,
+        description="OLS slope of log price over 60d (per-day log trend); "
+        "weak A-share prior, honestly tested.",
+    ),
+    FactorDef(
+        name="roe",
+        min_history=0,
+        attractive_high=True,
+        mechanism="quality_premium",
+        expected_ic_sign=1,
+        description="Return on equity (PIT ann_date) — quality/profitability; "
+        "weak/conditional in A-share (survey §2.7).",
+    ),
+    FactorDef(
+        name="gpm",
+        min_history=0,
+        attractive_high=True,
+        mechanism="quality_premium",
+        expected_ic_sign=1,
+        description="Gross profit margin (PIT) — Novy-Marx gross profitability, "
+        "robust to earnings management.",
+    ),
+    FactorDef(
+        name="np_yoy",
+        min_history=0,
+        attractive_high=True,
+        mechanism="growth_premium",
+        expected_ic_sign=1,
+        description="Net-profit YoY growth (PIT). 'growth_premium' is NOT yet a "
+        "registered EconomicMechanism (promotion fail-closed until amendment).",
+    ),
+    FactorDef(
+        name="rev_yoy",
+        min_history=0,
+        attractive_high=True,
+        mechanism="growth_premium",
+        expected_ic_sign=1,
+        description="Operating-revenue YoY growth (PIT) — growth; weak A-share "
+        "prior, honestly tested.",
+    ),
+)
+
+R2_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in R2_FACTORS)
+R2_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in R2_FACTORS}
+# Merged lookup for the diagnostic IC study (round-1 + round-2).
+ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {**FACTORS_BY_NAME, **R2_FACTORS_BY_NAME}
+
+
 __all__ = [
+    "ALL_FACTORS_BY_NAME",
     "AMIHUD_WINDOW",
     "FACTORS",
     "FACTORS_BY_NAME",
     "FACTOR_NAMES",
+    "FUNDAMENTAL_FACTOR_FIELDS",
+    "HIGH_WINDOW",
     "MAX_RETURN_WINDOW",
+    "MOMENTUM_LOOKBACK",
+    "MOMENTUM_SKIP",
+    "R2_FACTORS",
+    "R2_FACTORS_BY_NAME",
+    "R2_FACTOR_NAMES",
     "REVERSAL_MONTH_WINDOW",
     "REVERSAL_SHORT_WINDOW",
+    "SLOPE_WINDOW",
     "TURNOVER_WINDOW",
     "VOLATILITY_WINDOW",
     "FactorDef",
     "ResearchFactorVector",
     "amihud_illiquidity",
     "compute_factor_vector",
+    "compute_fundamental_factors",
+    "compute_trend_factors",
+    "distance_from_high",
     "earnings_yield",
     "max_daily_return",
     "mean_turnover",
+    "momentum_skip",
     "return_volatility",
     "trailing_return",
+    "trend_slope",
 ]
