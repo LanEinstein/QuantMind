@@ -240,3 +240,15 @@ PIT 数据扩充摄取落地 + **真实重活摄取已跑**:
   - **PIT 完整性强、行业覆盖是真缺口**:vintage 污染仅 **0.10%**(median ann lag 54d)→ ann_date gating 稳;**行业覆盖仅 66.3%**(`index_member_all` 是当前 SW 表,长退市/重分类码无 PIT L1 → 中性化 None,raw 保留)→ R2-3 须补历史完整 SW 表或 bound/披露 no-industry sleeve。
   - **R2-3 carry-forward 集** = round-1 七 ＋ 质量 roe/gpm ＋ 成长 np_yoy/rev_yoy(中性化形);**丢** mom_12_1/dist_high/trend_slope。`*_neut` 列 = 构造就绪输入。
 - **下一步 = R2-3**(基准相对构造:主动权重 builder + 约束后再投影 + TE 控制 + 买卖分拆保守成本 + active-exposure 披露;消费 R2-2 PIT 因子面板 raw+neutralized + `index_weight` 基准权重)+ 多空/中性参考臂。
+
+### R2-3 ✅ DONE(2026-06-19;feature `4011316`/`fb60562`/`1fe5716`/`092a30b`;本地未 push)
+基准相对长多构造(主,可落地)+ 多空/中性参考臂(辅,研究上界)+ 真实 train_val 诊断已跑:
+- 新模块(全 PIT、确定性、纯量化、import 隔离、LLM 零参与):`benchmark_weights.py`(CSI300 成分权重 PIT reader,多 publish 日按 publish<d 取最新归一)/ `benchmark_relative.py`(核心:composite_score 用 carry `*_neut` 定向合成 + build_active_weights〔box clip k·z、long-only floor、unscored 严格持基准权重、scored sleeve 缩放至 Σw=1 → 净零 active beta≈1〕+ benchmark_relative_backtest〔逐期超额扣买卖分拆成本 + drift turnover〕+ 暴露披露)/ `long_short.py`(市场中性参考臂,**research-only/永不上线/不进判定**)/ `r2_benchmark_relative_diagnostics.py`(诊断 runner + 防火墙)。
+- **设计判定**:① 净零 active = 最终 Σw=1 重归一(非 demean,守 a_max box);② amihud_neut 朝向覆写(size 正交残差=非流动性溢价,翻正);③ forced-underweight reconcile(被排除成分名 active=−w_bench,单列披露);④ 成本 = 买卖分拆 + **持仓漂移** turnover;⑤ **R2-3 不出 PASS/FAIL**(开发证据,判定在 R2-6 前向)。
+- **codex 8 轮(`codex review --uncommitted`,gpt-5.5 xhigh)→ 第 9 轮撞额度 → 回退 `/code-review high`(3 agent)**:全程 **0 P0**;累计修 2 P1(均防火墙:基准侧输入须 < test_start + 流式 loader 不 materialize test 行)+ ~13 P2(amihud 朝向 / 列缺失 fail-closed / 净零 box / forced-UW reconcile / resize+drift turnover / 参考臂同期 / 数据派生叙述 / gap≤0 边界 / 超长函数重构 …)+ 数个 P3。`/code-review high` 独立确认**防火墙 SOUND 零泄漏**(csi300_daily.csv 实含 250 test 行,流式 loader 全挡)。门禁:**179 测试绿** + ruff + mypy --strict + redline 全清。
+- **诚实诊断结论(train_val 样本内 2016-2025〔基准权重无 2015〕,`docs/research/factor-strategy-round2-r2-3-benchmark-relative-diagnostics-2026-06-18.md`)**:
+  - **构造完整性**:net active ~1e-18(beta≈1)✓;但 **size active −0.60~−0.71 std + gross active 43-47%** → 在全投资域(~1700 名)tilt off CSI300〔300 名〕权重 → 高分非成分小盘获正 active → **系统性小盘漂移**(虽因子已 size 中性)→ 主臂 +15~17% 超额/IR 0.27-0.34 **实质混入小盘 bet**,非纯因子 tilt(披露揪出的隐性押注)。
+  - **参考臂(同期可比 449 期)= +31.67% alpha / Sharpe 0.30**(早先 488 期含 2015 泡沫的 +101% 是样本错配)→ 与主臂 IR ~0.3 相当 → **有界 tilt 没漏多少 alpha,即因子在 2016+ 本就温和**(诚实)。
+  - **forced UW 16.2%**(科创/北交/ST/流动性/底30%排除的 CSI300 成分;创业板在白名单不排)+ R2-2 行业覆盖 66% → tracking 受 universe 而非 tilt 限。
+  - **R2-4 须约束 off-benchmark 暴露**(限成分内 tilt / 组合级 size 中性 / cap 非成分 active + TE 带);size 中性因子不防 universe-mismatch size 漂移。
+- **下一步 = R2-4**(冻结 `experiment_manifest.json` 全自由度 → CPCV/anchored-WF 评估 + 预声明 N 搜索 k/a_max/权重/暴露约束 + DSR/PBO/SPA/哨兵全披露 → 选唯一基准相对策略;消费 R2-3 `benchmark_relative_backtest`)。R2-5 全引擎交叉确认 + git 冻结 + 前向协议;R2-6 一次性前向判定(等前向数据)。
