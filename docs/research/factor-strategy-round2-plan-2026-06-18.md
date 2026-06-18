@@ -213,4 +213,15 @@ codex (gpt-5.5, xhigh) 评审本方案,**判定无 P0**(大方向成立:现有�
 | 8 | P2 | 投资域与 CSI300 成分可能不一致 | §3.2(3):被排除成分名强制持 0=满额低配 active,计入 TE 单列披露;过大则截基准到可投资交集 |
 
 **codex 总评**:"方案方向可以,无 P0;P1 会影响诚实性/可审计性,先修方案再执行。" → **已全修,本稿即定稿。**
-评审原文存档:`docs/reviews/round2-plan-codex-review-summary.md`。**方案定稿,待 owner 批准后进 R2-1 执行。**
+评审原文存档:`docs/reviews/round2-plan-codex-review-summary.md`。**方案定稿,owner 批准(2026-06-18 "开")后进 R2-1 执行。**
+
+---
+
+## 12. 执行进度
+
+### R2-1 ✅ DONE(2026-06-18;feature `434d2cb` + 真跑修复 `48809d2`;本地未 push)
+PIT 数据扩充摄取落地 + **真实重活摄取已跑**:
+- 新 `scripts/factor_research/ingest_round2_data.py`(离线编排器,字节存档+sha256+幂等续传+fail-closed+限速+幸存无偏 coverage)+ `TushareClient` 加 `index_weight`/`index_member_all`(只读)。codex 3 轮(cycle-1 5 + verify 3 + 真跑后 2 修)全清;门禁 ruff+mypy strict+184~283 测试绿;review summary `docs/reviews/round2-r2-1-ingest-codex-review-summary.md`。
+- **真实摄取结果(data/marketdata_pit,字节级)**:`index_weight` 125 月(**2016-01-29→2026-05-29**;Tushare CSI300 权重无 2015 数据=供应商边界 → benchmark-relative 权重窗口自 2016 起)/ `fina_indicator_vip` 45 报告期(2015Q1→2026Q1)/ `index_member_all` 1(申万成分 in/out date)/ `stock_basic` L+D rosters / **45 per-period fina coverage manifests**(最差 completeness 99.83%,9 码当期未报=fail-closed→None)。exit 0 零失败。
+- **真跑暴露并修的 2 坑**:① 退市股仍在 listed roster 使 delist_date 列浮点化(`20260610`→`20260610.0`)→ `_read_roster_frame` dtype=str 读;② index_weight 2015 无数据 → `CSI300_WEIGHT_FIRST_MONTH=201601` floor 跳过。
+- **下一步 = R2-2**(新因子库 趋势/质量/成长 + 行业+市值中性化;fina PIT **ann_date + vintage 审计** join;消费 fina 日期列须消费端显式 dtype)。
