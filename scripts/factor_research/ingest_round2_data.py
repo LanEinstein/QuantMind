@@ -80,6 +80,33 @@ EP_STOCK_BASIC_D = "stock_basic_delisted"
 STOCK_BASIC_FIELDS = "ts_code,name,list_date,delist_date"
 _QUARTER_ENDS = ("0331", "0630", "0930", "1231")
 
+# Round-3 (R3-1) financial-statement endpoints — accruals / asset-growth source.
+# Each is full-market per report period (like fina_indicator_vip); the snapshot
+# tag EQUALS the client method name so ``getattr(client, endpoint)`` fetches it.
+EP_INCOME = "income_vip"
+EP_CASHFLOW = "cashflow_vip"
+EP_BALANCESHEET = "balancesheet_vip"
+STATEMENT_ENDPOINTS: tuple[str, ...] = (EP_INCOME, EP_CASHFLOW, EP_BALANCESHEET)
+# Historical name changes (PIT ST-flag source). Paginated by the change
+# start_date YEAR so the full timeline is captured under the per-call row cap; an
+# empty year is legitimate (no name changes), so namechange is NOT require-non-empty.
+EP_NAMECHANGE = "namechange"
+# A-share name changes predate the 1998 ST system only trivially; 1990 floor
+# covers every name in effect during the 2015-2026 research window with margin.
+NAMECHANGE_FIRST_YEAR = 1990
+# Canonical namechange columns. A legitimate no-change year returns a ZERO-column
+# empty frame whose CSV is bare ``\n`` (unparseable — ``parse_csv_bytes`` raises
+# EmptyDataError, codex P2). Empty pages are stored with this header instead so a
+# PIT ST-history reader can replay them as a 0-row, known-column frame.
+NAMECHANGE_FIELDS: tuple[str, ...] = (
+    "ts_code",
+    "name",
+    "start_date",
+    "end_date",
+    "ann_date",
+    "change_reason",
+)
+
 _STATUS_INGESTED = "ingested"
 _STATUS_SKIPPED = "skipped"
 _STATUS_FAILED = "failed"
@@ -98,6 +125,12 @@ class _Round2Client(Protocol):
         end_date: str = "",
     ) -> pd.DataFrame: ...
     async def fina_indicator_vip(self, period: str) -> pd.DataFrame: ...
+    async def income_vip(self, period: str) -> pd.DataFrame: ...
+    async def cashflow_vip(self, period: str) -> pd.DataFrame: ...
+    async def balancesheet_vip(self, period: str) -> pd.DataFrame: ...
+    async def namechange(
+        self, *, start_date: str = "", end_date: str = ""
+    ) -> pd.DataFrame: ...
     async def index_member_all(self) -> pd.DataFrame: ...
     async def stock_basic(self, *, list_status: str, fields: str) -> pd.DataFrame: ...
 
@@ -438,6 +471,8 @@ def build_fina_coverage_manifests(
     store: SnapshotStore,
     periods: Sequence[str],
     universe: SurvivorshipUniverse,
+    *,
+    endpoint: str = EP_FINA,
 ) -> list[CoverageManifest]:
     """One coverage manifest PER report period (codex P1-1, fail-closed).
 
@@ -453,16 +488,18 @@ def build_fina_coverage_manifests(
 
     A missing period snapshot raises :class:`FileNotFoundError` (fail-closed —
     never silently skipped); the caller builds coverage only once every period
-    ingested successfully.
+    ingested successfully. ``endpoint`` defaults to ``fina_indicator_vip`` (R2-1
+    behavior byte-identical) and is parameterized so the R3-1 income / cashflow /
+    balancesheet statements get the same per-period survivorship-keyed coverage.
     """
     if not periods:
         raise ValueError("no report periods to build coverage from")
     manifests: list[CoverageManifest] = []
     for period in periods:
-        snapshot = store.latest(vendor=VENDOR, endpoint=EP_FINA, trade_date=period)
+        snapshot = store.latest(vendor=VENDOR, endpoint=endpoint, trade_date=period)
         if snapshot is None:
             raise FileNotFoundError(
-                f"fina_indicator period {period} snapshot missing — "
+                f"{endpoint} period {period} snapshot missing — "
                 "cannot build coverage (fail-closed)"
             )
         frame = parse_csv_bytes(snapshot.raw_payload)
@@ -471,7 +508,7 @@ def build_fina_coverage_manifests(
         manifests.append(
             CoverageManifest(
                 granularity="period",
-                endpoint=EP_FINA,
+                endpoint=endpoint,
                 params={"period": period},
                 session_start=period,
                 session_end=period,
@@ -596,6 +633,234 @@ async def ingest_round2(
     return Round2IngestReport(results=tuple(results), fina_coverage=coverage)
 
 
+# --- round-3 statement + namechange ingests (R3-1) ---------------------------
+
+
+async def ingest_statement(
+    client: _Round2Client,
+    store: SnapshotStore,
+    periods: Sequence[str],
+    *,
+    endpoint: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+) -> list[EndpointResult]:
+    """One full-market statement snapshot per report period (the 3 R3-1 tables).
+
+    ``endpoint`` is the snapshot tag AND the client method name (e.g.
+    ``income_vip``) — the byte-exact / idempotent / fail-closed mechanics are
+    shared with :func:`ingest_fina_indicator` via :func:`_ingest_one`.
+    """
+    fetch_method = getattr(client, endpoint)
+    out: list[EndpointResult] = []
+    for period in periods:
+        out.append(
+            await _ingest_one(
+                store,
+                endpoint=endpoint,
+                trade_date=period,
+                params={"period": period},
+                fetch=partial(fetch_method, period),
+                now=now,
+                require_non_empty=True,
+                rate_limiter=rate_limiter,
+            )
+        )
+    return out
+
+
+def namechange_years(first_year: int, asof: str) -> list[int]:
+    """Years to page namechange over: ``first_year``..``year(asof)`` inclusive."""
+    if not (len(asof) == 8 and asof.isdigit()):
+        raise ValueError(f"asof {asof!r} must be YYYYMMDD")
+    return list(range(first_year, int(asof[:4]) + 1))
+
+
+def namechange_pages(first_year: int, asof: str) -> list[tuple[str, str, str]]:
+    """``(start_date, end_date, snapshot_key)`` for each namechange year page.
+
+    A COMPLETE past year is ``(YYYY0101, YYYY1231, YYYY1231)`` — a stable key so
+    reruns skip it. The CURRENT (in-progress) year is ``(YYYY0101, asof, asof)``:
+    the page never requests beyond ``asof`` (no future-dated rows) and is keyed by
+    ``asof``, so a later rerun with a larger ``asof`` writes a NEW snapshot that
+    captures name changes after the first run instead of being skipped (codex P2).
+    """
+    asof_year = int(asof[:4])
+    pages: list[tuple[str, str, str]] = []
+    for year in namechange_years(first_year, asof):
+        if year < asof_year:
+            pages.append((f"{year}0101", f"{year}1231", f"{year}1231"))
+        else:
+            pages.append((f"{year}0101", asof, asof))
+    return pages
+
+
+async def ingest_namechange(
+    client: _Round2Client,
+    store: SnapshotStore,
+    *,
+    first_year: int,
+    asof: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+) -> list[EndpointResult]:
+    """One namechange snapshot per year of the change ``start_date`` (full timeline).
+
+    ``require_non_empty=False``: a year with no name changes legitimately returns
+    an empty frame and is stored (so a resume skips it) — only a fetch EXCEPTION
+    is recorded FAILED for retry. The empty frame is normalised to the canonical
+    :data:`NAMECHANGE_FIELDS` header so the stored CSV is replayable (codex P2).
+    The current year is keyed by ``asof`` (not the year-end) — see
+    :func:`namechange_pages`.
+    """
+
+    async def _fetch(start: str, end: str) -> pd.DataFrame:
+        frame = await client.namechange(start_date=start, end_date=end)
+        if frame is None or frame.empty:
+            return pd.DataFrame(columns=list(NAMECHANGE_FIELDS))
+        return frame
+
+    out: list[EndpointResult] = []
+    for start, end, key in namechange_pages(first_year, asof):
+        out.append(
+            await _ingest_one(
+                store,
+                endpoint=EP_NAMECHANGE,
+                trade_date=key,
+                params={"start_date": start, "end_date": end},
+                fetch=partial(_fetch, start, end),
+                now=now,
+                require_non_empty=False,
+                rate_limiter=rate_limiter,
+            )
+        )
+    return out
+
+
+def build_statement_coverage_manifests(
+    store: SnapshotStore,
+    periods: Sequence[str],
+    universe: SurvivorshipUniverse,
+) -> list[CoverageManifest]:
+    """Per-period survivorship-keyed coverage for all three R3-1 statements."""
+    manifests: list[CoverageManifest] = []
+    for endpoint in STATEMENT_ENDPOINTS:
+        manifests.extend(
+            build_fina_coverage_manifests(store, periods, universe, endpoint=endpoint)
+        )
+    return manifests
+
+
+def _build_statement_coverage(
+    store: SnapshotStore,
+    coverage_store: CoverageStore,
+    *,
+    periods: Sequence[str],
+    asof: str,
+    blocking: bool,
+) -> tuple[list[EndpointResult], tuple[CoverageManifest, ...]]:
+    """Build + persist per-period coverage for the 3 statements, fail-closed.
+
+    Mirrors :func:`_build_coverage`: skipped on blocking statement failures;
+    a missing snapshot or unbuildable survivorship universe is a FAILED
+    ``EndpointResult`` (never a silent pass). Returns ``(extra_results, coverage)``.
+    """
+    if not periods:
+        return [], ()
+    if blocking:
+        log.warning("round3_coverage_skipped", reason="blocking ingest failures")
+        return [], ()
+    try:
+        universe = load_survivorship(store, asof)
+        manifests = build_statement_coverage_manifests(store, periods, universe)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("round3_coverage_failed", error=str(exc))
+        return [
+            EndpointResult(
+                endpoint="coverage",
+                key=asof,
+                status=_STATUS_FAILED,
+                rows=0,
+                error=str(exc),
+            )
+        ], ()
+    for manifest in manifests:
+        _put_coverage_idempotent(coverage_store, manifest)
+    return [], tuple(manifests)
+
+
+async def ingest_round3(
+    client: _Round2Client,
+    store: SnapshotStore,
+    coverage_store: CoverageStore,
+    *,
+    calendar: Sequence[str],
+    first_year: int,
+    asof: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+    namechange_first_year: int = NAMECHANGE_FIRST_YEAR,
+) -> Round2IngestReport:
+    """R3-1: ingest income/cashflow/balancesheet (per-period) + namechange (per-year).
+
+    The L/D survivorship rosters (ingested by :func:`ingest_round2`) must already
+    be present for the statement coverage step — fail-closed otherwise. Idempotent
+    / resumable / rate-limited / byte-exact, same as round-2.
+    """
+    results: list[EndpointResult] = []
+    last_date = calendar[-1] if calendar else asof
+    periods = report_periods(first_year, last_date)
+    for endpoint in STATEMENT_ENDPOINTS:
+        results.extend(
+            await ingest_statement(
+                client,
+                store,
+                periods,
+                endpoint=endpoint,
+                now=now,
+                rate_limiter=rate_limiter,
+            )
+        )
+    results.extend(
+        await ingest_namechange(
+            client,
+            store,
+            first_year=namechange_first_year,
+            asof=asof,
+            now=now,
+            rate_limiter=rate_limiter,
+        )
+    )
+    blocking = any(
+        r.status == _STATUS_FAILED and r.endpoint in STATEMENT_ENDPOINTS
+        for r in results
+    )
+    cov_results, coverage = _build_statement_coverage(
+        store, coverage_store, periods=periods, asof=asof, blocking=blocking
+    )
+    results.extend(cov_results)
+    return Round2IngestReport(results=tuple(results), fina_coverage=coverage)
+
+
+def _print_report(label: str, report: Round2IngestReport) -> None:
+    """Print one phase's ingest tally + coverage summary + failures."""
+    print(
+        f"{label} ingest: ingested={report.ingested} skipped={report.skipped} "
+        f"failed={report.failed}"
+    )
+    if report.fina_coverage:
+        worst = min(report.fina_coverage, key=lambda m: m.completeness)
+        n_incomplete = sum(1 for m in report.fina_coverage if not m.is_complete)
+        print(
+            f"{label} coverage: {len(report.fina_coverage)} period manifests, "
+            f"{n_incomplete} incomplete; worst {worst.endpoint} {worst.session_end} "
+            f"completeness={worst.completeness:.4f} "
+            f"missing={len(worst.missing_symbols)}"
+        )
+    for fail in report.failures:
+        print(f"  FAILED {fail.endpoint} {fail.key}: {fail.error}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot-root", default="data/marketdata_pit")
@@ -604,6 +869,16 @@ def main() -> None:
         "--asof",
         default="",
         help="as-of YYYYMMDD for membership/rosters (default today UTC)",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=("round2", "round3", "all"),
+        default="round2",
+        help="round2 = R2-1 (weights/fina/member/rosters); round3 = R3-1 "
+        "(income/cashflow/balancesheet + namechange); all = both (idempotent)",
+    )
+    parser.add_argument(
+        "--namechange-first-year", type=int, default=NAMECHANGE_FIRST_YEAR
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="print the plan; NO network calls"
@@ -619,23 +894,41 @@ def main() -> None:
     calendar = load_daily_calendar(args.snapshot_root)
     asof = args.asof or datetime.now(UTC).strftime("%Y%m%d")
     last_date = calendar[-1] if calendar else asof
+    do_r2 = args.phase in ("round2", "all")
+    do_r3 = args.phase in ("round3", "all")
 
     if args.dry_run:
-        month_ends = [
-            d
-            for d in month_end_trade_dates(calendar)
-            if d[:6] >= CSI300_WEIGHT_FIRST_MONTH
-        ]
         periods = report_periods(args.first_year, last_date)
+        pd_span = f"{periods[0]}..{periods[-1]}" if periods else "-"
         print(
-            f"[dry-run] calendar {len(calendar)} td "
+            f"[dry-run] phase={args.phase} calendar {len(calendar)} td "
             f"({calendar[0] if calendar else '-'}..{last_date})"
         )
-        me_span = f"{month_ends[0]}..{month_ends[-1]}" if month_ends else "-"
-        pd_span = f"{periods[0]}..{periods[-1]}" if periods else "-"
-        print(f"[dry-run] index_weight month snapshots: {len(month_ends)} ({me_span})")
-        print(f"[dry-run] fina_indicator periods: {len(periods)} ({pd_span})")
-        print(f"[dry-run] index_member_all + stock_basic L/D as-of {asof}")
+        if do_r2:
+            month_ends = [
+                d
+                for d in month_end_trade_dates(calendar)
+                if d[:6] >= CSI300_WEIGHT_FIRST_MONTH
+            ]
+            me_span = f"{month_ends[0]}..{month_ends[-1]}" if month_ends else "-"
+            print(
+                f"[dry-run] index_weight month snapshots: {len(month_ends)} ({me_span})"
+            )
+            print(f"[dry-run] fina_indicator periods: {len(periods)} ({pd_span})")
+            print(f"[dry-run] index_member_all + stock_basic L/D as-of {asof}")
+        if do_r3:
+            pages = namechange_pages(args.namechange_first_year, asof)
+            keys = [k for _, _, k in pages]
+            yr_span = f"{keys[0]}..{keys[-1]}" if keys else "-"
+            n_stmt = len(STATEMENT_ENDPOINTS) * len(periods)
+            print(
+                f"[dry-run] statements ({', '.join(STATEMENT_ENDPOINTS)}): "
+                f"{n_stmt} period snapshots ({pd_span})"
+            )
+            print(
+                f"[dry-run] namechange year snapshots: {len(pages)} ({yr_span}; "
+                "current year keyed by asof)"
+            )
         print("[dry-run] no network calls made.")
         return
 
@@ -643,35 +936,41 @@ def main() -> None:
     store = SnapshotStore(args.snapshot_root)
     # Match the AE-001 coverage layout: snapshot_root/coverage/coverage.jsonl.
     coverage_store = CoverageStore(Path(args.snapshot_root) / "coverage")
-    report = asyncio.run(
-        ingest_round2(
-            client,
-            store,
-            coverage_store,
-            calendar=calendar,
-            first_year=args.first_year,
-            asof=asof,
-            now=lambda: datetime.now(UTC),
-            rate_limiter=RateLimiter(args.max_per_minute),
+    rate_limiter = RateLimiter(args.max_per_minute)
+    failed = 0
+    if do_r2:
+        report = asyncio.run(
+            ingest_round2(
+                client,
+                store,
+                coverage_store,
+                calendar=calendar,
+                first_year=args.first_year,
+                asof=asof,
+                now=lambda: datetime.now(UTC),
+                rate_limiter=rate_limiter,
+            )
         )
-    )
-    print(
-        f"round2 ingest: ingested={report.ingested} skipped={report.skipped} "
-        f"failed={report.failed}"
-    )
-    if report.fina_coverage:
-        worst = min(report.fina_coverage, key=lambda m: m.completeness)
-        n_incomplete = sum(1 for m in report.fina_coverage if not m.is_complete)
-        print(
-            f"fina coverage: {len(report.fina_coverage)} period manifests, "
-            f"{n_incomplete} incomplete; worst {worst.session_end} "
-            f"completeness={worst.completeness:.4f} "
-            f"missing={len(worst.missing_symbols)}"
+        _print_report("round2", report)
+        failed += report.failed
+    if do_r3:
+        report = asyncio.run(
+            ingest_round3(
+                client,
+                store,
+                coverage_store,
+                calendar=calendar,
+                first_year=args.first_year,
+                asof=asof,
+                now=lambda: datetime.now(UTC),
+                rate_limiter=rate_limiter,
+                namechange_first_year=args.namechange_first_year,
+            )
         )
-    for fail in report.failures:
-        print(f"  FAILED {fail.endpoint} {fail.key}: {fail.error}")
+        _print_report("round3", report)
+        failed += report.failed
     # Non-zero exit on any failure (fail-closed) so a resume re-run is obvious.
-    raise SystemExit(1 if report.failed else 0)
+    raise SystemExit(1 if failed else 0)
 
 
 if __name__ == "__main__":
@@ -680,20 +979,33 @@ if __name__ == "__main__":
 
 __all__ = [
     "CSI300_CODE",
+    "EP_BALANCESHEET",
+    "EP_CASHFLOW",
     "EP_FINA",
+    "EP_INCOME",
     "EP_INDEX_MEMBER",
     "EP_INDEX_WEIGHT",
+    "EP_NAMECHANGE",
     "EP_STOCK_BASIC_D",
     "EP_STOCK_BASIC_L",
+    "NAMECHANGE_FIELDS",
+    "NAMECHANGE_FIRST_YEAR",
+    "STATEMENT_ENDPOINTS",
     "EndpointResult",
     "Round2IngestReport",
     "build_fina_coverage_manifests",
+    "build_statement_coverage_manifests",
     "ingest_fina_indicator",
     "ingest_index_member_all",
     "ingest_index_weight",
+    "ingest_namechange",
     "ingest_round2",
+    "ingest_round3",
+    "ingest_statement",
     "ingest_stock_basic",
     "load_survivorship",
     "month_end_trade_dates",
+    "namechange_pages",
+    "namechange_years",
     "report_periods",
 ]

@@ -58,6 +58,18 @@ class _FakePro:
     def fina_indicator_vip(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("fina_indicator_vip", **kwargs)
 
+    def income_vip(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("income_vip", **kwargs)
+
+    def cashflow_vip(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("cashflow_vip", **kwargs)
+
+    def balancesheet_vip(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("balancesheet_vip", **kwargs)
+
+    def namechange(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("namechange", **kwargs)
+
     def index_daily(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("index_daily", **kwargs)
 
@@ -167,6 +179,54 @@ class TestFullMarketPull:
         df = await client.fina_indicator_vip("20251231")
         assert len(df) == 7194  # 5000档 vip confirmed in live test
         assert pro.calls == [("fina_indicator_vip", {"period": "20251231"})]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method", ["income_vip", "cashflow_vip", "balancesheet_vip"]
+    )
+    async def test_financial_statement_vip_by_period(self, method: str) -> None:
+        # The R3-1 accruals/asset-growth statements: full-market by report period
+        # (one call), mirroring fina_indicator_vip.
+        pro = _FakePro({method: pd.DataFrame({"x": range(6400)})})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await getattr(client, method)("20251231")
+        assert len(df) == 6400
+        assert pro.calls == [(method, {"period": "20251231"})]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method", ["income_vip", "cashflow_vip", "balancesheet_vip"]
+    )
+    async def test_financial_statement_vip_rejects_bad_period(
+        self, method: str
+    ) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="period"):
+            await getattr(client, method)("2025-12-31")
+
+    @pytest.mark.asyncio
+    async def test_namechange_full_history_no_filter(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.namechange()
+        assert pro.calls == [("namechange", {})]
+
+    @pytest.mark.asyncio
+    async def test_namechange_by_year_range(self) -> None:
+        # R3-1 ingests namechange paginated by year of the change start_date so the
+        # full PIT name timeline is captured without a single-call row cap.
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.namechange(start_date="20200101", end_date="20201231")
+        assert pro.calls == [
+            ("namechange", {"start_date": "20200101", "end_date": "20201231"})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_namechange_rejects_bad_date(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError):
+            await client.namechange(start_date="2020", end_date="20201231")
 
     @pytest.mark.asyncio
     async def test_index_daily_by_ts_code(self) -> None:

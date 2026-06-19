@@ -14,24 +14,37 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from backend.data.historical_ingest.serialization import canonical_csv_bytes
+from backend.data.historical_ingest.serialization import (
+    canonical_csv_bytes,
+    parse_csv_bytes,
+)
 from backend.marketdata_snapshot.coverage import CoverageStore
 from backend.marketdata_snapshot.store import SnapshotStore
 from scripts.factor_research.ingest_round2_data import (
+    EP_BALANCESHEET,
+    EP_CASHFLOW,
     EP_FINA,
+    EP_INCOME,
     EP_INDEX_MEMBER,
     EP_INDEX_WEIGHT,
+    EP_NAMECHANGE,
     EP_STOCK_BASIC_D,
     EP_STOCK_BASIC_L,
+    STATEMENT_ENDPOINTS,
     _build_coverage,
     build_fina_coverage_manifests,
     ingest_fina_indicator,
     ingest_index_member_all,
     ingest_index_weight,
+    ingest_namechange,
     ingest_round2,
+    ingest_round3,
+    ingest_statement,
     ingest_stock_basic,
     load_survivorship,
     month_end_trade_dates,
+    namechange_pages,
+    namechange_years,
     report_periods,
 )
 
@@ -54,6 +67,9 @@ class _FakeRound2Client:
         listed: pd.DataFrame | None = None,
         delisted: pd.DataFrame | None = None,
         empty_periods: set[str] | None = None,
+        statements: dict[tuple[str, str], pd.DataFrame] | None = None,
+        empty_statements: set[tuple[str, str]] | None = None,
+        namechange_by_year: dict[int, pd.DataFrame] | None = None,
     ) -> None:
         self._weight = weight
         self._fina = fina or {}
@@ -61,7 +77,55 @@ class _FakeRound2Client:
         self._listed = listed
         self._delisted = delisted
         self._empty_periods = empty_periods or set()
+        self._statements = statements or {}
+        self._empty_statements = empty_statements or set()
+        self._namechange_by_year = namechange_by_year or {}
         self.calls: list[tuple[str, str]] = []
+
+    def _statement(self, endpoint: str, period: str) -> pd.DataFrame:
+        self.calls.append((endpoint, period))
+        if (endpoint, period) in self._empty_statements:
+            return pd.DataFrame()
+        return self._statements.get(
+            (endpoint, period),
+            pd.DataFrame(
+                {
+                    "ts_code": ["600519.SH"],
+                    "end_date": [period],
+                    "ann_date": [period],
+                    "report_type": ["1"],
+                }
+            ),
+        )
+
+    async def income_vip(self, period: str) -> pd.DataFrame:
+        return self._statement("income_vip", period)
+
+    async def cashflow_vip(self, period: str) -> pd.DataFrame:
+        return self._statement("cashflow_vip", period)
+
+    async def balancesheet_vip(self, period: str) -> pd.DataFrame:
+        return self._statement("balancesheet_vip", period)
+
+    async def namechange(
+        self, *, start_date: str = "", end_date: str = ""
+    ) -> pd.DataFrame:
+        self.calls.append(("namechange", end_date or start_date))
+        year = int((start_date or end_date)[:4]) if (start_date or end_date) else 0
+        # Default: only 2018 has a row; other years legitimately empty.
+        if year in self._namechange_by_year:
+            return self._namechange_by_year[year]
+        if year == 2018:
+            return pd.DataFrame(
+                {
+                    "ts_code": ["600519.SH"],
+                    "name": ["*ST茅台"],
+                    "start_date": ["20180115"],
+                    "end_date": [""],
+                    "change_reason": ["test"],
+                }
+            )
+        return pd.DataFrame()
 
     async def index_weight(
         self,
@@ -440,3 +504,227 @@ class TestOrchestrator:
         assert len(cov_results) == 1
         assert cov_results[0].status == "failed"
         assert cov_results[0].endpoint == "coverage"
+
+
+# --- R3-1: financial statements + namechange --------------------------------
+
+
+class TestRound3Statements:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", [EP_INCOME, EP_CASHFLOW, EP_BALANCESHEET])
+    async def test_statement_persists_per_period(
+        self, tmp_path: Path, endpoint: str
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_statement(
+            client, store, ["20240331", "20240630"], endpoint=endpoint, now=_now
+        )
+        assert [r.status for r in results] == ["ingested", "ingested"]
+        assert (
+            store.latest(vendor="tushare", endpoint=endpoint, trade_date="20240331")
+            is not None
+        )
+
+    @pytest.mark.asyncio
+    async def test_statement_byte_exact_checksum(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        frame = pd.DataFrame(
+            {"ts_code": ["600519.SH"], "n_income": [1.0e9], "report_type": ["1"]}
+        )
+        client = _FakeRound2Client(statements={(EP_INCOME, "20240331"): frame})
+        await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_INCOME, now=_now
+        )
+        snap = store.latest(vendor="tushare", endpoint=EP_INCOME, trade_date="20240331")
+        assert snap is not None
+        assert (
+            snap.raw_payload_sha256
+            == hashlib.sha256(canonical_csv_bytes(frame)).hexdigest()
+        )
+
+    @pytest.mark.asyncio
+    async def test_statement_idempotent_resume(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_CASHFLOW, now=_now
+        )
+        n_calls = len(client.calls)
+        second = await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_CASHFLOW, now=_now
+        )
+        assert second[0].status == "skipped"
+        assert len(client.calls) == n_calls  # no re-fetch on resume
+
+    @pytest.mark.asyncio
+    async def test_statement_empty_required_fails_closed(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(empty_statements={(EP_BALANCESHEET, "20240331")})
+        results = await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_BALANCESHEET, now=_now
+        )
+        assert results[0].status == "failed"
+        assert (
+            store.latest(
+                vendor="tushare", endpoint=EP_BALANCESHEET, trade_date="20240331"
+            )
+            is None
+        )
+
+
+class TestNamechange:
+    def test_namechange_years_inclusive_range(self) -> None:
+        assert namechange_years(2015, "20180615") == [2015, 2016, 2017, 2018]
+
+    def test_namechange_years_rejects_bad_asof(self) -> None:
+        with pytest.raises(ValueError, match="YYYYMMDD"):
+            namechange_years(2015, "2018")
+
+    @pytest.mark.asyncio
+    async def test_namechange_year_paged_empty_year_stored_not_failed(
+        self, tmp_path: Path
+    ) -> None:
+        # 2017 returns empty (legit) → stored as a valid empty snapshot (not
+        # FAILED); 2018 has a real row. Both keyed by the year-end.
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_namechange(
+            client, store, first_year=2017, asof="20181231", now=_now
+        )
+        assert [r.key for r in results] == ["20171231", "20181231"]
+        assert all(r.status == "ingested" for r in results)  # empty year NOT failed
+        snap2017 = store.latest(
+            vendor="tushare", endpoint=EP_NAMECHANGE, trade_date="20171231"
+        )
+        assert snap2017 is not None and snap2017.metadata.get("rows") == 0
+        snap2018 = store.latest(
+            vendor="tushare", endpoint=EP_NAMECHANGE, trade_date="20181231"
+        )
+        assert snap2018 is not None and snap2018.metadata.get("rows") == 1
+
+    @pytest.mark.asyncio
+    async def test_namechange_idempotent_resume(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_namechange(
+            client, store, first_year=2018, asof="20181231", now=_now
+        )
+        n_calls = len(client.calls)
+        second = await ingest_namechange(
+            client, store, first_year=2018, asof="20181231", now=_now
+        )
+        assert [r.status for r in second] == ["skipped"]
+        assert len(client.calls) == n_calls
+
+    def test_namechange_pages_current_year_keyed_by_asof(self) -> None:
+        # codex P2: a mid-year asof must NOT key the current year YYYY1231 (that
+        # stores a partial page under the final key and never refreshes). Past
+        # years stay stable YYYY1231; the current year uses asof as end + key.
+        pages = namechange_pages(2024, "20260618")
+        assert pages == [
+            ("20240101", "20241231", "20241231"),
+            ("20250101", "20251231", "20251231"),
+            ("20260101", "20260618", "20260618"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_namechange_empty_year_snapshot_is_replayable(
+        self, tmp_path: Path
+    ) -> None:
+        # codex P2: an empty no-change year must serialize WITH the namechange
+        # header (not bare '\n'), so a PIT reader can replay it as a 0-row frame.
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()  # 2017 returns a zero-column empty frame
+        await ingest_namechange(
+            client, store, first_year=2017, asof="20171231", now=_now
+        )
+        snap = store.latest(
+            vendor="tushare", endpoint=EP_NAMECHANGE, trade_date="20171231"
+        )
+        assert snap is not None
+        frame = parse_csv_bytes(snap.raw_payload)  # must NOT raise EmptyDataError
+        assert len(frame) == 0
+        assert {"ts_code", "name", "start_date", "end_date"} <= set(frame.columns)
+
+
+class TestRound3Orchestrator:
+    @pytest.mark.asyncio
+    async def test_full_run_builds_per_statement_coverage(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        # Rosters must exist first (statement coverage needs the survivorship set);
+        # keyed by the SAME asof the round-3 run uses (real main passes one asof).
+        await ingest_stock_basic(client, store, "20181231", now=_now)
+        calendar = ["20240105", "20240131", "20240401"]  # spans Q1 end
+        report = await ingest_round3(
+            client,
+            store,
+            coverage_store,
+            calendar=calendar,
+            first_year=2024,
+            asof="20181231",  # namechange paged 2017..2018 (one real row in 2018)
+            now=_now,
+            namechange_first_year=2017,
+        )
+        assert report.failed == 0
+        # 3 statements × 1 Q1 period + 2 namechange years (2017 empty, 2018 row).
+        assert report.ingested == 3 + 2
+        # One coverage manifest per (statement endpoint × period).
+        assert len(report.fina_coverage) == len(STATEMENT_ENDPOINTS)
+        for endpoint in STATEMENT_ENDPOINTS:
+            assert (
+                coverage_store.get(endpoint=endpoint, session_end="20240331")
+                is not None
+            )
+
+    @pytest.mark.asyncio
+    async def test_coverage_fails_closed_without_rosters(self, tmp_path: Path) -> None:
+        # No L/D rosters ingested → survivorship universe unbuildable → the
+        # coverage step must surface a FAILED result, not warn-and-pass.
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        calendar = ["20240105", "20240401"]
+        report = await ingest_round3(
+            client,
+            store,
+            coverage_store,
+            calendar=calendar,
+            first_year=2024,
+            asof="20181231",
+            now=_now,
+            namechange_first_year=2018,
+        )
+        assert report.failed == 1
+        assert any(
+            r.endpoint == "coverage" and r.status == "failed" for r in report.results
+        )
+
+    @pytest.mark.asyncio
+    async def test_rerun_idempotent_no_coverage_duplication(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20181231", now=_now)
+        calendar = ["20240105", "20240401"]
+        kwargs = dict(
+            calendar=calendar,
+            first_year=2024,
+            asof="20181231",
+            now=_now,
+            namechange_first_year=2018,
+        )
+        first = await ingest_round3(client, store, coverage_store, **kwargs)  # type: ignore[arg-type]
+        assert first.failed == 0
+        second = await ingest_round3(client, store, coverage_store, **kwargs)  # type: ignore[arg-type]
+        assert second.ingested == 0  # all skipped on resume
+        cov_lines = [
+            ln
+            for ln in (tmp_path / "coverage.jsonl").read_text().splitlines()
+            if ln.strip()
+        ]
+        assert len(cov_lines) == len(STATEMENT_ENDPOINTS)  # no duplicate rows

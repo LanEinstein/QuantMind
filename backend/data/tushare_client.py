@@ -92,6 +92,10 @@ class TusharePro(Protocol):
     def daily_basic(self, **kwargs: Any) -> pd.DataFrame: ...
     def adj_factor(self, **kwargs: Any) -> pd.DataFrame: ...
     def fina_indicator_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def income_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def cashflow_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def balancesheet_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def namechange(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_daily(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_weight(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_member_all(self, **kwargs: Any) -> pd.DataFrame: ...
@@ -108,9 +112,7 @@ class TushareFallback(Protocol):
     best-effort degrade path, not a snapshot-grade source.
     """
 
-    async def fetch(
-        self, endpoint: str, params: dict[str, Any]
-    ) -> pd.DataFrame: ...
+    async def fetch(self, endpoint: str, params: dict[str, Any]) -> pd.DataFrame: ...
 
 
 def _fingerprint(value: str) -> str:
@@ -185,16 +187,12 @@ class TushareClient:
     @staticmethod
     def _check_trade_date(trade_date: str) -> None:
         if not _TRADE_DATE_RE.match(trade_date):
-            raise ValueError(
-                f"trade_date {trade_date!r} must be YYYYMMDD (8 digits)"
-            )
+            raise ValueError(f"trade_date {trade_date!r} must be YYYYMMDD (8 digits)")
 
     @staticmethod
     def _check_period(period: str) -> None:
         if not _PERIOD_RE.match(period):
-            raise ValueError(
-                f"period {period!r} must be a report-period end YYYYMMDD"
-            )
+            raise ValueError(f"period {period!r} must be a report-period end YYYYMMDD")
 
     @staticmethod
     def _check_ts_code(ts_code: str) -> None:
@@ -215,9 +213,7 @@ class TushareClient:
             if self._fallback is None:
                 log.error("tushare_fetch_failed", endpoint=endpoint, error=str(exc))
                 raise TushareFetchError(endpoint, params) from exc
-            log.warning(
-                "tushare_fetch_fallback", endpoint=endpoint, error=str(exc)
-            )
+            log.warning("tushare_fetch_fallback", endpoint=endpoint, error=str(exc))
             return await self._fallback.fetch(endpoint, params)
 
     # -- full-market single-pull endpoints -----------------------------
@@ -241,6 +237,57 @@ class TushareClient:
         """Full-market fundamentals for a report period (~7194 rows, 5000档 vip)."""
         self._check_period(period)
         return await self._fetch("fina_indicator_vip", {"period": period})
+
+    async def income_vip(self, period: str) -> pd.DataFrame:
+        """Full-market income statement for a report period (~6700 rows, vip).
+
+        Round-3 accruals input (``n_income`` = net profit). Multiple
+        ``report_type`` rows per ``(ts_code, end_date)`` exist; the PIT
+        consolidated-report (``report_type='1'``) selection + ann_date vintage
+        gating live in the R3-2 statements reader, not here.
+        """
+        self._check_period(period)
+        return await self._fetch("income_vip", {"period": period})
+
+    async def cashflow_vip(self, period: str) -> pd.DataFrame:
+        """Full-market cash-flow statement for a report period (~6400 rows, vip).
+
+        Round-3 accruals input (``n_cashflow_act`` = operating cash flow).
+        """
+        self._check_period(period)
+        return await self._fetch("cashflow_vip", {"period": period})
+
+    async def balancesheet_vip(self, period: str) -> pd.DataFrame:
+        """Full-market balance sheet for a report period (~7000 rows, vip).
+
+        Round-3 accruals + asset-growth input (``total_assets``, a stock — no
+        YTD differencing, but still ann_date-gated PIT).
+        """
+        self._check_period(period)
+        return await self._fetch("balancesheet_vip", {"period": period})
+
+    async def namechange(
+        self, *, start_date: str = "", end_date: str = ""
+    ) -> pd.DataFrame:
+        """Historical share name changes (``ts_code`` / ``name`` / ``start_date`` /
+        ``end_date`` / ``change_reason``) — the PIT ST-flag source (R3-1).
+
+        A name's ``start_date`` / ``end_date`` give the interval it was in
+        effect, so a backtest can reconstruct the point-in-time name (and the
+        ``*ST`` / ``ST`` / 退 prefix) of any code on any date. The offline ingest
+        paginates by the change ``start_date`` *year* (each year is far under the
+        per-call row cap) for a complete timeline; an empty year is legitimate
+        (no name changes that year), so the ingest does NOT require non-empty.
+        Pass neither date for a single best-effort full pull.
+        """
+        params: dict[str, Any] = {}
+        if start_date:
+            self._check_trade_date(start_date)
+            params["start_date"] = start_date
+        if end_date:
+            self._check_trade_date(end_date)
+            params["end_date"] = end_date
+        return await self._fetch("namechange", params)
 
     async def index_daily(
         self, ts_code: str, *, start_date: str = "", end_date: str = ""
