@@ -19,8 +19,12 @@ import argparse
 import csv
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from backend.marketdata_snapshot.store import SnapshotStore
 
 from .benchmark_relative import (
     CARRY_FACTORS,
@@ -81,6 +85,29 @@ def build_index_returns(
         if b0 > 0 and b1 > 0:
             out[d] = b1 / b0 - 1.0
     return out
+
+
+def pretest_benchmark_inputs(
+    store: SnapshotStore,
+    snapshot_root: str,
+    benchmark_path: str,
+    test_start: str,
+    dates: Sequence[str],
+    horizon: int,
+) -> tuple[BenchmarkWeightsPIT, dict[str, float]]:
+    """Build the firewall-restricted (benchmark weights, index returns) pair.
+
+    The SINGLE construction point for the research firewall's benchmark side:
+    both ``index_weight`` snapshot keys and the CSI300 closes are restricted to
+    STRICTLY before ``test_start`` so no test-window weight payload or index bar
+    is ever consumed during development (R2-3/R2-4 share this). Returns the PIT
+    benchmark-weight reader + the per-date CSI300 horizon returns over ``dates``.
+    """
+    pre_test_keys = tuple(k for k in index_weight_keys(snapshot_root) if k < test_start)
+    bench_pit = BenchmarkWeightsPIT.build(store, pre_test_keys)
+    benchmark = load_benchmark_before(benchmark_path, test_start)
+    index_returns = build_index_returns(benchmark, dates, horizon)
+    return bench_pit, index_returns
 
 
 def _equal_carry_weights() -> dict[str, float]:
@@ -260,20 +287,20 @@ def main() -> None:
 
     store = SnapshotStore(args.snapshot_root)
     # Research firewall: never read the sacred test window — not the panel, and
-    # not the benchmark SIDE inputs (codex P1/P2). Restrict the index_weight
-    # snapshot keys AND the CSI300 closes to strictly before test_start before
-    # building/using them, so no test-window weight payload or index bar is ever
-    # consumed during an R2-3 development diagnostic.
+    # not the benchmark SIDE inputs. The shared single-construction-point helper
+    # restricts both the index_weight keys AND the CSI300 closes to strictly
+    # before test_start, so no test-window payload is ever consumed here.
     split = LockedSplit.load(args.lock, args.snapshot_root)
     split.assert_all_not_test(sorted(panel["date"].astype(str).unique()))
-    test_start = split.test_dates[0]
-    pre_test_keys = tuple(
-        k for k in index_weight_keys(args.snapshot_root) if k < test_start
-    )
-    bench_pit = BenchmarkWeightsPIT.build(store, pre_test_keys)
-    benchmark = load_benchmark_before(args.benchmark, test_start)
     dates = sorted(panel["date"].astype(str).unique())
-    index_returns = build_index_returns(benchmark, dates, args.horizon)
+    bench_pit, index_returns = pretest_benchmark_inputs(
+        store,
+        args.snapshot_root,
+        args.benchmark,
+        split.test_dates[0],
+        dates,
+        args.horizon,
+    )
 
     report = build_report(panel, bench_pit, index_returns, horizon=args.horizon)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
