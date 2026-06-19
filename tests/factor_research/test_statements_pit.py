@@ -25,6 +25,7 @@ from scripts.factor_research.ingest_round2_data import (
 from scripts.factor_research.statements_pit import (
     PeriodStatementPIT,
     read_statement_period,
+    statement_vintage_audit,
 )
 
 FIXED_NOW = datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC)
@@ -247,3 +248,31 @@ def test_unknown_code_returns_empty(store: SnapshotStore) -> None:
     )
     assert pit.as_known("000001.SZ", "20241231") == {}
     assert pit.asof("000001.SZ", "20241231") is None
+
+
+def test_statement_vintage_audit_counts_restatements(store: SnapshotStore) -> None:
+    # 600519 period 20231231 has TWO ann_dates (a restatement); 000001 has one.
+    _put(
+        store,
+        EP_BALANCESHEET,
+        "20231231",
+        pd.DataFrame(
+            {
+                "ts_code": ["600519.SH", "600519.SH", "000001.SZ"],
+                "end_date": ["20231231", "20231231", "20231231"],
+                "ann_date": ["20240330", "20240820", "20240328"],
+                "report_type": ["1", "1", "1"],
+                "update_flag": ["0", "1", "1"],
+                "total_assets": [1.0e11, 1.1e11, 4.0e12],
+            }
+        ),
+    )
+    pit = PeriodStatementPIT.build(
+        store, ["20231231"], endpoint=EP_BALANCESHEET, fields=["total_assets"]
+    )
+    audit = statement_vintage_audit(pit)
+    assert audit.n_codes == 2
+    assert audit.n_code_periods == 2  # one (code, end_date) each
+    assert audit.n_restated_code_periods == 1  # only 600519 restated
+    assert audit.restatement_rate == pytest.approx(0.5)
+    assert audit.ann_lag_days_median is not None

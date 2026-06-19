@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import io
 import re
+import statistics
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -45,6 +46,8 @@ from typing import NamedTuple
 import pandas as pd
 
 from backend.marketdata_snapshot.store import SnapshotStore
+
+from .fundamentals_pit import VintageAudit, _days_between
 
 VENDOR = "tushare"
 # Consolidated YTD report (合并报表) — the only report_type the statement factors
@@ -248,9 +251,51 @@ class PeriodStatementPIT:
         return known[max(known)]
 
 
+def statement_vintage_audit(pit: PeriodStatementPIT) -> VintageAudit:
+    """Restatement-contamination stats for a statement PIT (honest disclosure).
+
+    Mirrors :func:`fundamentals_pit.vintage_audit` over the generic statement
+    vintage index: a ``(code, end_date)`` counts as *restated* when it carries ≥2
+    distinct ``ann_date`` values. Reuses the shared :class:`VintageAudit` shape so
+    the R3-3 diagnostic reports income/cashflow/balancesheet contamination the
+    same way R2-2 reported fina.
+    """
+    code_periods = 0
+    restated = 0
+    ann_lags: list[int] = []
+    restate_gaps: list[int] = []
+    for vintages in pit.by_code.values():
+        by_end: dict[str, set[str]] = defaultdict(set)
+        for v in vintages:
+            by_end[v.end_date].add(v.ann_date)
+        for end_date, ann_dates in by_end.items():
+            code_periods += 1
+            first_ann = min(ann_dates)
+            lag = _days_between(first_ann, end_date)
+            if lag is not None:
+                ann_lags.append(lag)
+            if len(ann_dates) >= 2:
+                restated += 1
+                gap = _days_between(max(ann_dates), first_ann)
+                if gap is not None:
+                    restate_gaps.append(gap)
+    rate = restated / code_periods if code_periods else 0.0
+    return VintageAudit(
+        n_codes=len(pit.by_code),
+        n_code_periods=code_periods,
+        n_restated_code_periods=restated,
+        restatement_rate=rate,
+        ann_lag_days_median=(statistics.median(ann_lags) if ann_lags else None),
+        restate_gap_days_median=(
+            statistics.median(restate_gaps) if restate_gaps else None
+        ),
+    )
+
+
 __all__ = [
     "CONSOLIDATED_REPORT_TYPE",
     "PeriodStatementPIT",
     "StatementRecord",
     "read_statement_period",
+    "statement_vintage_audit",
 ]
