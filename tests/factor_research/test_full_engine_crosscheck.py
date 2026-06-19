@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pandas as pd
 
 from scripts.factor_research.benchmark_relative import CARRY_FACTORS
@@ -9,6 +12,7 @@ from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME
 from scripts.factor_research.full_engine_crosscheck import (
     _excess_max_drawdown,
     cross_check,
+    load_selected_strategy,
 )
 
 
@@ -32,6 +36,24 @@ def _panel(dates: list[str]) -> pd.DataFrame:
                 row[f"{base}_neut"] = sign * sc
             rows.append(row)
     return pd.DataFrame(rows)
+
+
+def test_load_selected_strategy_reads_search_result(tmp_path: Path) -> None:
+    # The pre-freeze loader reads the search-result JSON verbatim (no commitment
+    # assertion — that is the locked test's job).
+    art = {
+        "selected_constraint": "constituent_only",
+        "selected_k": 0.05,
+        "selected_a_max": 0.01,
+        "selected_nonconst_cap": 0.10,
+        "selected_weights": {"ep_ttm": 0.2, "accr": 0.006},
+    }
+    p = tmp_path / "search.json"
+    p.write_text(json.dumps(art))
+    constraint, k, a_max, cap, weights = load_selected_strategy(str(p))
+    assert constraint == "constituent_only"
+    assert (k, a_max, cap) == (0.05, 0.01, 0.10)
+    assert weights == {"ep_ttm": 0.2, "accr": 0.006}
 
 
 def test_excess_max_drawdown_counts_first_period_loss() -> None:

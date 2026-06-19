@@ -24,8 +24,11 @@ before the freeze); LLM-zero.
 
 from __future__ import annotations
 
+import argparse
+import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -141,8 +144,130 @@ def cross_check(
     )
 
 
+def load_selected_strategy(
+    path: str,
+) -> tuple[str, float, float, float, dict[str, float]]:
+    """``(constraint, k, a_max, nonconst_cap, weights)`` from a search-result JSON.
+
+    Pre-freeze read (R2-5/R3-5 run BEFORE the strategy is git-frozen), so unlike
+    the locked-test ``load_frozen_strategy`` this does NOT assert against a
+    committed pre-commitment — it just reads the selected strategy to stress-test.
+    """
+    art = json.loads(Path(path).read_text(encoding="utf-8"))
+    weights = {k: float(v) for k, v in art["selected_weights"].items()}
+    return (
+        str(art["selected_constraint"]),
+        float(art["selected_k"]),
+        float(art["selected_a_max"]),
+        float(art["selected_nonconst_cap"]),
+        weights,
+    )
+
+
+def _result_dict(res: CrossCheckResult) -> dict[str, object]:
+    """Serialize with the round-2 artifact's key names (stable across rounds)."""
+    d = asdict(res)
+    d["base_ir"] = d.pop("base_information_ratio")
+    d["stressed_ir"] = d.pop("stressed_information_ratio")
+    return d
+
+
+def main() -> None:
+    from .r2_benchmark_relative_diagnostics import pretest_benchmark_inputs
+    from .round2_search import WINSOR_QUANTILE, resolve_carry_inputs
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snapshot-root", default="data/marketdata_pit")
+    parser.add_argument("--benchmark", default="data/factor_research/csi300_daily.csv")
+    parser.add_argument("--lock", default="config/research/test_set_lock.json")
+    parser.add_argument("--horizon", type=int, default=5)
+    parser.add_argument("--carry", choices=("r2", "r3"), default="r2")
+    # Empty → resolved per --carry (panel from resolve_carry_inputs; search-result
+    # / out from the per-round map below). Explicit values win.
+    parser.add_argument("--panel", default="")
+    parser.add_argument("--search-result", default="")
+    parser.add_argument("--out", default="")
+    args = parser.parse_args()
+
+    carry, panel_path, _, search_default = resolve_carry_inputs(
+        args.carry, panel=args.panel
+    )
+    search_result = args.search_result or search_default
+    # Canonical per-round artifact paths (match the committed round-2 artifact +
+    # docs: round2_crosscheck_result.json, not r2_crosscheck_result.json).
+    crosscheck_out = {
+        "r2": "data/factor_research/round2_crosscheck_result.json",
+        "r3": "data/factor_research/round3_crosscheck_result.json",
+    }
+    out_path = args.out or crosscheck_out[args.carry]
+
+    constraint, k, a_max, nonconst_cap, weights = load_selected_strategy(search_result)
+
+    from backend.marketdata_snapshot.store import SnapshotStore
+
+    from .locked_split import LockedSplit
+    from .neutralize import neutralize_panel
+
+    # Firewall FIRST: preflight ONLY the date column and assert it is train_val
+    # only, BEFORE the factor/label columns are ever read or neutralized. The
+    # pre-freeze cross-check covenant is that test data is not consumed at all,
+    # so a mis-pointed --panel must fail before any test row is materialized.
+    split = LockedSplit.load(args.lock, args.snapshot_root)
+    preflight = pd.read_csv(panel_path, usecols=["date"], dtype={"date": str})
+    dates = sorted(preflight["date"].astype(str).unique())
+    split.assert_all_not_test(dates)
+    # Stricter than not-test: the scored rows must be a SUBSET of train_val. An
+    # embargo (purge-gap) row is not "test" yet its forward-return label can
+    # straddle the test boundary, so a mis-pointed --panel that includes embargo
+    # rows must be rejected before any factor/label column is read (fail-closed).
+    non_train_val = sorted(set(dates) - set(split.train_val_dates))
+    if non_train_val:
+        raise ValueError(
+            f"--panel has {len(non_train_val)} non-train_val date(s) "
+            f"(e.g. {non_train_val[:3]}) — the pre-freeze cross-check scores "
+            "train_val ONLY (embargo forward-labels can straddle test)."
+        )
+    panel = pd.read_csv(panel_path, dtype={"date": str, "code": str, "ts_code": str})
+    panel = neutralize_panel(panel, list(carry), winsor_quantile=WINSOR_QUANTILE)
+
+    # Firewall: benchmark weights + CSI300 closes STRICTLY before test_start.
+    bench_pit, index_returns = pretest_benchmark_inputs(
+        SnapshotStore(args.snapshot_root),
+        args.snapshot_root,
+        args.benchmark,
+        split.test_dates[0],
+        dates,
+        args.horizon,
+    )
+    res = cross_check(
+        panel,
+        bench_pit.asof,
+        index_returns,
+        weights=weights,
+        exposure_constraint=constraint,
+        k=k,
+        a_max=a_max,
+        nonconst_cap=nonconst_cap,
+        horizon=args.horizon,
+    )
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(_result_dict(res), indent=2), encoding="utf-8")
+    print(
+        f"cross-check [{args.carry}] {constraint}: base_excess="
+        f"{res.base_total_excess:+.2%} stressed={res.stressed_total_excess:+.2%} "
+        f"delta={res.excess_delta:+.2%} monotone={res.monotone_friction} "
+        f"oracle={res.oracle_cross_checked} -> {out}"
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
 __all__ = [
     "STRESS_MULTIPLIER",
     "CrossCheckResult",
     "cross_check",
+    "load_selected_strategy",
 ]
