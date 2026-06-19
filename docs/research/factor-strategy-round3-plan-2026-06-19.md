@@ -6,11 +6,15 @@
 > Tushare 权限地图(2026-06-19 探测)= memory `reference-tushare-entitlements-2026-06-19.md`。
 > **本文件 = 书面方案(plan-first);执行(摄取=owner-gated 重活)在 owner 批准后。**
 
-> **实施进度(2026-06-19):** R3-1/R3-2/R3-3 **代码 done + codex 全过(0 P0/P1)+ 本地 commit
-> `120ea82`/`5678f45`/`40255b3`(未 push;297 测试绿)**。⛔ 卡 owner-gate「开」→ R3-1 真摄取
-> → r3 面板 → R3-3 诊断真跑(定 carry)→ R3-4 搜索 → R3-5 冻结 → R3-6 判定。**R3-4/5/6 代码未写**
-> (数据派生常量须等真跑)。**执行期接手文件(exhaustive,新 session 读它接手)=
-> `docs/research/factor-strategy-round3-handoff-2026-06-19.md`。**
+> **✅ 全轮 done = 终判 FAIL(owner「开」→ 执行;判定运行完成 2026-06-20)。** commit
+> `120ea82`(R3-1)`5678f45`(R3-2)`40255b3`(R3-3)`a24a6ba`(**真跑暴露+修复 Tushare
+> 单调用静默截断:三表分页重摄,coverage 59%→99.83%**)`8c932cc`(R3-4 carry 参数化搜索)
+> `cb779d0`(R3-5 成本压力+git 冻结,读 test 前)+ 本报告 docs commit(本地未 push)。
+> **R3-3 carry 决策:三新因子只 `accr`(应计)幸存**(中性化 |t|=4.35);SUE 丢(neut |t|=2.74<3)/
+> 资产增长丢(符号错)。R3_CARRY=11+accr。**R3-6 既有测试集第 3 次评测:净 +17.83%/夏普 1.51/
+> 回撤 7.00% 但超额 −4.00%(CSI300 +21.84%)→ 四门 3 过 1 不过 = FAIL**。诚实门事先警告
+> (DSR 0.032/SPA-vs-passive 0.110);accr 仅 0.006 权重,未转正超额。**三轮三 FAIL,反过拟合门
+> 三次正确预警。报告 `factor-strategy-round3-result-2026-06-19.md`;下一轮方向见报告 §7。**
 
 ---
 
