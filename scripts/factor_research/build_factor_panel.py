@@ -461,6 +461,52 @@ def build_panel_r2(
     )
 
 
+def build_test_panel_r2(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    fundamentals: _FundamentalsLookup,
+    industry: _IndustryLookup,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    extra_lag_days: int = 0,
+) -> pd.DataFrame:
+    """R2-6 ONE-SHOT — the SOLE sanctioned reader of the sacred test window for round-2.
+
+    The round-2 analogue of :func:`build_test_panel`. Unlike :func:`build_panel_r2`
+    (which fails closed on any test date), this deliberately reads test bars: at
+    each test rebalance date ``d`` the features use bars ``<= d`` (a
+    :data:`TEST_FEATURE_BUFFER_TD` buffer of non-test history before test_start,
+    then test bars up to ``d``) and the forward-return labels use test bars
+    ``> d``. Fundamentals/industry remain PIT (ann_date / in-out-date gated by
+    ``d``), so reading them for a test date is the sanctioned test read, NOT
+    leakage. Rebalances ONLY on test dates. The test-set covenant permits exactly
+    one such evaluation, for the strategy git-frozen in R2-5 — never call this
+    during strategy development.
+    """
+    pre_test = [*split.train_val_dates, *split.embargo_dates]  # all non-test
+    buffer = list(pre_test[-TEST_FEATURE_BUFFER_TD:])
+    feature_dates = [*buffer, *split.test_dates]
+    log.warning(
+        "r2_locked_test_panel_build",
+        note="reading the SACRED test window (round-2 one-shot, sanctioned)",
+        buffer_td=len(buffer),
+        test_td=len(split.test_dates),
+        test_start=split.test_dates[0],
+        test_end=split.test_dates[-1],
+    )
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.test_dates[::rebalance_freq])
+    return _panel_frame_r2(
+        _build_rows_r2(
+            series,
+            rebalance_dates,
+            fundamentals=fundamentals,
+            industry=industry,
+            extra_lag_days=extra_lag_days,
+        )
+    )
+
+
 def _latest_snapshot_key(snapshot_root: str, endpoint: str) -> str:
     """Highest ``trade_date`` stored for ``endpoint`` (for the as-of CLI default).
 
@@ -539,12 +585,15 @@ def main() -> None:
         test_sealed=len(split.test_dates),
     )
     if args.factor_set == "r2" and args.mode == "test":
-        # No sanctioned round-2 test-panel path exists (the test window stays
-        # sealed for round-2); r2 builds train_val only. Refuse rather than
-        # silently write train rows to a test output path (codex P2).
+        # The round-2 test window has exactly ONE sanctioned reader —
+        # build_test_panel_r2, called only by the R2-6 one-shot runner
+        # (r2_locked_test.py) AFTER the strategy is git-frozen. The generic CLI
+        # refuses, so a development run can never accidentally materialise the
+        # test panel here (the freeze-then-read covenant lives in the runner).
         raise SystemExit(
-            "factor-set r2 has no sanctioned test path — the round-2 test "
-            "window is sealed; r2 builds train_val only. Refusing."
+            "factor-set r2 test panel is built ONLY by the R2-6 one-shot runner "
+            "(scripts.factor_research.r2_locked_test), after the strategy is "
+            "git-frozen. The generic CLI refuses to read the sealed test window."
         )
     if args.factor_set == "r2":
         # Fundamentals only need report periods whose end_date <= train_val end

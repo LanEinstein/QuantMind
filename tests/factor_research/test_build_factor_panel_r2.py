@@ -10,7 +10,10 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
-from scripts.factor_research.build_factor_panel import build_panel_r2
+from scripts.factor_research.build_factor_panel import (
+    build_panel_r2,
+    build_test_panel_r2,
+)
 from scripts.factor_research.factor_lib import FACTOR_NAMES, R2_FACTOR_NAMES
 from scripts.factor_research.locked_split import LockedSplit
 
@@ -30,13 +33,21 @@ def _csv(header: str, rows: list[str]) -> bytes:
 
 
 class _FakeStore:
-    """Serves per-date snapshots; RAISES if a sealed test date is read."""
+    """Serves per-date snapshots; RAISES on a sealed test date unless allowed.
 
-    def __init__(self, codes: dict[str, dict[str, list[float]]]) -> None:
+    ``seal_test=True`` (default) proves ``build_panel_r2`` never reads test;
+    ``seal_test=False`` lets ``build_test_panel_r2`` (the R2-6 sanctioned reader)
+    deliberately read the test window.
+    """
+
+    def __init__(
+        self, codes: dict[str, dict[str, list[float]]], *, seal_test: bool = True
+    ) -> None:
         self._codes = codes
+        self._seal_test = seal_test
 
     def latest(self, *, vendor: str, endpoint: str, trade_date: str):  # noqa: ANN201
-        if trade_date in _TEST:
+        if self._seal_test and trade_date in _TEST:
             raise AssertionError(f"builder read SEALED test date {trade_date}")
         i = _DATES.index(trade_date)
         daily, adj, basic = [], [], []
@@ -149,3 +160,41 @@ def test_r2_trend_computed_on_long_history() -> None:
     # the last rebalance date has ~257 bars ≥ the 253-bar 12-1 momentum need
     assert late["mom_12_1"].notna().any()
     assert late["trend_slope"].notna().any()
+
+
+def test_build_test_panel_r2_reads_test_and_rebalances_on_test_only() -> None:
+    # The R2-6 sanctioned reader DELIBERATELY reads the test window (the store
+    # is unsealed) and rebalances ONLY on test dates, with the same R2 columns.
+    panel = build_test_panel_r2(
+        _split(),
+        _FakeStore(_codes(), seal_test=False),
+        fundamentals=_FakeFund(),
+        industry=_FakeIndustry(),
+        rebalance_freq=5,
+    )
+    assert not panel.empty
+    assert set(panel["date"]) <= set(_TEST)  # rebalances ONLY on test dates
+    assert set(panel["date"]) & set(_TEST)  # actually read the test window
+    for col in (
+        "ts_code",
+        *FACTOR_NAMES,
+        *R2_FACTOR_NAMES,
+        "industry_l1",
+        "circ_mv",
+        "log_circ_mv",
+        "fwd_ret_5d",
+    ):
+        assert col in panel.columns
+
+
+def test_build_panel_r2_still_seals_test_window() -> None:
+    # the train_val builder must still fail closed if it ever touches a test date
+    # (the sealed store raises) — guards against a regression from the new reader.
+    panel = build_panel_r2(
+        _split(),
+        _FakeStore(_codes(), seal_test=True),
+        fundamentals=_FakeFund(),
+        industry=_FakeIndustry(),
+        rebalance_freq=64,
+    )
+    assert not (set(panel["date"]) & set(_TEST))
