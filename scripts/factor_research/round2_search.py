@@ -41,6 +41,7 @@ import pandas as pd
 
 from .benchmark_relative import (
     CARRY_FACTORS,
+    R3_CARRY_FACTORS,
     BenchmarkRelativeResult,
     benchmark_relative_backtest,
 )
@@ -68,6 +69,41 @@ SENTINEL_SEEDS: tuple[int, ...] = (101, 202, 303, 404, 505, 606, 707, 808)
 WINSOR_QUANTILE: float = 0.01
 DEFAULT_MANIFEST = "config/research/round2_experiment_manifest.json"
 
+# Per-round CLI input defaults, keyed by the --carry choice, so `--carry r3`
+# alone selects the round-3 panel/manifest/out (not the round-2 ones, which lack
+# the accr column and would KeyError). Explicit --panel/--manifest/--out win.
+_CARRY_DEFAULTS: dict[str, tuple[str, str, str]] = {
+    # carry choice: (panel, manifest, out)
+    "r2": (
+        "data/factor_research/panel_train_val_r2.csv",
+        DEFAULT_MANIFEST,
+        "data/factor_research/round2_search_result.json",
+    ),
+    "r3": (
+        "data/factor_research/panel_train_val_r3.csv",
+        "config/research/round3_experiment_manifest.json",
+        "data/factor_research/round3_search_result.json",
+    ),
+}
+
+
+def resolve_carry_inputs(
+    choice: str,
+    *,
+    panel: str = "",
+    manifest: str = "",
+    out: str = "",
+) -> tuple[Sequence[str], str, str, str]:
+    """``(carry, panel, manifest, out)`` for a ``--carry`` choice.
+
+    The carry tuple and the three file paths are selected together so a
+    ``--carry r3`` run never mixes the round-3 carry with the round-2 panel/
+    manifest. Any explicitly-passed path overrides its per-round default.
+    """
+    carry = R3_CARRY_FACTORS if choice == "r3" else CARRY_FACTORS
+    d_panel, d_manifest, d_out = _CARRY_DEFAULTS[choice]
+    return carry, (panel or d_panel), (manifest or d_manifest), (out or d_out)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -76,7 +112,7 @@ class Candidate:
     constraint: str
     k: float
     a_max: float
-    weights: tuple[float, ...]  # positional over CARRY_FACTORS
+    weights: tuple[float, ...]  # positional over the run's carry tuple
 
 
 @dataclass(frozen=True)
@@ -108,30 +144,40 @@ class Round2SearchResult:
 # --- manifest ----------------------------------------------------------------
 
 
-def load_manifest(path: str = DEFAULT_MANIFEST) -> dict[str, Any]:
-    """Load + sanity-check the frozen experiment manifest (fail closed on drift)."""
+def load_manifest(
+    path: str = DEFAULT_MANIFEST, *, carry: Sequence[str] = CARRY_FACTORS
+) -> dict[str, Any]:
+    """Load + sanity-check the frozen experiment manifest (fail closed on drift).
+
+    ``carry`` is the factor order the searched weight vectors are positional over
+    (round-2 :data:`CARRY_FACTORS` by default; round-3 passes ``R3_CARRY_FACTORS``).
+    """
     manifest: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
     order = tuple(manifest["carry_factor_order"])
-    if order != tuple(CARRY_FACTORS):
+    if order != tuple(carry):
         raise ValueError(
-            f"manifest carry_factor_order {order} != CARRY_FACTORS {CARRY_FACTORS} "
+            f"manifest carry_factor_order {order} != carry {tuple(carry)} "
             "— searched weight vectors would remap; refusing (fail closed)."
         )
     return manifest
 
 
-def build_weight_vectors(manifest: dict[str, Any]) -> list[tuple[float, ...]]:
+def build_weight_vectors(
+    manifest: dict[str, Any], *, carry: Sequence[str] = CARRY_FACTORS
+) -> list[tuple[float, ...]]:
     """Equal-weight anchor + Sobol simplex points (the per-cell weight vectors)."""
     spec = manifest["degrees_of_freedom"]["weight_simplex"]
     dim = int(spec["dim"])
-    if dim != len(CARRY_FACTORS):
-        raise ValueError(f"weight_simplex dim {dim} != {len(CARRY_FACTORS)} carry")
+    if dim != len(carry):
+        raise ValueError(f"weight_simplex dim {dim} != {len(carry)} carry")
     equal = tuple(1.0 / dim for _ in range(dim))
     sobol = simplex_sobol(int(spec["n_sobol"]), dim, int(spec["seed"]))
     return [equal, *sobol]
 
 
-def build_candidates(manifest: dict[str, Any]) -> list[Candidate]:
+def build_candidates(
+    manifest: dict[str, Any], *, carry: Sequence[str] = CARRY_FACTORS
+) -> list[Candidate]:
     """The full pre-declared candidate grid (constraint × k × a_max × weights)."""
     dof = manifest["degrees_of_freedom"]
     constraints = dof["exposure_constraint"]["values"]
@@ -139,7 +185,7 @@ def build_candidates(manifest: dict[str, Any]) -> list[Candidate]:
         validate_constraint(c)
     ks = dof["k_grid"]["values"]
     a_maxes = dof["a_max_grid"]["values"]
-    vectors = build_weight_vectors(manifest)
+    vectors = build_weight_vectors(manifest, carry=carry)
     out: list[Candidate] = []
     for constraint in constraints:
         for k in ks:
@@ -149,8 +195,10 @@ def build_candidates(manifest: dict[str, Any]) -> list[Candidate]:
     return out
 
 
-def _weights_dict(w: Sequence[float]) -> dict[str, float]:
-    return dict(zip(CARRY_FACTORS, (float(x) for x in w), strict=True))
+def _weights_dict(
+    w: Sequence[float], *, carry: Sequence[str] = CARRY_FACTORS
+) -> dict[str, float]:
+    return dict(zip(carry, (float(x) for x in w), strict=True))
 
 
 # --- backtest + selection ----------------------------------------------------
@@ -164,13 +212,14 @@ def _run_candidate(
     *,
     horizon: int,
     nonconst_cap: float,
+    carry: Sequence[str] = CARRY_FACTORS,
 ) -> BenchmarkRelativeResult:
     """Backtest one candidate (benchmark-relative excess + exposures)."""
     return benchmark_relative_backtest(
         panel,
         bench_asof,
         index_returns,
-        weights=_weights_dict(cand.weights),
+        weights=_weights_dict(cand.weights, carry=carry),
         horizon=horizon,
         k=cand.k,
         a_max=cand.a_max,
@@ -267,7 +316,9 @@ def _spa_p(
 # --- sentinel ----------------------------------------------------------------
 
 
-def _shuffle_neut(panel: pd.DataFrame, seed: int) -> pd.DataFrame:
+def _shuffle_neut(
+    panel: pd.DataFrame, seed: int, *, carry: Sequence[str] = CARRY_FACTORS
+) -> pd.DataFrame:
     """Permute every ``*_neut`` column WITHIN each date (a no-signal control).
 
     A sentinel composite built on shuffled neutralized factors should carry no
@@ -276,7 +327,7 @@ def _shuffle_neut(panel: pd.DataFrame, seed: int) -> pd.DataFrame:
     """
     rng = np.random.default_rng(seed)
     out = panel.copy()
-    neut_cols = [f"{f}_neut" for f in CARRY_FACTORS if f"{f}_neut" in out.columns]
+    neut_cols = [f"{f}_neut" for f in carry if f"{f}_neut" in out.columns]
     for _, idx in panel.groupby("date", sort=True).groups.items():
         rows = list(idx)
         for col in neut_cols:
@@ -294,6 +345,7 @@ def _sentinel_val_irs(
     horizon: int,
     nonconst_cap: float,
     seeds: Sequence[int],
+    carry: Sequence[str] = CARRY_FACTORS,
 ) -> list[float]:
     """Val IR of the selected config on shuffled-composite (sentinel) panels."""
     irs: list[float] = []
@@ -301,10 +353,10 @@ def _sentinel_val_irs(
         selected.constraint,
         selected.k,
         selected.a_max,
-        tuple(1.0 / len(CARRY_FACTORS) for _ in CARRY_FACTORS),
+        tuple(1.0 / len(carry) for _ in carry),
     )
     for seed in seeds:
-        shuffled = _shuffle_neut(val_panel, seed)
+        shuffled = _shuffle_neut(val_panel, seed, carry=carry)
         r = _run_candidate(
             shuffled,
             bench_asof,
@@ -312,6 +364,7 @@ def _sentinel_val_irs(
             equal,
             horizon=horizon,
             nonconst_cap=nonconst_cap,
+            carry=carry,
         )
         irs.append(r.information_ratio)
     return irs
@@ -330,6 +383,7 @@ def _run_all(
     nonconst_cap: float,
     label: str,
     progress_every: int,
+    carry: Sequence[str] = CARRY_FACTORS,
 ) -> list[BenchmarkRelativeResult]:
     """Backtest every candidate over one panel (with progress logging)."""
     out: list[BenchmarkRelativeResult] = []
@@ -342,6 +396,7 @@ def _run_all(
                 c,
                 horizon=horizon,
                 nonconst_cap=nonconst_cap,
+                carry=carry,
             )
         )
         if progress_every and (i + 1) % progress_every == 0:
@@ -358,15 +413,18 @@ def search(
     split: LockedSplit | None = None,
     horizon: int = 5,
     progress_every: int = 100,
+    carry: Sequence[str] = CARRY_FACTORS,
 ) -> Round2SearchResult:
     """Run the pre-declared search and return the single selected strategy + disclosure.
 
     ``panel`` must be NEUTRALIZED (carry ``*_neut`` columns) and train_val only;
     ``bench_asof`` / ``index_returns`` must already be restricted to ``<
     test_start`` by the caller (firewall). The unique winner is the best inner-val
-    IR among the train-robust top-k finalists.
+    IR among the train-robust top-k finalists. ``carry`` is the factor order the
+    weight vectors are positional over (round-2 default; round-3 passes the
+    12-factor ``R3_CARRY_FACTORS``).
     """
-    manifest = load_manifest(manifest_path)
+    manifest = load_manifest(manifest_path, carry=carry)
     if split is None:
         split = LockedSplit.load()
     split.assert_all_not_test(sorted(panel["date"].astype(str).unique()))  # firewall
@@ -381,7 +439,7 @@ def search(
     train_panel, val_panel, train_dates, val_dates = split_train_val(
         panel, cutoff=cutoff, purge=purge
     )
-    candidates = build_candidates(manifest)
+    candidates = build_candidates(manifest, carry=carry)
     if len(candidates) != n_trials:
         raise ValueError(
             f"candidate count {len(candidates)} != manifest n_trials {n_trials} "
@@ -397,6 +455,7 @@ def search(
         nonconst_cap=nonconst_cap,
         label="train",
         progress_every=progress_every,
+        carry=carry,
     )
     val_results = _run_all(
         val_panel,
@@ -407,6 +466,7 @@ def search(
         nonconst_cap=nonconst_cap,
         label="val",
         progress_every=progress_every,
+        carry=carry,
     )
     train_irs = [r.information_ratio for r in train_results]
     val_irs = [r.information_ratio for r in val_results]
@@ -425,6 +485,7 @@ def search(
         index_returns=index_returns,
         horizon=horizon,
         nonconst_cap=nonconst_cap,
+        carry=carry,
     )
     return _assemble_result(
         candidates,
@@ -441,6 +502,7 @@ def search(
         n_train_dates=len(train_dates),
         n_val_dates=len(val_dates),
         nonconst_cap=nonconst_cap,
+        carry=carry,
     )
 
 
@@ -467,6 +529,7 @@ def _disclose_and_robustness(
     index_returns: Mapping[str, float],
     horizon: int,
     nonconst_cap: float,
+    carry: Sequence[str] = CARRY_FACTORS,
 ) -> _Disclosure:
     """DSR/PBO/SPA over the full pool + sentinel + anchored-WF/CPCV robustness."""
     date_sets = [set(r.dates) for r in val_results]
@@ -498,6 +561,7 @@ def _disclose_and_robustness(
         horizon=horizon,
         nonconst_cap=nonconst_cap,
         seeds=SENTINEL_SEEDS,
+        carry=carry,
     )
     full = _run_candidate(
         panel,
@@ -506,6 +570,7 @@ def _disclose_and_robustness(
         sel_cand,
         horizon=horizon,
         nonconst_cap=nonconst_cap,
+        carry=carry,
     )
     return _Disclosure(
         report=report,
@@ -532,6 +597,7 @@ def _assemble_result(
     n_train_dates: int,
     n_val_dates: int,
     nonconst_cap: float,
+    carry: Sequence[str] = CARRY_FACTORS,
 ) -> Round2SearchResult:
     """Plain field-plumbing of the search outputs into the result record."""
     sel_val_ir = val_irs[selected]
@@ -541,7 +607,7 @@ def _assemble_result(
         selected_k=sel_cand.k,
         selected_a_max=sel_cand.a_max,
         selected_nonconst_cap=nonconst_cap,
-        selected_weights=_weights_dict(sel_cand.weights),
+        selected_weights=_weights_dict(sel_cand.weights, carry=carry),
         n_trials=n_trials,
         cutoff=cutoff,
         n_train_dates=n_train_dates,
@@ -589,22 +655,30 @@ _CONSTRAINT_CODE: dict[str, float] = {
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot-root", default="data/marketdata_pit")
-    parser.add_argument(
-        "--panel", default="data/factor_research/panel_train_val_r2.csv"
-    )
     parser.add_argument("--benchmark", default="data/factor_research/csi300_daily.csv")
     parser.add_argument("--lock", default="config/research/test_set_lock.json")
-    parser.add_argument("--manifest", default=DEFAULT_MANIFEST)
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument(
-        "--out", default="data/factor_research/round2_search_result.json"
+        "--carry",
+        choices=("r2", "r3"),
+        default="r2",
+        help="r2 = round-2 eleven (CARRY_FACTORS); r3 = round-2 eleven + accr "
+        "(R3_CARRY_FACTORS, the R3-3 survivor). Selects the matching panel / "
+        "manifest / out defaults unless overridden.",
     )
+    # Default empty so the per-round default is resolved from --carry; an
+    # explicit value still overrides it (codex R3-4 P2: `--carry r3` alone must
+    # pick the r3 panel/manifest, not the r2 ones, which lack the accr column).
+    parser.add_argument("--panel", default="")
+    parser.add_argument("--manifest", default="")
+    parser.add_argument("--out", default="")
     args = parser.parse_args()
 
-    panel = pd.read_csv(args.panel, dtype={"date": str, "code": str, "ts_code": str})
-    panel = neutralize_panel(
-        panel, list(CARRY_FACTORS), winsor_quantile=WINSOR_QUANTILE
+    carry, panel_path, manifest_path, out_path = resolve_carry_inputs(
+        args.carry, panel=args.panel, manifest=args.manifest, out=args.out
     )
+    panel = pd.read_csv(panel_path, dtype={"date": str, "code": str, "ts_code": str})
+    panel = neutralize_panel(panel, list(carry), winsor_quantile=WINSOR_QUANTILE)
     split = LockedSplit.load(args.lock, args.snapshot_root)
     split.assert_all_not_test(sorted(panel["date"].astype(str).unique()))
     dates = sorted(panel["date"].astype(str).unique())
@@ -625,16 +699,17 @@ def main() -> None:
         panel,
         bench_pit.asof,
         index_returns,
-        manifest_path=args.manifest,
+        manifest_path=manifest_path,
         split=split,
         horizon=args.horizon,
+        carry=carry,
     )
 
-    out = Path(args.out)
+    out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
 
-    w = ", ".join(f"{f}={result.selected_weights[f]:.3f}" for f in CARRY_FACTORS)
+    w = ", ".join(f"{f}={result.selected_weights[f]:.3f}" for f in carry)
     d = result.disclosure
     print("=" * 64)
     print("R2-4 SEARCH — selected benchmark-relative strategy (DEV evidence)")
@@ -683,6 +758,7 @@ __all__ = [
     "build_candidates",
     "build_weight_vectors",
     "load_manifest",
+    "resolve_carry_inputs",
     "search",
 ]
 

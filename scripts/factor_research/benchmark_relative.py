@@ -69,6 +69,13 @@ CARRY_FACTORS: tuple[str, ...] = (
     "rev_yoy",
 )
 
+# Round-3 carry = round-2 eleven + the single R3-3 survivor: accruals (`accr`).
+# SUE was dropped (industry+size-neutralized |t|=2.74 < 3) and asset_growth was
+# dropped (wrong sign) — see factor-strategy-round3-r3-factor-diagnostics. `accr`
+# passed the full gate (neut |t|=4.35, aligned, max carry |corr|=0.13). Composed
+# from its `*_neut` column, same as the round-2 carry cluster.
+R3_CARRY_FACTORS: tuple[str, ...] = (*CARRY_FACTORS, "accr")
+
 # Conservative A-share one-way costs (≈ broker.yaml), buy/sell split:
 # buy = commission 0.015% + ~1.5bp slippage; sell adds 0.1% stamp duty.
 BUY_COST: float = 0.0003
@@ -527,6 +534,7 @@ __all__ = [
     "CARRY_FACTORS",
     "DEFAULT_A_MAX",
     "DEFAULT_K",
+    "R3_CARRY_FACTORS",
     "SELL_COST",
     "BenchmarkRelativeResult",
     "benchmark_relative_backtest",

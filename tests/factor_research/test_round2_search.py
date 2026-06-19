@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.factor_research.benchmark_relative import CARRY_FACTORS
+from scripts.factor_research.benchmark_relative import CARRY_FACTORS, R3_CARRY_FACTORS
 from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME, FACTOR_NAMES
 from scripts.factor_research.locked_split import LockedSplit
 from scripts.factor_research.round2_search import (
@@ -19,10 +19,12 @@ from scripts.factor_research.round2_search import (
     build_candidates,
     build_weight_vectors,
     load_manifest,
+    resolve_carry_inputs,
     search,
 )
 
 REAL_MANIFEST = "config/research/round2_experiment_manifest.json"
+R3_MANIFEST = "config/research/round3_experiment_manifest.json"
 
 
 # --- manifest / candidate grid ----------------------------------------------
@@ -62,6 +64,63 @@ def test_candidate_count_matches_manifest_n_trials() -> None:
     assert len(cands) == int(manifest["search_design"]["n_trials_total"])
 
 
+# --- round-3 carry parameterization (round-2 byte-behavior preserved) --------
+
+
+def test_r3_manifest_carry_order_matches_r3_carry() -> None:
+    # The round-3 manifest is keyed to R3_CARRY_FACTORS (eleven + accr); loading
+    # it with the round-3 carry passes, and the order matches by construction.
+    manifest = load_manifest(R3_MANIFEST, carry=R3_CARRY_FACTORS)
+    assert tuple(manifest["carry_factor_order"]) == tuple(R3_CARRY_FACTORS)
+    assert R3_CARRY_FACTORS == (*CARRY_FACTORS, "accr")
+
+
+def test_r3_manifest_fails_closed_under_round2_carry() -> None:
+    # The drift guard still fires across rounds: the 12-factor R3 manifest must
+    # NOT load under the 11-factor round-2 carry (the default).
+    with pytest.raises(ValueError, match="carry_factor_order"):
+        load_manifest(R3_MANIFEST)  # default carry == CARRY_FACTORS (eleven)
+
+
+def test_r3_weight_vectors_dim_12_sum_to_one() -> None:
+    manifest = load_manifest(R3_MANIFEST, carry=R3_CARRY_FACTORS)
+    vecs = build_weight_vectors(manifest, carry=R3_CARRY_FACTORS)
+    spec = manifest["degrees_of_freedom"]["weight_simplex"]
+    assert len(vecs) == 1 + int(spec["n_sobol"])
+    for v in vecs:
+        assert len(v) == len(R3_CARRY_FACTORS) == 12
+        assert sum(v) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_r3_candidate_count_matches_manifest_n_trials() -> None:
+    manifest = load_manifest(R3_MANIFEST, carry=R3_CARRY_FACTORS)
+    cands = build_candidates(manifest, carry=R3_CARRY_FACTORS)
+    assert len(cands) == int(manifest["search_design"]["n_trials_total"]) == 612
+    # weights are positional over the 12-factor carry
+    assert all(len(c.weights) == 12 for c in cands)
+
+
+def test_resolve_carry_inputs_selects_per_round_defaults() -> None:
+    # `--carry r3` alone must pick the r3 panel/manifest/out (not the r2 ones,
+    # which lack accr) — codex R3-4 P2.
+    carry, panel, manifest, out = resolve_carry_inputs("r3")
+    assert carry == R3_CARRY_FACTORS
+    assert panel == "data/factor_research/panel_train_val_r3.csv"
+    assert manifest == R3_MANIFEST
+    assert out == "data/factor_research/round3_search_result.json"
+
+    carry2, panel2, manifest2, out2 = resolve_carry_inputs("r2")
+    assert carry2 == CARRY_FACTORS
+    assert panel2 == "data/factor_research/panel_train_val_r2.csv"
+    assert manifest2 == REAL_MANIFEST
+
+    # explicit overrides win
+    _, panel3, manifest3, out3 = resolve_carry_inputs(
+        "r3", panel="x.csv", manifest="m.json", out="o.json"
+    )
+    assert (panel3, manifest3, out3) == ("x.csv", "m.json", "o.json")
+
+
 # --- pure helpers ------------------------------------------------------------
 
 
@@ -95,7 +154,9 @@ def test_shuffle_neut_preserves_per_date_multiset() -> None:
 # --- end-to-end search (tiny temp manifest) ---------------------------------
 
 
-def _synth_panel(dates: list[str]) -> pd.DataFrame:
+def _synth_panel(
+    dates: list[str], carry: tuple[str, ...] = CARRY_FACTORS
+) -> pd.DataFrame:
     names = ["a", "b", "c", "d", "e", "f"]
     base = {"a": 6.0, "b": 5.0, "c": 4.0, "d": 3.0, "e": 2.0, "f": 1.0}
     rows = []
@@ -116,23 +177,24 @@ def _synth_panel(dates: list[str]) -> pd.DataFrame:
             }
             for f in FACTOR_NAMES:  # round-1 raw factors (for the SPA baselines)
                 row[f] = float(sc)
-            for b in CARRY_FACTORS:  # neutralized composite inputs
+            for b in carry:  # neutralized composite inputs
                 sign = 1.0 if ALL_FACTORS_BY_NAME[b].attractive_high else -1.0
                 row[f"{b}_neut"] = sign * sc
             rows.append(row)
     return pd.DataFrame(rows)
 
 
-def _tiny_manifest(tmp_path: Path) -> str:
+def _tiny_manifest(tmp_path: Path, carry: tuple[str, ...] = CARRY_FACTORS) -> str:
     real = json.loads(Path(REAL_MANIFEST).read_text())
     m = dict(real)
+    m["carry_factor_order"] = list(carry)
     m["degrees_of_freedom"] = dict(real["degrees_of_freedom"])
     m["degrees_of_freedom"]["exposure_constraint"] = {"values": ["constituent_only"]}
     m["degrees_of_freedom"]["k_grid"] = {"values": [0.1]}
     m["degrees_of_freedom"]["a_max_grid"] = {"values": [0.02]}
     m["degrees_of_freedom"]["weight_simplex"] = {
         "sampler": "scrambled_sobol_kraemer_simplex",
-        "dim": len(CARRY_FACTORS),
+        "dim": len(carry),
         "n_sobol": 2,
         "seed": 1,
     }
@@ -174,3 +236,29 @@ def test_search_end_to_end_returns_selected_strategy(tmp_path: Path) -> None:
     assert 0.0 <= result.spa_p_vs_passive <= 1.0
     assert isinstance(result.sentinel_passes, bool)
     assert len(result.finalists) == 2
+
+
+def test_search_end_to_end_r3_carry_threads_accr(tmp_path: Path) -> None:
+    # Full carry-threaded path under the 12-factor round-3 carry: weights, the
+    # sentinel shuffle, and neutralized composite all span accr (the R3-3 survivor).
+    dates = [f"202401{i:02d}" for i in range(1, 29)]
+    panel = _synth_panel(dates, carry=R3_CARRY_FACTORS)
+    bench = {f"{nm}00000.SH": 1.0 / 6 for nm in ["a", "b", "c", "d", "e", "f"]}
+    index_returns = dict.fromkeys(dates, 0.0)
+    split = LockedSplit(
+        train_val_dates=tuple(dates), embargo_dates=(), test_dates=("20991231",)
+    )
+    result = search(
+        panel,
+        lambda d: bench,
+        index_returns,
+        manifest_path=_tiny_manifest(tmp_path, carry=R3_CARRY_FACTORS),
+        split=split,
+        horizon=5,
+        progress_every=0,
+        carry=R3_CARRY_FACTORS,
+    )
+    assert result.selected_constraint == "constituent_only"
+    assert set(result.selected_weights) == set(R3_CARRY_FACTORS)
+    assert "accr" in result.selected_weights
+    assert isinstance(result.sentinel_passes, bool)

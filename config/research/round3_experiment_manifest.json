@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "created": "2026-06-19",
+  "project": "factor-strategy-research-2026-06-16 / round-3 R3-4",
+  "purpose": "FROZEN pre-declared search space for the R3-4 benchmark-relative strategy selection. Identical construction to round-2 R2-4 but over the round-3 carry set (round-2 eleven + the single R3-3 survivor, accruals). Enumerates EVERY degree of freedom so the Deflated-Sharpe / PBO multiple-testing correction uses the cumulative trial count N. The search (round2_search.py --carry r3) reads this, asserts the carry-factor order against benchmark_relative.R3_CARRY_FACTORS, runs all N candidates on the inner train/val split (never test), and selects the SINGLE strategy carried into R3-5 freeze + R3-6 verdict. Editing this after a search run voids the deflation — re-declare and re-run.",
+
+  "carry_factor_order": [
+    "ret_5d", "ret_20d", "vol_20d", "max_20d", "ep_ttm",
+    "turn_20d", "amihud_20d", "roe", "gpm", "np_yoy", "rev_yoy", "accr"
+  ],
+  "carry_factor_order_note": "Positional order the Sobol weight vectors map to; MUST equal benchmark_relative.R3_CARRY_FACTORS (round-2 eleven + accr) or the search fails closed. accr is the ONLY R3-3 survivor (neutralized |t|=4.35, aligned, max carry |corr|=0.13); SUE dropped (neut |t|=2.74 < 3) and asset_growth dropped (wrong sign). Composite consumes each factor's industry/size-neutralized *_neut column.",
+
+  "degrees_of_freedom": {
+    "exposure_constraint": {
+      "values": ["unconstrained", "constituent_only", "size_neutral", "capped_nonconstituent"],
+      "note": "Same four as round-2. All kept and searched for honest completeness even though constituent_only won R2-4 (true enhanced-index, tilt only CSI300 members — the small-cap-drift fix). unconstrained = R2-3 construction; size_neutral = remove the active vector's size projection; capped_nonconstituent = cap non-member gross active at nonconst_cap."
+    },
+    "k_grid": {
+      "values": [0.05, 0.10, 0.20],
+      "note": "Tilt strength (active = clip(k*z(score), +/-a_max))."
+    },
+    "a_max_grid": {
+      "values": [0.01, 0.02, 0.04],
+      "note": "Per-name pre-floor active box bound."
+    },
+    "nonconst_cap": {
+      "value": 0.10,
+      "note": "Fixed; only applies when exposure_constraint == capped_nonconstituent."
+    },
+    "weight_simplex": {
+      "sampler": "scrambled_sobol_kraemer_simplex",
+      "dim": 12,
+      "n_sobol": 16,
+      "seed": 20260619,
+      "anchor": "equal_weight_carry",
+      "anchor_note": "Each (constraint,k,a_max) cell prepends the equal-weight carry vector (now over 12 factors) before the 16 Sobol simplex points → 17 weight vectors per cell. dim 11→12 changes each vector's length, not the per-cell count.",
+      "weights_per_cell": 17
+    }
+  },
+
+  "search_design": {
+    "cells": 36,
+    "cells_note": "4 exposure_constraint x 3 k_grid x 3 a_max_grid (unchanged from round-2).",
+    "weights_per_cell": 17,
+    "n_trials_total": 612,
+    "n_trials_note": "36 cells x 17 weight vectors = 612 candidates. The pre-declared within-round N for DSR/PBO deflation (cumulative, not survivor-only). Same count as round-2 because n_sobol is unchanged at 16; the carry dimension grew (11->12) but the per-cell vector count did not. Recorded into the search result as dsr n_trials.",
+    "horizon": 5,
+    "winsor_quantile": 0.01,
+    "selection": {
+      "inner_train_val_cutoff": "20221230",
+      "purge_rebalances": 4,
+      "top_k_finalists": 16,
+      "metric": "information_ratio",
+      "metric_note": "Per-period excess-vs-CSI300 Sharpe (annualised IR). Score every candidate on inner-train IR, shortlist the train-robust top-k, pick the unique winner = best inner-val IR (round-1 _select cross-validation discipline).",
+      "tie_break": "lowest_candidate_index"
+    }
+  },
+
+  "disclosure": {
+    "dsr_floor": 0.95,
+    "dsr_note": "MAIN statistical gate, deflated by n_trials_total. PBO <=0.5 hard / <=0.2 target. SPA vs three baselines: passive CSI300 (zero active), round-1 frozen strategy excess, momentum incumbent excess. Sentinel = shuffled-composite control candidates batched in. Mechanism gate: all carry factors are registry-mechanism-backed (accr = quality_premium, already registered).",
+    "spa_baselines": ["passive_csi300", "round1_frozen_strategy", "momentum_incumbent"]
+  },
+
+  "honesty": {
+    "verdict_boundary": "This search produces DEVELOPMENT EVIDENCE + the single selected strategy ONLY — never a PASS/FAIL. The four-gate verdict is R3-6 on the locked test set (one shot, strategy frozen first).",
+    "failed_or_aborted_variants": 0,
+    "failed_or_aborted_note": "Variants considered then dropped during development BEFORE this declaration count toward N. None dropped here: all four exposure_constraints are kept and searched. The two rejected new factors (sue, asset_growth) were dropped at the R3-3 diagnostic gate BEFORE this search declaration on documented |t|/sign grounds (not after a search run), so they do not enter this manifest's N.",
+    "test_reuse": "Per docs/research/factor-strategy-round2-test-reuse-decision-2026-06-19.md (owner-extended to round-3): train_val reuse across experiments is allowed; test stays sealed until the R3-6 one-shot. This is the THIRD evaluation of the same locked test set (round-1 / round-2 / round-3) — disclosed explicitly in the R3-6 report as cross-strategy multiple testing; the four gates are NOT relaxed."
+  }
+}
