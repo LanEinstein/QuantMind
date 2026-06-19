@@ -530,8 +530,226 @@ R2_FACTORS: tuple[FactorDef, ...] = (
 
 R2_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in R2_FACTORS)
 R2_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in R2_FACTORS}
-# Merged lookup for the diagnostic IC study (round-1 + round-2).
-ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {**FACTORS_BY_NAME, **R2_FACTORS_BY_NAME}
+
+
+# ===========================================================================
+# Round-3 factor families (R3-2): earnings-surprise / accruals / asset-growth.
+#
+# The round-2 alpha source proved too thin (locked-test excess −0.26%). These
+# add two zero-cost orthogonal alpha sources from PIT financial statements:
+#   * SUE (post-earnings drift) — single-quarter ex-recurring net profit
+#     (fina_indicator_vip.profit_dedt, YTD → seasonal-difference standardised).
+#   * accruals (Sloan) + asset-growth — annual income/cashflow/balancesheet.
+# They live in a SEPARATE R3_FACTORS registry so the round-2 panel/search/IC
+# modules keyed on R2_FACTORS / R2_FACTOR_NAMES are byte-for-byte unaffected.
+# All are deterministic + pure-stdlib; a PIT replay reproduces them bit-exact.
+# ===========================================================================
+
+SUE_DIFF_WINDOW: int = 8  # trailing seasonal-difference window for the SUE σ
+SUE_MIN_DIFFS: int = 6  # need this many seasonal diffs to standardise honestly
+_QUARTER_MMDD: tuple[str, ...] = ("0331", "0630", "0930", "1231")
+
+
+def _prior_period_same_fy(end_date: str) -> str | None:
+    """Immediately preceding report period in the SAME fiscal year.
+
+    ``0630→0331`` / ``0930→0630`` / ``1231→0930`` (same year); ``0331`` returns
+    ``None`` (Q1 YTD already IS the single quarter).
+    """
+    year, mmdd = end_date[:4], end_date[4:]
+    if mmdd not in _QUARTER_MMDD or mmdd == "0331":
+        return None
+    return f"{year}{_QUARTER_MMDD[_QUARTER_MMDD.index(mmdd) - 1]}"
+
+
+def _same_quarter_prev_year(end_date: str) -> str:
+    """Same fiscal quarter, one year earlier (``YYYY-1`` + same MMDD)."""
+    return f"{int(end_date[:4]) - 1}{end_date[4:]}"
+
+
+def _single_quarter_series(
+    ytd_by_end: dict[str, float | None],
+) -> dict[str, float]:
+    """YTD → single-quarter net profit per period (Q1 = YTD; else YTD differenced).
+
+    A period whose YTD (or, for Q2-Q4, the same-year prior YTD) is missing/NaN is
+    omitted — never fabricated.
+    """
+    out: dict[str, float] = {}
+    for end, v in ytd_by_end.items():
+        if v is None or not math.isfinite(v) or end[4:] not in _QUARTER_MMDD:
+            continue
+        if end[4:] == "0331":
+            out[end] = v
+            continue
+        prior = _prior_period_same_fy(end)
+        pv = ytd_by_end.get(prior) if prior else None
+        if pv is not None and math.isfinite(pv):
+            out[end] = v - pv
+    return out
+
+
+def earnings_surprise_sue(ytd_by_end: dict[str, float | None]) -> float | None:
+    """Standardised unexpected earnings (Foster SUE) from a YTD net-profit series.
+
+    ``ytd_by_end`` = ``{end_date: as-known YTD profit_dedt}``. Computes the
+    single-quarter series, the seasonal differences ``Δq_t = q_t − q_{t-4}``, and
+    returns ``Δq_latest / stdev(trailing SUE_DIFF_WINDOW diffs)``. ``None`` when
+    fewer than :data:`SUE_MIN_DIFFS` seasonal diffs are available or the
+    dispersion is non-positive (fail-closed — never a fabricated surprise).
+    """
+    sq = _single_quarter_series(ytd_by_end)
+    if not sq:
+        return None
+    diffs: dict[str, float] = {}
+    for end, q in sq.items():
+        prev = _same_quarter_prev_year(end)
+        if prev in sq:
+            diffs[end] = q - sq[prev]
+    if not diffs:
+        return None
+    ends = sorted(diffs)
+    window = [diffs[e] for e in ends[-SUE_DIFF_WINDOW:]]
+    if len(window) < SUE_MIN_DIFFS:
+        return None
+    sigma = statistics.stdev(window)
+    if not (math.isfinite(sigma) and sigma > 0):
+        return None
+    sue = diffs[ends[-1]] / sigma
+    return sue if math.isfinite(sue) else None
+
+
+def _annual_pair(total_assets: dict[str, float | None]) -> tuple[str, str] | None:
+    """``(latest_annual_end, prior_annual_end)`` of two CONSECUTIVE year-ends.
+
+    Both must be 12-31 reports present with finite values; non-consecutive
+    annuals (a missing year) → ``None`` (an asset-growth across a gap would be a
+    multi-year change, not 1-year — fail-closed).
+    """
+    annuals = sorted(
+        e
+        for e, v in total_assets.items()
+        if e.endswith("1231") and v is not None and math.isfinite(v)
+    )
+    if not annuals:
+        return None
+    latest = annuals[-1]
+    prev = f"{int(latest[:4]) - 1}1231"
+    if total_assets.get(prev) is None:
+        return None
+    return latest, prev
+
+
+def accruals_sloan(
+    n_income: float | None,
+    cfo: float | None,
+    ta_now: float | None,
+    ta_prev: float | None,
+) -> float | None:
+    """Cash-flow accruals ``(net profit − operating CFO) / avg total assets``.
+
+    High accruals = lower earnings quality → expected to underperform
+    (attractive-low). ``None`` on any missing input or a non-positive average
+    asset base.
+    """
+    vals = (n_income, cfo, ta_now, ta_prev)
+    if any(v is None or not math.isfinite(v) for v in vals):
+        return None
+    avg_ta = (ta_now + ta_prev) / 2.0  # type: ignore[operator]
+    if avg_ta <= 0:
+        return None
+    return (n_income - cfo) / avg_ta  # type: ignore[operator]
+
+
+def asset_growth(ta_now: float | None, ta_prev: float | None) -> float | None:
+    """Year-on-year total-asset growth ``TA_t / TA_{t-1} − 1`` (Cooper-Gulen-Schill).
+
+    High growth (over-investment) → expected to underperform (attractive-low).
+    ``None`` on a missing input or non-positive prior asset base.
+    """
+    if ta_now is None or ta_prev is None:
+        return None
+    if not (math.isfinite(ta_now) and math.isfinite(ta_prev)) or ta_prev <= 0:
+        return None
+    return ta_now / ta_prev - 1.0
+
+
+def compute_statement_factors(
+    *,
+    profit_dedt_ytd: dict[str, float | None],
+    n_income_ytd: dict[str, float | None],
+    cfo_ytd: dict[str, float | None],
+    total_assets: dict[str, float | None],
+) -> dict[str, float | None]:
+    """The three R3 factors from a code's PIT statement series (raw values).
+
+    Inputs are ``{end_date: as-known value}`` maps (the panel builder marshals
+    them from the PIT readers). SUE uses every quarter; accruals + asset-growth
+    use the latest two CONSECUTIVE annual reports. Any insufficiency → ``None``.
+    """
+    pair = _annual_pair(total_assets)
+    if pair is None:
+        accr = ag = None
+    else:
+        latest, prev = pair
+        ta_now, ta_prev = total_assets[latest], total_assets[prev]
+        accr = accruals_sloan(
+            n_income_ytd.get(latest), cfo_ytd.get(latest), ta_now, ta_prev
+        )
+        ag = asset_growth(ta_now, ta_prev)
+    return {
+        "sue": earnings_surprise_sue(profit_dedt_ytd),
+        "accr": accr,
+        "asset_growth": ag,
+    }
+
+
+# The round-3 registry. ``accr`` maps to the registered ``quality_premium``
+# mechanism (low accruals = higher earnings quality); ``sue`` and
+# ``asset_growth`` are honestly tagged with mechanisms NOT yet in the
+# ``EconomicMechanism`` enum (post_earnings_drift / asset_growth_anomaly), so the
+# live promotion gate stays fail-closed until a future amendment — same posture
+# as ``growth_premium``. R3 is offline research and never invokes that gate.
+R3_FACTORS: tuple[FactorDef, ...] = (
+    FactorDef(
+        name="sue",
+        min_history=0,
+        attractive_high=True,
+        mechanism="post_earnings_drift",
+        expected_ic_sign=1,
+        description="Standardised unexpected earnings (Foster SUE) on single-"
+        "quarter ex-recurring net profit — post-earnings-announcement drift. "
+        "'post_earnings_drift' is NOT yet a registered EconomicMechanism.",
+    ),
+    FactorDef(
+        name="accr",
+        min_history=0,
+        attractive_high=False,
+        mechanism="quality_premium",
+        expected_ic_sign=-1,
+        description="Sloan cash-flow accruals (net profit − operating CFO)/avg "
+        "assets — low accruals = higher earnings quality (attractive-low).",
+    ),
+    FactorDef(
+        name="asset_growth",
+        min_history=0,
+        attractive_high=False,
+        mechanism="asset_growth_anomaly",
+        expected_ic_sign=-1,
+        description="YoY total-asset growth (Cooper-Gulen-Schill investment "
+        "factor) — over-investment underperforms (attractive-low). "
+        "'asset_growth_anomaly' is NOT yet a registered EconomicMechanism.",
+    ),
+)
+
+R3_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in R3_FACTORS)
+R3_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in R3_FACTORS}
+# Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3).
+ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {
+    **FACTORS_BY_NAME,
+    **R2_FACTORS_BY_NAME,
+    **R3_FACTORS_BY_NAME,
+}
 
 
 __all__ = [
@@ -548,18 +766,27 @@ __all__ = [
     "R2_FACTORS",
     "R2_FACTORS_BY_NAME",
     "R2_FACTOR_NAMES",
+    "R3_FACTORS",
+    "R3_FACTORS_BY_NAME",
+    "R3_FACTOR_NAMES",
     "REVERSAL_MONTH_WINDOW",
     "REVERSAL_SHORT_WINDOW",
     "SLOPE_WINDOW",
+    "SUE_DIFF_WINDOW",
+    "SUE_MIN_DIFFS",
     "TURNOVER_WINDOW",
     "VOLATILITY_WINDOW",
     "FactorDef",
     "ResearchFactorVector",
+    "accruals_sloan",
     "amihud_illiquidity",
+    "asset_growth",
     "compute_factor_vector",
     "compute_fundamental_factors",
+    "compute_statement_factors",
     "compute_trend_factors",
     "distance_from_high",
+    "earnings_surprise_sue",
     "earnings_yield",
     "max_daily_return",
     "mean_turnover",

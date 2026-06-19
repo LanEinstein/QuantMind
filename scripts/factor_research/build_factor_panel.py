@@ -48,6 +48,7 @@ import io
 import math
 import statistics
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -71,14 +72,24 @@ from backend.services.universe_policy import BOARD_WHITELIST
 from .factor_lib import (
     FACTOR_NAMES,
     R2_FACTOR_NAMES,
+    R3_FACTOR_NAMES,
     compute_factor_vector,
     compute_fundamental_factors,
+    compute_statement_factors,
     compute_trend_factors,
 )
 from .fundamentals_pit import FundamentalsPIT
 from .industry_pit import IndustryPIT
-from .ingest_round2_data import report_periods
+from .ingest_round2_data import (
+    EP_BALANCESHEET,
+    EP_CASHFLOW,
+    EP_FINA,
+    EP_INCOME,
+    report_periods,
+)
 from .locked_split import LockedSplit
+from .namechange_pit import NameChangePIT, namechange_snapshot_keys
+from .statements_pit import PeriodStatementPIT, StatementRecord
 
 log = structlog.get_logger(component="factor_research.build_panel")
 
@@ -222,14 +233,19 @@ def _ingest_series(
 
 
 def _cohort(
-    series: dict[str, _CodeSeries], day: str
+    series: dict[str, _CodeSeries],
+    day: str,
+    *,
+    st_filter: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[tuple[str, _CodeSeries, int]], float] | None:
     """The day's investable cross-section + the bottom-30% market-cap cutoff.
 
     Codes with a bar today that pass the liquidity / unit-price / finite-size
     filters; ``None`` when the cross-section is too thin (<20) to rank. The
     bottom-30% size cut (Liu-Stambaugh-Yuan shell mandate) is returned for the
-    caller to apply per code.
+    caller to apply per code. ``st_filter(ts_code, day) -> True`` excludes a
+    point-in-time ST / 退 name BEFORE the size cut (R3-2; default ``None`` keeps
+    the round-1/round-2 cohort byte-identical).
     """
     cohort: list[tuple[str, _CodeSeries, int]] = []
     for code, cs in series.items():
@@ -238,6 +254,8 @@ def _cohort(
             continue
         if not math.isfinite(cs.circ_mv[pos]):  # need a size to rank on
             continue
+        if st_filter is not None and st_filter(cs.ts_code, day):
+            continue  # PIT ST exclusion (hard, like the board whitelist)
         cohort.append((code, cs, pos))
     if len(cohort) < 20:  # too thin a cross-section to rank
         return None
@@ -507,6 +525,279 @@ def build_test_panel_r2(
     )
 
 
+# ===========================================================================
+# Round-3 panel (R3-2): round-2 columns + earnings-surprise / accruals /
+# asset-growth (PIT statements) + a PIT ST exclusion. Written to a SEPARATE
+# file (panel_train_val_r3.csv); build_panel_r2 / build_test_panel_r2 above are
+# byte-for-byte unchanged.
+# ===========================================================================
+
+
+class _StatementLookup(Protocol):
+    """Injected PIT statement lookup (satisfied by ``PeriodStatementPIT``)."""
+
+    def as_known(
+        self, code: str, decision_date: str, *, extra_lag_days: int = 0
+    ) -> dict[str, StatementRecord]: ...
+
+
+class _StLookup(Protocol):
+    """Injected PIT ST-name lookup (satisfied by ``NameChangePIT``)."""
+
+    def is_st_asof(self, code: str, decision_date: str) -> bool: ...
+
+
+def _field_series(
+    known: dict[str, StatementRecord], field: str
+) -> dict[str, float | None]:
+    """``{end_date: value}`` for one field across a code's as-known records."""
+    return {end: rec.get(field) for end, rec in known.items()}
+
+
+def _build_rows_r3(
+    series: dict[str, _CodeSeries],
+    rebalance_dates: list[str],
+    *,
+    fundamentals: _FundamentalsLookup,
+    industry: _IndustryLookup,
+    fina_stmt: _StatementLookup,
+    income: _StatementLookup,
+    cashflow: _StatementLookup,
+    balancesheet: _StatementLookup,
+    namechange: _StLookup,
+    extra_lag_days: int,
+) -> list[dict[str, object]]:
+    """Round-3 rows: round-2 columns + SUE/accruals/asset-growth + PIT ST drop.
+
+    Same investable cross-section + bottom-30% size cut as :func:`_build_rows_r2`,
+    PLUS a point-in-time ST exclusion in the cohort. The three statement factors
+    are computed from the PIT readers (all ann_date-gated by ``day`` — never
+    reading beyond it). Deliberately parallel to ``_build_rows_r2`` rather than
+    sharing its body, so the round-2 builder stays byte-frozen.
+    """
+    rows: list[dict[str, object]] = []
+    for day in rebalance_dates:
+        selected = _cohort(series, day, st_filter=namechange.is_st_asof)
+        if selected is None:
+            continue
+        cohort, cmv_cut = selected
+        for code, cs, pos in cohort:
+            if cs.circ_mv[pos] < cmv_cut:
+                continue
+            closes = cs.adj_close[: pos + 1]
+            vec = compute_factor_vector(
+                closes=closes,
+                amounts=cs.amount[: pos + 1],
+                turnover_rates=cs.turnover[: pos + 1],
+                pe_ttm=cs.pe_ttm[pos],
+            )
+            record = fundamentals.asof(cs.ts_code, day, extra_lag_days=extra_lag_days)
+            stmt = compute_statement_factors(
+                profit_dedt_ytd=_field_series(
+                    fina_stmt.as_known(cs.ts_code, day, extra_lag_days=extra_lag_days),
+                    "profit_dedt",
+                ),
+                n_income_ytd=_field_series(
+                    income.as_known(cs.ts_code, day, extra_lag_days=extra_lag_days),
+                    "n_income",
+                ),
+                cfo_ytd=_field_series(
+                    cashflow.as_known(cs.ts_code, day, extra_lag_days=extra_lag_days),
+                    "n_cashflow_act",
+                ),
+                total_assets=_field_series(
+                    balancesheet.as_known(
+                        cs.ts_code, day, extra_lag_days=extra_lag_days
+                    ),
+                    "total_assets",
+                ),
+            )
+            circ = cs.circ_mv[pos]
+            row: dict[str, object] = {
+                "date": day,
+                "code": code,
+                "ts_code": cs.ts_code,
+            }
+            row.update(vec.as_dict())
+            row.update(compute_trend_factors(closes))
+            row.update(compute_fundamental_factors(record))
+            row.update(stmt)
+            row["industry_l1"] = industry.l1_asof(cs.ts_code, day)
+            row["circ_mv"] = circ
+            row["log_circ_mv"] = (
+                math.log(circ) if (math.isfinite(circ) and circ > 0) else None
+            )
+            row.update(_forward_returns(cs.adj_close, pos))
+            rows.append(row)
+        log.info("panel_r3_rebalance", day=day, cohort=len(cohort), rows=len(rows))
+    return rows
+
+
+def _panel_frame_r3(rows: list[dict[str, object]]) -> pd.DataFrame:
+    """Assemble the round-3 panel frame with the canonical column order."""
+    cols = [
+        "date",
+        "code",
+        "ts_code",
+        *FACTOR_NAMES,
+        *R2_FACTOR_NAMES,
+        *R3_FACTOR_NAMES,
+        *R2_PANEL_EXTRA_COLS,
+        *(f"fwd_ret_{h}d" for h in FORWARD_HORIZONS),
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+
+@dataclass(frozen=True)
+class _R3Inputs:
+    """The PIT readers a round-3 panel build injects (immutable)."""
+
+    fundamentals: _FundamentalsLookup
+    industry: _IndustryLookup
+    fina_stmt: _StatementLookup
+    income: _StatementLookup
+    cashflow: _StatementLookup
+    balancesheet: _StatementLookup
+    namechange: _StLookup
+
+
+def build_panel_r3(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    inputs: _R3Inputs,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    max_rebalances: int = 0,
+    extra_lag_days: int = 0,
+) -> pd.DataFrame:
+    """Build the round-3 train_val panel (round-2 columns + R3 factors + PIT ST).
+
+    Same sacred-split discipline as :func:`build_panel_r2` (feature window =
+    train_val + embargo, ``assert_all_not_test`` guard); fundamentals / industry /
+    statements / namechange are PIT and gated by ``day`` so no test bar is read.
+    """
+    feature_dates = [*split.train_val_dates, *split.embargo_dates]
+    split.assert_all_not_test(feature_dates)  # hard guard: never touch test
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.train_val_dates[::rebalance_freq])
+    if max_rebalances:
+        rebalance_dates = rebalance_dates[:max_rebalances]
+    return _panel_frame_r3(
+        _build_rows_r3(
+            series,
+            rebalance_dates,
+            fundamentals=inputs.fundamentals,
+            industry=inputs.industry,
+            fina_stmt=inputs.fina_stmt,
+            income=inputs.income,
+            cashflow=inputs.cashflow,
+            balancesheet=inputs.balancesheet,
+            namechange=inputs.namechange,
+            extra_lag_days=extra_lag_days,
+        )
+    )
+
+
+def build_test_panel_r3(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    inputs: _R3Inputs,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    extra_lag_days: int = 0,
+) -> pd.DataFrame:
+    """R3-6 ONE-SHOT — the SOLE sanctioned reader of the sacred test window for round-3.
+
+    The round-3 analogue of :func:`build_test_panel_r2`. Reads test bars (features
+    ``<= d`` from a :data:`TEST_FEATURE_BUFFER_TD` buffer + test bars to ``d``;
+    forward labels from test bars ``> d``); statements / industry / fundamentals /
+    namechange stay PIT (gated by ``d``). Rebalances ONLY on test dates. The
+    covenant permits exactly one such evaluation, for the strategy git-frozen in
+    R3-5 — never call this during strategy development.
+    """
+    pre_test = [*split.train_val_dates, *split.embargo_dates]  # all non-test
+    buffer = list(pre_test[-TEST_FEATURE_BUFFER_TD:])
+    feature_dates = [*buffer, *split.test_dates]
+    log.warning(
+        "r3_locked_test_panel_build",
+        note="reading the SACRED test window (round-3 one-shot, sanctioned)",
+        buffer_td=len(buffer),
+        test_td=len(split.test_dates),
+        test_start=split.test_dates[0],
+        test_end=split.test_dates[-1],
+    )
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.test_dates[::rebalance_freq])
+    return _panel_frame_r3(
+        _build_rows_r3(
+            series,
+            rebalance_dates,
+            fundamentals=inputs.fundamentals,
+            industry=inputs.industry,
+            fina_stmt=inputs.fina_stmt,
+            income=inputs.income,
+            cashflow=inputs.cashflow,
+            balancesheet=inputs.balancesheet,
+            namechange=inputs.namechange,
+            extra_lag_days=extra_lag_days,
+        )
+    )
+
+
+def build_r3_inputs(
+    store: SnapshotStore,
+    snapshot_root: str,
+    *,
+    last_period_date: str,
+    industry_asof: str = "",
+) -> _R3Inputs:
+    """Construct the round-3 PIT readers from the stored snapshots (R3-2 / R3-6).
+
+    ``last_period_date`` bounds the fundamentals/statement report periods (the
+    ann_date<d gate keeps them PIT regardless). Shared by the train_val build and
+    the R3-6 one-shot so both read identically-constructed readers.
+    """
+    periods = report_periods(2015, last_period_date)
+    fundamentals = FundamentalsPIT.build(store, periods)
+    asof = industry_asof or _latest_snapshot_key(snapshot_root, "index_member_all")
+    industry = IndustryPIT.build(store, asof)
+    fina_stmt = PeriodStatementPIT.build(
+        store,
+        periods,
+        endpoint=EP_FINA,
+        fields=["profit_dedt"],
+        report_type_filter=None,
+    )
+    income = PeriodStatementPIT.build(
+        store, periods, endpoint=EP_INCOME, fields=["n_income"]
+    )
+    cashflow = PeriodStatementPIT.build(
+        store, periods, endpoint=EP_CASHFLOW, fields=["n_cashflow_act"]
+    )
+    balancesheet = PeriodStatementPIT.build(
+        store, periods, endpoint=EP_BALANCESHEET, fields=["total_assets"]
+    )
+    namechange = NameChangePIT.build(store, namechange_snapshot_keys(snapshot_root))
+    log.info(
+        "panel_r3_inputs",
+        fina_periods=len(periods),
+        fundamentals_codes=len(fundamentals.by_code),
+        income_codes=len(income.by_code),
+        balancesheet_codes=len(balancesheet.by_code),
+        namechange_codes=len(namechange.by_code),
+        industry_asof=asof,
+    )
+    return _R3Inputs(
+        fundamentals=fundamentals,
+        industry=industry,
+        fina_stmt=fina_stmt,
+        income=income,
+        cashflow=cashflow,
+        balancesheet=balancesheet,
+        namechange=namechange,
+    )
+
+
 def _latest_snapshot_key(snapshot_root: str, endpoint: str) -> str:
     """Highest ``trade_date`` stored for ``endpoint`` (for the as-of CLI default).
 
@@ -552,10 +843,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--factor-set",
-        choices=("r1", "r2"),
+        choices=("r1", "r2", "r3"),
         default="r1",
-        help="r2 = round-2 panel (train_val only): +trend/quality/growth +"
-        " PIT industry/size for neutralization → panel_train_val_r2.csv",
+        help="r2 = round-2 panel (+trend/quality/growth + PIT industry/size); "
+        "r3 = round-2 columns + SUE/accruals/asset-growth + PIT ST exclusion "
+        "(train_val only) → panel_train_val_r3.csv",
     )
     parser.add_argument(
         "--industry-asof",
@@ -584,18 +876,38 @@ def main() -> None:
         embargo=len(split.embargo_dates),
         test_sealed=len(split.test_dates),
     )
-    if args.factor_set == "r2" and args.mode == "test":
-        # The round-2 test window has exactly ONE sanctioned reader —
-        # build_test_panel_r2, called only by the R2-6 one-shot runner
-        # (r2_locked_test.py) AFTER the strategy is git-frozen. The generic CLI
+    if args.factor_set in ("r2", "r3") and args.mode == "test":
+        # The round-2/3 test window has exactly ONE sanctioned reader each —
+        # build_test_panel_r2 / build_test_panel_r3, called only by the R2-6 /
+        # R3-6 one-shot runners AFTER the strategy is git-frozen. The generic CLI
         # refuses, so a development run can never accidentally materialise the
         # test panel here (the freeze-then-read covenant lives in the runner).
+        runner = {
+            "r2": "scripts.factor_research.r2_locked_test",
+            "r3": "scripts.factor_research.round3_locked_test",
+        }[args.factor_set]
         raise SystemExit(
-            "factor-set r2 test panel is built ONLY by the R2-6 one-shot runner "
-            "(scripts.factor_research.r2_locked_test), after the strategy is "
-            "git-frozen. The generic CLI refuses to read the sealed test window."
+            f"factor-set {args.factor_set} test panel is built ONLY by its one-shot "
+            f"runner ({runner}), after the strategy is git-frozen. The generic CLI "
+            "refuses to read the sealed test window."
         )
-    if args.factor_set == "r2":
+    if args.factor_set == "r3":
+        inputs = build_r3_inputs(
+            store,
+            args.snapshot_root,
+            last_period_date=split.train_val_dates[-1],
+            industry_asof=args.industry_asof,
+        )
+        panel = build_panel_r3(
+            split,
+            store,
+            inputs=inputs,
+            rebalance_freq=args.rebalance_freq,
+            max_rebalances=args.max_rebalances,
+            extra_lag_days=args.fund_lag_days,
+        )
+        default_out = "data/factor_research/panel_train_val_r3.csv"
+    elif args.factor_set == "r2":
         # Fundamentals only need report periods whose end_date <= train_val end
         # (later reports are announced after train_val and never selected as-of a
         # train_val date — and asof's ann_date<d gate keeps it PIT regardless).
