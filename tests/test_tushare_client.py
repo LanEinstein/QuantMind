@@ -42,9 +42,16 @@ class _FakePro:
 
     def _make(self, endpoint: str, **kwargs: Any) -> pd.DataFrame:
         self.calls.append((endpoint, kwargs))
-        return self._frames.get(
+        frame = self._frames.get(
             endpoint, pd.DataFrame({"ts_code": ["000001.SZ"], "endpoint": [endpoint]})
         )
+        # Honour limit/offset so the paginated *_vip statement pulls are exercised
+        # against a real (sliceable) backing frame instead of an infinite loop.
+        if "limit" in kwargs and "offset" in kwargs:
+            off = int(kwargs["offset"])
+            lim = int(kwargs["limit"])
+            return frame.iloc[off : off + lim].reset_index(drop=True)
+        return frame
 
     def daily(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("daily", **kwargs)
@@ -184,14 +191,62 @@ class TestFullMarketPull:
     @pytest.mark.parametrize(
         "method", ["income_vip", "cashflow_vip", "balancesheet_vip"]
     )
-    async def test_financial_statement_vip_by_period(self, method: str) -> None:
-        # The R3-1 accruals/asset-growth statements: full-market by report period
-        # (one call), mirroring fina_indicator_vip.
-        pro = _FakePro({method: pd.DataFrame({"x": range(6400)})})
+    async def test_financial_statement_vip_paginates_full_period(
+        self, method: str
+    ) -> None:
+        # The R3-1 accruals/asset-growth statements: a single un-paginated call is
+        # silently capped by Tushare and drops codes, so the client pages with
+        # limit+offset and assembles the COMPLETE period (PIT completeness red line).
+        # 12345 rows over page_limit 5000 → pages of 5000, 5000, 2345.
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(12345)]})
+        pro = _FakePro({method: backing})
         client = TushareClient(pro=pro, token=VALID_TOKEN)
         df = await getattr(client, method)("20251231")
-        assert len(df) == 6400
-        assert pro.calls == [(method, {"period": "20251231"})]
+        assert len(df) == 12345
+        assert df["ts_code"].nunique() == 12345  # nothing dropped past the cap
+        offsets = [c[1]["offset"] for c in pro.calls]
+        assert offsets == [0, 5000, 10000]  # paged until a short final page
+        assert all(c[1]["limit"] == 5000 for c in pro.calls)
+
+    @pytest.mark.asyncio
+    async def test_financial_statement_vip_throttles_each_page(self) -> None:
+        # The per-page throttle is awaited once per real SDK call, so a paginated
+        # pull consumes one rate-limit token per page (not one per period).
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(12345)]})
+        pro = _FakePro({"cashflow_vip": backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        ticks = 0
+
+        async def throttle() -> None:
+            nonlocal ticks
+            ticks += 1
+
+        df = await client.cashflow_vip("20251231", throttle=throttle)
+        assert len(df) == 12345
+        assert ticks == 3  # one token per page (offsets 0, 5000, 10000)
+
+    @pytest.mark.asyncio
+    async def test_financial_statement_vip_exact_page_boundary(self) -> None:
+        # An exact multiple of page_limit needs one extra (empty-tail) call to
+        # learn the period is exhausted — the assembled frame must not duplicate.
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(10000)]})
+        pro = _FakePro({"cashflow_vip": backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await client.cashflow_vip("20251231")
+        assert len(df) == 10000
+        assert [c[1]["offset"] for c in pro.calls] == [0, 5000, 10000]
+
+    @pytest.mark.asyncio
+    async def test_financial_statement_vip_empty_period_keeps_columns(self) -> None:
+        # A legitimately empty period returns the first (column-bearing) page so
+        # the stored CSV stays replayable rather than a zero-column frame.
+        backing = pd.DataFrame({"ts_code": [], "n_cashflow_act": []})
+        pro = _FakePro({"cashflow_vip": backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await client.cashflow_vip("20251231")
+        assert df.empty
+        assert list(df.columns) == ["ts_code", "n_cashflow_act"]
+        assert len(pro.calls) == 1  # one bounded call, no runaway paging
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

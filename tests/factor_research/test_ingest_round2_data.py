@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -98,13 +99,25 @@ class _FakeRound2Client:
             ),
         )
 
-    async def income_vip(self, period: str) -> pd.DataFrame:
+    async def income_vip(
+        self, period: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()  # one page → one token (mirrors the real client)
         return self._statement("income_vip", period)
 
-    async def cashflow_vip(self, period: str) -> pd.DataFrame:
+    async def cashflow_vip(
+        self, period: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()
         return self._statement("cashflow_vip", period)
 
-    async def balancesheet_vip(self, period: str) -> pd.DataFrame:
+    async def balancesheet_vip(
+        self, period: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()
         return self._statement("balancesheet_vip", period)
 
     async def namechange(
@@ -571,6 +584,136 @@ class TestRound3Statements:
             )
             is None
         )
+
+    @pytest.mark.asyncio
+    async def test_reingest_version_bumps_on_changed_pull(
+        self, tmp_path: Path
+    ) -> None:
+        # The R3-1 truncation repair: a corrected (paginated) re-pull that returns
+        # the dropped codes is appended as a NEW version; the truncated v1 bytes
+        # are preserved (append-only) and store.latest returns the complete pull.
+        store = SnapshotStore(tmp_path)
+        truncated = pd.DataFrame(
+            {"ts_code": ["1.SZ"], "end_date": ["20240331"], "report_type": ["1"]}
+        )
+        client = _FakeRound2Client(
+            statements={(EP_CASHFLOW, "20240331"): truncated}
+        )
+        first = await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_CASHFLOW, now=_now
+        )
+        assert first[0].status == "ingested"
+        complete = pd.DataFrame(
+            {
+                "ts_code": ["1.SZ", "2.SZ"],
+                "end_date": ["20240331", "20240331"],
+                "report_type": ["1", "1"],
+            }
+        )
+        client._statements[(EP_CASHFLOW, "20240331")] = complete
+        second = await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_CASHFLOW, now=_now, reingest=True
+        )
+        assert second[0].status == "ingested"
+        versions = store.versions(
+            vendor="tushare", endpoint=EP_CASHFLOW, trade_date="20240331"
+        )
+        assert [v.version for v in versions] == [1, 2]  # v1 preserved, v2 appended
+        latest = store.latest(
+            vendor="tushare", endpoint=EP_CASHFLOW, trade_date="20240331"
+        )
+        assert latest is not None and latest.version == 2
+        assert (
+            latest.raw_payload_sha256
+            == hashlib.sha256(canonical_csv_bytes(complete)).hexdigest()
+        )
+
+    @pytest.mark.asyncio
+    async def test_reingest_unchanged_payload_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        # An already-complete period whose re-pull is byte-identical is reported
+        # SKIPPED — no spurious v2 churn.
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_INCOME, now=_now
+        )
+        second = await ingest_statement(
+            client, store, ["20240331"], endpoint=EP_INCOME, now=_now, reingest=True
+        )
+        assert second[0].status == "skipped"
+        versions = store.versions(
+            vendor="tushare", endpoint=EP_INCOME, trade_date="20240331"
+        )
+        assert [v.version for v in versions] == [1]  # no restatement written
+
+    @pytest.mark.asyncio
+    async def test_round3_restate_skips_namechange_and_rebuilds_coverage(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20260618", now=_now)  # rosters
+        calendar = ["20240105", "20240401"]  # spans the Q1 report-period end
+        first = await ingest_round3(
+            client,
+            store,
+            coverage_store,
+            calendar=calendar,
+            first_year=2024,
+            asof="20260618",
+            now=_now,
+        )
+        assert first.failed == 0
+        client.calls.clear()
+        report = await ingest_round3(
+            client,
+            store,
+            coverage_store,
+            calendar=calendar,
+            first_year=2024,
+            asof="20260618",
+            now=_now,
+            restate_statements=True,
+        )
+        assert report.failed == 0
+        stmt_results = [
+            r
+            for r in report.results
+            if r.endpoint in (EP_INCOME, EP_CASHFLOW, EP_BALANCESHEET)
+        ]
+        assert stmt_results and all(r.status == "skipped" for r in stmt_results)
+        assert not any(c[0] == "namechange" for c in client.calls)  # skipped in restate
+
+    @pytest.mark.asyncio
+    async def test_statement_throttles_per_page_not_double(
+        self, tmp_path: Path
+    ) -> None:
+        # The rate limiter is handed to the client (one token per real SDK page)
+        # and _ingest_one does NOT also acquire — so a single-page period spends
+        # exactly one token, never two (codex P2: no double / under throttling).
+        class _CountingLimiter:
+            def __init__(self) -> None:
+                self.acquires = 0
+
+            def acquire(self) -> None:
+                self.acquires += 1
+
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()  # fake spends one token per statement call
+        limiter = _CountingLimiter()
+        results = await ingest_statement(
+            client,
+            store,
+            ["20240331", "20240630"],
+            endpoint=EP_INCOME,
+            now=_now,
+            rate_limiter=limiter,
+        )
+        assert [r.status for r in results] == ["ingested", "ingested"]
+        assert limiter.acquires == 2  # one per period; 4 would mean double-throttle
 
 
 class TestNamechange:

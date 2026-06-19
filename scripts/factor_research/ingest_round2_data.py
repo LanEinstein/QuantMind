@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import io
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -111,6 +112,10 @@ _STATUS_INGESTED = "ingested"
 _STATUS_SKIPPED = "skipped"
 _STATUS_FAILED = "failed"
 
+# A per-page rate-limit hook the paginated statement pulls await before each
+# real SDK call (one token per call, not one per period — see _ingest_one).
+_Throttle = Callable[[], Awaitable[None]]
+
 
 @runtime_checkable
 class _Round2Client(Protocol):
@@ -125,9 +130,15 @@ class _Round2Client(Protocol):
         end_date: str = "",
     ) -> pd.DataFrame: ...
     async def fina_indicator_vip(self, period: str) -> pd.DataFrame: ...
-    async def income_vip(self, period: str) -> pd.DataFrame: ...
-    async def cashflow_vip(self, period: str) -> pd.DataFrame: ...
-    async def balancesheet_vip(self, period: str) -> pd.DataFrame: ...
+    async def income_vip(
+        self, period: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
+    async def cashflow_vip(
+        self, period: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
+    async def balancesheet_vip(
+        self, period: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
     async def namechange(
         self, *, start_date: str = "", end_date: str = ""
     ) -> pd.DataFrame: ...
@@ -230,14 +241,22 @@ async def _ingest_one(
     now: Callable[[], datetime],
     require_non_empty: bool,
     rate_limiter: RateLimiter | None = None,
+    reingest: bool = False,
 ) -> EndpointResult:
     """Skip-if-present, else fetch + persist one snapshot byte-exact.
 
     The presence check runs *before* any throttle/fetch, so a resume re-run over
     already-stored keys costs no rate-limit budget and no network call.
+
+    ``reingest=True`` deliberately re-pulls even when a snapshot is already
+    stored: the bytes are compared to the latest stored version, and a CHANGED
+    payload is appended as a NEW version (append-only restatement, old bytes
+    kept) so ``store.latest`` reflects the corrected pull. An UNCHANGED payload
+    is reported SKIPPED. This is the one-time repair path for the *_vip
+    statements truncated by the pre-pagination per-call cap (R3-1).
     """
     existing = store.latest(vendor=VENDOR, endpoint=endpoint, trade_date=trade_date)
-    if existing is not None:
+    if existing is not None and not reingest:
         return EndpointResult(
             endpoint=endpoint,
             key=trade_date,
@@ -271,6 +290,18 @@ async def _ingest_one(
         )
     frame = frame if frame is not None else pd.DataFrame()
     raw = canonical_csv_bytes(frame)
+    new_sha = hashlib.sha256(raw).hexdigest()
+    if existing is not None and existing.raw_payload_sha256 == new_sha:
+        # reingest path only: the re-pull is byte-identical to the latest stored
+        # version (already complete) — no restatement needed.
+        return EndpointResult(
+            endpoint=endpoint,
+            key=trade_date,
+            status=_STATUS_SKIPPED,
+            rows=int(len(frame)),
+            sha256=existing.raw_payload_sha256,
+        )
+    version = existing.version + 1 if existing is not None else 1
     snapshot = MarketDataSnapshot.create(
         vendor=VENDOR,
         endpoint=endpoint,
@@ -281,6 +312,7 @@ async def _ingest_one(
         compression="none",
         fetch_time_utc=now(),
         metadata={"rows": int(len(frame))},
+        version=version,
     )
     try:
         store.put(snapshot)
@@ -644,14 +676,29 @@ async def ingest_statement(
     endpoint: str,
     now: Callable[[], datetime],
     rate_limiter: RateLimiter | None = None,
+    reingest: bool = False,
 ) -> list[EndpointResult]:
     """One full-market statement snapshot per report period (the 3 R3-1 tables).
 
     ``endpoint`` is the snapshot tag AND the client method name (e.g.
     ``income_vip``) — the byte-exact / idempotent / fail-closed mechanics are
     shared with :func:`ingest_fina_indicator` via :func:`_ingest_one`.
+    ``reingest=True`` re-pulls and version-bumps changed payloads (the R3-1
+    truncation repair) — see :func:`_ingest_one`.
+
+    Statement pulls paginate INSIDE the client, so the throttle is handed to the
+    client (awaited once per page) and ``_ingest_one`` is told NOT to throttle
+    (``rate_limiter=None``) — otherwise a multi-page period would either
+    double-count its first page or under-count the rest, overrunning the cap.
     """
     fetch_method = getattr(client, endpoint)
+    throttle: _Throttle | None = None
+    if rate_limiter is not None:
+        limiter = rate_limiter
+
+        async def throttle() -> None:
+            await asyncio.to_thread(limiter.acquire)
+
     out: list[EndpointResult] = []
     for period in periods:
         out.append(
@@ -660,10 +707,11 @@ async def ingest_statement(
                 endpoint=endpoint,
                 trade_date=period,
                 params={"period": period},
-                fetch=partial(fetch_method, period),
+                fetch=partial(fetch_method, period, throttle=throttle),
                 now=now,
                 require_non_empty=True,
-                rate_limiter=rate_limiter,
+                rate_limiter=None,
+                reingest=reingest,
             )
         )
     return out
@@ -800,12 +848,19 @@ async def ingest_round3(
     now: Callable[[], datetime],
     rate_limiter: RateLimiter | None = None,
     namechange_first_year: int = NAMECHANGE_FIRST_YEAR,
+    restate_statements: bool = False,
 ) -> Round2IngestReport:
     """R3-1: ingest income/cashflow/balancesheet (per-period) + namechange (per-year).
 
     The L/D survivorship rosters (ingested by :func:`ingest_round2`) must already
     be present for the statement coverage step — fail-closed otherwise. Idempotent
     / resumable / rate-limited / byte-exact, same as round-2.
+
+    ``restate_statements=True`` is the truncation-repair path: it re-pulls the 3
+    statements with pagination and appends a NEW version wherever the prior pull
+    was capped (see :func:`_ingest_one`), then rebuilds coverage from the
+    corrected ``store.latest``. namechange (never truncated — small per-year
+    pages) is skipped in this mode.
     """
     results: list[EndpointResult] = []
     last_date = calendar[-1] if calendar else asof
@@ -819,18 +874,20 @@ async def ingest_round3(
                 endpoint=endpoint,
                 now=now,
                 rate_limiter=rate_limiter,
+                reingest=restate_statements,
             )
         )
-    results.extend(
-        await ingest_namechange(
-            client,
-            store,
-            first_year=namechange_first_year,
-            asof=asof,
-            now=now,
-            rate_limiter=rate_limiter,
+    if not restate_statements:
+        results.extend(
+            await ingest_namechange(
+                client,
+                store,
+                first_year=namechange_first_year,
+                asof=asof,
+                now=now,
+                rate_limiter=rate_limiter,
+            )
         )
-    )
     blocking = any(
         r.status == _STATUS_FAILED and r.endpoint in STATEMENT_ENDPOINTS
         for r in results
@@ -872,10 +929,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--phase",
-        choices=("round2", "round3", "all"),
+        choices=("round2", "round3", "round3-restate", "all"),
         default="round2",
         help="round2 = R2-1 (weights/fina/member/rosters); round3 = R3-1 "
-        "(income/cashflow/balancesheet + namechange); all = both (idempotent)",
+        "(income/cashflow/balancesheet + namechange); round3-restate = re-pull "
+        "the 3 statements paginated + version-bump truncated periods + rebuild "
+        "coverage (no namechange); all = round2 + round3 (idempotent)",
     )
     parser.add_argument(
         "--namechange-first-year", type=int, default=NAMECHANGE_FIRST_YEAR
@@ -896,6 +955,7 @@ def main() -> None:
     last_date = calendar[-1] if calendar else asof
     do_r2 = args.phase in ("round2", "all")
     do_r3 = args.phase in ("round3", "all")
+    do_r3_restate = args.phase == "round3-restate"
 
     if args.dry_run:
         periods = report_periods(args.first_year, last_date)
@@ -916,15 +976,17 @@ def main() -> None:
             )
             print(f"[dry-run] fina_indicator periods: {len(periods)} ({pd_span})")
             print(f"[dry-run] index_member_all + stock_basic L/D as-of {asof}")
+        if do_r3 or do_r3_restate:
+            n_stmt = len(STATEMENT_ENDPOINTS) * len(periods)
+            verb = "re-pull (paginated, version-bump)" if do_r3_restate else "pull"
+            print(
+                f"[dry-run] statements ({', '.join(STATEMENT_ENDPOINTS)}): "
+                f"{verb} {n_stmt} period snapshots ({pd_span})"
+            )
         if do_r3:
             pages = namechange_pages(args.namechange_first_year, asof)
             keys = [k for _, _, k in pages]
             yr_span = f"{keys[0]}..{keys[-1]}" if keys else "-"
-            n_stmt = len(STATEMENT_ENDPOINTS) * len(periods)
-            print(
-                f"[dry-run] statements ({', '.join(STATEMENT_ENDPOINTS)}): "
-                f"{n_stmt} period snapshots ({pd_span})"
-            )
             print(
                 f"[dry-run] namechange year snapshots: {len(pages)} ({yr_span}; "
                 "current year keyed by asof)"
@@ -968,6 +1030,23 @@ def main() -> None:
             )
         )
         _print_report("round3", report)
+        failed += report.failed
+    if do_r3_restate:
+        report = asyncio.run(
+            ingest_round3(
+                client,
+                store,
+                coverage_store,
+                calendar=calendar,
+                first_year=args.first_year,
+                asof=asof,
+                now=lambda: datetime.now(UTC),
+                rate_limiter=rate_limiter,
+                namechange_first_year=args.namechange_first_year,
+                restate_statements=True,
+            )
+        )
+        _print_report("round3-restate", report)
         failed += report.failed
     # Non-zero exit on any failure (fail-closed) so a resume re-run is obvious.
     raise SystemExit(1 if failed else 0)

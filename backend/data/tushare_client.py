@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 import pandas as pd
@@ -53,6 +54,17 @@ TUSHARE_TOKEN_ENV = "TUSHARE_TOKEN"
 _TRADE_DATE_RE = re.compile(r"\A\d{8}\Z")  # YYYYMMDD
 _PERIOD_RE = re.compile(r"\A\d{8}\Z")  # report period end, e.g. 20251231
 _TS_CODE_RE = re.compile(r"\A\d{6}\.(SH|SZ|BJ)\Z")  # e.g. 000300.SH
+
+# A single un-paginated *_vip statement call is silently capped by Tushare at a
+# per-endpoint row limit (live 2026-06-19: cashflow_vip 6400, balancesheet_vip
+# 7000, income_vip 9000), dropping every code past the cap. The statements carry
+# MANY rows per code (one per report_type / ann_date filing), so a busy period
+# overflows the cap and truncates the universe — corrupting the survivorship
+# denominator (PIT completeness is a red line). Paging with an explicit
+# limit+offset UNDER the smallest cap retrieves the complete period; pages are
+# concatenated in offset order (Tushare returns a stable order per period), so
+# the assembled frame is deterministic and byte-replayable.
+_STATEMENT_PAGE_LIMIT = 5000
 
 
 class TushareConfigError(RuntimeError):
@@ -216,6 +228,46 @@ class TushareClient:
             log.warning("tushare_fetch_fallback", endpoint=endpoint, error=str(exc))
             return await self._fallback.fetch(endpoint, params)
 
+    async def _fetch_paginated(
+        self,
+        endpoint: str,
+        params: dict[str, Any],
+        *,
+        page_limit: int = _STATEMENT_PAGE_LIMIT,
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Page ``pro.<endpoint>`` with ``limit``+``offset`` until a short page.
+
+        Each page reuses :meth:`_fetch` (so the degrade/fail-closed and fallback
+        path is identical to a single call). Paging stops on the first page with
+        fewer than ``page_limit`` rows (the last page) or an exact-boundary empty
+        page. An entirely empty period returns the first (column-bearing) frame so
+        the stored CSV stays replayable. See :data:`_STATEMENT_PAGE_LIMIT` for why
+        the *_vip statements need this and other full-market pulls do not.
+
+        ``throttle`` (when given) is awaited once before EACH page, so a paginated
+        pull consumes exactly one rate-limit token per real SDK call (a single
+        per-period token would under-count multi-page periods and overrun the
+        vendor cap). The caller must therefore not also throttle this whole call.
+        """
+        frames: list[pd.DataFrame] = []
+        offset = 0
+        while True:
+            if throttle is not None:
+                await throttle()
+            page = await self._fetch(
+                endpoint, {**params, "limit": page_limit, "offset": offset}
+            )
+            if page is None or (page.empty and frames):
+                break  # end reached (exact page boundary returns an empty tail)
+            frames.append(page)
+            if len(page) < page_limit:
+                break
+            offset += page_limit
+        if not frames:
+            return pd.DataFrame()
+        return frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+
     # -- full-market single-pull endpoints -----------------------------
 
     async def daily(self, trade_date: str) -> pd.DataFrame:
@@ -238,33 +290,52 @@ class TushareClient:
         self._check_period(period)
         return await self._fetch("fina_indicator_vip", {"period": period})
 
-    async def income_vip(self, period: str) -> pd.DataFrame:
+    async def income_vip(
+        self, period: str, *, throttle: Callable[[], Awaitable[None]] | None = None
+    ) -> pd.DataFrame:
         """Full-market income statement for a report period (~6700 rows, vip).
 
         Round-3 accruals input (``n_income`` = net profit). Multiple
         ``report_type`` rows per ``(ts_code, end_date)`` exist; the PIT
         consolidated-report (``report_type='1'``) selection + ann_date vintage
-        gating live in the R3-2 statements reader, not here.
+        gating live in the R3-2 statements reader, not here. Paginated so the
+        per-call row cap never truncates the universe (see
+        :data:`_STATEMENT_PAGE_LIMIT`); ``throttle`` is awaited per page.
         """
         self._check_period(period)
-        return await self._fetch("income_vip", {"period": period})
+        return await self._fetch_paginated(
+            "income_vip", {"period": period}, throttle=throttle
+        )
 
-    async def cashflow_vip(self, period: str) -> pd.DataFrame:
-        """Full-market cash-flow statement for a report period (~6400 rows, vip).
+    async def cashflow_vip(
+        self, period: str, *, throttle: Callable[[], Awaitable[None]] | None = None
+    ) -> pd.DataFrame:
+        """Full-market cash-flow statement for a report period (vip, paginated).
 
-        Round-3 accruals input (``n_cashflow_act`` = operating cash flow).
+        Round-3 accruals input (``n_cashflow_act`` = operating cash flow). This
+        statement has the most rows per code, so a single call is capped at 6400
+        rows and drops ~2400 codes per busy period — paging is mandatory (see
+        :data:`_STATEMENT_PAGE_LIMIT`); ``throttle`` is awaited per page.
         """
         self._check_period(period)
-        return await self._fetch("cashflow_vip", {"period": period})
+        return await self._fetch_paginated(
+            "cashflow_vip", {"period": period}, throttle=throttle
+        )
 
-    async def balancesheet_vip(self, period: str) -> pd.DataFrame:
-        """Full-market balance sheet for a report period (~7000 rows, vip).
+    async def balancesheet_vip(
+        self, period: str, *, throttle: Callable[[], Awaitable[None]] | None = None
+    ) -> pd.DataFrame:
+        """Full-market balance sheet for a report period (vip, paginated).
 
         Round-3 accruals + asset-growth input (``total_assets``, a stock — no
-        YTD differencing, but still ann_date-gated PIT).
+        YTD differencing, but still ann_date-gated PIT). Paginated so the
+        per-call row cap never truncates the universe (see
+        :data:`_STATEMENT_PAGE_LIMIT`); ``throttle`` is awaited per page.
         """
         self._check_period(period)
-        return await self._fetch("balancesheet_vip", {"period": period})
+        return await self._fetch_paginated(
+            "balancesheet_vip", {"period": period}, throttle=throttle
+        )
 
     async def namechange(
         self, *, start_date: str = "", end_date: str = ""
