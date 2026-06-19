@@ -3,7 +3,16 @@
 > **🚀 新 session 开工**:先读 [`docs/SESSION-KICKOFF.md`](docs/SESSION-KICKOFF.md)(通用开工协议:检查上次节点 → 开工改状态 → 完成改 done+记录 → 末尾一句话指下一步),按它无缝衔接。
 
 QuantMind = 多 Agent 投研信号 + 模拟实盘 + 飞书人工执行。**永禁**真实券商程序化下单。
-**当前状态(2026-06-19)**:决策对齐 ✅ + 旧 S/A-H/J/I/X 基础设施 ✅ + 双线重构 v2 **MVP(Phase K-N)2026-06-01 真启上线 ✅** + 双线投研逻辑 v3(V/W/Y/Z)+ 存量(O/Q/R/T)+ 模拟盘自动驾驶/自进化(AA-AE)**全 done(#60-#93)**。**当前 = owner 暂停运行,做『量化选股策略研究专项』**(用真实 A 股大历史推 OOS 可证盈利策略;round-1 long-only **FAIL** / round-2 benchmark-relative **FAIL**〔扣成本 +21.58% 但超额 −0.26%〕;round-3 补正超额 alpha 源方案就绪 `docs/research/factor-strategy-round3-plan-2026-06-19.md`,代码全在 `scripts/factor_research/`,离线/确定性/LLM 零参与/import 隔离)。owner 重定位为**双线架构(全市场量化选股 + 持仓监控)+ 本地知识图谱 + 自进化多 agent**,在已建 backend 上演进。
+**当前状态(2026-06-20)**:决策对齐 ✅ + 旧 S/A-H/J/I/X 基础设施 ✅ + 双线重构 v2 **MVP(Phase K-N)2026-06-01 真启上线 ✅** + 双线投研逻辑 v3(V/W/Y/Z)+ 存量(O/Q/R/T)+ 模拟盘自动驾驶/自进化(AA-AE)**全 done(#60-#93)**。**当前 = owner 暂停运行,做『量化选股策略研究专项』**(用真实 A 股大历史推 OOS 可证盈利策略;**round-1/2/3 三轮全 FAIL**:round-1 long-only 超额 −16.36% / round-2 增强指数 −0.26% / round-3 增强指数+应计 −4.00%,均扣成本真盈利但跑不赢强势 CSI300,反过拟合门 DSR/PBO/SPA **三次正确预警**;报告 `docs/research/factor-strategy-round3-result-2026-06-19.md`)。**round-4 kickoff 就绪**(owner 已充 Tushare 到 **8000 积分**解锁分析师预测 `report_rc`;以**分析师修正动量**为头号正交 alpha 源;方案 `docs/research/factor-strategy-round4-kickoff-2026-06-20.md`)。代码全在 `scripts/factor_research/`,离线/确定性/LLM 零参与/import 隔离。owner 重定位为**双线架构(全市场量化选股 + 持仓监控)+ 本地知识图谱 + 自进化多 agent**,在已建 backend 上演进。
+
+> **研究专项已验证原则(owner 2026-06-20 锁定,跨 session 强制;新验证的原则及时回写此处)**
+> 1. **反过拟合门 = 真预言,信它**:DSR≥0.95 主门 / PBO≤0.5 / SPA-vs-passive 三轮三次精准预测 OOS 失败;低 DSR 不是"门保守",是真脆弱 —— 开发证据 ≠ 判定。
+> 2. **不闭门造车**:因子/策略从**前沿文献 + 牛人分享**汲取灵感(provenance-gated 记来源)→ 再严格验证;严禁拍脑袋造因子。
+> 3. **数据划分铁律**:**从零数学提取**新因子/权重 → 用既有 locked split(test 封存);**测试现成(已发表)策略** → 可用更广数据(全历史,不限 12 个月 test 窗口)做复现,**不烧 test 集**。
+> 4. **测试集已评测 3 次**(round-1/2/3)→ 每多评一次 OOS 价值递减;下一轮判定**优先冻结新策略 + 等真前向窗口(test_end 2026-06-12 之后新增数据)做处子 OOS**,次选既有 test 第 4 次(须显式披露)。
+> 5. **benchmark-gate 现实**:强势大盘年里长多增强指数要跑赢 cap 加权 CSI300,**必须有真·正交 alpha**;价值/质量/反转/SUE/应计(零成本财报衍生因子)已证不够。
+> 6. **Tushare `*_vip` 及多行/票端点单调用静默截断** → **必 limit+offset 分页**;coverage manifest fail-closed 兜底(详见 memory `reference-tushare-statement-vip-row-cap`)。
+> 7. 研究全程:PIT/幸存无偏/无前视 + 字节存档+checksum + 仅 Tushare 官方 SDK + 离线 + LLM 只用于文献 + 永禁真实下单 + 不动 governance enum + codex 前置门 + 四门不放宽 + FAIL 报 FAIL。
 SSoT = `docs/plan.html`(任务清单 + Session Log + 维护协议)。**总纲 = `docs/decisions/R0-two-line-rearch-provenance-and-single-builder-2026-05-24.md` + v2 6 amendment(§2.0)+ v3 4 amendment(§2.0b)**;红线条文 → 对应 `docs/decisions/*.md` §2。
 
 ## 1. 项目进度管理协议(**强制,违反 = 违规实现**)
@@ -47,7 +56,8 @@ SSoT = `docs/plan.html`(任务清单 + Session Log + 维护协议)。**总纲 = 
 > - **✅ 参考/治理(PIT)**:`stock_basic`(已摄取)+ `namechange`(曾用名/ST 史 → 可做 PIT ST 排除)/`share_float`(限售解禁)/`stk_holdernumber`(股东人数)/`stk_holdertrade`(增减持)/`repurchase`(回购)/`stk_managers`(管理层)。
 > - **✅ 指数/行业/基金**:`index_daily`/`index_weight`(成分权重,已摄取)/`index_member_all`+`index_member`(成分,已摄取)/`index_classify`(申万分类)/`fund_basic`/`fund_nav`/`fund_portfolio`。
 > - **✅ 概念**:`ths_index`(同花顺概念)。
-> - **❌ 不可用(需更高积分/单独申请)**:`report_rc`(券商分析师盈利预测,需正式 **8000 积分**;现 ≥~5000 约差 3000,owner 登录确认+充值才取);`concept` 端点名已变更→用 `ths_index`。
+> - **✅ 分析师/筹码(2026-06-20 owner 充值到 8000 积分后实探解锁)**:`report_rc`(券商分析师盈利预测/评级,2016+,按 `report_date` PIT;`eps`/`np`/`tp` 目标价/`rating` → **分析师修正动量,round-4 头号正交 alpha 源**)/ `cyq_chips`(筹码分布)/ `stk_factor_pro`(技术因子 pro)/ `ccass_hold`(中央结算持股)。完整 8000 档权限图 = round-4 R4-1 真探针任务(docs.qq.com 积分权限表 JS 渲染取不到→真探针权威)。
+> - **❌ 仍不可用 / 已变更**:`concept` 端点名已变更→用 `ths_index`;>8000 档(如部分另需单独申请的端点)按需 R4-1 探。
 
 **2.6 飞书(P0-2 / P0-4)** 永禁 HTTPS 回调入站;事件订阅仅 `lark-oapi` WebSocket(3s ack);`tenant_access_token` 仅内存。备用 webhook 仅发系统告警,**绝不**发买卖 / 对账 / 澄清。纯文本 + 严格正则;不通过 = AMBIGUOUS 绝不更新 MockBroker;严禁猜 `instruction_id`。所有飞书消息必经 `renderer.py`(防 prompt injection)。
 
