@@ -205,3 +205,107 @@ def test_benchmark_relative_backtest_runs_and_reports_te_ir() -> None:
     assert res.tracking_error >= 0
     # net active per date ~ 0 (beta ~ 1)
     assert abs(res.mean_net_active) < 1e-6
+
+
+# --- R2-4 exposure constraints ----------------------------------------------
+
+
+def test_unknown_exposure_constraint_fails_closed() -> None:
+    g = _group({"a.SH": 2.0, "b.SH": 1.0})
+    score = composite_score(g, _weights())
+    with pytest.raises(ValueError, match="exposure_constraint"):
+        build_active_weights(
+            g,
+            {"a.SH": 0.6, "b.SH": 0.4},
+            score,
+            k=0.05,
+            a_max=0.02,
+            exposure_constraint="bogus",
+        )
+
+
+def test_constituent_only_does_not_tilt_non_members() -> None:
+    # x.SH is investable + high-score but NOT a benchmark member (w_bench absent).
+    # constituent_only must hold it at 0 (not buy it), tilting only a/b.
+    g = _group({"a.SH": 3.0, "b.SH": 1.0, "x.SH": 5.0})
+    score = composite_score(g, _weights())
+    w_bench = {"a.SH": 0.5, "b.SH": 0.5}
+    w = build_active_weights(
+        g, w_bench, score, k=0.1, a_max=0.05, exposure_constraint="constituent_only"
+    )
+    assert w.get("x.SH", 0.0) == pytest.approx(0.0)  # non-member never held
+    assert sum(w.values()) == pytest.approx(1.0)
+    # a (higher score) overweighted vs b within the benchmark
+    assert w["a.SH"] > w_bench["a.SH"] > 0
+    # unconstrained WOULD have bought the high-score non-member x
+    w_unc = build_active_weights(g, w_bench, score, k=0.1, a_max=0.05)
+    assert w_unc.get("x.SH", 0.0) > 0
+
+
+def _size_varied_panel() -> pd.DataFrame:
+    """One date; score ANTI-correlated with size (high score = small cap) — the
+    R2-3 small-cap-drift scenario. All names are benchmark members so no floor
+    truncation masks the size exposure."""
+    from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME
+
+    sizes = {"a": 8.0, "b": 9.0, "c": 10.0, "d": 11.0, "e": 12.0, "f": 13.0}
+    scores = {"a": 6.0, "b": 5.0, "c": 4.0, "d": 3.0, "e": 2.0, "f": 1.0}
+    rows = []
+    for name in sizes:
+        code = f"{name}.SH"
+        row: dict[str, object] = {
+            "date": "20240105",
+            "ts_code": code,
+            "industry_l1": "801080.SI",
+            "log_circ_mv": sizes[name],
+            "fwd_ret_5d": 0.0,
+        }
+        for base in CARRY_FACTORS:
+            sign = 1.0 if ALL_FACTORS_BY_NAME[base].attractive_high else -1.0
+            row[f"{base}_neut"] = sign * scores[name]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def test_size_neutral_reduces_size_active() -> None:
+    panel = _size_varied_panel()
+    bench = {c: 1.0 / 6 for c in ["a.SH", "b.SH", "c.SH", "d.SH", "e.SH", "f.SH"]}
+    idx = {"20240105": 0.0}
+    common = dict(weights=_weights(), horizon=5, k=0.1, a_max=0.05)
+    unc = benchmark_relative_backtest(
+        panel, lambda d: bench, idx, exposure_constraint="unconstrained", **common
+    )
+    sn = benchmark_relative_backtest(
+        panel, lambda d: bench, idx, exposure_constraint="size_neutral", **common
+    )
+    assert abs(unc.mean_size_active) > 0.05  # clear small-cap drift unconstrained
+    assert abs(sn.mean_size_active) < abs(unc.mean_size_active)
+    assert abs(sn.mean_size_active) < 1e-6  # neutralized (no floor truncation here)
+
+
+def test_capped_nonconstituent_bounds_realised_active() -> None:
+    # Two members (small w_bench) + four high-score non-members → unconstrained
+    # piles active into non-members. The cap must bound the REALISED
+    # non-constituent weight (codex P2: the renormalize must not re-inflate it).
+    g = _group(
+        {"a.SH": 2.0, "b.SH": 1.0, "x.SH": 6.0, "y.SH": 5.0, "z.SH": 4.0, "q.SH": 3.0}
+    )
+    score = composite_score(g, _weights())
+    w_bench = {"a.SH": 0.5, "b.SH": 0.5}
+    nonmembers = {"x.SH", "y.SH", "z.SH", "q.SH"}
+    w_unc = build_active_weights(g, w_bench, score, k=0.2, a_max=0.05)
+    w_cap = build_active_weights(
+        g,
+        w_bench,
+        score,
+        k=0.2,
+        a_max=0.05,
+        exposure_constraint="capped_nonconstituent",
+        nonconst_cap=0.03,
+    )
+    realised_nonconst = sum(w_cap.get(c, 0.0) for c in nonmembers)
+    unc_nonconst = sum(w_unc.get(c, 0.0) for c in nonmembers)
+    assert realised_nonconst <= 0.03 + 1e-9  # realised cap honoured
+    assert realised_nonconst < unc_nonconst  # capped below unconstrained
+    assert sum(w_cap.values()) == pytest.approx(1.0)
+    assert all(v >= 0 for v in w_cap.values())

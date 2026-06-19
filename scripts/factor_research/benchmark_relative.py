@@ -43,6 +43,13 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
+from .exposure_constraints import (
+    DEFAULT_NONCONST_CAP,
+    cap_nonconstituent_weights,
+    filter_constituents,
+    size_neutralize_active,
+    validate_constraint,
+)
 from .factor_lib import ALL_FACTORS_BY_NAME
 from .portfolio_backtest import group_by_date
 
@@ -119,6 +126,20 @@ def composite_score(group: pd.DataFrame, weights: Mapping[str, float]) -> pd.Ser
     return score
 
 
+def _sizes_from_group(group: pd.DataFrame) -> dict[str, float]:
+    """``{ts_code: log_circ_mv}`` for the size-neutral exposure constraint."""
+    if "log_circ_mv" not in group.columns or "ts_code" not in group.columns:
+        return {}
+    sizes: dict[str, float] = {}
+    for code, lm in zip(
+        group["ts_code"].astype(str), group["log_circ_mv"], strict=True
+    ):
+        lm_f = float(lm) if lm == lm else float("nan")  # NaN-safe
+        if np.isfinite(lm_f):
+            sizes[str(code)] = lm_f
+    return sizes
+
+
 def build_active_weights(
     group: pd.DataFrame,
     w_bench: Mapping[str, float],
@@ -126,6 +147,8 @@ def build_active_weights(
     *,
     k: float,
     a_max: float,
+    exposure_constraint: str = "unconstrained",
+    nonconst_cap: float = DEFAULT_NONCONST_CAP,
 ) -> dict[str, float]:
     """Construct the long-only, net-zero-active, fully-invested weight book.
 
@@ -141,7 +164,17 @@ def build_active_weights(
     renormalize scaled unscored names off benchmark). Net active is 0 by
     construction (Σw = Σw_bench = 1). ``a_max`` bounds the pre-floor/scale
     active; the realized active (disclosed) may differ after scaling.
+
+    ``exposure_constraint`` (R2-4, the R2-3 size-drift fix) bounds the
+    off-benchmark tilt: ``constituent_only`` ranks only CSI300 constituents (a
+    score pre-filter → z-score within the index); ``size_neutral`` removes the
+    active vector's size projection; ``capped_nonconstituent`` caps the
+    non-constituent gross active at ``nonconst_cap``. ``unconstrained`` (default)
+    is byte-identical to the R2-3 construction.
     """
+    validate_constraint(exposure_constraint)
+    if exposure_constraint == "constituent_only":
+        score = filter_constituents(score, w_bench)
     codes = [str(c) for c in score.index]
     finite = score.dropna()
     scored = {str(c) for c in finite.index}
@@ -154,6 +187,21 @@ def build_active_weights(
         active_map = {str(c): float(a) for c, a in active.items()}
     else:
         active_map = {}
+
+    # size_neutral acts on the active overlay BEFORE the long-only floor, then
+    # SCALES (not clips) it into the box: the size projection can push a name
+    # outside [-a_max, a_max] (codex P2), so shrink the whole vector uniformly to
+    # honour the advertised per-name bound while PRESERVING size-orthogonality (a
+    # clip would re-introduce a size tilt; uniform scaling keeps Σ active·z=0).
+    # The long-only floor may still leave a small residual (disclosed by the
+    # size-active column). capped_nonconstituent is applied to the FINAL book
+    # below (a realised cap, not a pre-floor one the renormalize re-inflates).
+    if active_map and exposure_constraint == "size_neutral":
+        active_map = size_neutralize_active(active_map, _sizes_from_group(group))
+        peak = max((abs(a) for a in active_map.values()), default=0.0)
+        if peak > a_max:
+            shrink = a_max / peak
+            active_map = {c: a * shrink for c, a in active_map.items()}
 
     w_scored: dict[str, float] = {}
     w_unscored: dict[str, float] = {}
@@ -189,7 +237,18 @@ def build_active_weights(
             else {}
         )
     scale = gap / sum_scored
-    return {**{c: w * scale for c, w in w_scored.items()}, **w_unscored}
+    book = {**{c: w * scale for c, w in w_scored.items()}, **w_unscored}
+    if exposure_constraint == "capped_nonconstituent":
+        # Bound the REALISED non-constituent active (the renormalize above can
+        # re-inflate a pre-floor cap — codex P2). Freed weight is redistributed
+        # ONLY into scored constituents, so UNSCORED benchmark constituents stay
+        # at their exact benchmark weight (codex P2). The earlier all-benchmark
+        # return paths hold no non-constituent weight, so this is the only path
+        # that can breach the cap.
+        book = cap_nonconstituent_weights(
+            book, w_bench, nonconst_cap, redistribute_into=frozenset(scored)
+        )
+    return book
 
 
 def drift_weights(
@@ -292,14 +351,19 @@ def benchmark_relative_backtest(
     a_max: float = DEFAULT_A_MAX,
     buy_cost: float = BUY_COST,
     sell_cost: float = SELL_COST,
+    exposure_constraint: str = "unconstrained",
+    nonconst_cap: float = DEFAULT_NONCONST_CAP,
 ) -> BenchmarkRelativeResult:
     """Run the benchmark-relative tilt over the panel; return excess + exposures.
 
     ``bench_asof(d)`` returns the PIT benchmark weights known as of date ``d``
     (``{}`` → skip, e.g. pre-2016). ``index_returns[d]`` is the CSI300 return
     over the same ``horizon`` bars (precomputed by the caller). A date with no
-    benchmark weights or no index return is skipped.
+    benchmark weights or no index return is skipped. ``exposure_constraint`` /
+    ``nonconst_cap`` (R2-4) bound the off-benchmark tilt (see
+    :func:`build_active_weights`); the default reproduces the R2-3 construction.
     """
+    validate_constraint(exposure_constraint)
     fwd_col = f"fwd_ret_{horizon}d"
     groups = group_by_date(panel)
     prev_w: dict[str, float] = {}
@@ -318,6 +382,8 @@ def benchmark_relative_backtest(
             a_max=a_max,
             buy_cost=buy_cost,
             sell_cost=sell_cost,
+            exposure_constraint=exposure_constraint,
+            nonconst_cap=nonconst_cap,
         )
         if period is not None:
             periods.append(period)
@@ -361,6 +427,8 @@ def _run_period(
     a_max: float,
     buy_cost: float,
     sell_cost: float,
+    exposure_constraint: str = "unconstrained",
+    nonconst_cap: float = DEFAULT_NONCONST_CAP,
 ) -> tuple[_Period | None, dict[str, float]]:
     """Build + evaluate one rebalance date; return its stats + drifted holdings.
 
@@ -373,7 +441,15 @@ def _run_period(
     if g.empty:
         return None, prev_w
     score = composite_score(g, weights)
-    w = build_active_weights(g, w_bench, score, k=k, a_max=a_max)
+    w = build_active_weights(
+        g,
+        w_bench,
+        score,
+        k=k,
+        a_max=a_max,
+        exposure_constraint=exposure_constraint,
+        nonconst_cap=nonconst_cap,
+    )
     if not w:
         return None, prev_w
 
