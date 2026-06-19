@@ -219,6 +219,12 @@ codex (gpt-5.5, xhigh) 评审本方案,**判定无 P0**(大方向成立:现有�
 
 ## 12. 执行进度
 
+### ⚠️ 方法论变更(2026-06-19,owner;放宽 §2/§11 C-1)
+**测试集可跨实验复用** → **R2-6 改在既有锁定测试集(2025-06-04→2026-06-12)做一次性判定**,
+不再等前向封存窗口。理由:每次搜寻是独立实验,不偷看测试集 + 测试期严格 PIT ≠ look-ahead。
+诚实保障四条全留(冻结-再读 / 累计-N deflation / 测试集第 2 次评测披露 / 四门不放宽)。
+**记录全文 = `docs/research/factor-strategy-round2-test-reuse-decision-2026-06-19.md`(先读)。**
+
 ### R2-1 ✅ DONE(2026-06-18;feature `434d2cb` + 真跑修复 `48809d2`;本地未 push)
 PIT 数据扩充摄取落地 + **真实重活摄取已跑**:
 - 新 `scripts/factor_research/ingest_round2_data.py`(离线编排器,字节存档+sha256+幂等续传+fail-closed+限速+幸存无偏 coverage)+ `TushareClient` 加 `index_weight`/`index_member_all`(只读)。codex 3 轮(cycle-1 5 + verify 3 + 真跑后 2 修)全清;门禁 ruff+mypy strict+184~283 测试绿;review summary `docs/reviews/round2-r2-1-ingest-codex-review-summary.md`。
