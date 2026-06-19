@@ -6,6 +6,12 @@
 > Tushare 权限地图(2026-06-19 探测)= memory `reference-tushare-entitlements-2026-06-19.md`。
 > **本文件 = 书面方案(plan-first);执行(摄取=owner-gated 重活)在 owner 批准后。**
 
+> **实施进度(2026-06-19):** R3-1/R3-2/R3-3 **代码 done + codex 全过(0 P0/P1)+ 本地 commit
+> `120ea82`/`5678f45`/`40255b3`(未 push;297 测试绿)**。⛔ 卡 owner-gate「开」→ R3-1 真摄取
+> → r3 面板 → R3-3 诊断真跑(定 carry)→ R3-4 搜索 → R3-5 冻结 → R3-6 判定。**R3-4/5/6 代码未写**
+> (数据派生常量须等真跑)。**执行期接手文件(exhaustive,新 session 读它接手)=
+> `docs/research/factor-strategy-round3-handoff-2026-06-19.md`。**
+
 ---
 
 ## 0. 一句话方案
