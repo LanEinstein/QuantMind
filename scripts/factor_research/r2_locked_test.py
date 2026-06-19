@@ -56,11 +56,27 @@ _PERIODS_PER_YEAR_BASE: int = 252
 # === The strategy git-frozen in R2-5 (filled from the R2-4 search result BEFORE
 # the test is read). Recorded here to 3 dp as the auditable pre-commitment; the
 # run asserts the on-disk search-result artifact agrees (catches a drifted JSON).
-FROZEN_R2_CONSTRAINT: str = "PLACEHOLDER_FILLED_IN_R2_5"
-FROZEN_R2_K: float = 0.0
-FROZEN_R2_A_MAX: float = 0.0
+# R2-4 selected: constituent_only (true enhanced index — fixes the R2-3 size
+# drift), k=0.10, a_max=0.01; value/quality-tilted composite (momentum ≈ 0). DEV
+# disclosure (in-sample): inner-val IR 1.09 / sentinel passes / CPCV 89% positive,
+# but DSR 0.056 fails ≥0.95 + PBO 0.504 — the verdict is this one-shot test.
+FROZEN_R2_CONSTRAINT: str = "constituent_only"
+FROZEN_R2_K: float = 0.10
+FROZEN_R2_A_MAX: float = 0.01
 FROZEN_R2_NONCONST_CAP: float = 0.10
-FROZEN_R2_WEIGHTS_3DP: dict[str, float] = {}
+FROZEN_R2_WEIGHTS_3DP: dict[str, float] = {
+    "ret_5d": 0.056,
+    "ret_20d": 0.053,
+    "vol_20d": 0.031,
+    "max_20d": 0.040,
+    "ep_ttm": 0.195,
+    "turn_20d": 0.104,
+    "amihud_20d": 0.160,
+    "roe": 0.140,
+    "gpm": 0.089,
+    "np_yoy": 0.076,
+    "rev_yoy": 0.056,
+}
 
 
 @dataclass(frozen=True)

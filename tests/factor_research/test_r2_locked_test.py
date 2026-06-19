@@ -74,14 +74,16 @@ def test_positive_net_but_loses_to_strong_index_fails_beats_gate() -> None:
     assert v.passed is False
 
 
-def test_load_frozen_refuses_until_constants_filled(tmp_path: Path) -> None:
-    # Until R2-5 fills the freeze constants, the firewall fails closed (must never
-    # burn the sacred window against an unfilled pre-commitment).
-    assert FROZEN_R2_CONSTRAINT == "PLACEHOLDER_FILLED_IN_R2_5"
-    p = tmp_path / "search.json"
-    p.write_text(json.dumps({"selected_constraint": "x", "selected_weights": {}}))
-    with pytest.raises(ValueError, match="not filled"):
-        load_frozen_strategy(str(p))
+def test_frozen_constants_are_filled_and_wellformed() -> None:
+    # R2-5 freeze: the pre-commitment constants are filled (not placeholders) and
+    # cover exactly the carry-factor set (the firewall pins the weight SET).
+    from scripts.factor_research.benchmark_relative import CARRY_FACTORS
+    from scripts.factor_research.exposure_constraints import CONSTRAINTS
+    from scripts.factor_research.r2_locked_test import FROZEN_R2_WEIGHTS_3DP
+
+    assert FROZEN_R2_CONSTRAINT != "PLACEHOLDER_FILLED_IN_R2_5"
+    assert FROZEN_R2_CONSTRAINT in CONSTRAINTS
+    assert set(FROZEN_R2_WEIGHTS_3DP) == set(CARRY_FACTORS)
 
 
 def _fill_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
