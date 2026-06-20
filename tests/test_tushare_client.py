@@ -22,6 +22,8 @@ import pandas as pd
 import pytest
 
 from backend.data.tushare_client import (
+    REPORT_RC_FIELDS,
+    REPORT_RC_PAGE_LIMIT,
     TUSHARE_TOKEN_ENV,
     TushareClient,
     TushareConfigError,
@@ -73,6 +75,9 @@ class _FakePro:
 
     def balancesheet_vip(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("balancesheet_vip", **kwargs)
+
+    def report_rc(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("report_rc", **kwargs)
 
     def namechange(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("namechange", **kwargs)
@@ -392,6 +397,99 @@ class TestFullMarketPull:
         client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
         with pytest.raises(ValueError):
             await client.trade_cal(start_date="2015", end_date="20151231")
+
+
+# ---------------------------------------------------------------------------
+# R4-1 analyst forecast / rating (report_rc) — single-date vs paginated range
+# ---------------------------------------------------------------------------
+
+
+class TestReportRc:
+    @pytest.mark.asyncio
+    async def test_single_report_date_one_call_with_pinned_fields(self) -> None:
+        pro = _FakePro({"report_rc": pd.DataFrame({"ts_code": ["1", "2", "3"]})})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await client.report_rc(report_date="20240108")
+        assert list(df["ts_code"]) == ["1", "2", "3"]
+        # a single report_date is cap-immune → ONE call, no pagination.
+        assert pro.calls == [
+            ("report_rc", {"report_date": "20240108", "fields": REPORT_RC_FIELDS})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_pinned_fields_include_create_time(self) -> None:
+        # create_time (omitted from report_rc's DEFAULT field set) must be requested
+        # so a PIT build can drop backfilled rows (create_time >> report_date).
+        assert "create_time" in REPORT_RC_FIELDS
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.report_rc(report_date="20240108")
+        assert "create_time" in pro.calls[0][1]["fields"]
+
+    @pytest.mark.asyncio
+    async def test_range_paginates_below_the_5000_cap(self) -> None:
+        # A date-RANGE query is silently capped at 5000 rows/call, so the client
+        # pages with limit+offset (page_limit 3000 < cap) and assembles the complete
+        # range. 7000 rows over page_limit 3000 → pages of 3000, 3000, 1000.
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(7000)]})
+        pro = _FakePro({"report_rc": backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await client.report_rc(start_date="20240101", end_date="20240131")
+        assert len(df) == 7000  # nothing dropped past the cap
+        assert df["ts_code"].nunique() == 7000
+        assert [c[1]["offset"] for c in pro.calls] == [0, 3000, 6000]
+        assert all(c[1]["limit"] == REPORT_RC_PAGE_LIMIT for c in pro.calls)
+        assert all(c[1]["fields"] == REPORT_RC_FIELDS for c in pro.calls)
+
+    @pytest.mark.asyncio
+    async def test_range_throttles_each_page(self) -> None:
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(7000)]})
+        pro = _FakePro({"report_rc": backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        ticks = 0
+
+        async def throttle() -> None:
+            nonlocal ticks
+            ticks += 1
+
+        await client.report_rc(
+            start_date="20240101", end_date="20240131", throttle=throttle
+        )
+        assert ticks == 3  # one token per page (offsets 0, 3000, 6000)
+
+    @pytest.mark.asyncio
+    async def test_range_exact_page_boundary_no_duplicate(self) -> None:
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(6000)]})
+        pro = _FakePro({"report_rc": backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await client.report_rc(start_date="20240101", end_date="20240131")
+        assert len(df) == 6000
+        assert [c[1]["offset"] for c in pro.calls] == [0, 3000, 6000]
+
+    @pytest.mark.asyncio
+    async def test_rejects_mixed_date_and_range(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="exactly one"):
+            await client.report_rc(report_date="20240108", end_date="20240131")
+
+    @pytest.mark.asyncio
+    async def test_rejects_neither_date_nor_range(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="exactly one"):
+            await client.report_rc()
+
+    @pytest.mark.asyncio
+    async def test_rejects_inverted_range(self) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="start_date"):
+            await client.report_rc(start_date="20240131", end_date="20240101")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["2024-01-08", "202401", "abcdefgh"])
+    async def test_rejects_bad_report_date(self, bad: str) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError):
+            await client.report_rc(report_date=bad)
 
 
 # ---------------------------------------------------------------------------

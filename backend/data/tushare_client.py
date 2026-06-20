@@ -37,7 +37,7 @@ import asyncio
 import hashlib
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import pandas as pd
 import structlog
@@ -65,6 +65,25 @@ _TS_CODE_RE = re.compile(r"\A\d{6}\.(SH|SZ|BJ)\Z")  # e.g. 000300.SH
 # concatenated in offset order (Tushare returns a stable order per period), so
 # the assembled frame is deterministic and byte-replayable.
 _STATEMENT_PAGE_LIMIT = 5000
+
+# report_rc (broker analyst earnings-forecast / rating, R4-1) is a sparse STREAM,
+# not a daily snapshot: a single report_date returns ~150-900 rows (cap-immune),
+# but a multi-month date-RANGE query is silently capped at 5000 rows/call (probed
+# 2026-06-20: limit=8000 still returns 5000), so a range pull MUST paginate. The
+# page limit is kept STRICTLY BELOW the observed 5000 cap (3000 = the doc-stated
+# cap) so a full page never equals the cap — otherwise the short-page stop could
+# misfire and silently truncate (the R3-1 *_vip lesson, generalised).
+REPORT_RC_PAGE_LIMIT = 3000
+# Explicit field pin so a re-pull is byte-stable AND includes ``create_time`` (the
+# insert/update timestamp Tushare omits from report_rc's default field set) — it
+# lets a PIT factor build drop backfilled rows (create_time >> report_date). These
+# are the 21 default columns + create_time. NB ``tp`` = 利润总额/total-profit (万元),
+# NOT the target price; the target price is ``min_price`` (max_price ~always empty).
+REPORT_RC_FIELDS = (
+    "ts_code,name,report_date,report_title,report_type,classify,org_name,"
+    "author_name,quarter,op_rt,op_pr,tp,np,eps,pe,rd,roe,ev_ebitda,rating,"
+    "max_price,min_price,create_time"
+)
 
 
 class TushareConfigError(RuntimeError):
@@ -107,6 +126,7 @@ class TusharePro(Protocol):
     def income_vip(self, **kwargs: Any) -> pd.DataFrame: ...
     def cashflow_vip(self, **kwargs: Any) -> pd.DataFrame: ...
     def balancesheet_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def report_rc(self, **kwargs: Any) -> pd.DataFrame: ...
     def namechange(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_daily(self, **kwargs: Any) -> pd.DataFrame: ...
     def index_weight(self, **kwargs: Any) -> pd.DataFrame: ...
@@ -187,7 +207,10 @@ class TushareClient:
             raise TushareConfigError(
                 "tushare package not installed; add tushare>=1.4 (R0 §6)"
             ) from exc
-        return ts.pro_api(token)
+        # tushare is untyped (no py.typed) → pro_api returns Any; the SDK object
+        # structurally satisfies the TusharePro Protocol (asserted by the live
+        # endpoint tests), so cast at this isolated boundary keeps strict mypy green.
+        return cast(TusharePro, ts.pro_api(token))
 
     @property
     def token_fingerprint(self) -> str:
@@ -335,6 +358,60 @@ class TushareClient:
         self._check_period(period)
         return await self._fetch_paginated(
             "balancesheet_vip", {"period": period}, throttle=throttle
+        )
+
+    async def report_rc(
+        self,
+        *,
+        report_date: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        fields: str = REPORT_RC_FIELDS,
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Broker analyst earnings-forecast / rating reports (``report_rc``, R4-1).
+
+        The round-4 analyst-revision alpha source. Query EITHER a single
+        ``report_date`` (a publication day — cap-immune, ≤~900 rows, one call) OR a
+        ``start_date``/``end_date`` range (paginated — a range is silently capped at
+        5000 rows/call, see :data:`REPORT_RC_PAGE_LIMIT`). ``report_date`` is the PIT
+        availability date (the report loads that night → tradable D+1).
+
+        Exactly one of ``report_date`` OR the ``start_date``/``end_date`` range must
+        be given (a mix is ambiguous and rejected fail-closed); a range requires both
+        ends and ``start_date <= end_date``. ``fields`` is pinned to
+        :data:`REPORT_RC_FIELDS` (incl. ``create_time``) for byte-stable replayable
+        pulls. ``throttle`` (range mode) is awaited once per page.
+
+        NB: ``tp`` is 利润总额/total-profit (万元), NOT the target price — the target
+        price is ``min_price`` (``max_price`` is almost always empty). Multiple rows
+        per (ts_code, report_date) are legitimate (one per forecast fiscal year ×
+        broker); de-dup/aggregation is a factor-build concern, not done here.
+        """
+        is_range = bool(start_date or end_date)
+        if bool(report_date) == is_range:
+            raise ValueError(
+                "report_rc needs exactly one of report_date OR a "
+                "start_date/end_date range (got both or neither)"
+            )
+        if report_date:
+            self._check_trade_date(report_date)
+            return await self._fetch(
+                "report_rc", {"report_date": report_date, "fields": fields}
+            )
+        if not (start_date and end_date):
+            raise ValueError("report_rc range needs both start_date and end_date")
+        self._check_trade_date(start_date)
+        self._check_trade_date(end_date)
+        if start_date > end_date:
+            raise ValueError(
+                f"report_rc start_date {start_date} > end_date {end_date}"
+            )
+        return await self._fetch_paginated(
+            "report_rc",
+            {"start_date": start_date, "end_date": end_date, "fields": fields},
+            page_limit=REPORT_RC_PAGE_LIMIT,
+            throttle=throttle,
         )
 
     async def namechange(

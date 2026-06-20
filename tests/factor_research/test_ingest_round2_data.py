@@ -29,6 +29,7 @@ from scripts.factor_research.ingest_round2_data import (
     EP_INDEX_MEMBER,
     EP_INDEX_WEIGHT,
     EP_NAMECHANGE,
+    EP_REPORT_RC,
     EP_STOCK_BASIC_D,
     EP_STOCK_BASIC_L,
     STATEMENT_ENDPOINTS,
@@ -38,8 +39,10 @@ from scripts.factor_research.ingest_round2_data import (
     ingest_index_member_all,
     ingest_index_weight,
     ingest_namechange,
+    ingest_report_rc,
     ingest_round2,
     ingest_round3,
+    ingest_round4,
     ingest_statement,
     ingest_stock_basic,
     load_survivorship,
@@ -47,6 +50,7 @@ from scripts.factor_research.ingest_round2_data import (
     namechange_pages,
     namechange_years,
     report_periods,
+    report_rc_month_ranges,
 )
 
 FIXED_NOW = datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC)
@@ -71,6 +75,8 @@ class _FakeRound2Client:
         statements: dict[tuple[str, str], pd.DataFrame] | None = None,
         empty_statements: set[tuple[str, str]] | None = None,
         namechange_by_year: dict[int, pd.DataFrame] | None = None,
+        report_rc: dict[str, pd.DataFrame] | None = None,
+        report_rc_empty: set[str] | None = None,
     ) -> None:
         self._weight = weight
         self._fina = fina or {}
@@ -81,6 +87,8 @@ class _FakeRound2Client:
         self._statements = statements or {}
         self._empty_statements = empty_statements or set()
         self._namechange_by_year = namechange_by_year or {}
+        self._report_rc = report_rc or {}
+        self._report_rc_empty = report_rc_empty or set()
         self.calls: list[tuple[str, str]] = []
 
     def _statement(self, endpoint: str, period: str) -> pd.DataFrame:
@@ -119,6 +127,31 @@ class _FakeRound2Client:
         if throttle is not None:
             await throttle()
         return self._statement("balancesheet_vip", period)
+
+    async def report_rc(
+        self,
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: Any | None = None,
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()  # one page → one token (mirrors the real client)
+        self.calls.append(("report_rc", end_date))
+        if end_date in self._report_rc_empty:
+            return pd.DataFrame()
+        return self._report_rc.get(
+            end_date,
+            pd.DataFrame(
+                {
+                    "ts_code": ["600519.SH"],
+                    "report_date": [end_date],
+                    "org_name": ["中金"],
+                    "quarter": ["2024Q4"],
+                    "np": [10000.0],
+                }
+            ),
+        )
 
     async def namechange(
         self, *, start_date: str = "", end_date: str = ""
@@ -871,3 +904,135 @@ class TestRound3Orchestrator:
             if ln.strip()
         ]
         assert len(cov_lines) == len(STATEMENT_ENDPOINTS)  # no duplicate rows
+
+
+# --- R4-2: report_rc analyst-forecast ingest --------------------------------
+
+
+class TestRound4ReportRc:
+    def test_month_ranges_weekend_inclusive_calendar_end(self) -> None:
+        # Each month spans its full CALENDAR end (last day), not the last trade
+        # date, so weekend-published reports are captured; key = end; the final
+        # month is capped at last_date.
+        ranges = report_rc_month_ranges(2024, "20240315")
+        assert ranges == [
+            ("20240101", "20240131", "20240131"),
+            ("20240201", "20240229", "20240229"),  # leap-year Feb end
+            ("20240301", "20240315", "20240315"),  # final month capped at last_date
+        ]
+
+    def test_month_ranges_first_year_floor_warms_window(self) -> None:
+        # first_year is BEFORE the calendar/train_val start so the trailing window
+        # is warm at the panel start.
+        ranges = report_rc_month_ranges(2014, "20150115")
+        assert ranges[0] == ("20140101", "20140131", "20140131")
+        assert ranges[-1] == ("20150101", "20150115", "20150115")
+
+    def test_month_ranges_rejects_bad_last_date(self) -> None:
+        with pytest.raises(ValueError, match="YYYYMMDD"):
+            report_rc_month_ranges(2024, "2024-03")
+
+    @pytest.mark.asyncio
+    async def test_report_rc_persists_per_month(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_report_rc(
+            client, store, first_year=2024, last_date="20240228", now=_now
+        )
+        assert [r.status for r in results] == ["ingested", "ingested"]
+        snap = store.latest(
+            vendor="tushare", endpoint=EP_REPORT_RC, trade_date="20240131"
+        )
+        assert snap is not None
+        assert snap.params == {"start_date": "20240101", "end_date": "20240131"}
+
+    @pytest.mark.asyncio
+    async def test_report_rc_byte_exact_checksum(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        frame = pd.DataFrame(
+            {"ts_code": ["600519.SH"], "np": [100.0], "report_date": ["20240131"]}
+        )
+        client = _FakeRound2Client(report_rc={"20240131": frame})
+        await ingest_report_rc(
+            client, store, first_year=2024, last_date="20240131", now=_now
+        )
+        snap = store.latest(
+            vendor="tushare", endpoint=EP_REPORT_RC, trade_date="20240131"
+        )
+        assert snap is not None
+        assert (
+            snap.raw_payload_sha256
+            == hashlib.sha256(canonical_csv_bytes(frame)).hexdigest()
+        )
+
+    @pytest.mark.asyncio
+    async def test_report_rc_idempotent_resume(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_report_rc(
+            client, store, first_year=2024, last_date="20240131", now=_now
+        )
+        n_calls = len(client.calls)
+        second = await ingest_report_rc(
+            client, store, first_year=2024, last_date="20240131", now=_now
+        )
+        assert second[0].status == "skipped"
+        assert len(client.calls) == n_calls  # no re-fetch on resume
+
+    @pytest.mark.asyncio
+    async def test_report_rc_empty_month_fails_closed(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(report_rc_empty={"20240131"})
+        results = await ingest_report_rc(
+            client, store, first_year=2024, last_date="20240131", now=_now
+        )
+        assert results[0].status == "failed"
+        assert (
+            store.latest(vendor="tushare", endpoint=EP_REPORT_RC, trade_date="20240131")
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_report_rc_throttles_per_month_not_double(
+        self, tmp_path: Path
+    ) -> None:
+        class _CountingLimiter:
+            def __init__(self) -> None:
+                self.acquires = 0
+
+            def acquire(self) -> None:
+                self.acquires += 1
+
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()  # fake spends one token per report_rc call
+        limiter = _CountingLimiter()
+        results = await ingest_report_rc(
+            client,
+            store,
+            first_year=2024,
+            last_date="20240228",
+            now=_now,
+            rate_limiter=limiter,
+        )
+        assert [r.status for r in results] == ["ingested", "ingested"]
+        assert limiter.acquires == 2  # one per month; 4 would mean double-throttle
+
+    @pytest.mark.asyncio
+    async def test_ingest_round4_no_coverage_manifest(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        # calendar last = 20240301 → months 2024-01, 2024-02, 2024-03 (capped 0301).
+        calendar = ["20240105", "20240131", "20240201", "20240228", "20240301"]
+        report = await ingest_round4(
+            client, store, calendar=calendar, now=_now, report_rc_first_year=2024
+        )
+        assert report.failed == 0
+        assert report.fina_coverage == ()  # sparse stream → no coverage manifest
+        assert report.ingested == 3
+
+    @pytest.mark.asyncio
+    async def test_ingest_round4_empty_calendar_rejected(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        with pytest.raises(ValueError, match="empty calendar"):
+            await ingest_round4(client, store, calendar=[], now=_now)

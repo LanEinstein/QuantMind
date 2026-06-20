@@ -204,3 +204,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["scipy.*"]
 ignore_missing_imports = true
+
+# tushare ships no type stubs / py.typed marker; the K-001 client
+# (backend/data/tushare_client.py) imports it only inside _build_pro (isolated).
+# Same untyped-third-party-dep pattern as scipy / rqalpha above. (Surfaced when the
+# R4-2 ingest forced mypy to fully analyse TushareClient via the _Round2Client
+# Protocol; the import is genuinely untyped, so declare it once here.)
+[[tool.mypy.overrides]]
+module = ["tushare"]
+ignore_missing_imports = true

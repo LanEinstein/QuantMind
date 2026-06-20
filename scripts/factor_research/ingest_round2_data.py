@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import hashlib
 import io
+from calendar import monthrange
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -108,6 +109,22 @@ NAMECHANGE_FIELDS: tuple[str, ...] = (
     "change_reason",
 )
 
+# Round-4 (R4-2) broker analyst forecast / rating endpoint (report_rc) — the
+# analyst-revision alpha source. A sparse STREAM (reports on weekends too), ingested
+# per calendar month via a paginated date-range query (single-call cap, see
+# tushare_client.REPORT_RC_PAGE_LIMIT). Unlike the statements there is NO fixed
+# survivorship universe → no coverage manifest; integrity = in-client pagination to
+# a short page (no silent truncation) + byte+checksum + idempotent.
+EP_REPORT_RC = "report_rc"
+# One year before train_val (2015) so a trailing revision window is warm at the
+# panel start. report_rc history runs back to <=2010 and EVERY 2014 month is dense
+# (real-probe 2026-06-20: 2014 monthly rows 4146-12906, no empty months; 2010-2013
+# also dense), so the 2014 floor enumerates only data-bearing months → an empty pull
+# is genuine corruption/truncation, NOT a legitimate empty pre-history period. Hence
+# require_non_empty=True below stays a valid fail-closed check and never wrongly
+# fails a fresh run.
+REPORT_RC_FIRST_YEAR = 2014
+
 _STATUS_INGESTED = "ingested"
 _STATUS_SKIPPED = "skipped"
 _STATUS_FAILED = "failed"
@@ -138,6 +155,13 @@ class _Round2Client(Protocol):
     ) -> pd.DataFrame: ...
     async def balancesheet_vip(
         self, period: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
+    async def report_rc(
+        self,
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: _Throttle | None = None,
     ) -> pd.DataFrame: ...
     async def namechange(
         self, *, start_date: str = "", end_date: str = ""
@@ -226,6 +250,35 @@ def month_end_trade_dates(
     if not include_partial_last and months:
         months = months[:-1]  # drop the highest (possibly-incomplete) month
     return [last_by_month[m] for m in months]
+
+
+def report_rc_month_ranges(
+    first_year: int, last_date: str
+) -> list[tuple[str, str, str]]:
+    """One ``(start_date, end_date, key)`` per calendar month, first_year..last_date.
+
+    report_rc is a sparse STREAM with reports on weekends too, so each month is
+    queried over its full CALENDAR span ``[YYYYMM01, last-calendar-day]`` — NOT the
+    last *trade* date (which would drop weekend-published reports). The final
+    (possibly partial) month is capped at ``last_date`` so the pull never reaches
+    past the locked research calendar. ``snapshot_key`` = the end date (stable for a
+    locked calendar → idempotent resume). ``first_year`` is one year before
+    train_val so a trailing revision window is warm at the start of the panel.
+    """
+    if not (len(last_date) == 8 and last_date.isdigit()):
+        raise ValueError(f"last_date {last_date!r} must be YYYYMMDD")
+    last_year, last_month = int(last_date[:4]), int(last_date[4:6])
+    out: list[tuple[str, str, str]] = []
+    for year in range(first_year, last_year + 1):
+        for month in range(1, 13):
+            if (year, month) > (last_year, last_month):
+                break
+            start = f"{year}{month:02d}01"
+            end = f"{year}{month:02d}{monthrange(year, month)[1]:02d}"
+            if end > last_date:
+                end = last_date
+            out.append((start, end, end))
+    return out
 
 
 # --- persistence (fetch only when absent — idempotent / resumable) -----------
@@ -899,6 +952,83 @@ async def ingest_round3(
     return Round2IngestReport(results=tuple(results), fina_coverage=coverage)
 
 
+# --- round-4 report_rc ingest (R4-2) -----------------------------------------
+
+
+async def ingest_report_rc(
+    client: _Round2Client,
+    store: SnapshotStore,
+    *,
+    first_year: int,
+    last_date: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+) -> list[EndpointResult]:
+    """One report_rc snapshot per calendar month (paginated date-range query).
+
+    report_rc paginates INSIDE the client (one rate-limit token per page), so the
+    throttle is handed to the client and ``_ingest_one`` is told NOT to throttle —
+    mirrors :func:`ingest_statement`. Every enumerated month (from the verified-dense
+    2014 floor — see :data:`REPORT_RC_FIRST_YEAR`) has reports, so ``require_non_empty``
+    is a valid fail-closed corruption/truncation check; a fetch EXCEPTION is recorded
+    FAILED and retried on resume. Snapshots key on the month-range end date.
+    """
+    throttle: _Throttle | None = None
+    if rate_limiter is not None:
+        limiter = rate_limiter
+
+        async def throttle() -> None:
+            await asyncio.to_thread(limiter.acquire)
+
+    out: list[EndpointResult] = []
+    for start, end, key in report_rc_month_ranges(first_year, last_date):
+        out.append(
+            await _ingest_one(
+                store,
+                endpoint=EP_REPORT_RC,
+                trade_date=key,
+                params={"start_date": start, "end_date": end},
+                fetch=partial(
+                    client.report_rc, start_date=start, end_date=end, throttle=throttle
+                ),
+                now=now,
+                require_non_empty=True,
+                rate_limiter=None,
+            )
+        )
+    return out
+
+
+async def ingest_round4(
+    client: _Round2Client,
+    store: SnapshotStore,
+    *,
+    calendar: Sequence[str],
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+    report_rc_first_year: int = REPORT_RC_FIRST_YEAR,
+) -> Round2IngestReport:
+    """R4-2: ingest report_rc (broker analyst forecasts/ratings) per calendar month.
+
+    report_rc is a sparse STREAM with no fixed survivorship universe → unlike the
+    statements there is NO coverage manifest; integrity = in-client pagination to a
+    short page (no silent truncation) + byte+checksum + idempotent resume. Offline
+    batch; the real multi-hundred-call run is owner-gated.
+    """
+    last_date = calendar[-1] if calendar else ""
+    if not last_date:
+        raise ValueError("empty calendar — cannot enumerate report_rc months")
+    results = await ingest_report_rc(
+        client,
+        store,
+        first_year=report_rc_first_year,
+        last_date=last_date,
+        now=now,
+        rate_limiter=rate_limiter,
+    )
+    return Round2IngestReport(results=tuple(results), fina_coverage=())
+
+
 def _print_report(label: str, report: Round2IngestReport) -> None:
     """Print one phase's ingest tally + coverage summary + failures."""
     print(
@@ -929,12 +1059,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--phase",
-        choices=("round2", "round3", "round3-restate", "all"),
+        choices=("round2", "round3", "round3-restate", "round4", "all"),
         default="round2",
         help="round2 = R2-1 (weights/fina/member/rosters); round3 = R3-1 "
         "(income/cashflow/balancesheet + namechange); round3-restate = re-pull "
         "the 3 statements paginated + version-bump truncated periods + rebuild "
-        "coverage (no namechange); all = round2 + round3 (idempotent)",
+        "coverage (no namechange); round4 = R4-2 (report_rc analyst forecasts, "
+        "per-calendar-month paginated); all = round2 + round3 (idempotent)",
     )
     parser.add_argument(
         "--namechange-first-year", type=int, default=NAMECHANGE_FIRST_YEAR
@@ -956,6 +1087,7 @@ def main() -> None:
     do_r2 = args.phase in ("round2", "all")
     do_r3 = args.phase in ("round3", "all")
     do_r3_restate = args.phase == "round3-restate"
+    do_r4 = args.phase == "round4"
 
     if args.dry_run:
         periods = report_periods(args.first_year, last_date)
@@ -990,6 +1122,13 @@ def main() -> None:
             print(
                 f"[dry-run] namechange year snapshots: {len(pages)} ({yr_span}; "
                 "current year keyed by asof)"
+            )
+        if do_r4:
+            ranges = report_rc_month_ranges(REPORT_RC_FIRST_YEAR, last_date)
+            rr_span = f"{ranges[0][2]}..{ranges[-1][2]}" if ranges else "-"
+            print(
+                f"[dry-run] report_rc month snapshots: {len(ranges)} ({rr_span}; "
+                "range-paginated, weekends incl)"
             )
         print("[dry-run] no network calls made.")
         return
@@ -1048,6 +1187,18 @@ def main() -> None:
         )
         _print_report("round3-restate", report)
         failed += report.failed
+    if do_r4:
+        report = asyncio.run(
+            ingest_round4(
+                client,
+                store,
+                calendar=calendar,
+                now=lambda: datetime.now(UTC),
+                rate_limiter=rate_limiter,
+            )
+        )
+        _print_report("round4", report)
+        failed += report.failed
     # Non-zero exit on any failure (fail-closed) so a resume re-run is obvious.
     raise SystemExit(1 if failed else 0)
 
@@ -1065,10 +1216,12 @@ __all__ = [
     "EP_INDEX_MEMBER",
     "EP_INDEX_WEIGHT",
     "EP_NAMECHANGE",
+    "EP_REPORT_RC",
     "EP_STOCK_BASIC_D",
     "EP_STOCK_BASIC_L",
     "NAMECHANGE_FIELDS",
     "NAMECHANGE_FIRST_YEAR",
+    "REPORT_RC_FIRST_YEAR",
     "STATEMENT_ENDPOINTS",
     "EndpointResult",
     "Round2IngestReport",
@@ -1078,8 +1231,10 @@ __all__ = [
     "ingest_index_member_all",
     "ingest_index_weight",
     "ingest_namechange",
+    "ingest_report_rc",
     "ingest_round2",
     "ingest_round3",
+    "ingest_round4",
     "ingest_statement",
     "ingest_stock_basic",
     "load_survivorship",
@@ -1087,4 +1242,5 @@ __all__ = [
     "namechange_pages",
     "namechange_years",
     "report_periods",
+    "report_rc_month_ranges",
 ]
