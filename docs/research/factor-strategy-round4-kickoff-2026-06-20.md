@@ -168,8 +168,14 @@ unchanged),加 r4 只需:`R4_CARRY_FACTORS` + `resolve_carry_inputs` 的 `_CARRY
   资金流/事件因子的**文献/牛人方案调研**(provenance-gated,落 `docs/research/round4-literature-*.md`)。
 - **R4-2 PIT 摄取**:新端点(report_rc 优先)加 `tushare_client`(分页)+ `ingest_round2_data`
   `--phase round4`(字节+checksum+coverage+幂等+`--dry-run` 先验);owner-gate「开」才真摄取。
-- **R4-3 因子库 + PIT 聚合**:`R4_FACTORS`(eps_rev/np_rev/tp_impl/rating_chg/disp…)纯函数 +
-  report_date<d trailing 聚合 + `build_panel_r4`(并入新列,既有列 byte-unchanged)。
+- **✅ R4-3 因子库 + PIT 聚合 DONE(2026-06-20,commit `f4a6805`,本地未 push)**:`R4_FACTORS`
+  (np_rev/eps_rev/rev_diff/rating_chg/tp_impl/disp/cover_chg)+ 新 `analyst_revision_pit.py`
+  (report_date<d trailing 聚合,**PIT 闸=report_date<d only** —— step0 实探发现 `create_time` 是
+  2022 统一 bulk-load 时戳,用它当闸会清零 2022 前全部 train_val 数据;FY1 用 `target_fy_asof(d)`
+  两端同锚;rating ordinal 未知→NaN;扩散/分歧 n≥3)+ `build_panel_r4` + 防火墙 `report_rc_month_keys`
+  (<test_start)+ `--factor-set r4`(既有列 byte-unchanged)。门禁 352 绿 + ruff + mypy --strict +
+  redline;codex 600s stall → `/code-review high` 3-angle **0 findings**(防火墙 SOUND)。真跑
+  `panel_train_val_r4.csv` = **325,718 行 / 3001 码 / 498 日**,np_rev 投资域覆盖 67%。
 - **R4-4 诊断**:`r4_factor_diagnostics`(R2-2 协议:中性化 |t|≥3 + 低共线 + 机制注册)→ 定 R4_CARRY 增补集(弱则如实丢)。
 - **R4-5 搜索 + 成本压力 + 冻结**:`--carry r4` 搜索(DSR/PBO/SPA/哨兵/CPCV 全披露,N 重声明)+
   crosscheck + **读 test/前向窗口前 git 冻结 `FROZEN_R4_*`**。
