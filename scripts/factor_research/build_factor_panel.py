@@ -69,10 +69,17 @@ from backend.data.stock_metadata import (  # noqa: TID251
 from backend.marketdata_snapshot.store import SnapshotStore
 from backend.services.universe_policy import BOARD_WHITELIST
 
+from .analyst_revision_pit import (
+    LEVEL_WINDOW_DAYS,
+    LOOKBACK_DAYS,
+    STALENESS_DAYS,
+    AnalystRevisionPIT,
+)
 from .factor_lib import (
     FACTOR_NAMES,
     R2_FACTOR_NAMES,
     R3_FACTOR_NAMES,
+    R4_FACTOR_NAMES,
     compute_factor_vector,
     compute_fundamental_factors,
     compute_statement_factors,
@@ -85,7 +92,9 @@ from .ingest_round2_data import (
     EP_CASHFLOW,
     EP_FINA,
     EP_INCOME,
+    REPORT_RC_FIRST_YEAR,
     report_periods,
+    report_rc_month_ranges,
 )
 from .locked_split import LockedSplit
 from .namechange_pit import NameChangePIT, namechange_snapshot_keys
@@ -798,6 +807,307 @@ def build_r3_inputs(
     )
 
 
+# ===========================================================================
+# Round-4 panel (R4-3): round-3 columns + analyst-revision factors (report_rc
+# PIT). Written to a SEPARATE file (panel_train_val_r4.csv); build_panel_r3 /
+# build_test_panel_r3 above are byte-for-byte unchanged. The R4_CARRY search
+# (R4-5) consumes ALL carry columns' *_neut, so the r4 panel carries the full
+# round-1/2/3 factor set PLUS the new analyst columns.
+# ===========================================================================
+
+
+class _AnalystLookup(Protocol):
+    """Injected PIT analyst-revision lookup (satisfied by ``AnalystRevisionPIT``)."""
+
+    def factors(
+        self,
+        code: str,
+        decision_date: str,
+        *,
+        close: float | None,
+        staleness_days: int = ...,
+        lookback_days: int = ...,
+        level_window_days: int = ...,
+    ) -> dict[str, float | None]: ...
+
+
+@dataclass(frozen=True)
+class _R4Inputs:
+    """The PIT readers a round-4 panel build injects (round-3 set + analyst)."""
+
+    r3: _R3Inputs
+    analyst: _AnalystLookup
+
+
+def report_rc_month_keys(
+    report_rc_last_date: str,
+    *,
+    test_start: str,
+    sanctioned_test_read: bool,
+) -> list[str]:
+    """report_rc month snapshot keys through ``report_rc_last_date`` (firewalled).
+
+    FIREWALL: unless ``sanctioned_test_read`` (the R4-6 one-shot), every key MUST
+    be ``< test_start`` — a development build can never load a test-era analyst
+    report. Raises :class:`RuntimeError` fail-closed otherwise. Pure (no I/O), so
+    the firewall is unit-testable without a store.
+    """
+    ranges = report_rc_month_ranges(REPORT_RC_FIRST_YEAR, report_rc_last_date)
+    keys = [k for _, _, k in ranges]
+    leaked = [k for k in keys if k >= test_start]
+    if leaked and not sanctioned_test_read:
+        raise RuntimeError(
+            f"report_rc firewall: {len(leaked)} month key(s) >= test_start "
+            f"{test_start} (e.g. {leaked[0]}) — a development build must load only "
+            "pre-test analyst months. Refusing to materialise the sealed window."
+        )
+    if sanctioned_test_read and leaked:
+        log.warning(
+            "r4_analyst_sanctioned_test_read",
+            months=len(keys),
+            test_era_months=len(leaked),
+            last=keys[-1] if keys else "-",
+        )
+    return keys
+
+
+def _build_rows_r4(
+    series: dict[str, _CodeSeries],
+    rebalance_dates: list[str],
+    *,
+    inputs: _R4Inputs,
+    extra_lag_days: int,
+    staleness_days: int,
+    lookback_days: int,
+    level_window_days: int,
+) -> list[dict[str, object]]:
+    """Round-4 rows: round-3 columns + the seven analyst-revision factors.
+
+    Same investable cross-section + bottom-30% size cut + PIT ST exclusion as
+    :func:`_build_rows_r3`. The analyst factors are joined by the full ``ts_code``
+    as-of ``day`` (the analyst reader is ``report_date < day`` gated — PIT, never
+    reading beyond ``day``) using the code's RAW close on ``day`` (the
+    target-price factor compares an absolute target price to the tradable price).
+    Deliberately parallel to ``_build_rows_r3`` so the round-3 builder stays
+    byte-frozen.
+    """
+    r3 = inputs.r3
+    fundamentals = r3.fundamentals
+    industry = r3.industry
+    fina_stmt = r3.fina_stmt
+    income = r3.income
+    cashflow = r3.cashflow
+    balancesheet = r3.balancesheet
+    namechange = r3.namechange
+    rows: list[dict[str, object]] = []
+    for day in rebalance_dates:
+        selected = _cohort(series, day, st_filter=namechange.is_st_asof)
+        if selected is None:
+            continue
+        cohort, cmv_cut = selected
+        for code, cs, pos in cohort:
+            if cs.circ_mv[pos] < cmv_cut:
+                continue
+            closes = cs.adj_close[: pos + 1]
+            vec = compute_factor_vector(
+                closes=closes,
+                amounts=cs.amount[: pos + 1],
+                turnover_rates=cs.turnover[: pos + 1],
+                pe_ttm=cs.pe_ttm[pos],
+            )
+            record = fundamentals.asof(cs.ts_code, day, extra_lag_days=extra_lag_days)
+            stmt = compute_statement_factors(
+                profit_dedt_ytd=_field_series(
+                    fina_stmt.as_known(cs.ts_code, day, extra_lag_days=extra_lag_days),
+                    "profit_dedt",
+                ),
+                n_income_ytd=_field_series(
+                    income.as_known(cs.ts_code, day, extra_lag_days=extra_lag_days),
+                    "n_income",
+                ),
+                cfo_ytd=_field_series(
+                    cashflow.as_known(cs.ts_code, day, extra_lag_days=extra_lag_days),
+                    "n_cashflow_act",
+                ),
+                total_assets=_field_series(
+                    balancesheet.as_known(
+                        cs.ts_code, day, extra_lag_days=extra_lag_days
+                    ),
+                    "total_assets",
+                ),
+            )
+            analyst = inputs.analyst.factors(
+                cs.ts_code,
+                day,
+                close=cs.raw_close[pos],
+                staleness_days=staleness_days,
+                lookback_days=lookback_days,
+                level_window_days=level_window_days,
+            )
+            circ = cs.circ_mv[pos]
+            row: dict[str, object] = {
+                "date": day,
+                "code": code,
+                "ts_code": cs.ts_code,
+            }
+            row.update(vec.as_dict())
+            row.update(compute_trend_factors(closes))
+            row.update(compute_fundamental_factors(record))
+            row.update(stmt)
+            row.update(analyst)
+            row["industry_l1"] = industry.l1_asof(cs.ts_code, day)
+            row["circ_mv"] = circ
+            row["log_circ_mv"] = (
+                math.log(circ) if (math.isfinite(circ) and circ > 0) else None
+            )
+            row.update(_forward_returns(cs.adj_close, pos))
+            rows.append(row)
+        log.info("panel_r4_rebalance", day=day, cohort=len(cohort), rows=len(rows))
+    return rows
+
+
+def _panel_frame_r4(rows: list[dict[str, object]]) -> pd.DataFrame:
+    """Assemble the round-4 panel frame with the canonical column order."""
+    cols = [
+        "date",
+        "code",
+        "ts_code",
+        *FACTOR_NAMES,
+        *R2_FACTOR_NAMES,
+        *R3_FACTOR_NAMES,
+        *R4_FACTOR_NAMES,
+        *R2_PANEL_EXTRA_COLS,
+        *(f"fwd_ret_{h}d" for h in FORWARD_HORIZONS),
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def build_panel_r4(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    inputs: _R4Inputs,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    max_rebalances: int = 0,
+    extra_lag_days: int = 0,
+    staleness_days: int = STALENESS_DAYS,
+    lookback_days: int = LOOKBACK_DAYS,
+    level_window_days: int = LEVEL_WINDOW_DAYS,
+) -> pd.DataFrame:
+    """Build the round-4 train_val panel (round-3 columns + analyst factors).
+
+    Same sacred-split discipline as :func:`build_panel_r3` (feature window =
+    train_val + embargo, ``assert_all_not_test`` guard); the analyst reader is
+    constructed from report_rc months strictly ``< test_start`` (firewall in
+    :func:`build_r4_inputs`) and is ``report_date < day`` gated, so no test bar
+    or test-era report is read during development.
+    """
+    feature_dates = [*split.train_val_dates, *split.embargo_dates]
+    split.assert_all_not_test(feature_dates)  # hard guard: never touch test
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.train_val_dates[::rebalance_freq])
+    if max_rebalances:
+        rebalance_dates = rebalance_dates[:max_rebalances]
+    return _panel_frame_r4(
+        _build_rows_r4(
+            series,
+            rebalance_dates,
+            inputs=inputs,
+            extra_lag_days=extra_lag_days,
+            staleness_days=staleness_days,
+            lookback_days=lookback_days,
+            level_window_days=level_window_days,
+        )
+    )
+
+
+def build_test_panel_r4(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    inputs: _R4Inputs,
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    extra_lag_days: int = 0,
+    staleness_days: int = STALENESS_DAYS,
+    lookback_days: int = LOOKBACK_DAYS,
+    level_window_days: int = LEVEL_WINDOW_DAYS,
+) -> pd.DataFrame:
+    """R4-6 ONE-SHOT — the SOLE sanctioned reader of the sacred test window for round-4.
+
+    The round-4 analogue of :func:`build_test_panel_r3`. Reads test bars (features
+    ``<= d`` from a :data:`TEST_FEATURE_BUFFER_TD` buffer + test bars to ``d``;
+    forward labels from test bars ``> d``); statements / industry / fundamentals /
+    namechange / analyst stay PIT (gated by ``d``). The R4-6 runner constructs
+    ``inputs`` via :func:`build_r4_inputs` with ``sanctioned_test_read=True``
+    (report_rc months through test_end); rebalances ONLY on test dates. The
+    covenant permits exactly one such evaluation, for the strategy git-frozen in
+    R4-5 — never call during development.
+    """
+    pre_test = [*split.train_val_dates, *split.embargo_dates]  # all non-test
+    buffer = list(pre_test[-TEST_FEATURE_BUFFER_TD:])
+    feature_dates = [*buffer, *split.test_dates]
+    log.warning(
+        "r4_locked_test_panel_build",
+        note="reading the SACRED test window (round-4 one-shot, sanctioned)",
+        buffer_td=len(buffer),
+        test_td=len(split.test_dates),
+        test_start=split.test_dates[0],
+        test_end=split.test_dates[-1],
+    )
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(split.test_dates[::rebalance_freq])
+    return _panel_frame_r4(
+        _build_rows_r4(
+            series,
+            rebalance_dates,
+            inputs=inputs,
+            extra_lag_days=extra_lag_days,
+            staleness_days=staleness_days,
+            lookback_days=lookback_days,
+            level_window_days=level_window_days,
+        )
+    )
+
+
+def build_r4_inputs(
+    store: SnapshotStore,
+    snapshot_root: str,
+    *,
+    last_period_date: str,
+    report_rc_last_date: str,
+    test_start: str,
+    sanctioned_test_read: bool = False,
+    industry_asof: str = "",
+) -> _R4Inputs:
+    """Construct the round-4 PIT readers (round-3 set + analyst-revision).
+
+    ``report_rc_last_date`` bounds the report_rc month snapshots loaded
+    (``report_date < day`` keeps them PIT regardless). FIREWALL: unless
+    ``sanctioned_test_read`` (the R4-6 one-shot), every loaded month key MUST be
+    ``< test_start`` — a development build can never materialise a test-era
+    analyst report. Raises :class:`RuntimeError` fail-closed if it would.
+    """
+    r3 = build_r3_inputs(
+        store,
+        snapshot_root,
+        last_period_date=last_period_date,
+        industry_asof=industry_asof,
+    )
+    month_keys = report_rc_month_keys(
+        report_rc_last_date,
+        test_start=test_start,
+        sanctioned_test_read=sanctioned_test_read,
+    )
+    analyst = AnalystRevisionPIT.build(store, month_keys)
+    log.info(
+        "panel_r4_inputs",
+        report_rc_months=len(month_keys),
+        analyst_codes=len(analyst.by_code),
+        sanctioned_test_read=sanctioned_test_read,
+    )
+    return _R4Inputs(r3=r3, analyst=analyst)
+
+
 def _latest_snapshot_key(snapshot_root: str, endpoint: str) -> str:
     """Highest ``trade_date`` stored for ``endpoint`` (for the as-of CLI default).
 
@@ -843,11 +1153,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--factor-set",
-        choices=("r1", "r2", "r3"),
+        choices=("r1", "r2", "r3", "r4"),
         default="r1",
         help="r2 = round-2 panel (+trend/quality/growth + PIT industry/size); "
-        "r3 = round-2 columns + SUE/accruals/asset-growth + PIT ST exclusion "
-        "(train_val only) → panel_train_val_r3.csv",
+        "r3 = round-2 columns + SUE/accruals/asset-growth + PIT ST exclusion; "
+        "r4 = round-3 columns + analyst-revision factors (report_rc PIT) "
+        "(train_val only) → panel_train_val_r4.csv",
     )
     parser.add_argument(
         "--industry-asof",
@@ -859,6 +1170,18 @@ def main() -> None:
         type=int,
         default=0,
         help="extra calendar-day lag on fundamentals availability (r2)",
+    )
+    parser.add_argument(
+        "--staleness-days", type=int, default=STALENESS_DAYS,
+        help="analyst-revision staleness window N (r4; R4-4 sweeps 90/180)",
+    )
+    parser.add_argument(
+        "--lookback-days", type=int, default=LOOKBACK_DAYS,
+        help="analyst-revision look-back Δ (r4; R4-4 sweeps 90/60)",
+    )
+    parser.add_argument(
+        "--level-window-days", type=int, default=LEVEL_WINDOW_DAYS,
+        help="analyst target-price / dispersion level window (r4; default 180)",
     )
     parser.add_argument("--out", default="")
     parser.add_argument(
@@ -876,22 +1199,44 @@ def main() -> None:
         embargo=len(split.embargo_dates),
         test_sealed=len(split.test_dates),
     )
-    if args.factor_set in ("r2", "r3") and args.mode == "test":
-        # The round-2/3 test window has exactly ONE sanctioned reader each —
-        # build_test_panel_r2 / build_test_panel_r3, called only by the R2-6 /
-        # R3-6 one-shot runners AFTER the strategy is git-frozen. The generic CLI
+    if args.factor_set in ("r2", "r3", "r4") and args.mode == "test":
+        # The round-2/3/4 test window has exactly ONE sanctioned reader each —
+        # build_test_panel_r2 / _r3 / _r4, called only by the R2-6 / R3-6 / R4-6
+        # one-shot runners AFTER the strategy is git-frozen. The generic CLI
         # refuses, so a development run can never accidentally materialise the
         # test panel here (the freeze-then-read covenant lives in the runner).
         runner = {
             "r2": "scripts.factor_research.r2_locked_test",
             "r3": "scripts.factor_research.round3_locked_test",
+            "r4": "scripts.factor_research.round4_locked_test",
         }[args.factor_set]
         raise SystemExit(
             f"factor-set {args.factor_set} test panel is built ONLY by its one-shot "
             f"runner ({runner}), after the strategy is git-frozen. The generic CLI "
             "refuses to read the sealed test window."
         )
-    if args.factor_set == "r3":
+    if args.factor_set == "r4":
+        r4_inputs = build_r4_inputs(
+            store,
+            args.snapshot_root,
+            last_period_date=split.train_val_dates[-1],
+            report_rc_last_date=split.train_val_dates[-1],
+            test_start=split.test_dates[0],
+            industry_asof=args.industry_asof,
+        )
+        panel = build_panel_r4(
+            split,
+            store,
+            inputs=r4_inputs,
+            rebalance_freq=args.rebalance_freq,
+            max_rebalances=args.max_rebalances,
+            extra_lag_days=args.fund_lag_days,
+            staleness_days=args.staleness_days,
+            lookback_days=args.lookback_days,
+            level_window_days=args.level_window_days,
+        )
+        default_out = "data/factor_research/panel_train_val_r4.csv"
+    elif args.factor_set == "r3":
         inputs = build_r3_inputs(
             store,
             args.snapshot_root,

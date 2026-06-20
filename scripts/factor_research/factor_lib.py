@@ -744,11 +744,106 @@ R3_FACTORS: tuple[FactorDef, ...] = (
 
 R3_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in R3_FACTORS)
 R3_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in R3_FACTORS}
-# Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3).
+
+
+# ===========================================================================
+# Round-4 factor family (R4-3): analyst-revision momentum (report_rc).
+#
+# The first family that is NOT a zero-cost financial-report derivative — it is an
+# INFORMATION-FLOW signal (broker earnings-estimate revisions), the classic
+# orthogonal alpha the three FAIL rounds lacked. The factor MATH lives in the
+# cohesive ``analyst_revision_pit`` module (it is tightly coupled to the report
+# stream's PIT windows / per-broker dedup / FY alignment); this registry only
+# carries each factor's identity + the LITERATURE-prior sign. A-share analyst
+# signs differ from the US (Liu-Zhang 2023) → the sign is verified from zero in
+# the R4-4 IC study, never assumed. The names mirror
+# ``analyst_revision_pit.ANALYST_FACTOR_NAMES`` (a test asserts equality).
+#
+# Mechanisms (analyst_revision / analyst_dispersion / analyst_coverage) are
+# INTENTIONALLY not registered EconomicMechanism values — the live promotion gate
+# stays fail-closed until a future amendment, same posture as growth_premium /
+# post_earnings_drift / asset_growth_anomaly. R4 is offline research and never
+# invokes that gate. They live in a SEPARATE R4_FACTORS registry so the
+# round-1/2/3 panel / search / IC modules keyed on the earlier registries are
+# byte-for-byte unaffected.
+# ===========================================================================
+R4_FACTORS: tuple[FactorDef, ...] = (
+    FactorDef(
+        name="np_rev",
+        min_history=0,
+        attractive_high=True,
+        mechanism="analyst_revision",
+        expected_ic_sign=1,
+        description="Net-profit consensus revision momentum (FY1, trailing) — "
+        "broker estimate up-revisions drift positive (Chan-Jegadeesh-Lakonishok). "
+        "'analyst_revision' is NOT a registered EconomicMechanism.",
+    ),
+    FactorDef(
+        name="eps_rev",
+        min_history=0,
+        attractive_high=True,
+        mechanism="analyst_revision",
+        expected_ic_sign=1,
+        description="EPS consensus revision momentum (FY1, trailing) — likely "
+        "collinear with np_rev (R4-4 picks one).",
+    ),
+    FactorDef(
+        name="rev_diff",
+        min_history=0,
+        attractive_high=True,
+        mechanism="analyst_revision",
+        expected_ic_sign=1,
+        description="Revision diffusion (n_up − n_down)/n_total of brokers revising "
+        "their own FY1 estimate — breadth (orthogonal to np_rev's magnitude); n≥3.",
+    ),
+    FactorDef(
+        name="rating_chg",
+        min_history=0,
+        attractive_high=True,
+        mechanism="analyst_revision",
+        expected_ic_sign=1,
+        description="Net rating upgrade diffusion over the window (ordinal rating, "
+        "house-agnostic map; unknown vocab → NaN fail-closed); n≥3.",
+    ),
+    FactorDef(
+        name="tp_impl",
+        min_history=0,
+        attractive_high=True,
+        mechanism="analyst_revision",
+        expected_ic_sign=1,
+        description="Target-price implied return median(min_price)/close − 1 "
+        "(min_price = the real target price, NOT tp=total-profit); ~30% coverage.",
+    ),
+    FactorDef(
+        name="disp",
+        min_history=0,
+        attractive_high=False,
+        mechanism="analyst_dispersion",
+        expected_ic_sign=-1,
+        description="FY1 EPS forecast dispersion std/|mean| (Diether-Malloy-"
+        "Scherbina) — high disagreement underperforms (attractive-low); n≥3. "
+        "'analyst_dispersion' is NOT a registered EconomicMechanism.",
+    ),
+    FactorDef(
+        name="cover_chg",
+        min_history=0,
+        attractive_high=True,
+        mechanism="analyst_coverage",
+        expected_ic_sign=1,
+        description="Δ coverage breadth ln(n_now/n_back) of brokers with a live "
+        "FY1 estimate — weak prior, honestly tested. 'analyst_coverage' is NOT a "
+        "registered EconomicMechanism.",
+    ),
+)
+
+R4_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in R4_FACTORS)
+R4_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in R4_FACTORS}
+# Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3 + round-4).
 ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {
     **FACTORS_BY_NAME,
     **R2_FACTORS_BY_NAME,
     **R3_FACTORS_BY_NAME,
+    **R4_FACTORS_BY_NAME,
 }
 
 
@@ -769,6 +864,9 @@ __all__ = [
     "R3_FACTORS",
     "R3_FACTORS_BY_NAME",
     "R3_FACTOR_NAMES",
+    "R4_FACTORS",
+    "R4_FACTORS_BY_NAME",
+    "R4_FACTOR_NAMES",
     "REVERSAL_MONTH_WINDOW",
     "REVERSAL_SHORT_WINDOW",
     "SLOPE_WINDOW",
