@@ -49,7 +49,7 @@ cd /home/ps/papers/QuantMind && git log --oneline -3   # 应见 0834b60 起的 r
 **已起头确认(2026-06-20,现 8000 积分 token 实测 `[OK]`):**
 - ✅ **`report_rc`(券商分析师盈利预测/评级,本轮头号 alpha 源)** —— 2016+ 有数据;按 `report_date`
   查(=PIT 可得日)或 `ts_code`+range。字段:`ts_code/report_date/org_name/author_name/quarter/
-  op_rt(营收预测)/op_pr(营业利润)/tp(目标价)/np(净利润预测,万元)/eps(EPS 预测)/pe/roe/
+  op_rt(营收预测)/op_pr(营业利润)/**tp(利润总额万元,⚠️非目标价!实测 2026-06-20)**/np(净利润预测,万元)/eps(EPS 预测)/pe/roe/**目标价=min_price**/
   rating/max_price/min_price`。单 report_date 全市场 ~170(2016)→700+(2020),稀疏流式(非日快照)。
 - ✅ `cyq_chips`(筹码分布)/ `stk_factor_pro`(技术因子 pro,含复权 OHLC+预算因子)/ `ccass_hold`(中央结算持股)。
 
@@ -92,7 +92,7 @@ def probe(name, fn):
   不同(A 股价格动量缺失,但分析师修正是**信息流**非价格流)。A 股卖方覆盖偏大盘 → **可能正好补
   "大盘年跑赢 cap 加权指数"的缺口**。
 - **因子设计(候选,待文献校准)**:① `eps_rev` = 近 N 月 EPS 预测中位数环比变化 / |上期|;
-  ② `np_rev` = 净利预测上修幅度;③ `tp_impl` = 中位目标价/现价 −1;④ `rating_chg` = 评级上调净家数;
+  ② `np_rev` = 净利预测上修幅度;③ `tp_impl` = 中位目标价(=`min_price`,⚠️非 `tp`=利润总额)/现价 −1;④ `rating_chg` = 评级上调净家数;
   ⑤ `coverage_chg` = 覆盖券商数变化;⑥ `disp` = 预测分歧度(std/mean,反向)。
 - **PIT**:用 `report_date < 决策日` 的报告;trailing 窗口(如 90/180 天)聚合每票。稀疏流式 →
   摄取按 `report_date` 跨日/跨月分块拉全市场,再 PIT 聚合。**字节存档+checksum+coverage,同 K-001。**
