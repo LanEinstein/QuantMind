@@ -176,7 +176,15 @@ unchanged),加 r4 只需:`R4_CARRY_FACTORS` + `resolve_carry_inputs` 的 `_CARRY
   (<test_start)+ `--factor-set r4`(既有列 byte-unchanged)。门禁 352 绿 + ruff + mypy --strict +
   redline;codex 600s stall → `/code-review high` 3-angle **0 findings**(防火墙 SOUND)。真跑
   `panel_train_val_r4.csv` = **325,718 行 / 3001 码 / 498 日**,np_rev 投资域覆盖 67%。
-- **R4-4 诊断**:`r4_factor_diagnostics`(R2-2 协议:中性化 |t|≥3 + 低共线 + 机制注册)→ 定 R4_CARRY 增补集(弱则如实丢)。
+- **✅ R4-4 诊断 DONE(2026-06-21,commit `1c97319`)= 4 轮最强 IC 结果**:新 `r4_factor_diagnostics`
+  (R2-2 协议:行业+市值中性化 IC |t|≥3 + **PAIRWISE 2-way-support 共线** + **新增 mutual dedup**〔np_rev/
+  eps_rev/rev_diff 同簇〕+ coverage 披露 + §7 诚实 read〔IC t 膨胀=SCREEN 非判定〕)。真跑:**4 分析师
+  因子幸存且全正交于 R3_CARRY 12 簇(max 共线 0.38)= 四轮首次「强 + 真新轴」** —— np_rev(neut t5.64)/
+  rev_diff(5.06)/tp_impl(6.77)/cover_chg(5.11)。如实丢 rating_chg(neut t1.22)/disp(中性化吃掉)/eps_rev
+  (0.90 共线 np_rev)。**R4_CARRY = R3_CARRY(12) ∪ {np_rev, rev_diff, tp_impl, cover_chg} = 16**。稳健双参
+  (staleness 180/lookback 60):4 核心两参均幸存,rating_chg 仅 180d 过→保守不纳。codex 480s stall →
+  `/code-review high` 0 correctness bug + 4 披露 finding 全修;361 测试绿。报告
+  `factor-strategy-round4-r4-4-factor-diagnostics-2026-06-21.md`(+robust)。
 - **R4-5 搜索 + 成本压力 + 冻结**:`--carry r4` 搜索(DSR/PBO/SPA/哨兵/CPCV 全披露,N 重声明)+
   crosscheck + **读 test/前向窗口前 git 冻结 `FROZEN_R4_*`**。
 - **R4-6 判定**:owner 拍板 §5.2 路径(**推荐前向窗口处子 OOS**;次选既有 test 第 4 次披露)→ 四门 PASS/FAIL 报告。
