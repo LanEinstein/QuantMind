@@ -1108,6 +1108,86 @@ def build_r4_inputs(
     return _R4Inputs(r3=r3, analyst=analyst)
 
 
+def forward_trade_dates(snapshot_root: str, test_end: str) -> list[str]:
+    """``daily`` snapshot trade_dates STRICTLY after ``test_end`` (the virgin window).
+
+    The forward out-of-sample window = every trading day whose ``daily`` snapshot
+    postdates the locked test (``> test_end``). Survivorship-correct by
+    construction (each day's ``daily`` frame IS that day's tradable universe). Pure
+    read of the snapshot index — no backend import beyond the store path.
+    """
+    index_path = Path(snapshot_root) / "index.jsonl"
+    if not index_path.exists():
+        raise FileNotFoundError(f"snapshot index not found: {index_path}")
+    import json
+
+    days: set[str] = set()
+    with index_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if rec.get("endpoint") == "daily":
+                d = str(rec["trade_date"])
+                if d > test_end:
+                    days.add(d)
+    return sorted(days)
+
+
+def build_forward_panel_r4(
+    split: LockedSplit,
+    store: SnapshotStore,
+    *,
+    inputs: _R4Inputs,
+    forward_dates: list[str],
+    rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
+    extra_lag_days: int = 0,
+    staleness_days: int = STALENESS_DAYS,
+    lookback_days: int = LOOKBACK_DAYS,
+    level_window_days: int = LEVEL_WINDOW_DAYS,
+) -> pd.DataFrame:
+    """R5 FORWARD OOS — build the panel over the VIRGIN window (postdate test_end).
+
+    The genuinely-unseen out-of-sample evaluation of the git-frozen round-4
+    strategy: ``forward_dates`` (every trading day ``> test_end``) are the
+    rebalance/label window, prefixed by a :data:`TEST_FEATURE_BUFFER_TD` buffer of
+    pre-forward history (``<= test_end`` bars — already-known features, NOT a leak)
+    so the first forward rebalance has a full 21-bar factor window. Forward-return
+    labels use ONLY forward bars (``> d``). Statements / industry / analyst stay PIT
+    (gated by ``d``). Unlike the locked-test reader this window was never evaluated,
+    so it is the binding virgin OOS; ``inputs`` must be built with
+    ``sanctioned_test_read=True`` through ``forward_dates[-1]``.
+
+    When the window is too short for a complete forward-return label (fewer than
+    ``rebalance_freq`` forward bars after the first rebalance), the panel is empty —
+    the runner reports the window as still ACCRUING, never a verdict on noise.
+    """
+    pre_forward = [*split.train_val_dates, *split.embargo_dates, *split.test_dates]
+    buffer = list(pre_forward[-TEST_FEATURE_BUFFER_TD:])
+    feature_dates = [*buffer, *forward_dates]
+    log.warning(
+        "r4_forward_panel_build",
+        note="reading the VIRGIN forward window (postdate test_end, never evaluated)",
+        buffer_td=len(buffer),
+        forward_td=len(forward_dates),
+        forward_start=forward_dates[0] if forward_dates else "-",
+        forward_end=forward_dates[-1] if forward_dates else "-",
+    )
+    series = _ingest_series(store, feature_dates)
+    rebalance_dates = list(forward_dates[::rebalance_freq])
+    return _panel_frame_r4(
+        _build_rows_r4(
+            series,
+            rebalance_dates,
+            inputs=inputs,
+            extra_lag_days=extra_lag_days,
+            staleness_days=staleness_days,
+            lookback_days=lookback_days,
+            level_window_days=level_window_days,
+        )
+    )
+
+
 def _latest_snapshot_key(snapshot_root: str, endpoint: str) -> str:
     """Highest ``trade_date`` stored for ``endpoint`` (for the as-of CLI default).
 
