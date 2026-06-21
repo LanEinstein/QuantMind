@@ -97,6 +97,33 @@ class _FakePro:
     def trade_cal(self, **kwargs: Any) -> pd.DataFrame:
         return self._make("trade_cal", **kwargs)
 
+    def stk_limit(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("stk_limit", **kwargs)
+
+    def limit_list_d(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("limit_list_d", **kwargs)
+
+    def suspend_d(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("suspend_d", **kwargs)
+
+    def cyq_perf(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("cyq_perf", **kwargs)
+
+    def stk_factor_pro(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("stk_factor_pro", **kwargs)
+
+    def forecast_vip(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("forecast_vip", **kwargs)
+
+    def express_vip(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("express_vip", **kwargs)
+
+    def ths_index(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("ths_index", **kwargs)
+
+    def index_classify(self, **kwargs: Any) -> pd.DataFrame:
+        return self._make("index_classify", **kwargs)
+
 
 class _RaisingPro(_FakePro):
     """Every endpoint raises — exercises fallback / fail-closed."""
@@ -490,6 +517,152 @@ class TestReportRc:
         client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
         with pytest.raises(ValueError):
             await client.report_rc(report_date=bad)
+
+
+# ---------------------------------------------------------------------------
+# QGR-1 short-horizon microstructure / chips / tech / events / theme catalogs
+# ---------------------------------------------------------------------------
+
+
+class TestQgrShortHorizonEndpoints:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["stk_limit", "cyq_perf", "stk_factor_pro"])
+    async def test_fullmarket_daily_paginates_below_5000_cap(self, method: str) -> None:
+        # stk_limit/cyq_perf/stk_factor_pro are full-market by trade_date and are
+        # silently capped at 5000 rows/call (probed 2026-06-21) → the client pages
+        # with limit+offset BELOW the cap and assembles the complete day. 9000 rows
+        # over page_limit 4000 → pages of 4000, 4000, 1000.
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(9000)]})
+        pro = _FakePro({method: backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await getattr(client, method)("20260612")
+        assert len(df) == 9000
+        assert df["ts_code"].nunique() == 9000  # nothing dropped past the cap
+        assert [c[1]["offset"] for c in pro.calls] == [0, 4000, 8000]
+        assert all(c[1]["limit"] == 4000 for c in pro.calls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["stk_limit", "cyq_perf", "stk_factor_pro"])
+    async def test_fullmarket_daily_throttles_each_page(self, method: str) -> None:
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(9000)]})
+        pro = _FakePro({method: backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        ticks = 0
+
+        async def throttle() -> None:
+            nonlocal ticks
+            ticks += 1
+
+        await getattr(client, method)("20260612", throttle=throttle)
+        assert ticks == 3  # one token per page (offsets 0, 4000, 8000)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["stk_limit", "cyq_perf", "stk_factor_pro"])
+    async def test_fullmarket_daily_rejects_bad_trade_date(self, method: str) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="trade_date"):
+            await getattr(client, method)("2026-06-12")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["limit_list_d", "suspend_d"])
+    async def test_sparse_daily_single_call(self, method: str) -> None:
+        # Sparse daily endpoints are cap-immune → exactly one call, no pagination.
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await getattr(client, method)("20260612")
+        assert pro.calls == [(method, {"trade_date": "20260612"})]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["limit_list_d", "suspend_d"])
+    async def test_sparse_daily_rejects_bad_trade_date(self, method: str) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="trade_date"):
+            await getattr(client, method)("202606")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["forecast_vip", "express_vip"])
+    async def test_event_vip_paginates_by_period(self, method: str) -> None:
+        # forecast_vip is capped at 5000/call (probed 5875); both route through the
+        # paginated path. 9000 rows over page_limit 4000 → 4000, 4000, 1000.
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(9000)]})
+        pro = _FakePro({method: backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await getattr(client, method)("20231231")
+        assert len(df) == 9000
+        assert [c[1]["offset"] for c in pro.calls] == [0, 4000, 8000]
+        assert all(c[1]["limit"] == 4000 for c in pro.calls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["forecast_vip", "express_vip"])
+    async def test_event_vip_rejects_bad_period(self, method: str) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="period"):
+            await getattr(client, method)("2023-12-31")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["forecast_vip", "express_vip"])
+    async def test_event_vip_paginates_by_ann_date_range(self, method: str) -> None:
+        # The QGR ingest queries by ann_date range (captures forecasts already
+        # announced for a future target period); range mode paginates below the cap.
+        backing = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(9000)]})
+        pro = _FakePro({method: backing})
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        df = await getattr(client, method)(start_date="20240101", end_date="20240131")
+        assert len(df) == 9000
+        assert [c[1]["offset"] for c in pro.calls] == [0, 4000, 8000]
+        assert all(c[1]["start_date"] == "20240101" for c in pro.calls)
+        assert all(c[1]["end_date"] == "20240131" for c in pro.calls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["forecast_vip", "express_vip"])
+    async def test_event_vip_rejects_mixed_period_and_range(self, method: str) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="exactly one"):
+            await getattr(client, method)("20231231", end_date="20240131")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["forecast_vip", "express_vip"])
+    async def test_event_vip_rejects_neither_period_nor_range(
+        self, method: str
+    ) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="exactly one"):
+            await getattr(client, method)()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["forecast_vip", "express_vip"])
+    async def test_event_vip_rejects_inverted_range(self, method: str) -> None:
+        client = TushareClient(pro=_FakePro(), token=VALID_TOKEN)
+        with pytest.raises(ValueError, match="start_date"):
+            await getattr(client, method)(start_date="20240131", end_date="20240101")
+
+    @pytest.mark.asyncio
+    async def test_ths_index_full_catalog_one_call(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.ths_index()
+        assert pro.calls == [("ths_index", {})]
+
+    @pytest.mark.asyncio
+    async def test_ths_index_type_filter(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.ths_index(index_type="N")
+        assert pro.calls == [("ths_index", {"type": "N"})]
+
+    @pytest.mark.asyncio
+    async def test_index_classify_defaults_to_sw2021(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.index_classify()
+        assert pro.calls == [("index_classify", {"src": "SW2021"})]
+
+    @pytest.mark.asyncio
+    async def test_index_classify_level_filter(self) -> None:
+        pro = _FakePro()
+        client = TushareClient(pro=pro, token=VALID_TOKEN)
+        await client.index_classify(level="L1")
+        assert pro.calls == [("index_classify", {"src": "SW2021", "level": "L1"})]
 
 
 # ---------------------------------------------------------------------------

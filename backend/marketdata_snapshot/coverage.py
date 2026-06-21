@@ -10,6 +10,7 @@ universes it is computed from.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import structlog
@@ -34,9 +35,7 @@ class CoverageManifest(BaseModel):
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    schema_version: int = Field(
-        default=COVERAGE_MANIFEST_SCHEMA_VERSION, ge=1
-    )
+    schema_version: int = Field(default=COVERAGE_MANIFEST_SCHEMA_VERSION, ge=1)
     granularity: str = Field(min_length=1)
     """e.g. ``daily`` / ``period``."""
     endpoint: str = Field(min_length=1)
@@ -97,9 +96,19 @@ class CoverageStore:
         )
         return manifest
 
-    def get(
-        self, *, endpoint: str, session_end: str
-    ) -> CoverageManifest | None:
+    def iter_keys(self) -> Iterator[tuple[str, str]]:
+        """Yield ``(endpoint, session_end)`` of every stored manifest, one pass.
+
+        Lighter than reconstructing each :class:`CoverageManifest` (which carries
+        the full requested/delivered universes) — a bulk idempotent writer pulls
+        the present keys once and skips them in O(1), avoiding an O(n²) per-row
+        rescan of a large coverage file. Later rows for the same key are yielded
+        too (the caller de-dupes via a set); the file is append-only.
+        """
+        for row in load_rows(self._path):
+            yield (row["endpoint"], row["session_end"])
+
+    def get(self, *, endpoint: str, session_end: str) -> CoverageManifest | None:
         """Latest manifest for (endpoint, session_end), or None."""
         latest: CoverageManifest | None = None
         for row in load_rows(self._path):

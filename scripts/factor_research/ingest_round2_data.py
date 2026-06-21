@@ -134,6 +134,23 @@ _STATUS_FAILED = "failed"
 _Throttle = Callable[[], Awaitable[None]]
 
 
+def _make_throttle(rate_limiter: RateLimiter | None) -> _Throttle | None:
+    """Build a per-page throttle that acquires one rate-limit token off-thread.
+
+    Handed to a client method that paginates internally (one token per real SDK
+    page); the caller then passes ``rate_limiter=None`` to :func:`_ingest_one` so
+    a multi-page pull is not double- or under-throttled.
+    """
+    if rate_limiter is None:
+        return None
+    limiter = rate_limiter
+
+    async def throttle() -> None:
+        await asyncio.to_thread(limiter.acquire)
+
+    return throttle
+
+
 @runtime_checkable
 class _Round2Client(Protocol):
     """The new-endpoint subset of :class:`TushareClient` this job needs."""
@@ -168,6 +185,38 @@ class _Round2Client(Protocol):
     ) -> pd.DataFrame: ...
     async def index_member_all(self) -> pd.DataFrame: ...
     async def stock_basic(self, *, list_status: str, fields: str) -> pd.DataFrame: ...
+    # QGR-1 short-horizon / theme endpoints.
+    async def stk_limit(
+        self, trade_date: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
+    async def limit_list_d(self, trade_date: str) -> pd.DataFrame: ...
+    async def suspend_d(self, trade_date: str) -> pd.DataFrame: ...
+    async def cyq_perf(
+        self, trade_date: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
+    async def stk_factor_pro(
+        self, trade_date: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
+    async def forecast_vip(
+        self,
+        period: str = "",
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: _Throttle | None = None,
+    ) -> pd.DataFrame: ...
+    async def express_vip(
+        self,
+        period: str = "",
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: _Throttle | None = None,
+    ) -> pd.DataFrame: ...
+    async def ths_index(self, *, index_type: str = "") -> pd.DataFrame: ...
+    async def index_classify(
+        self, *, level: str = "", src: str = "SW2021"
+    ) -> pd.DataFrame: ...
 
 
 @dataclass(frozen=True)
@@ -745,13 +794,7 @@ async def ingest_statement(
     double-count its first page or under-count the rest, overrunning the cap.
     """
     fetch_method = getattr(client, endpoint)
-    throttle: _Throttle | None = None
-    if rate_limiter is not None:
-        limiter = rate_limiter
-
-        async def throttle() -> None:
-            await asyncio.to_thread(limiter.acquire)
-
+    throttle = _make_throttle(rate_limiter)
     out: list[EndpointResult] = []
     for period in periods:
         out.append(
@@ -973,13 +1016,7 @@ async def ingest_report_rc(
     is a valid fail-closed corruption/truncation check; a fetch EXCEPTION is recorded
     FAILED and retried on resume. Snapshots key on the month-range end date.
     """
-    throttle: _Throttle | None = None
-    if rate_limiter is not None:
-        limiter = rate_limiter
-
-        async def throttle() -> None:
-            await asyncio.to_thread(limiter.acquire)
-
+    throttle = _make_throttle(rate_limiter)
     out: list[EndpointResult] = []
     for start, end, key in report_rc_month_ranges(first_year, last_date):
         out.append(
@@ -1029,6 +1066,505 @@ async def ingest_round4(
     return Round2IngestReport(results=tuple(results), fina_coverage=())
 
 
+# --- QGR-1 short-horizon + 主旋律 ingest (quant first-gate re-research) -------
+#
+# Endpoint tags EQUAL the client method names so ``getattr(client, endpoint)``
+# dispatches. Three categories by query shape (probed read-only 2026-06-21):
+#   * FULL-MARKET daily  (stk_limit/cyq_perf/stk_factor_pro): one paginated pull
+#     per trade_date covering the whole universe → silently capped at 5000
+#     rows/call → paginate; require_non_empty; per-day survivorship coverage.
+#   * SPARSE daily       (limit_list_d/suspend_d): only the names with an event
+#     that day → cap-immune single call; an EMPTY day is legitimate (no limit
+#     stocks / no suspend-resume) → stored replayable with pinned columns; NO
+#     survivorship coverage.
+#   * PERIOD events      (forecast_vip/express_vip): by report period, paginated;
+#     NOT full-universe (only issuers) → NO survivorship coverage (like report_rc).
+#   * THEME catalogs     (ths_index/index_classify): one small as-of pull each.
+EP_STK_LIMIT = "stk_limit"
+EP_LIMIT_LIST_D = "limit_list_d"
+EP_SUSPEND_D = "suspend_d"
+EP_CYQ_PERF = "cyq_perf"
+EP_STK_FACTOR_PRO = "stk_factor_pro"
+EP_FORECAST = "forecast_vip"
+EP_EXPRESS = "express_vip"
+EP_THS_INDEX = "ths_index"
+EP_INDEX_CLASSIFY = "index_classify"
+
+# Full-market-by-trade_date endpoints → per-day survivorship coverage + pagination.
+QGR_FULLMARKET_DAILY: tuple[str, ...] = (EP_STK_LIMIT, EP_CYQ_PERF, EP_STK_FACTOR_PRO)
+# Sparse daily endpoints → single call, empty day legitimate, no coverage.
+QGR_SPARSE_DAILY: tuple[str, ...] = (EP_LIMIT_LIST_D, EP_SUSPEND_D)
+# Event-stream endpoints → ingested by ann_date month-range (NOT target period),
+# paginated, no survivorship coverage. ann_date keying captures a forecast already
+# announced for a FUTURE target period (annual forecasts file months ahead) that a
+# target-period enumeration stopping at the calendar end would silently drop.
+QGR_EVENT_STREAM: tuple[str, ...] = (EP_FORECAST, EP_EXPRESS)
+
+# Per-endpoint first available trade date — days before are skipped (a permanent
+# vendor data-availability limit, NOT a transient failure to retry; mirrors the
+# index_weight 2016 floor). Probed 2026-06-21: cyq_perf empty before 2018-01,
+# limit_list_d empty before 2020-01; stk_limit/suspend_d/stk_factor_pro cover the
+# full 2015+ calendar so they have no floor here.
+CYQ_PERF_FIRST_DATE = "20180101"
+LIMIT_LIST_D_FIRST_DATE = "20200101"
+QGR_DAILY_FIRST_DATE: dict[str, str] = {
+    EP_CYQ_PERF: CYQ_PERF_FIRST_DATE,
+    EP_LIMIT_LIST_D: LIMIT_LIST_D_FIRST_DATE,
+}
+
+# Canonical columns for the sparse daily endpoints (probed 2026-06-21) — an empty
+# day must serialize WITH this header (not a bare ``\n`` that ``parse_csv_bytes``
+# rejects), so a PIT reader replays it as a 0-row, known-column frame (the
+# namechange empty-year lesson).
+SUSPEND_D_FIELDS: tuple[str, ...] = (
+    "ts_code",
+    "trade_date",
+    "suspend_timing",
+    "suspend_type",
+)
+LIMIT_LIST_D_FIELDS: tuple[str, ...] = (
+    "trade_date",
+    "ts_code",
+    "industry",
+    "name",
+    "close",
+    "pct_chg",
+    "amount",
+    "limit_amount",
+    "float_mv",
+    "total_mv",
+    "turnover_ratio",
+    "fd_amount",
+    "first_time",
+    "last_time",
+    "open_times",
+    "up_stat",
+    "limit_times",
+    "limit",
+)
+_SPARSE_DAILY_FIELDS: dict[str, tuple[str, ...]] = {
+    EP_SUSPEND_D: SUSPEND_D_FIELDS,
+    EP_LIMIT_LIST_D: LIMIT_LIST_D_FIELDS,
+}
+
+# Event-stream require-non-empty per endpoint (probed 2026-06-21):
+#   * forecast_vip: every calendar month has forecasts (min 11/month) → an empty
+#     month IS truncation/corruption → require non-empty (fail-closed check).
+#   * express_vip: EVENT-clustered, many quiet months legitimately ZERO → must NOT
+#     require non-empty; an empty month is stored as a replayable empty frame with
+#     the canonical header (the namechange empty-year lesson).
+EVENT_STREAM_REQUIRE_NON_EMPTY: dict[str, bool] = {
+    EP_FORECAST: True,
+    EP_EXPRESS: False,
+}
+# Canonical columns for an empty express_vip month (forecast never empty → no need).
+EXPRESS_VIP_FIELDS: tuple[str, ...] = (
+    "ts_code",
+    "ann_date",
+    "end_date",
+    "revenue",
+    "operate_profit",
+    "total_profit",
+    "n_income",
+    "total_assets",
+    "total_hldr_eqy_exc_min_int",
+    "diluted_eps",
+    "diluted_roe",
+    "yoy_net_profit",
+    "bps",
+    "open_net_assets",
+    "open_bps",
+    "perf_summary",
+    "update_flag",
+)
+_EVENT_EMPTY_FIELDS: dict[str, tuple[str, ...]] = {EP_EXPRESS: EXPRESS_VIP_FIELDS}
+
+# SW industry taxonomy for the index_classify catalog pull.
+SW_CLASSIFY_SRC = "SW2021"
+
+
+async def ingest_fullmarket_daily(
+    client: _Round2Client,
+    store: SnapshotStore,
+    calendar: Sequence[str],
+    *,
+    endpoint: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+    first_date: str = "",
+) -> list[EndpointResult]:
+    """One paginated full-market snapshot per trade date (stk_limit/cyq_perf/…).
+
+    Pagination happens INSIDE the client (one rate-limit token per page), so the
+    throttle is handed to the client and ``_ingest_one`` is told NOT to throttle —
+    mirrors :func:`ingest_statement`. ``require_non_empty=True``: a trading day
+    at/after the endpoint's availability floor must return full-market rows, so an
+    empty pull is truncation/corruption (recorded FAILED → retried on resume).
+    Days before ``first_date`` are skipped (permanent vendor limit).
+    """
+    fetch_method = getattr(client, endpoint)
+    throttle = _make_throttle(rate_limiter)
+    out: list[EndpointResult] = []
+    for d in calendar:
+        if first_date and d < first_date:
+            continue
+        out.append(
+            await _ingest_one(
+                store,
+                endpoint=endpoint,
+                trade_date=d,
+                params={"trade_date": d},
+                fetch=partial(fetch_method, d, throttle=throttle),
+                now=now,
+                require_non_empty=True,
+                rate_limiter=None,
+            )
+        )
+    return out
+
+
+async def ingest_sparse_daily(
+    client: _Round2Client,
+    store: SnapshotStore,
+    calendar: Sequence[str],
+    *,
+    endpoint: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+    first_date: str = "",
+) -> list[EndpointResult]:
+    """One sparse single-call snapshot per trade date (limit_list_d/suspend_d).
+
+    ``require_non_empty=False``: an empty day is legitimate (no limit stocks / no
+    suspend-resume events) and is stored as a replayable empty frame normalised to
+    the canonical :data:`_SPARSE_DAILY_FIELDS` header; only a fetch EXCEPTION is
+    recorded FAILED for retry. Cap-immune → single call (no per-page throttle).
+    Days before ``first_date`` are skipped (permanent vendor limit).
+    """
+    fetch_method = getattr(client, endpoint)
+    columns = list(_SPARSE_DAILY_FIELDS[endpoint])
+
+    async def _fetch(trade_date: str) -> pd.DataFrame:
+        frame: pd.DataFrame = await fetch_method(trade_date)
+        if frame is None or frame.empty:
+            return pd.DataFrame(columns=columns)
+        return frame
+
+    out: list[EndpointResult] = []
+    for d in calendar:
+        if first_date and d < first_date:
+            continue
+        out.append(
+            await _ingest_one(
+                store,
+                endpoint=endpoint,
+                trade_date=d,
+                params={"trade_date": d},
+                fetch=partial(_fetch, d),
+                now=now,
+                require_non_empty=False,
+                rate_limiter=rate_limiter,
+            )
+        )
+    return out
+
+
+async def ingest_event_stream(
+    client: _Round2Client,
+    store: SnapshotStore,
+    ranges: Sequence[tuple[str, str, str]],
+    *,
+    endpoint: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+    require_non_empty: bool,
+    empty_columns: tuple[str, ...] | None = None,
+) -> list[EndpointResult]:
+    """One paginated event snapshot per ann_date month-range (forecast/express).
+
+    Keyed by ``ann_date`` window (``ranges`` = ``(start, end, key)`` triples from
+    :func:`report_rc_month_ranges`), NOT by target report period — so a forecast
+    already announced for a future target period is captured (codex P2-1).
+    Pagination is inside the client (throttle per page). ``require_non_empty`` is
+    per-endpoint (forecast: True = corruption check; express: False = quiet months
+    are legitimately empty). When not required and a month is empty, it is stored as
+    a replayable empty frame normalised to ``empty_columns`` (the namechange lesson).
+    NOT full-universe → no survivorship coverage (integrity = pagination + checksum).
+    """
+    fetch_method = getattr(client, endpoint)
+    throttle = _make_throttle(rate_limiter)
+
+    async def _fetch(start: str, end: str) -> pd.DataFrame:
+        frame: pd.DataFrame = await fetch_method(
+            start_date=start, end_date=end, throttle=throttle
+        )
+        if (frame is None or frame.empty) and empty_columns is not None:
+            return pd.DataFrame(columns=list(empty_columns))
+        return frame
+
+    out: list[EndpointResult] = []
+    for start, end, key in ranges:
+        out.append(
+            await _ingest_one(
+                store,
+                endpoint=endpoint,
+                trade_date=key,
+                params={"start_date": start, "end_date": end},
+                fetch=partial(_fetch, start, end),
+                now=now,
+                require_non_empty=require_non_empty,
+                rate_limiter=None,
+            )
+        )
+    return out
+
+
+async def ingest_theme_catalogs(
+    client: _Round2Client,
+    store: SnapshotStore,
+    asof: str,
+    *,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+) -> list[EndpointResult]:
+    """As-of THS concept catalog + SW industry classification catalog (主旋律).
+
+    ``ths_index`` = the 同花顺 concept/industry index registry (PIT-stable via its
+    ``list_date``); ``index_classify`` = the 申万 industry code↔name tree. Both
+    small single pulls keyed by ``asof``. The PIT SW *membership* (in/out dates) is
+    ``index_member_all`` (ingested by round-2); THS concept *membership*
+    (``ths_member``) carries no in/out dates → non-PIT, deferred to QGR-3.
+    """
+    out: list[EndpointResult] = []
+    out.append(
+        await _ingest_one(
+            store,
+            endpoint=EP_THS_INDEX,
+            trade_date=asof,
+            params={"asof": asof},
+            fetch=client.ths_index,
+            now=now,
+            require_non_empty=True,
+            rate_limiter=rate_limiter,
+        )
+    )
+    out.append(
+        await _ingest_one(
+            store,
+            endpoint=EP_INDEX_CLASSIFY,
+            trade_date=asof,
+            params={"asof": asof, "src": SW_CLASSIFY_SRC},
+            fetch=partial(client.index_classify, src=SW_CLASSIFY_SRC),
+            now=now,
+            require_non_empty=True,
+            rate_limiter=rate_limiter,
+        )
+    )
+    return out
+
+
+def build_daily_coverage_manifests(
+    store: SnapshotStore,
+    calendar: Sequence[str],
+    universe: SurvivorshipUniverse,
+    *,
+    endpoint: str,
+    first_date: str = "",
+    skip_keys: frozenset[tuple[str, str]] | None = None,
+) -> list[CoverageManifest]:
+    """Per-DAY survivorship-keyed coverage for a full-market daily endpoint.
+
+    Mirrors the ``daily``/``daily`` convention in ``historical_ingest.job``:
+    ``requested`` = codes tradable as-of the day (``universe.tradable_asof(d)``);
+    ``delivered`` = the day's stored snapshot ``ts_code`` set. A missing snapshot
+    raises :class:`FileNotFoundError` (fail-closed — the cap-truncation backstop).
+    Days before ``first_date`` are skipped (no data ingested for them). NB
+    ``stk_limit`` delivers a superset (funds included) of the stock universe →
+    completeness ~1.0; the point is to catch a silently-truncated (sub-5000) day.
+
+    ``skip_keys`` = ``(endpoint, day)`` pairs whose coverage is already stored;
+    those days are skipped BEFORE the snapshot is read, so an idempotent resume
+    never re-parses the (very wide ``stk_factor_pro``) CSVs just to drop the write
+    (codex P2-2).
+    """
+    skip = skip_keys or frozenset()
+    manifests: list[CoverageManifest] = []
+    for d in calendar:
+        if first_date and d < first_date:
+            continue
+        if (endpoint, d) in skip:
+            continue
+        snapshot = store.latest(vendor=VENDOR, endpoint=endpoint, trade_date=d)
+        if snapshot is None:
+            raise FileNotFoundError(
+                f"{endpoint} day {d} snapshot missing — "
+                "cannot build coverage (fail-closed)"
+            )
+        frame = parse_csv_bytes(snapshot.raw_payload)
+        delivered = {str(c).strip() for c in frame.get("ts_code", pd.Series(dtype=str))}
+        requested = sorted(universe.tradable_asof(d))
+        manifests.append(
+            CoverageManifest(
+                granularity="daily",
+                endpoint=endpoint,
+                params={"trade_date": d},
+                session_start=d,
+                session_end=d,
+                requested_universe=tuple(requested),
+                delivered_universe=tuple(sorted(delivered)),
+            )
+        )
+    return manifests
+
+
+def _existing_coverage_keys(coverage_store: CoverageStore) -> set[tuple[str, str]]:
+    """One-pass read of the (endpoint, session_end) keys already stored.
+
+    The per-day coverage build writes thousands of manifests; calling
+    :func:`_put_coverage_idempotent` (a full-file scan per manifest) for each
+    would be O(n²) over a large coverage file. Pre-loading the present keys once
+    makes the resume-skip O(1) per manifest (the QGR daily manifests are
+    deterministic, so a key-presence check is sufficient — no content re-compare).
+    """
+    return set(coverage_store.iter_keys())
+
+
+def _build_qgr_coverage(
+    store: SnapshotStore,
+    coverage_store: CoverageStore,
+    *,
+    calendar: Sequence[str],
+    asof: str,
+    blocking: bool,
+) -> tuple[list[EndpointResult], tuple[CoverageManifest, ...]]:
+    """Build + persist per-day coverage for the full-market daily endpoints.
+
+    Fail-closed, mirroring :func:`_build_coverage`: skipped on blocking full-market
+    ingest failures; a missing snapshot or unbuildable survivorship universe (the
+    round-2 stock_basic L/D rosters must exist at ``asof``) is a FAILED
+    ``EndpointResult`` (never a silent pass). Resume-safe via a one-pass present-key
+    preload (no duplicate rows, no O(n²) rescan). Returns ``(extra_results, cov)``.
+    """
+    if not calendar:
+        return [], ()
+    if blocking:
+        log.warning("qgr_coverage_skipped", reason="blocking ingest failures")
+        return [], ()
+    # Pre-load already-stored coverage keys ONCE so a resume skips manifest
+    # construction (the snapshot re-parse) for present days, not just the write.
+    present = frozenset(_existing_coverage_keys(coverage_store))
+    try:
+        universe = load_survivorship(store, asof)
+        manifests: list[CoverageManifest] = []
+        for endpoint in QGR_FULLMARKET_DAILY:
+            manifests.extend(
+                build_daily_coverage_manifests(
+                    store,
+                    calendar,
+                    universe,
+                    endpoint=endpoint,
+                    first_date=QGR_DAILY_FIRST_DATE.get(endpoint, ""),
+                    skip_keys=present,
+                )
+            )
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("qgr_coverage_failed", error=str(exc))
+        return [
+            EndpointResult(
+                endpoint="coverage",
+                key=asof,
+                status=_STATUS_FAILED,
+                rows=0,
+                error=str(exc),
+            )
+        ], ()
+    # Every manifest returned is for a not-yet-covered day (present keys were
+    # skipped during construction) → write them all.
+    for manifest in manifests:
+        coverage_store.put(manifest)
+    return [], tuple(manifests)
+
+
+async def ingest_qgr(
+    client: _Round2Client,
+    store: SnapshotStore,
+    coverage_store: CoverageStore,
+    *,
+    calendar: Sequence[str],
+    first_year: int,
+    asof: str,
+    now: Callable[[], datetime],
+    rate_limiter: RateLimiter | None = None,
+) -> Round2IngestReport:
+    """QGR-1: short-horizon microstructure/chips/tech + earnings events + 主旋律.
+
+    Full-market daily (stk_limit/cyq_perf/stk_factor_pro, paginated, coverage) +
+    sparse daily (limit_list_d/suspend_d) over the calendar; earnings events
+    (forecast_vip/express_vip) by ann_date month-range; theme catalogs
+    (ths_index/index_classify) as-of. Per-day survivorship coverage is built for
+    the 3 full-market daily endpoints ONLY (the others are sparse / not
+    full-universe). Idempotent / resumable / rate-limited / byte-exact. OFFLINE
+    batch; the real multi-thousand-call run is owner-gated. report_rc is ingested
+    separately (``--phase round4``) and not repeated here.
+    """
+    results: list[EndpointResult] = []
+    for endpoint in QGR_FULLMARKET_DAILY:
+        results.extend(
+            await ingest_fullmarket_daily(
+                client,
+                store,
+                calendar,
+                endpoint=endpoint,
+                now=now,
+                rate_limiter=rate_limiter,
+                first_date=QGR_DAILY_FIRST_DATE.get(endpoint, ""),
+            )
+        )
+    for endpoint in QGR_SPARSE_DAILY:
+        results.extend(
+            await ingest_sparse_daily(
+                client,
+                store,
+                calendar,
+                endpoint=endpoint,
+                now=now,
+                rate_limiter=rate_limiter,
+                first_date=QGR_DAILY_FIRST_DATE.get(endpoint, ""),
+            )
+        )
+    last_date = calendar[-1] if calendar else asof
+    # Event streams keyed by ann_date month (NOT target period) so a forecast
+    # already announced for a future target period is captured (codex P2-1).
+    event_ranges = report_rc_month_ranges(first_year, last_date)
+    for endpoint in QGR_EVENT_STREAM:
+        results.extend(
+            await ingest_event_stream(
+                client,
+                store,
+                event_ranges,
+                endpoint=endpoint,
+                now=now,
+                rate_limiter=rate_limiter,
+                require_non_empty=EVENT_STREAM_REQUIRE_NON_EMPTY[endpoint],
+                empty_columns=_EVENT_EMPTY_FIELDS.get(endpoint),
+            )
+        )
+    results.extend(
+        await ingest_theme_catalogs(
+            client, store, asof, now=now, rate_limiter=rate_limiter
+        )
+    )
+    blocking = any(
+        r.status == _STATUS_FAILED and r.endpoint in QGR_FULLMARKET_DAILY
+        for r in results
+    )
+    cov_results, coverage = _build_qgr_coverage(
+        store, coverage_store, calendar=calendar, asof=asof, blocking=blocking
+    )
+    results.extend(cov_results)
+    return Round2IngestReport(results=tuple(results), fina_coverage=coverage)
+
+
 def _print_report(label: str, report: Round2IngestReport) -> None:
     """Print one phase's ingest tally + coverage summary + failures."""
     print(
@@ -1059,13 +1595,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--phase",
-        choices=("round2", "round3", "round3-restate", "round4", "all"),
+        choices=("round2", "round3", "round3-restate", "round4", "qgr", "all"),
         default="round2",
         help="round2 = R2-1 (weights/fina/member/rosters); round3 = R3-1 "
         "(income/cashflow/balancesheet + namechange); round3-restate = re-pull "
         "the 3 statements paginated + version-bump truncated periods + rebuild "
         "coverage (no namechange); round4 = R4-2 (report_rc analyst forecasts, "
-        "per-calendar-month paginated); all = round2 + round3 (idempotent)",
+        "per-calendar-month paginated); qgr = QGR-1 (stk_limit/cyq_perf/"
+        "stk_factor_pro full-market daily + limit_list_d/suspend_d sparse daily + "
+        "forecast_vip/express_vip events + ths_index/index_classify theme "
+        "catalogs); all = round2 + round3 (idempotent)",
     )
     parser.add_argument(
         "--namechange-first-year", type=int, default=NAMECHANGE_FIRST_YEAR
@@ -1082,12 +1621,18 @@ def main() -> None:
     args = parser.parse_args()
 
     calendar = load_daily_calendar(args.snapshot_root)
-    asof = args.asof or datetime.now(UTC).strftime("%Y%m%d")
-    last_date = calendar[-1] if calendar else asof
+    today = datetime.now(UTC).strftime("%Y%m%d")
+    last_date = calendar[-1] if calendar else today
     do_r2 = args.phase in ("round2", "all")
     do_r3 = args.phase in ("round3", "all")
     do_r3_restate = args.phase == "round3-restate"
     do_r4 = args.phase == "round4"
+    do_qgr = args.phase == "qgr"
+    # QGR keys its theme catalogs + per-day survivorship coverage on ``asof``;
+    # default to the calendar's last trade date so coverage finds the round-2
+    # stock_basic L/D rosters ingested at that date — wall-clock today would miss
+    # them (the row-cap memo's asof-alignment gotcha).
+    asof = args.asof or (last_date if do_qgr else today)
 
     if args.dry_run:
         periods = report_periods(args.first_year, last_date)
@@ -1130,6 +1675,52 @@ def main() -> None:
                 f"[dry-run] report_rc month snapshots: {len(ranges)} ({rr_span}; "
                 "range-paginated, weekends incl)"
             )
+        if do_qgr:
+            est_calls = 0
+            print(
+                "[dry-run] QGR-1 full-market daily (paginated ~1-2 calls/day, "
+                "+per-day survivorship coverage):"
+            )
+            for ep in QGR_FULLMARKET_DAILY:
+                floor = QGR_DAILY_FIRST_DATE.get(ep, "")
+                days = [d for d in calendar if not floor or d >= floor]
+                span = f"{days[0]}..{days[-1]}" if days else "-"
+                floor_note = f" (floor {floor})" if floor else ""
+                print(
+                    f"             {ep}: {len(days)} day snapshots ({span}){floor_note}"
+                )
+                est_calls += len(days) * 2  # upper bound: 2 pages/day
+            print("[dry-run] QGR-1 sparse daily (single-call, empty day ok):")
+            for ep in QGR_SPARSE_DAILY:
+                floor = QGR_DAILY_FIRST_DATE.get(ep, "")
+                days = [d for d in calendar if not floor or d >= floor]
+                span = f"{days[0]}..{days[-1]}" if days else "-"
+                floor_note = f" (floor {floor})" if floor else ""
+                print(
+                    f"             {ep}: {len(days)} day snapshots ({span}){floor_note}"
+                )
+                est_calls += len(days)
+            event_ranges = report_rc_month_ranges(args.first_year, last_date)
+            ev_span = (
+                f"{event_ranges[0][2]}..{event_ranges[-1][2]}" if event_ranges else "-"
+            )
+            n_evt = len(QGR_EVENT_STREAM) * len(event_ranges)
+            print(
+                f"[dry-run] QGR-1 earnings events ({', '.join(QGR_EVENT_STREAM)}): "
+                f"{n_evt} ann_date-month snapshots ({ev_span}; paginated)"
+            )
+            est_calls += n_evt * 2  # upper bound: 2 pages/month
+            print(
+                f"[dry-run] QGR-1 theme catalogs (ths_index, index_classify) "
+                f"as-of {asof}"
+            )
+            est_calls += 2
+            print(
+                f"[dry-run] QGR-1 coverage: per-day survivorship manifests for "
+                f"{', '.join(QGR_FULLMARKET_DAILY)} (needs round-2 stock_basic "
+                f"rosters at asof {asof})"
+            )
+            print(f"[dry-run] QGR-1 estimated SDK calls (upper bound): ~{est_calls}")
         print("[dry-run] no network calls made.")
         return
 
@@ -1199,6 +1790,21 @@ def main() -> None:
         )
         _print_report("round4", report)
         failed += report.failed
+    if do_qgr:
+        report = asyncio.run(
+            ingest_qgr(
+                client,
+                store,
+                coverage_store,
+                calendar=calendar,
+                first_year=args.first_year,
+                asof=asof,
+                now=lambda: datetime.now(UTC),
+                rate_limiter=rate_limiter,
+            )
+        )
+        _print_report("qgr", report)
+        failed += report.failed
     # Non-zero exit on any failure (fail-closed) so a resume re-run is obvious.
     raise SystemExit(1 if failed else 0)
 
@@ -1209,25 +1815,47 @@ if __name__ == "__main__":
 
 __all__ = [
     "CSI300_CODE",
+    "CYQ_PERF_FIRST_DATE",
     "EP_BALANCESHEET",
     "EP_CASHFLOW",
+    "EP_CYQ_PERF",
+    "EP_EXPRESS",
     "EP_FINA",
+    "EP_FORECAST",
     "EP_INCOME",
+    "EP_INDEX_CLASSIFY",
     "EP_INDEX_MEMBER",
     "EP_INDEX_WEIGHT",
+    "EP_LIMIT_LIST_D",
     "EP_NAMECHANGE",
     "EP_REPORT_RC",
+    "EP_STK_FACTOR_PRO",
+    "EP_STK_LIMIT",
     "EP_STOCK_BASIC_D",
     "EP_STOCK_BASIC_L",
+    "EP_SUSPEND_D",
+    "EP_THS_INDEX",
+    "EVENT_STREAM_REQUIRE_NON_EMPTY",
+    "EXPRESS_VIP_FIELDS",
+    "LIMIT_LIST_D_FIELDS",
+    "LIMIT_LIST_D_FIRST_DATE",
     "NAMECHANGE_FIELDS",
     "NAMECHANGE_FIRST_YEAR",
+    "QGR_DAILY_FIRST_DATE",
+    "QGR_EVENT_STREAM",
+    "QGR_FULLMARKET_DAILY",
+    "QGR_SPARSE_DAILY",
     "REPORT_RC_FIRST_YEAR",
     "STATEMENT_ENDPOINTS",
+    "SUSPEND_D_FIELDS",
     "EndpointResult",
     "Round2IngestReport",
+    "build_daily_coverage_manifests",
     "build_fina_coverage_manifests",
     "build_statement_coverage_manifests",
+    "ingest_event_stream",
     "ingest_fina_indicator",
+    "ingest_fullmarket_daily",
     "ingest_index_member_all",
     "ingest_index_weight",
     "ingest_namechange",
@@ -1235,8 +1863,11 @@ __all__ = [
     "ingest_round2",
     "ingest_round3",
     "ingest_round4",
+    "ingest_qgr",
+    "ingest_sparse_daily",
     "ingest_statement",
     "ingest_stock_basic",
+    "ingest_theme_catalogs",
     "load_survivorship",
     "month_end_trade_dates",
     "namechange_pages",

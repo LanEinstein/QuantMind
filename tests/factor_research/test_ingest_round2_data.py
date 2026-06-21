@@ -22,29 +22,50 @@ from backend.data.historical_ingest.serialization import (
 from backend.marketdata_snapshot.coverage import CoverageStore
 from backend.marketdata_snapshot.store import SnapshotStore
 from scripts.factor_research.ingest_round2_data import (
+    CYQ_PERF_FIRST_DATE,
     EP_BALANCESHEET,
     EP_CASHFLOW,
+    EP_CYQ_PERF,
+    EP_EXPRESS,
     EP_FINA,
+    EP_FORECAST,
     EP_INCOME,
+    EP_INDEX_CLASSIFY,
     EP_INDEX_MEMBER,
     EP_INDEX_WEIGHT,
+    EP_LIMIT_LIST_D,
     EP_NAMECHANGE,
     EP_REPORT_RC,
+    EP_STK_FACTOR_PRO,
+    EP_STK_LIMIT,
     EP_STOCK_BASIC_D,
     EP_STOCK_BASIC_L,
+    EP_SUSPEND_D,
+    EP_THS_INDEX,
+    EVENT_STREAM_REQUIRE_NON_EMPTY,
+    EXPRESS_VIP_FIELDS,
+    LIMIT_LIST_D_FIELDS,
+    LIMIT_LIST_D_FIRST_DATE,
     STATEMENT_ENDPOINTS,
+    SUSPEND_D_FIELDS,
     _build_coverage,
+    build_daily_coverage_manifests,
     build_fina_coverage_manifests,
+    ingest_event_stream,
     ingest_fina_indicator,
+    ingest_fullmarket_daily,
     ingest_index_member_all,
     ingest_index_weight,
     ingest_namechange,
+    ingest_qgr,
     ingest_report_rc,
     ingest_round2,
     ingest_round3,
     ingest_round4,
+    ingest_sparse_daily,
     ingest_statement,
     ingest_stock_basic,
+    ingest_theme_catalogs,
     load_survivorship,
     month_end_trade_dates,
     namechange_pages,
@@ -77,6 +98,8 @@ class _FakeRound2Client:
         namechange_by_year: dict[int, pd.DataFrame] | None = None,
         report_rc: dict[str, pd.DataFrame] | None = None,
         report_rc_empty: set[str] | None = None,
+        qgr_frames: dict[tuple[str, str], pd.DataFrame] | None = None,
+        qgr_empty: set[tuple[str, str]] | None = None,
     ) -> None:
         self._weight = weight
         self._fina = fina or {}
@@ -89,7 +112,88 @@ class _FakeRound2Client:
         self._namechange_by_year = namechange_by_year or {}
         self._report_rc = report_rc or {}
         self._report_rc_empty = report_rc_empty or set()
+        self._qgr_frames = qgr_frames or {}
+        self._qgr_empty = qgr_empty or set()
         self.calls: list[tuple[str, str]] = []
+
+    def _qgr_frame(self, endpoint: str, key: str) -> pd.DataFrame:
+        if (endpoint, key) in self._qgr_empty:
+            return pd.DataFrame()
+        if (endpoint, key) in self._qgr_frames:
+            return self._qgr_frames[(endpoint, key)]
+        return pd.DataFrame(
+            {"ts_code": ["600519.SH"], "trade_date": [key], "val": [1.0]}
+        )
+
+    async def stk_limit(
+        self, trade_date: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()  # one page → one token (mirrors the real client)
+        self.calls.append(("stk_limit", trade_date))
+        return self._qgr_frame("stk_limit", trade_date)
+
+    async def cyq_perf(
+        self, trade_date: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()
+        self.calls.append(("cyq_perf", trade_date))
+        return self._qgr_frame("cyq_perf", trade_date)
+
+    async def stk_factor_pro(
+        self, trade_date: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()
+        self.calls.append(("stk_factor_pro", trade_date))
+        return self._qgr_frame("stk_factor_pro", trade_date)
+
+    async def limit_list_d(self, trade_date: str) -> pd.DataFrame:
+        self.calls.append(("limit_list_d", trade_date))
+        return self._qgr_frame("limit_list_d", trade_date)
+
+    async def suspend_d(self, trade_date: str) -> pd.DataFrame:
+        self.calls.append(("suspend_d", trade_date))
+        return self._qgr_frame("suspend_d", trade_date)
+
+    async def forecast_vip(
+        self,
+        period: str = "",
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: Any | None = None,
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()
+        key = end_date or period
+        self.calls.append(("forecast_vip", key))
+        return self._qgr_frame("forecast_vip", key)
+
+    async def express_vip(
+        self,
+        period: str = "",
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: Any | None = None,
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()
+        key = end_date or period
+        self.calls.append(("express_vip", key))
+        return self._qgr_frame("express_vip", key)
+
+    async def ths_index(self, *, index_type: str = "") -> pd.DataFrame:
+        self.calls.append(("ths_index", index_type))
+        return self._qgr_frame("ths_index", "asof")
+
+    async def index_classify(
+        self, *, level: str = "", src: str = "SW2021"
+    ) -> pd.DataFrame:
+        self.calls.append(("index_classify", src))
+        return self._qgr_frame("index_classify", "asof")
 
     def _statement(self, endpoint: str, period: str) -> pd.DataFrame:
         self.calls.append((endpoint, period))
@@ -619,9 +723,7 @@ class TestRound3Statements:
         )
 
     @pytest.mark.asyncio
-    async def test_reingest_version_bumps_on_changed_pull(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_reingest_version_bumps_on_changed_pull(self, tmp_path: Path) -> None:
         # The R3-1 truncation repair: a corrected (paginated) re-pull that returns
         # the dropped codes is appended as a NEW version; the truncated v1 bytes
         # are preserved (append-only) and store.latest returns the complete pull.
@@ -629,9 +731,7 @@ class TestRound3Statements:
         truncated = pd.DataFrame(
             {"ts_code": ["1.SZ"], "end_date": ["20240331"], "report_type": ["1"]}
         )
-        client = _FakeRound2Client(
-            statements={(EP_CASHFLOW, "20240331"): truncated}
-        )
+        client = _FakeRound2Client(statements={(EP_CASHFLOW, "20240331"): truncated})
         first = await ingest_statement(
             client, store, ["20240331"], endpoint=EP_CASHFLOW, now=_now
         )
@@ -662,9 +762,7 @@ class TestRound3Statements:
         )
 
     @pytest.mark.asyncio
-    async def test_reingest_unchanged_payload_is_skipped(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_reingest_unchanged_payload_is_skipped(self, tmp_path: Path) -> None:
         # An already-complete period whose re-pull is byte-identical is reported
         # SKIPPED — no spurious v2 churn.
         store = SnapshotStore(tmp_path)
@@ -1036,3 +1134,412 @@ class TestRound4ReportRc:
         client = _FakeRound2Client()
         with pytest.raises(ValueError, match="empty calendar"):
             await ingest_round4(client, store, calendar=[], now=_now)
+
+
+# --- QGR-1: short-horizon microstructure / chips / tech / events / theme -----
+
+
+class TestQgrFullMarketDaily:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", [EP_STK_LIMIT, EP_CYQ_PERF, EP_STK_FACTOR_PRO])
+    async def test_persists_per_trade_date(self, tmp_path: Path, endpoint: str) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_fullmarket_daily(
+            client, store, ["20240105", "20240108"], endpoint=endpoint, now=_now
+        )
+        assert [r.status for r in results] == ["ingested", "ingested"]
+        snap = store.latest(vendor="tushare", endpoint=endpoint, trade_date="20240105")
+        assert snap is not None
+        assert snap.params == {"trade_date": "20240105"}
+
+    @pytest.mark.asyncio
+    async def test_empty_required_fails_closed(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(qgr_empty={(EP_STK_LIMIT, "20240105")})
+        results = await ingest_fullmarket_daily(
+            client, store, ["20240105"], endpoint=EP_STK_LIMIT, now=_now
+        )
+        assert results[0].status == "failed"
+        assert (
+            store.latest(vendor="tushare", endpoint=EP_STK_LIMIT, trade_date="20240105")
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_cyq_perf_skips_before_2018_floor(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        # 2017 day skipped (vendor floor 2018); 2018 day ingested.
+        results = await ingest_fullmarket_daily(
+            client,
+            store,
+            ["20170103", "20180102"],
+            endpoint=EP_CYQ_PERF,
+            now=_now,
+            first_date=CYQ_PERF_FIRST_DATE,
+        )
+        assert [r.key for r in results] == ["20180102"]
+        assert (
+            store.latest(vendor="tushare", endpoint=EP_CYQ_PERF, trade_date="20170103")
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_throttle_one_token_per_day(self, tmp_path: Path) -> None:
+        class _CountingLimiter:
+            def __init__(self) -> None:
+                self.acquires = 0
+
+            def acquire(self) -> None:
+                self.acquires += 1
+
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()  # fake spends one token per (paginated) call
+        limiter = _CountingLimiter()
+        await ingest_fullmarket_daily(
+            client,
+            store,
+            ["20240105", "20240108"],
+            endpoint=EP_STK_LIMIT,
+            now=_now,
+            rate_limiter=limiter,
+        )
+        assert limiter.acquires == 2  # one per day; 4 would mean double-throttle
+
+    @pytest.mark.asyncio
+    async def test_idempotent_resume(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_fullmarket_daily(
+            client, store, ["20240105"], endpoint=EP_STK_FACTOR_PRO, now=_now
+        )
+        n_calls = len(client.calls)
+        second = await ingest_fullmarket_daily(
+            client, store, ["20240105"], endpoint=EP_STK_FACTOR_PRO, now=_now
+        )
+        assert second[0].status == "skipped"
+        assert len(client.calls) == n_calls  # no re-fetch on resume
+
+
+class TestQgrSparseDaily:
+    @pytest.mark.asyncio
+    async def test_empty_day_stored_replayable_not_failed(self, tmp_path: Path) -> None:
+        # A day with no suspend/resume events is legitimate → stored as an empty
+        # frame with the canonical header (replayable), NOT failed.
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(qgr_empty={(EP_SUSPEND_D, "20240105")})
+        results = await ingest_sparse_daily(
+            client, store, ["20240105"], endpoint=EP_SUSPEND_D, now=_now
+        )
+        assert results[0].status == "ingested"
+        snap = store.latest(
+            vendor="tushare", endpoint=EP_SUSPEND_D, trade_date="20240105"
+        )
+        assert snap is not None and snap.metadata.get("rows") == 0
+        frame = parse_csv_bytes(snap.raw_payload)  # must NOT raise EmptyDataError
+        assert len(frame) == 0
+        assert set(SUSPEND_D_FIELDS) <= set(frame.columns)
+
+    @pytest.mark.asyncio
+    async def test_limit_list_d_empty_day_uses_its_own_header(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(qgr_empty={(EP_LIMIT_LIST_D, "20240105")})
+        await ingest_sparse_daily(
+            client, store, ["20240105"], endpoint=EP_LIMIT_LIST_D, now=_now
+        )
+        snap = store.latest(
+            vendor="tushare", endpoint=EP_LIMIT_LIST_D, trade_date="20240105"
+        )
+        assert snap is not None
+        frame = parse_csv_bytes(snap.raw_payload)
+        assert set(LIMIT_LIST_D_FIELDS) <= set(frame.columns)
+
+    @pytest.mark.asyncio
+    async def test_limit_list_d_skips_before_2020_floor(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_sparse_daily(
+            client,
+            store,
+            ["20190102", "20200102"],
+            endpoint=EP_LIMIT_LIST_D,
+            now=_now,
+            first_date=LIMIT_LIST_D_FIRST_DATE,
+        )
+        assert [r.key for r in results] == ["20200102"]
+
+    @pytest.mark.asyncio
+    async def test_sparse_idempotent_resume(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_sparse_daily(
+            client, store, ["20240105"], endpoint=EP_SUSPEND_D, now=_now
+        )
+        n_calls = len(client.calls)
+        second = await ingest_sparse_daily(
+            client, store, ["20240105"], endpoint=EP_SUSPEND_D, now=_now
+        )
+        assert second[0].status == "skipped"
+        assert len(client.calls) == n_calls
+
+
+class TestQgrEventStream:
+    # ann_date month-range triples (start, end, key) like report_rc_month_ranges.
+    _RANGES = [
+        ("20240101", "20240131", "20240131"),
+        ("20240201", "20240229", "20240229"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", [EP_FORECAST, EP_EXPRESS])
+    async def test_persists_per_ann_month_keyed_by_month_end(
+        self, tmp_path: Path, endpoint: str
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_event_stream(
+            client,
+            store,
+            self._RANGES,
+            endpoint=endpoint,
+            now=_now,
+            require_non_empty=EVENT_STREAM_REQUIRE_NON_EMPTY[endpoint],
+            empty_columns=EXPRESS_VIP_FIELDS if endpoint == EP_EXPRESS else None,
+        )
+        assert [r.status for r in results] == ["ingested", "ingested"]
+        snap = store.latest(vendor="tushare", endpoint=endpoint, trade_date="20240131")
+        # Keyed by the ann_date month-end; params carry the ann_date window.
+        assert snap is not None
+        assert snap.params == {"start_date": "20240101", "end_date": "20240131"}
+
+    @pytest.mark.asyncio
+    async def test_forecast_empty_month_fails_closed(self, tmp_path: Path) -> None:
+        # forecast_vip is never empty (require_non_empty=True) → an empty month is
+        # corruption → FAILED, nothing stored.
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(qgr_empty={(EP_FORECAST, "20240131")})
+        results = await ingest_event_stream(
+            client,
+            store,
+            self._RANGES[:1],
+            endpoint=EP_FORECAST,
+            now=_now,
+            require_non_empty=True,
+        )
+        assert results[0].status == "failed"
+        assert (
+            store.latest(vendor="tushare", endpoint=EP_FORECAST, trade_date="20240131")
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_express_empty_month_stored_replayable(self, tmp_path: Path) -> None:
+        # express_vip months are legitimately empty (require_non_empty=False) →
+        # stored as a replayable empty frame with the canonical header.
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client(qgr_empty={(EP_EXPRESS, "20240131")})
+        results = await ingest_event_stream(
+            client,
+            store,
+            self._RANGES[:1],
+            endpoint=EP_EXPRESS,
+            now=_now,
+            require_non_empty=False,
+            empty_columns=EXPRESS_VIP_FIELDS,
+        )
+        assert results[0].status == "ingested"
+        snap = store.latest(
+            vendor="tushare", endpoint=EP_EXPRESS, trade_date="20240131"
+        )
+        assert snap is not None and snap.metadata.get("rows") == 0
+        frame = parse_csv_bytes(snap.raw_payload)  # must NOT raise EmptyDataError
+        assert len(frame) == 0
+        assert set(EXPRESS_VIP_FIELDS) <= set(frame.columns)
+
+    @pytest.mark.asyncio
+    async def test_throttle_one_token_per_month(self, tmp_path: Path) -> None:
+        class _CountingLimiter:
+            def __init__(self) -> None:
+                self.acquires = 0
+
+            def acquire(self) -> None:
+                self.acquires += 1
+
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        limiter = _CountingLimiter()
+        await ingest_event_stream(
+            client,
+            store,
+            self._RANGES,
+            endpoint=EP_FORECAST,
+            now=_now,
+            rate_limiter=limiter,
+            require_non_empty=True,
+        )
+        assert limiter.acquires == 2
+
+
+class TestQgrThemeCatalogs:
+    @pytest.mark.asyncio
+    async def test_ths_index_and_index_classify_keyed_by_asof(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        results = await ingest_theme_catalogs(client, store, "20260618", now=_now)
+        assert [r.endpoint for r in results] == [EP_THS_INDEX, EP_INDEX_CLASSIFY]
+        assert all(r.status == "ingested" for r in results)
+        assert (
+            store.latest(vendor="tushare", endpoint=EP_THS_INDEX, trade_date="20260618")
+            is not None
+        )
+        classify = store.latest(
+            vendor="tushare", endpoint=EP_INDEX_CLASSIFY, trade_date="20260618"
+        )
+        assert classify is not None and classify.params["src"] == "SW2021"
+
+
+class TestQgrDailyCoverage:
+    @pytest.mark.asyncio
+    async def test_per_day_survivorship_coverage(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20260618", now=_now)
+        await ingest_fullmarket_daily(
+            client, store, ["20240105", "20240108"], endpoint=EP_STK_LIMIT, now=_now
+        )
+        universe = load_survivorship(store, "20260618")
+        manifests = build_daily_coverage_manifests(
+            store, ["20240105", "20240108"], universe, endpoint=EP_STK_LIMIT
+        )
+        assert len(manifests) == 2
+        m = manifests[0]
+        assert m.granularity == "daily"
+        assert m.session_start == m.session_end == "20240105"
+        # requested = tradable as-of the day; delivered = the snapshot ts_codes.
+        assert "600519.SH" in m.requested_universe
+        assert m.delivered_universe == ("600519.SH",)
+
+    @pytest.mark.asyncio
+    async def test_coverage_fails_closed_on_missing_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20260618", now=_now)
+        universe = load_survivorship(store, "20260618")
+        with pytest.raises(FileNotFoundError, match="20240105"):
+            build_daily_coverage_manifests(
+                store, ["20240105"], universe, endpoint=EP_CYQ_PERF
+            )
+
+    @pytest.mark.asyncio
+    async def test_coverage_skips_before_floor(self, tmp_path: Path) -> None:
+        store = SnapshotStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20260618", now=_now)
+        await ingest_fullmarket_daily(
+            client,
+            store,
+            ["20180102"],
+            endpoint=EP_CYQ_PERF,
+            now=_now,
+            first_date=CYQ_PERF_FIRST_DATE,
+        )
+        universe = load_survivorship(store, "20260618")
+        # 2017 day below floor → not required (no snapshot, no FileNotFoundError).
+        manifests = build_daily_coverage_manifests(
+            store,
+            ["20170103", "20180102"],
+            universe,
+            endpoint=EP_CYQ_PERF,
+            first_date=CYQ_PERF_FIRST_DATE,
+        )
+        assert [m.session_end for m in manifests] == ["20180102"]
+
+
+class TestQgrOrchestrator:
+    @pytest.mark.asyncio
+    async def test_full_run_builds_coverage_for_fullmarket_daily(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20260618", now=_now)  # rosters
+        calendar = ["20240105", "20240131", "20240401"]  # spans Q1 end
+        report = await ingest_qgr(
+            client,
+            store,
+            coverage_store,
+            calendar=calendar,
+            first_year=2024,
+            asof="20260618",
+            now=_now,
+        )
+        assert report.failed == 0
+        # 3 full-market daily × 3 days (9) + 2 sparse × 3 days (6) + 2 event
+        # streams × 4 ann_date months (Jan/Feb/Mar/Apr-capped) (8) + 2 catalogs = 25.
+        assert report.ingested == 25
+        # Coverage = 3 full-market daily endpoints × 3 days.
+        assert len(report.fina_coverage) == 9
+        for endpoint in ("stk_limit", "cyq_perf", "stk_factor_pro"):
+            assert (
+                coverage_store.get(endpoint=endpoint, session_end="20240105")
+                is not None
+            )
+
+    @pytest.mark.asyncio
+    async def test_resume_idempotent_no_coverage_duplication(
+        self, tmp_path: Path
+    ) -> None:
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        await ingest_stock_basic(client, store, "20260618", now=_now)
+        calendar = ["20240105", "20240401"]
+        kwargs = dict(calendar=calendar, first_year=2024, asof="20260618", now=_now)
+        first = await ingest_qgr(client, store, coverage_store, **kwargs)  # type: ignore[arg-type]
+        assert first.failed == 0
+        n_cov_first = len(
+            [
+                ln
+                for ln in (tmp_path / "coverage.jsonl").read_text().splitlines()
+                if ln.strip()
+            ]
+        )
+        second = await ingest_qgr(client, store, coverage_store, **kwargs)  # type: ignore[arg-type]
+        assert second.ingested == 0  # all skipped on resume
+        n_cov_second = len(
+            [
+                ln
+                for ln in (tmp_path / "coverage.jsonl").read_text().splitlines()
+                if ln.strip()
+            ]
+        )
+        assert n_cov_first == n_cov_second  # no duplicate coverage rows
+
+    @pytest.mark.asyncio
+    async def test_coverage_fails_closed_without_rosters(self, tmp_path: Path) -> None:
+        # No L/D rosters → survivorship universe unbuildable → coverage surfaces a
+        # FAILED result (never a silent pass).
+        store = SnapshotStore(tmp_path)
+        coverage_store = CoverageStore(tmp_path)
+        client = _FakeRound2Client()
+        report = await ingest_qgr(
+            client,
+            store,
+            coverage_store,
+            calendar=["20240105", "20240401"],
+            first_year=2024,
+            asof="20260618",
+            now=_now,
+        )
+        assert report.failed == 1
+        assert any(
+            r.endpoint == "coverage" and r.status == "failed" for r in report.results
+        )

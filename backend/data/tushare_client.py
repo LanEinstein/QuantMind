@@ -66,6 +66,17 @@ _TS_CODE_RE = re.compile(r"\A\d{6}\.(SH|SZ|BJ)\Z")  # e.g. 000300.SH
 # the assembled frame is deterministic and byte-replayable.
 _STATEMENT_PAGE_LIMIT = 5000
 
+# QGR-1 short-horizon / theme endpoints. A full-market-by-trade_date pull on
+# several of these is silently capped at 5000 rows/call (probed 2026-06-21:
+# stk_limit 7651, cyq_perf 5512, stk_factor_pro 5512, forecast_vip 5875 all
+# return exactly 5000 at offset 0 with a non-empty offset=5000 page) — the same
+# silent-truncation trap as the *_vip statements. The page limit is kept STRICTLY
+# BELOW the observed 5000 cap so a full page never equals the cap (else the
+# short-page stop could misfire and silently truncate — the R3-1 lesson). Sparse
+# daily endpoints (limit_list_d / suspend_d) and the catalogs (ths_index /
+# index_classify) are well under the cap and use a single un-paginated call.
+_FULLMARKET_PAGE_LIMIT = 4000
+
 # report_rc (broker analyst earnings-forecast / rating, R4-1) is a sparse STREAM,
 # not a daily snapshot: a single report_date returns ~150-900 rows (cap-immune),
 # but a multi-month date-RANGE query is silently capped at 5000 rows/call (probed
@@ -133,6 +144,16 @@ class TusharePro(Protocol):
     def index_member_all(self, **kwargs: Any) -> pd.DataFrame: ...
     def fund_daily(self, **kwargs: Any) -> pd.DataFrame: ...
     def stock_basic(self, **kwargs: Any) -> pd.DataFrame: ...
+    # QGR-1 short-horizon / theme endpoints.
+    def stk_limit(self, **kwargs: Any) -> pd.DataFrame: ...
+    def limit_list_d(self, **kwargs: Any) -> pd.DataFrame: ...
+    def suspend_d(self, **kwargs: Any) -> pd.DataFrame: ...
+    def cyq_perf(self, **kwargs: Any) -> pd.DataFrame: ...
+    def stk_factor_pro(self, **kwargs: Any) -> pd.DataFrame: ...
+    def forecast_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def express_vip(self, **kwargs: Any) -> pd.DataFrame: ...
+    def ths_index(self, **kwargs: Any) -> pd.DataFrame: ...
+    def index_classify(self, **kwargs: Any) -> pd.DataFrame: ...
 
 
 @runtime_checkable
@@ -404,9 +425,7 @@ class TushareClient:
         self._check_trade_date(start_date)
         self._check_trade_date(end_date)
         if start_date > end_date:
-            raise ValueError(
-                f"report_rc start_date {start_date} > end_date {end_date}"
-            )
+            raise ValueError(f"report_rc start_date {start_date} > end_date {end_date}")
         return await self._fetch_paginated(
             "report_rc",
             {"start_date": start_date, "end_date": end_date, "fields": fields},
@@ -567,6 +586,235 @@ class TushareClient:
         return await self._fetch(
             "stock_basic", {"list_status": list_status, "fields": fields}
         )
+
+    # -- QGR-1 short-horizon microstructure (full-market by trade_date) -
+
+    async def stk_limit(
+        self,
+        trade_date: str,
+        *,
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Full-market price-limit table for a trade date (涨跌停价, QGR-1).
+
+        Columns ``ts_code`` / ``up_limit`` / ``down_limit`` — the at-fill
+        limit-up/down check + the §3.2 "near-limit (not yet limit-up)" momentum
+        slice. A single trade_date covers every security (~7600 rows incl. funds)
+        and is silently capped at 5000 rows/call, so this paginates with
+        ``limit``+``offset`` below the cap (see :data:`_FULLMARKET_PAGE_LIMIT`);
+        ``throttle`` is awaited once per page.
+        """
+        self._check_trade_date(trade_date)
+        return await self._fetch_paginated(
+            "stk_limit",
+            {"trade_date": trade_date},
+            page_limit=_FULLMARKET_PAGE_LIMIT,
+            throttle=throttle,
+        )
+
+    async def limit_list_d(self, trade_date: str) -> pd.DataFrame:
+        """Daily limit-up/down statistics for a trade date (涨跌停统计, QGR-1).
+
+        SPARSE — only the names that hit a limit that day (~150 rows), so it is
+        cap-immune and uses one call. A FEATURE source only (early-seal / one-word
+        / streak tags); **the same-day list is complete only after close, so a PIT
+        factor build must use ``report_date < d`` semantics (use the prior day)**
+        — that gating lives in the factor builder, not here. Vendor data starts
+        ~2020 (probed 2026-06-21: empty before); an empty day is legitimate.
+        """
+        self._check_trade_date(trade_date)
+        return await self._fetch("limit_list_d", {"trade_date": trade_date})
+
+    async def suspend_d(self, trade_date: str) -> pd.DataFrame:
+        """Suspend/resume events for a trade date (停复牌, QGR-1).
+
+        SPARSE — only the codes with a suspend (``S``) or resume (``R``) event
+        that day (~20 rows), cap-immune, one call. Used to exclude non-tradable
+        names and handle resume-day gaps. An empty day (no suspend/resume events)
+        is legitimate and stored as a replayable empty frame by the ingest.
+        """
+        self._check_trade_date(trade_date)
+        return await self._fetch("suspend_d", {"trade_date": trade_date})
+
+    async def cyq_perf(
+        self,
+        trade_date: str,
+        *,
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Full-market chip-distribution PERFORMANCE summary (筹码胜率, QGR-1).
+
+        The tractable full-market form of the chip data: one row per code with
+        the cost-band percentiles (``cost_5pct`` … ``cost_95pct``), ``weight_avg``
+        and ``winner_rate`` — exactly the §3.8 "站稳筹码成本带上方" bottom-
+        confirmation inputs. (The raw ``cyq_chips`` price histogram is per-stock
+        only — ``必填参数 ts_code`` — so it is infeasible at full-market scale;
+        ``cyq_perf`` is the full-market substitute.) Vendor data starts ~2018-01
+        (probed 2026-06-21: empty before). Silently capped at 5000 rows/call →
+        paginated below the cap; ``throttle`` awaited per page.
+        """
+        self._check_trade_date(trade_date)
+        return await self._fetch_paginated(
+            "cyq_perf",
+            {"trade_date": trade_date},
+            page_limit=_FULLMARKET_PAGE_LIMIT,
+            throttle=throttle,
+        )
+
+    async def stk_factor_pro(
+        self,
+        trade_date: str,
+        *,
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Full-market technical-factor PRO table for a trade date (技术因子, QGR-1).
+
+        ~261 columns (qfq/hfq/bfq OHLC + MACD/KDJ/RSI/BOLL/ATR/turnover/… and the
+        valuation/share columns) — the precomputed short-horizon technical inputs.
+        Silently capped at 5000 rows/call → paginated below the cap; ``throttle``
+        awaited per page. Vendor data covers the full 2015+ window (probed).
+        """
+        self._check_trade_date(trade_date)
+        return await self._fetch_paginated(
+            "stk_factor_pro",
+            {"trade_date": trade_date},
+            page_limit=_FULLMARKET_PAGE_LIMIT,
+            throttle=throttle,
+        )
+
+    # -- QGR-1 earnings-event endpoints (by ann_date range or period) --
+
+    async def _pull_period_or_ann_range(
+        self,
+        endpoint: str,
+        *,
+        period: str,
+        start_date: str,
+        end_date: str,
+        throttle: Callable[[], Awaitable[None]] | None,
+    ) -> pd.DataFrame:
+        """Paginated pull for forecast_vip/express_vip by period OR ann_date range.
+
+        Exactly one of ``period`` (the forecast/express TARGET report period) OR
+        the ``start_date``/``end_date`` range (filtering by ``ann_date`` = the PIT
+        availability date) must be given (a mix is ambiguous and rejected
+        fail-closed). The ann_date-range form is what the QGR ingest uses: it keys
+        snapshots by announcement window so a forecast already announced for a
+        FUTURE target period (e.g. an annual forecast filed months ahead) is
+        captured, instead of being dropped by a target-period enumeration that
+        stops at the calendar end. Both forms paginate below the 5000 cap; a busy
+        report-season month stays well under it (probed) but paging is uniform.
+        """
+        is_range = bool(start_date or end_date)
+        if bool(period) == is_range:
+            raise ValueError(
+                f"{endpoint} needs exactly one of period OR a start_date/end_date "
+                "(ann_date) range (got both or neither)"
+            )
+        params: dict[str, Any]
+        if period:
+            self._check_period(period)
+            params = {"period": period}
+        else:
+            if not (start_date and end_date):
+                raise ValueError(f"{endpoint} range needs both start_date and end_date")
+            self._check_trade_date(start_date)
+            self._check_trade_date(end_date)
+            if start_date > end_date:
+                raise ValueError(
+                    f"{endpoint} start_date {start_date} > end_date {end_date}"
+                )
+            params = {"start_date": start_date, "end_date": end_date}
+        return await self._fetch_paginated(
+            endpoint, params, page_limit=_FULLMARKET_PAGE_LIMIT, throttle=throttle
+        )
+
+    async def forecast_vip(
+        self,
+        period: str = "",
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Full-market earnings forecast (业绩预告, QGR-1).
+
+        PEAD/event input (``type`` / ``p_change_min`` / ``p_change_max`` /
+        ``net_profit_min`` / ``net_profit_max`` / ``ann_date`` / ``end_date``).
+        Query by the TARGET report ``period`` OR (the ingest path) by an
+        ``ann_date`` ``start_date``/``end_date`` range — exactly one. ``ann_date``
+        is the PIT availability date (gating lives in the factor builder). Forecast
+        rows exist every month (probed) → the ingest can require non-empty as a
+        corruption check. NOT a full-universe pull → no survivorship coverage.
+        """
+        return await self._pull_period_or_ann_range(
+            "forecast_vip",
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+            throttle=throttle,
+        )
+
+    async def express_vip(
+        self,
+        period: str = "",
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        throttle: Callable[[], Awaitable[None]] | None = None,
+    ) -> pd.DataFrame:
+        """Full-market earnings express report (业绩快报, QGR-1).
+
+        PEAD/event input (``revenue`` / ``n_income`` / ``diluted_roe`` /
+        ``yoy_net_profit`` / ``ann_date`` / ``end_date``). Query by TARGET
+        ``period`` OR (the ingest path) an ``ann_date`` range — exactly one.
+        Express filings are EVENT-clustered: many calendar months legitimately have
+        ZERO (probed) → the ingest must NOT require non-empty (an empty month is
+        real, stored as a replayable empty frame). NOT full-universe → no coverage.
+        """
+        return await self._pull_period_or_ann_range(
+            "express_vip",
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+            throttle=throttle,
+        )
+
+    # -- QGR-1 主旋律 (theme) catalogs (as-of, small) ------------------
+
+    async def ths_index(self, *, index_type: str = "") -> pd.DataFrame:
+        """同花顺 concept/industry index CATALOG (QGR-1 主旋律 registry).
+
+        One small pull of every THS index (``ts_code`` / ``name`` / ``count`` /
+        ``exchange`` / ``list_date`` / ``type``; ``type='N'`` = concept). This is
+        the index *catalog* (PIT-stable via ``list_date``), NOT the membership:
+        ``ths_member`` (concept constituents) carries NO in/out dates → it is not
+        PIT and is deferred to QGR-3 (handled under the pre-registered policy→theme
+        map). The PIT 主旋律 "场" anchor is the SW industry membership
+        (``index_member_all``, which DOES carry in/out dates). ``index_type``
+        optionally filters by ``type`` (default: full catalog).
+        """
+        params: dict[str, Any] = {}
+        if index_type:
+            params["type"] = index_type
+        return await self._fetch("ths_index", params)
+
+    async def index_classify(
+        self, *, level: str = "", src: str = "SW2021"
+    ) -> pd.DataFrame:
+        """SW industry CLASSIFICATION catalog (申万行业目录, QGR-1 主旋律).
+
+        The 申万 industry-code↔name tree (``index_code`` / ``industry_name`` /
+        ``level`` / ``industry_code`` / ``parent_code``). Small (L1=31, full tree
+        a few hundred rows). Pairs with the already-ingested ``index_member_all``
+        (PIT membership with in/out dates) to reconstruct any code's point-in-time
+        SW industry. ``src`` defaults to the current ``SW2021`` taxonomy; ``level``
+        optionally restricts to ``L1`` / ``L2`` / ``L3`` (default: all levels).
+        """
+        params: dict[str, Any] = {"src": src}
+        if level:
+            params["level"] = level
+        return await self._fetch("index_classify", params)
 
 
 __all__ = [

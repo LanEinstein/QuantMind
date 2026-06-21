@@ -81,16 +81,35 @@ class TestCoverageStore:
         assert loaded.completeness == 0.5
 
     def test_reopened_store_reads_offline(self, tmp_path: Path) -> None:
-        CoverageStore(root=tmp_path).put(
-            _manifest(("000001.SZ",), ("000001.SZ",))
-        )
+        CoverageStore(root=tmp_path).put(_manifest(("000001.SZ",), ("000001.SZ",)))
         assert (
-            CoverageStore(root=tmp_path).get(
-                endpoint="daily", session_end="20260522"
-            )
+            CoverageStore(root=tmp_path).get(endpoint="daily", session_end="20260522")
             is not None
         )
 
     def test_get_missing_returns_none(self, tmp_path: Path) -> None:
         store = CoverageStore(root=tmp_path)
         assert store.get(endpoint="daily", session_end="20990101") is None
+
+    def test_iter_keys_yields_all_stored_keys(self, tmp_path: Path) -> None:
+        store = CoverageStore(root=tmp_path)
+        store.put(
+            _manifest(("a",), ("a",), endpoint="stk_limit", session_end="20240105")
+        )
+        store.put(
+            _manifest(("b",), ("b",), endpoint="cyq_perf", session_end="20240105")
+        )
+        store.put(
+            _manifest(("c",), ("c",), endpoint="stk_limit", session_end="20240108")
+        )
+        keys = list(store.iter_keys())
+        assert keys == [
+            ("stk_limit", "20240105"),
+            ("cyq_perf", "20240105"),
+            ("stk_limit", "20240108"),
+        ]
+        # The bulk idempotent writer de-dupes via a set membership check.
+        assert ("cyq_perf", "20240105") in set(store.iter_keys())
+
+    def test_iter_keys_empty_store(self, tmp_path: Path) -> None:
+        assert list(CoverageStore(root=tmp_path).iter_keys()) == []
