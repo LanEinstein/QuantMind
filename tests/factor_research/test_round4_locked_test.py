@@ -1,0 +1,170 @@
+"""Tests for the R4-6 one-shot locked-test verdict logic."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from scripts.factor_research.benchmark_relative import (
+    R4_CARRY_FACTORS,
+    BenchmarkRelativeResult,
+)
+from scripts.factor_research.round4_locked_test import (
+    FROZEN_R4_CONSTRAINT,
+    evaluate,
+    load_frozen_strategy,
+)
+
+
+def _result(excess: list[float], dates: list[str]) -> BenchmarkRelativeResult:
+    return BenchmarkRelativeResult(
+        n_periods=len(excess),
+        total_excess=0.0,
+        annual_excess=0.0,
+        tracking_error=0.05,
+        information_ratio=0.3,
+        avg_turnover=0.2,
+        avg_gross_active=0.4,
+        avg_forced_underweight=0.16,
+        mean_net_active=0.0,
+        mean_size_active=-0.15,
+        mean_max_industry_active=0.04,
+        excess_returns=tuple(excess),
+        dates=tuple(dates),
+    )
+
+
+def _evaluate(excess: list[float], index: dict[str, float]):  # noqa: ANN202
+    res = _result(excess, list(index))
+    return evaluate(
+        res,
+        index,
+        constraint="constituent_only",
+        k=0.20,
+        a_max=0.04,
+        nonconst_cap=0.10,
+        weights={"ep_ttm": 1.0},
+    )
+
+
+def test_portfolio_net_is_excess_plus_benchmark() -> None:
+    v = _evaluate([0.03, 0.01], {"20250604": 0.0, "20250611": 0.0})
+    assert v.net_total_return == pytest.approx(1.03 * 1.01 - 1.0)
+    assert v.bench_total_return == pytest.approx(0.0)
+
+
+def test_all_four_gates_pass() -> None:
+    v = _evaluate([0.03, 0.01], {"20250604": 0.0, "20250611": 0.0})
+    assert v.criteria["net_positive"] is True
+    assert v.criteria["beats_csi300"] is True
+    assert v.criteria["drawdown_within_15pct"] is True
+    assert v.criteria["sharpe_at_least_0.5"] is True
+    assert v.passed is True
+
+
+def test_positive_net_but_loses_to_strong_index_fails_beats_gate() -> None:
+    # The round-1/2/3 failure mode: positive net but the index ran harder →
+    # cumulative excess negative → beats_csi300 FAILS even though net > 0.
+    v = _evaluate([-0.05, -0.05], {"20250604": 0.10, "20250611": 0.10})
+    assert v.net_total_return > 0.0
+    assert v.criteria["net_positive"] is True
+    assert v.excess_vs_bench < 0.0
+    assert v.criteria["beats_csi300"] is False
+    assert v.passed is False
+
+
+def test_frozen_constants_are_filled_and_wellformed() -> None:
+    # R4-5 freeze: the pre-commitment constants are filled (not placeholders) and
+    # cover exactly the round-4 carry set (sixteen; the firewall pins the SET).
+    from scripts.factor_research.exposure_constraints import CONSTRAINTS
+    from scripts.factor_research.round4_locked_test import FROZEN_R4_WEIGHTS_3DP
+
+    assert FROZEN_R4_CONSTRAINT != "PLACEHOLDER_FILLED_IN_R4_5"
+    assert FROZEN_R4_CONSTRAINT in CONSTRAINTS
+    assert set(FROZEN_R4_WEIGHTS_3DP) == set(R4_CARRY_FACTORS)
+    # the dominant round-4 alpha addition (analyst revision diffusion)
+    assert FROZEN_R4_WEIGHTS_3DP["rev_diff"] > 0.0
+    assert sum(FROZEN_R4_WEIGHTS_3DP.values()) == pytest.approx(1.0, abs=2e-3)
+
+
+def _fill_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate the R4-5 freeze so the firewall logic can be exercised filled."""
+    import scripts.factor_research.round4_locked_test as m
+
+    monkeypatch.setattr(m, "FROZEN_R4_CONSTRAINT", "constituent_only")
+    monkeypatch.setattr(m, "FROZEN_R4_K", 0.20)
+    monkeypatch.setattr(m, "FROZEN_R4_A_MAX", 0.04)
+    monkeypatch.setattr(m, "FROZEN_R4_NONCONST_CAP", 0.10)
+    monkeypatch.setattr(m, "FROZEN_R4_WEIGHTS_3DP", {"ep_ttm": 0.6, "rev_diff": 0.4})
+
+
+def _artifact(**over: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "selected_constraint": "constituent_only",
+        "selected_k": 0.20,
+        "selected_a_max": 0.04,
+        "selected_nonconst_cap": 0.10,
+        "selected_weights": {"ep_ttm": 0.6, "rev_diff": 0.4},
+    }
+    base.update(over)
+    return base
+
+
+def test_load_frozen_accepts_matching_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fill_freeze(monkeypatch)
+    p = tmp_path / "ok.json"
+    p.write_text(json.dumps(_artifact()))
+    constraint, k, a_max, cap, weights = load_frozen_strategy(str(p))
+    assert constraint == "constituent_only"
+    assert weights == {"ep_ttm": 0.6, "rev_diff": 0.4}
+
+
+def test_load_frozen_returns_committed_weights_not_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Firewall: the scored weights are the git-committed constants, NOT the
+    # gitignored artifact's — a sub-tolerance artifact value is verified but the
+    # exact committed value is returned (codex R3-5).
+    _fill_freeze(monkeypatch)  # committed ep_ttm=0.6, rev_diff=0.4
+    p = tmp_path / "near.json"
+    # within ±5e-4 of the committed values, but not identical
+    near = {"ep_ttm": 0.6004, "rev_diff": 0.3997}
+    p.write_text(json.dumps(_artifact(selected_weights=near)))
+    _, _, _, _, weights = load_frozen_strategy(str(p))
+    assert weights == {"ep_ttm": 0.6, "rev_diff": 0.4}  # committed, not 0.6004/0.3997
+
+
+def test_load_frozen_fails_closed_on_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fill_freeze(monkeypatch)
+    cases = [
+        ({"selected_constraint": "unconstrained"}, "constraint"),
+        ({"selected_k": 0.05}, "selected_k"),
+        ({"selected_nonconst_cap": 0.20}, "selected_nonconst_cap"),
+        # an EXTRA factor must not slip through (weight-set pinning)
+        ({"selected_weights": {"ep_ttm": 0.6, "rev_diff": 0.4, "vol_20d": 0.0}}, "set"),
+        # a drifted weight value
+        ({"selected_weights": {"ep_ttm": 0.7, "rev_diff": 0.4}}, "drifted"),
+    ]
+    for over, match in cases:
+        p = tmp_path / "drift.json"
+        p.write_text(json.dumps(_artifact(**over)))
+        with pytest.raises(ValueError, match=match):
+            load_frozen_strategy(str(p))
+
+
+def test_real_frozen_constants_match_search_result() -> None:
+    # The committed FROZEN_R4_* must agree with the on-disk R4-5 search result —
+    # so the freeze is a real pre-commitment, not a transcription error. This runs
+    # the actual firewall against the real artifact (no monkeypatch).
+    path = "data/factor_research/round4_search_result.json"
+    if not Path(path).exists():  # artifact is gitignored; skip if absent
+        pytest.skip("round4_search_result.json not present")
+    constraint, k, a_max, cap, weights = load_frozen_strategy(path)
+    assert constraint == FROZEN_R4_CONSTRAINT
+    assert set(weights) == set(R4_CARRY_FACTORS)
