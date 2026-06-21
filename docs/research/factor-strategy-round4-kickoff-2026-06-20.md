@@ -185,10 +185,21 @@ unchanged),加 r4 只需:`R4_CARRY_FACTORS` + `resolve_carry_inputs` 的 `_CARRY
   (staleness 180/lookback 60):4 核心两参均幸存,rating_chg 仅 180d 过→保守不纳。codex 480s stall →
   `/code-review high` 0 correctness bug + 4 披露 finding 全修;361 测试绿。报告
   `factor-strategy-round4-r4-4-factor-diagnostics-2026-06-21.md`(+robust)。
-- **R4-5 搜索 + 成本压力 + 冻结**:`--carry r4` 搜索(DSR/PBO/SPA/哨兵/CPCV 全披露,N 重声明)+
-  crosscheck + **读 test/前向窗口前 git 冻结 `FROZEN_R4_*`**。
-- **R4-6 判定**:owner 拍板 §5.2 路径(**推荐前向窗口处子 OOS**;次选既有 test 第 4 次披露)→ 四门 PASS/FAIL 报告。
-- 收尾:更新本文件进度 + CLAUDE.md «已验证原则» + memory + 中文报告 + 一句话指下一步。
+- **✅ R4-5 搜索 + 成本压力 + 冻结 DONE(2026-06-21,feature `8d497ff`〔a-d 参数化〕+ `ffc1db3`〔冻结〕)**:
+  `--carry r4` 搜索(carry 参数化 + DSR/MinBTL 按累计 N=2348 deflate 解耦,grid 仍 612)+ crosscheck
+  (base +52.2%→stressed +35.9%,摩擦单调,oracle UNAVAILABLE)+ **读 test 前 git 冻结 `FROZEN_R4_*`**
+  (constituent_only/k0.2/a_max0.04/16 权重 3dp;firewall 打分用 git 冻结常量)。**开发证据(非判定)**:
+  val IR 0.71/超额 +4.55%/CPCV 全正 IR_mean 1.45/**SPA-vs-passive 0.056(四轮最接近显著)**,但
+  **DSR 0.007(四轮最低)+ PBO 0.329 + 哨兵不过**(噪声 val IR 1.34 > 真 0.71)。门禁 383 绿 +
+  `/code-review high`(a-d 0 P0-P2 + 1 P3 cleanup 已修;f 0 correctness/PIT-leakage)。
+- **✅ R4-6 判定 DONE = PASS(provisional,2026-06-21,owner「开」→ 一次性读 test)**:既有 test 第 4 次评测
+  (累计 N=2348 deflate + 显式披露 + 四门不放宽)。**净 +24.51% / 超额 CSI300 +2.68% / 夏普 1.81 / 回撤
+  6.40% = 四门全过 = 四轮首个 PASS**(策略读 test 前 git 冻结 `ffc1db3`,无偷看)。**但 provisional**:
+  dev DSR/哨兵未背书 + 第 4 次评测 → 须前向窗口确认。报告 `factor-strategy-round4-result-2026-06-21.md`。
+- **✅ 收尾 DONE**:本文件 §7 + CLAUDE.md «已验证原则»(#1 精化/#4 第4次/#5 分析师 alpha 兑现)+ memory + 中文报告。
+- **⏭️ NEXT(owner 拍板)**:首选 **冻结(已 `ffc1db3`)+ 真前向窗口处子 OOS 确认**(摄取 2026-06-13+ 新行情/
+  report_rc → 跑冻结策略一次 = 唯一干净 OOS;过则升「确认稳健」可议上线 gate);并行 train_val 稳健体检
+  (弱 tilt k≤0.1 是否也过/分析师衰减/size 漂移来源)。**测试集已 4 次评测,慎第 5 次。**
 
 ═══════════════════════════════════════════════════════════════════════
 
