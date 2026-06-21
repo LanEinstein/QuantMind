@@ -9,7 +9,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.factor_research.benchmark_relative import CARRY_FACTORS, R3_CARRY_FACTORS
+from scripts.factor_research.benchmark_relative import (
+    CARRY_FACTORS,
+    R3_CARRY_FACTORS,
+    R4_CARRY_FACTORS,
+)
 from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME, FACTOR_NAMES
 from scripts.factor_research.locked_split import LockedSplit
 from scripts.factor_research.round2_search import (
@@ -25,6 +29,7 @@ from scripts.factor_research.round2_search import (
 
 REAL_MANIFEST = "config/research/round2_experiment_manifest.json"
 R3_MANIFEST = "config/research/round3_experiment_manifest.json"
+R4_MANIFEST = "config/research/round4_experiment_manifest.json"
 
 
 # --- manifest / candidate grid ----------------------------------------------
@@ -119,6 +124,71 @@ def test_resolve_carry_inputs_selects_per_round_defaults() -> None:
         "r3", panel="x.csv", manifest="m.json", out="o.json"
     )
     assert (panel3, manifest3, out3) == ("x.csv", "m.json", "o.json")
+
+
+# --- round-4 carry parameterization (round-2/3 byte-behavior preserved) -------
+
+
+def test_r4_carry_is_r3_plus_four_analyst_survivors() -> None:
+    assert R4_CARRY_FACTORS == (
+        *R3_CARRY_FACTORS,
+        "np_rev",
+        "rev_diff",
+        "tp_impl",
+        "cover_chg",
+    )
+    assert len(R4_CARRY_FACTORS) == 16
+
+
+def test_r4_manifest_carry_order_matches_r4_carry() -> None:
+    manifest = load_manifest(R4_MANIFEST, carry=R4_CARRY_FACTORS)
+    assert tuple(manifest["carry_factor_order"]) == tuple(R4_CARRY_FACTORS)
+
+
+def test_r4_manifest_fails_closed_under_round2_carry() -> None:
+    # The drift guard fires across rounds: the 16-factor R4 manifest must NOT load
+    # under the 11-factor round-2 carry (the default).
+    with pytest.raises(ValueError, match="carry_factor_order"):
+        load_manifest(R4_MANIFEST)  # default carry == CARRY_FACTORS (eleven)
+
+
+def test_r4_weight_vectors_dim_16_sum_to_one() -> None:
+    manifest = load_manifest(R4_MANIFEST, carry=R4_CARRY_FACTORS)
+    vecs = build_weight_vectors(manifest, carry=R4_CARRY_FACTORS)
+    spec = manifest["degrees_of_freedom"]["weight_simplex"]
+    assert len(vecs) == 1 + int(spec["n_sobol"])
+    for v in vecs:
+        assert len(v) == len(R4_CARRY_FACTORS) == 16
+        assert sum(v) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_r4_candidate_count_matches_manifest_n_trials() -> None:
+    manifest = load_manifest(R4_MANIFEST, carry=R4_CARRY_FACTORS)
+    cands = build_candidates(manifest, carry=R4_CARRY_FACTORS)
+    # n_trials_total is THIS round's grid (612 = 4×3×3×17), unchanged from r2/r3
+    # because n_sobol stays 16; the carry dim grew 12→16, not the per-cell count.
+    assert len(cands) == int(manifest["search_design"]["n_trials_total"]) == 612
+    assert all(len(c.weights) == 16 for c in cands)
+
+
+def test_r4_manifest_declares_cumulative_deflation_n() -> None:
+    # The R4 manifest pre-declares the CUMULATIVE deflation count across all four
+    # rounds (512 + 612 + 612 + 612 = 2348) — strictly larger than the per-round
+    # grid so the DSR is deflated more harshly than round-2/3.
+    manifest = load_manifest(R4_MANIFEST, carry=R4_CARRY_FACTORS)
+    n_trials = int(manifest["search_design"]["n_trials_total"])
+    deflation_n = int(manifest["search_design"]["dsr_deflation_n_trials"])
+    assert n_trials == 612
+    assert deflation_n == 2348
+    assert deflation_n > n_trials
+
+
+def test_resolve_carry_inputs_selects_r4_defaults() -> None:
+    carry, panel, manifest, out = resolve_carry_inputs("r4")
+    assert carry == R4_CARRY_FACTORS
+    assert panel == "data/factor_research/panel_train_val_r4.csv"
+    assert manifest == R4_MANIFEST
+    assert out == "data/factor_research/round4_search_result.json"
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -262,3 +332,74 @@ def test_search_end_to_end_r3_carry_threads_accr(tmp_path: Path) -> None:
     assert set(result.selected_weights) == set(R3_CARRY_FACTORS)
     assert "accr" in result.selected_weights
     assert isinstance(result.sentinel_passes, bool)
+
+
+def test_search_end_to_end_r4_carry_threads_analyst(tmp_path: Path) -> None:
+    # Full carry-threaded path under the 16-factor round-4 carry: weights, the
+    # sentinel shuffle, and the neutralized composite all span the four analyst
+    # survivors (np_rev / rev_diff / tp_impl / cover_chg).
+    dates = [f"202401{i:02d}" for i in range(1, 29)]
+    panel = _synth_panel(dates, carry=R4_CARRY_FACTORS)
+    bench = {f"{nm}00000.SH": 1.0 / 6 for nm in ["a", "b", "c", "d", "e", "f"]}
+    index_returns = dict.fromkeys(dates, 0.0)
+    split = LockedSplit(
+        train_val_dates=tuple(dates), embargo_dates=(), test_dates=("20991231",)
+    )
+    result = search(
+        panel,
+        lambda d: bench,
+        index_returns,
+        manifest_path=_tiny_manifest(tmp_path, carry=R4_CARRY_FACTORS),
+        split=split,
+        horizon=5,
+        progress_every=0,
+        carry=R4_CARRY_FACTORS,
+    )
+    assert result.selected_constraint == "constituent_only"
+    assert set(result.selected_weights) == set(R4_CARRY_FACTORS)
+    for survivor in ("np_rev", "rev_diff", "tp_impl", "cover_chg"):
+        assert survivor in result.selected_weights
+    assert isinstance(result.sentinel_passes, bool)
+
+
+# --- cumulative-N DSR deflation decoupling (round-2/3 byte-identical) ---------
+
+
+def _run_tiny_search(manifest_path: str) -> object:  # noqa: ANN401
+    dates = [f"202401{i:02d}" for i in range(1, 29)]
+    panel = _synth_panel(dates)
+    bench = {f"{nm}00000.SH": 1.0 / 6 for nm in ["a", "b", "c", "d", "e", "f"]}
+    index_returns = dict.fromkeys(dates, 0.0)
+    split = LockedSplit(
+        train_val_dates=tuple(dates), embargo_dates=(), test_dates=("20991231",)
+    )
+    return search(
+        panel,
+        lambda d: bench,
+        index_returns,
+        manifest_path=manifest_path,
+        split=split,
+        horizon=5,
+        progress_every=0,
+    )
+
+
+def test_deflation_n_defaults_to_grid_when_absent(tmp_path: Path) -> None:
+    # Round-2/3 manifests carry NO dsr_deflation_n_trials → the disclosure's
+    # n_trials equals the grid n_trials (their behavior is byte-identical).
+    result = _run_tiny_search(_tiny_manifest(tmp_path))
+    assert result.n_trials == 3  # top-level = this round's grid
+    assert result.disclosure["n_trials"] == 3  # DSR deflation = grid (no override)
+
+
+def test_deflation_n_overrides_disclosure_when_present(tmp_path: Path) -> None:
+    # A manifest carrying dsr_deflation_n_trials deflates the DSR/MinBTL by the
+    # cumulative count while the grid candidate-count check still uses the
+    # per-round n_trials (the round-4 cross-round multiple-testing correction).
+    m = json.loads(Path(_tiny_manifest(tmp_path)).read_text())
+    m["search_design"]["dsr_deflation_n_trials"] = 999  # cumulative, > grid 3
+    p = tmp_path / "tiny_deflate.json"
+    p.write_text(json.dumps(m))
+    result = _run_tiny_search(str(p))
+    assert result.n_trials == 3  # grid candidate count unchanged
+    assert result.disclosure["n_trials"] == 999  # DSR deflated by cumulative N

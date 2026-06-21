@@ -7,25 +7,32 @@ import pytest
 
 from scripts.factor_research.benchmark_relative import (
     CARRY_FACTORS,
+    NEUT_ORIENTATION_OVERRIDE,
+    R3_CARRY_FACTORS,
+    R4_CARRY_FACTORS,
     benchmark_relative_backtest,
     build_active_weights,
     composite_score,
     drift_weights,
     weight_turnover,
 )
+from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME
 
 
-def _group(scores: dict[str, float], *, with_neut: bool = True) -> pd.DataFrame:
+def _group(
+    scores: dict[str, float],
+    *,
+    with_neut: bool = True,
+    carry: tuple[str, ...] = CARRY_FACTORS,
+) -> pd.DataFrame:
     """A one-date cross-section where every carry factor's _neut == the score
     (so the composite is monotonic in the score) for the given ts_codes."""
     rows = []
     for code, sc in scores.items():
         row: dict[str, object] = {"ts_code": code, "industry_l1": "801080.SI"}
-        for base in CARRY_FACTORS:
+        for base in carry:
             # attractive-high factors take +sc; attractive-low take -sc so the
             # oriented composite rises with sc regardless of orientation.
-            from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME
-
             sign = 1.0 if ALL_FACTORS_BY_NAME[base].attractive_high else -1.0
             row[f"{base}_neut"] = (sign * sc) if with_neut else float("nan")
         rows.append(row)
@@ -88,6 +95,37 @@ def test_amihud_neut_orientation_override() -> None:
     )
     score = composite_score(g, {"amihud_20d": 1.0})
     assert score["a.SH"] > score["b.SH"] > score["c.SH"]  # high residual → high score
+
+
+def test_r4_carry_extends_r3_with_four_analyst_survivors() -> None:
+    # R4-4 survivors: np_rev / rev_diff / tp_impl / cover_chg (the first NEW
+    # information-flow axis); dropped rating_chg / disp / eps_rev. The 16-factor
+    # carry is the round-3 twelve plus exactly these four, in registry order.
+    assert R4_CARRY_FACTORS == (
+        *R3_CARRY_FACTORS,
+        "np_rev",
+        "rev_diff",
+        "tp_impl",
+        "cover_chg",
+    )
+    assert len(R4_CARRY_FACTORS) == 16
+
+
+def test_r4_analyst_survivors_are_attractive_high_with_no_override() -> None:
+    # All four survivors stay positive/aligned under neutralization (np_rev_neut
+    # t+5.64 … tp_impl +6.77), so the composite must NOT invert or override them —
+    # unlike amihud, whose size-neutral residual flipped (the only override).
+    for base in ("np_rev", "rev_diff", "tp_impl", "cover_chg"):
+        assert ALL_FACTORS_BY_NAME[base].attractive_high is True
+        assert base not in NEUT_ORIENTATION_OVERRIDE
+
+
+def test_composite_score_monotonic_over_r4_carry() -> None:
+    # The 16-factor oriented composite is monotone in the score when every
+    # carry factor's _neut tracks it (the four analyst columns included).
+    g = _group({"a.SH": 3.0, "b.SH": 2.0, "c.SH": 1.0}, carry=R4_CARRY_FACTORS)
+    score = composite_score(g, {f: 1.0 for f in R4_CARRY_FACTORS})
+    assert score["a.SH"] > score["b.SH"] > score["c.SH"]
 
 
 def test_build_active_weights_net_zero_and_long_only() -> None:

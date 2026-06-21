@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.factor_research.benchmark_relative import CARRY_FACTORS
+from scripts.factor_research.benchmark_relative import CARRY_FACTORS, R4_CARRY_FACTORS
 from scripts.factor_research.factor_lib import ALL_FACTORS_BY_NAME
 from scripts.factor_research.full_engine_crosscheck import (
     _excess_max_drawdown,
@@ -16,7 +16,7 @@ from scripts.factor_research.full_engine_crosscheck import (
 )
 
 
-def _panel(dates: list[str]) -> pd.DataFrame:
+def _panel(dates: list[str], carry: tuple[str, ...] = CARRY_FACTORS) -> pd.DataFrame:
     rows = []
     for d in dates:
         for code, sc, fwd in [
@@ -31,7 +31,7 @@ def _panel(dates: list[str]) -> pd.DataFrame:
                 "log_circ_mv": 10.0,
                 "fwd_ret_5d": fwd,
             }
-            for base in CARRY_FACTORS:
+            for base in carry:
                 sign = 1.0 if ALL_FACTORS_BY_NAME[base].attractive_high else -1.0
                 row[f"{base}_neut"] = sign * sc
             rows.append(row)
@@ -84,3 +84,25 @@ def test_cross_check_friction_is_monotone_and_records_oracle() -> None:
     # rqalpha oracle is recorded UNAVAILABLE (documented, not a silent pass)
     assert res.oracle_cross_checked is False
     assert "UNAVAILABLE" in res.oracle_status
+
+
+def test_cross_check_r4_carry_16_factor_path_is_monotone() -> None:
+    # The cost-stress cross-check runs over the 16-factor round-4 carry (the four
+    # analyst columns included); friction stays monotone regardless of carry size.
+    dates = ["20240105", "20240112", "20240119"]
+    panel = _panel(dates, carry=R4_CARRY_FACTORS)
+    bench = {"a.SH": 0.34, "b.SH": 0.33, "c.SH": 0.33}
+    idx = dict.fromkeys(dates, 0.0)
+    res = cross_check(
+        panel,
+        lambda d: bench,
+        idx,
+        weights={f: 1.0 for f in R4_CARRY_FACTORS},
+        exposure_constraint="constituent_only",
+        k=0.1,
+        a_max=0.05,
+        horizon=5,
+    )
+    assert res.n_periods == 3
+    assert res.excess_delta <= 1e-12
+    assert res.monotone_friction is True

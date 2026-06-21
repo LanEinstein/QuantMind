@@ -76,6 +76,28 @@ CARRY_FACTORS: tuple[str, ...] = (
 # from its `*_neut` column, same as the round-2 carry cluster.
 R3_CARRY_FACTORS: tuple[str, ...] = (*CARRY_FACTORS, "accr")
 
+# Round-4 carry = round-3 twelve + the four R4-4 analyst-revision survivors:
+# net-profit consensus-revision momentum (`np_rev`), revision diffusion
+# (`rev_diff`), target-price implied return (`tp_impl`), and coverage-breadth
+# change (`cover_chg`) — the first NEW (information-flow, not financial-report)
+# orthogonal axis across all four rounds (max |corr| vs the round-3 cluster = 0.38,
+# tp_impl↔ret_20d). Dropped at the R4-4 gate: rating_chg (neut |t|=1.22 — no signal
+# at the main 90d params), disp (neut |t|=1.69 — a size artefact eaten by
+# neutralization), and eps_rev (|corr|=0.90 with the stronger np_rev — mutually
+# redundant; only one belongs in the composite). All four survivors are
+# attractive-HIGH (a higher up-revision → higher return) and stay positive/aligned
+# under neutralization (np_rev_neut t+5.64 / rev_diff +5.06 / tp_impl +6.77 /
+# cover_chg +5.11), so — unlike amihud, whose size-neutral residual flipped — NO
+# orientation override is needed. Composed from each factor's `*_neut` column,
+# same as the round-2/3 carry cluster.
+R4_CARRY_FACTORS: tuple[str, ...] = (
+    *R3_CARRY_FACTORS,
+    "np_rev",
+    "rev_diff",
+    "tp_impl",
+    "cover_chg",
+)
+
 # Conservative A-share one-way costs (≈ broker.yaml), buy/sell split:
 # buy = commission 0.015% + ~1.5bp slippage; sell adds 0.1% stamp duty.
 BUY_COST: float = 0.0003
@@ -535,6 +557,7 @@ __all__ = [
     "DEFAULT_A_MAX",
     "DEFAULT_K",
     "R3_CARRY_FACTORS",
+    "R4_CARRY_FACTORS",
     "SELL_COST",
     "BenchmarkRelativeResult",
     "benchmark_relative_backtest",

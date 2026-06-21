@@ -42,6 +42,7 @@ import pandas as pd
 from .benchmark_relative import (
     CARRY_FACTORS,
     R3_CARRY_FACTORS,
+    R4_CARRY_FACTORS,
     BenchmarkRelativeResult,
     benchmark_relative_backtest,
 )
@@ -69,20 +70,30 @@ SENTINEL_SEEDS: tuple[int, ...] = (101, 202, 303, 404, 505, 606, 707, 808)
 WINSOR_QUANTILE: float = 0.01
 DEFAULT_MANIFEST = "config/research/round2_experiment_manifest.json"
 
-# Per-round CLI input defaults, keyed by the --carry choice, so `--carry r3`
-# alone selects the round-3 panel/manifest/out (not the round-2 ones, which lack
-# the accr column and would KeyError). Explicit --panel/--manifest/--out win.
-_CARRY_DEFAULTS: dict[str, tuple[str, str, str]] = {
-    # carry choice: (panel, manifest, out)
+# Per-round inputs, keyed by the --carry choice: (carry tuple, panel, manifest,
+# out). One source of truth so the carry tuple, panel, and manifest can never
+# drift apart — `--carry r4` selects the round-4 carry AND the round-4 panel/
+# manifest/out together (the round-2/3 panels lack later columns and would
+# KeyError). The carry tuple is the positional order the Sobol weight vectors map
+# to + the columns the composite scores. Explicit --panel/--manifest/--out win.
+_CARRY_INPUTS: dict[str, tuple[Sequence[str], str, str, str]] = {
     "r2": (
+        CARRY_FACTORS,
         "data/factor_research/panel_train_val_r2.csv",
         DEFAULT_MANIFEST,
         "data/factor_research/round2_search_result.json",
     ),
     "r3": (
+        R3_CARRY_FACTORS,
         "data/factor_research/panel_train_val_r3.csv",
         "config/research/round3_experiment_manifest.json",
         "data/factor_research/round3_search_result.json",
+    ),
+    "r4": (
+        R4_CARRY_FACTORS,
+        "data/factor_research/panel_train_val_r4.csv",
+        "config/research/round4_experiment_manifest.json",
+        "data/factor_research/round4_search_result.json",
     ),
 }
 
@@ -97,11 +108,10 @@ def resolve_carry_inputs(
     """``(carry, panel, manifest, out)`` for a ``--carry`` choice.
 
     The carry tuple and the three file paths are selected together so a
-    ``--carry r3`` run never mixes the round-3 carry with the round-2 panel/
+    ``--carry r4`` run never mixes the round-4 carry with the round-2/3 panel/
     manifest. Any explicitly-passed path overrides its per-round default.
     """
-    carry = R3_CARRY_FACTORS if choice == "r3" else CARRY_FACTORS
-    d_panel, d_manifest, d_out = _CARRY_DEFAULTS[choice]
+    carry, d_panel, d_manifest, d_out = _CARRY_INPUTS[choice]
     return carry, (panel or d_panel), (manifest or d_manifest), (out or d_out)
 
 
@@ -435,6 +445,15 @@ def search(
     top_k = int(sel["top_k_finalists"])
     nonconst_cap = float(manifest["degrees_of_freedom"]["nonconst_cap"]["value"])
     n_trials = int(manifest["search_design"]["n_trials_total"])
+    # The DSR/MinBTL deflation count: the CUMULATIVE pre-declared trial count
+    # across every round that has searched this carry lineage, not just this
+    # round's grid (round-4 declares 2348 = 512+612+612+612). Absent (round-2/3
+    # manifests) → equals n_trials, so their behavior is byte-identical. The grid
+    # check below still uses the per-round n_trials; only the disclosure deflates
+    # by the larger cumulative count (honest multiple-testing across rounds).
+    deflation_n = int(
+        manifest["search_design"].get("dsr_deflation_n_trials", n_trials)
+    )
 
     train_panel, val_panel, train_dates, val_dates = split_train_val(
         panel, cutoff=cutoff, purge=purge
@@ -474,13 +493,15 @@ def search(
     sel_cand = candidates[selected]
 
     # Disclosure over the FULL searched pool (val excess aligned to common dates).
+    # DSR/MinBTL deflate by the CUMULATIVE deflation_n (cross-round multiple
+    # testing); PBO/SPA are over THIS round's actual pool (not n_trials-keyed).
     disc = _disclose_and_robustness(
         panel,
         val_panel,
         val_results,
         sel_cand,
         selected=selected,
-        n_trials=n_trials,
+        deflation_n=deflation_n,
         bench_asof=bench_asof,
         index_returns=index_returns,
         horizon=horizon,
@@ -524,14 +545,19 @@ def _disclose_and_robustness(
     sel_cand: Candidate,
     *,
     selected: int,
-    n_trials: int,
+    deflation_n: int,
     bench_asof: Callable[[str], dict[str, float]],
     index_returns: Mapping[str, float],
     horizon: int,
     nonconst_cap: float,
     carry: Sequence[str] = CARRY_FACTORS,
 ) -> _Disclosure:
-    """DSR/PBO/SPA over the full pool + sentinel + anchored-WF/CPCV robustness."""
+    """DSR/PBO/SPA over the full pool + sentinel + anchored-WF/CPCV robustness.
+
+    ``deflation_n`` is the cumulative pre-declared trial count used to deflate the
+    DSR / MinBTL (cross-round multiple-testing correction). PBO and SPA are
+    computed over THIS round's actual candidate pool and are NOT keyed on it.
+    """
     date_sets = [set(r.dates) for r in val_results]
     common = sorted(set.intersection(*date_sets)) if date_sets else []
     candidate_matrix = [_align(r.excess_returns, r.dates, common) for r in val_results]
@@ -539,7 +565,7 @@ def _disclose_and_robustness(
         selected_net_rets=candidate_matrix[selected],
         candidate_return_matrix=candidate_matrix,
         incumbent_excess_matrix=candidate_matrix,  # passive CSI300 incumbent = 0
-        n_trials=n_trials,
+        n_trials=deflation_n,
         n_observations=len(common),
     )
     mom = _longonly_excess_by_date(
@@ -660,11 +686,12 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument(
         "--carry",
-        choices=("r2", "r3"),
+        choices=("r2", "r3", "r4"),
         default="r2",
         help="r2 = round-2 eleven (CARRY_FACTORS); r3 = round-2 eleven + accr "
-        "(R3_CARRY_FACTORS, the R3-3 survivor). Selects the matching panel / "
-        "manifest / out defaults unless overridden.",
+        "(R3_CARRY_FACTORS, the R3-3 survivor); r4 = round-3 twelve + the four "
+        "R4-4 analyst-revision survivors (R4_CARRY_FACTORS). Selects the matching "
+        "panel / manifest / out defaults unless overridden.",
     )
     # Default empty so the per-round default is resolved from --carry; an
     # explicit value still overrides it (codex R3-4 P2: `--carry r3` alone must

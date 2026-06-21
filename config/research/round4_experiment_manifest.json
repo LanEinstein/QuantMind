@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "created": "2026-06-21",
+  "project": "factor-strategy-research-2026-06-16 / round-4 R4-5",
+  "purpose": "FROZEN pre-declared search space for the R4-5 benchmark-relative strategy selection. Identical construction to round-2 R2-4 / round-3 R3-4 but over the round-4 carry set (round-3 twelve + the four R4-4 analyst-revision survivors). Enumerates EVERY degree of freedom so the Deflated-Sharpe / PBO multiple-testing correction uses the trial count N. The search (round2_search.py --carry r4) reads this, asserts the carry-factor order against benchmark_relative.R4_CARRY_FACTORS, runs all 612 candidates on the inner train/val split (never test), and selects the SINGLE strategy carried into R4-5 freeze + R4-6 verdict. The DSR/MinBTL deflate by dsr_deflation_n_trials (the CUMULATIVE count across all four rounds), not just this round's 612. Editing this after a search run voids the deflation — re-declare and re-run.",
+
+  "carry_factor_order": [
+    "ret_5d", "ret_20d", "vol_20d", "max_20d", "ep_ttm",
+    "turn_20d", "amihud_20d", "roe", "gpm", "np_yoy", "rev_yoy", "accr",
+    "np_rev", "rev_diff", "tp_impl", "cover_chg"
+  ],
+  "carry_factor_order_note": "Positional order the Sobol weight vectors map to; MUST equal benchmark_relative.R4_CARRY_FACTORS (round-3 twelve + the four R4-4 survivors) or the search fails closed. The four analyst-revision survivors (industry+size-neutralized |t|, all aligned, all max carry |corr| <= 0.7): np_rev (net-profit consensus-revision momentum, neut |t|=5.64), rev_diff (revision diffusion, neut |t|=5.06), tp_impl (target-price implied return, neut |t|=6.77 — strongest, but carries a reversal flavour: |corr| 0.38 vs ret_20d), cover_chg (coverage-breadth change, neut |t|=5.11). Dropped at the R4-4 gate: rating_chg (neut |t|=1.22, no signal at the main 90d params; passed only at 180d → conservatively excluded), disp (neut |t|=1.69, a size artefact eaten by neutralization), eps_rev (|corr|=0.90 with the stronger np_rev — mutually redundant). This is the FIRST round whose new material is both strong AND a largely new axis (information-flow, not a financial-report derivative); R2 quality survived but was insufficient and R3 accruals earned only a 0.006 weight. Composite consumes each factor's industry/size-neutralized *_neut column; the four survivors are attractive-high and need NO orientation override (unlike amihud).",
+
+  "degrees_of_freedom": {
+    "exposure_constraint": {
+      "values": ["unconstrained", "constituent_only", "size_neutral", "capped_nonconstituent"],
+      "note": "Same four as round-2/3. All kept and searched for honest completeness even though constituent_only won R2-4 and R3-4 (true enhanced-index, tilt only CSI300 members — the small-cap-drift fix). unconstrained = R2-3 construction; size_neutral = remove the active vector's size projection; capped_nonconstituent = cap non-member gross active at nonconst_cap."
+    },
+    "k_grid": {
+      "values": [0.05, 0.10, 0.20],
+      "note": "Tilt strength (active = clip(k*z(score), +/-a_max))."
+    },
+    "a_max_grid": {
+      "values": [0.01, 0.02, 0.04],
+      "note": "Per-name pre-floor active box bound."
+    },
+    "nonconst_cap": {
+      "value": 0.10,
+      "note": "Fixed; only applies when exposure_constraint == capped_nonconstituent."
+    },
+    "weight_simplex": {
+      "sampler": "scrambled_sobol_kraemer_simplex",
+      "dim": 16,
+      "n_sobol": 16,
+      "seed": 20260619,
+      "anchor": "equal_weight_carry",
+      "anchor_note": "Each (constraint,k,a_max) cell prepends the equal-weight carry vector (now over 16 factors) before the 16 Sobol simplex points → 17 weight vectors per cell. dim 12→16 changes each vector's length, not the per-cell count. The seed is held identical to round-2/3 so the Sobol stream is deterministic and the only declared change is the carry dimension.",
+      "weights_per_cell": 17
+    }
+  },
+
+  "search_design": {
+    "cells": 36,
+    "cells_note": "4 exposure_constraint x 3 k_grid x 3 a_max_grid (unchanged from round-2/3).",
+    "weights_per_cell": 17,
+    "n_trials_total": 612,
+    "n_trials_note": "36 cells x 17 weight vectors = 612 candidates = THIS round's grid (the candidate-count fail-closed check). Same count as round-2/3 because n_sobol is unchanged at 16; the carry dimension grew (12->16) but the per-cell vector count did not. Recorded into the search result as the top-level n_trials.",
+    "dsr_deflation_n_trials": 2348,
+    "dsr_deflation_note": "The CUMULATIVE pre-declared trial count across every round that has searched this carry lineage = round-1 512 (weight_search Sobol simplex) + round-2 612 + round-3 612 + round-4 612 = 2348. The DSR (main gate) and MinBTL deflate by THIS count, not just this round's 612, so the same locked test set's 4th evaluation is corrected for the full cross-round search. NOTE (honest limitation): PBO and SPA are combinatorial / data-snooping statistics over THIS round's actual 612-candidate pool and are NOT n_trials-parameterized here, so they reflect within-round multiple testing only; the cross-round multiple testing they do not capture is disclosed in the R4-6 '4th evaluation' report.",
+    "horizon": 5,
+    "winsor_quantile": 0.01,
+    "selection": {
+      "inner_train_val_cutoff": "20221230",
+      "purge_rebalances": 4,
+      "top_k_finalists": 16,
+      "metric": "information_ratio",
+      "metric_note": "Per-period excess-vs-CSI300 Sharpe (annualised IR). Score every candidate on inner-train IR, shortlist the train-robust top-k, pick the unique winner = best inner-val IR (round-1 _select cross-validation discipline).",
+      "tie_break": "lowest_candidate_index"
+    }
+  },
+
+  "disclosure": {
+    "dsr_floor": 0.95,
+    "dsr_note": "MAIN statistical gate, deflated by dsr_deflation_n_trials (2348, cumulative across rounds 1-4). PBO <=0.5 hard / <=0.2 target (over this round's 612 pool). SPA vs three baselines: passive CSI300 (zero active), round-1 frozen strategy excess, momentum incumbent excess. Sentinel = shuffled-composite control candidates. Mechanism gate: the round-3 carry factors are registry-mechanism-backed (accr = quality_premium, already registered); the four analyst factors' mechanisms (analyst_revision / analyst_dispersion / analyst_coverage) are INTENTIONALLY NOT registered EconomicMechanism values — the live promotion gate stays fail-closed until a future amendment. This is OFFLINE research that never invokes that gate; the governance mechanism_registry is left untouched.",
+    "spa_baselines": ["passive_csi300", "round1_frozen_strategy", "momentum_incumbent"]
+  },
+
+  "honesty": {
+    "verdict_boundary": "This search produces DEVELOPMENT EVIDENCE + the single selected strategy ONLY — never a PASS/FAIL. The four-gate verdict is R4-6 on the locked test set (one shot, strategy git-frozen first). Strong train_val IC is NECESSARY, NOT SUFFICIENT: rounds 1/2/3 all had strong train_val IC yet FAILed the locked test, and the DSR/PBO/SPA gates correctly warned each time.",
+    "failed_or_aborted_variants": 0,
+    "failed_or_aborted_note": "Variants considered then dropped during development BEFORE this declaration count toward the within-round N. None dropped here: all four exposure_constraints are kept and searched. The three rejected analyst factors (rating_chg, disp, eps_rev) were dropped at the R4-4 diagnostic gate BEFORE this search declaration on documented |t|/sign/collinearity grounds (not after a search run), so they do not enter this manifest's 612.",
+    "test_reuse": "Per docs/research/factor-strategy-round2-test-reuse-decision-2026-06-19.md (owner-extended round-2 -> round-3 -> round-4): train_val reuse across experiments is allowed; test stays sealed until the R4-6 one-shot. This is the FOURTH evaluation of the same locked test set (round-1 / round-2 / round-3 / round-4) — disclosed explicitly in the R4-6 report as cross-strategy multiple testing; the DSR deflates by the cumulative 2348 and the four owner-locked gates (net>0 / beats-CSI300 / MDD<=15% / Sharpe>=0.5) are NOT relaxed."
+  }
+}

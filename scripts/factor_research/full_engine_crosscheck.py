@@ -181,7 +181,7 @@ def main() -> None:
     parser.add_argument("--benchmark", default="data/factor_research/csi300_daily.csv")
     parser.add_argument("--lock", default="config/research/test_set_lock.json")
     parser.add_argument("--horizon", type=int, default=5)
-    parser.add_argument("--carry", choices=("r2", "r3"), default="r2")
+    parser.add_argument("--carry", choices=("r2", "r3", "r4"), default="r2")
     # Empty → resolved per --carry (panel from resolve_carry_inputs; search-result
     # / out from the per-round map below). Explicit values win.
     parser.add_argument("--panel", default="")
@@ -198,6 +198,7 @@ def main() -> None:
     crosscheck_out = {
         "r2": "data/factor_research/round2_crosscheck_result.json",
         "r3": "data/factor_research/round3_crosscheck_result.json",
+        "r4": "data/factor_research/round4_crosscheck_result.json",
     }
     out_path = args.out or crosscheck_out[args.carry]
 
