@@ -197,9 +197,16 @@ unchanged),加 r4 只需:`R4_CARRY_FACTORS` + `resolve_carry_inputs` 的 `_CARRY
   6.40% = 四门全过 = 四轮首个 PASS**(策略读 test 前 git 冻结 `ffc1db3`,无偷看)。**但 provisional**:
   dev DSR/哨兵未背书 + 第 4 次评测 → 须前向窗口确认。报告 `factor-strategy-round4-result-2026-06-21.md`。
 - **✅ 收尾 DONE**:本文件 §7 + CLAUDE.md «已验证原则»(#1 精化/#4 第4次/#5 分析师 alpha 兑现)+ memory + 中文报告。
-- **⏭️ NEXT(owner 拍板)**:首选 **冻结(已 `ffc1db3`)+ 真前向窗口处子 OOS 确认**(摄取 2026-06-13+ 新行情/
-  report_rc → 跑冻结策略一次 = 唯一干净 OOS;过则升「确认稳健」可议上线 gate);并行 train_val 稳健体检
-  (弱 tilt k≤0.1 是否也过/分析师衰减/size 漂移来源)。**测试集已 4 次评测,慎第 5 次。**
+- **✅ R5 前向 OOS 启动 + 稳健体检 DONE(2026-06-21,owner「开」;feature `c2a8c6e`)**:前向管线搭好
+  (`forward_trade_dates`/`build_forward_panel_r4`/`round4_forward_test`,打分用同一 git 冻结,fail-closed
+  ACCRUING + csi300 覆盖闸)+ 启动时钟(前向 daily 06-15..18 + report_rc June「20260618」摄取)。**前向 =
+  ACCRUING**(test_end 后只 4 td + 端午封市 → 0 可评分,需累积 ~20-40 期数月,出不了 verdict)。**稳健体检**:
+  倾斜-稳健 ✓(k0.05/0.1/0.2 IR~1.5)/ 哨兵薄胜(真 1.53 vs 噪声地板 1.46 = 构造 small-cap tilt 占大块)/
+  消融分析师扛 >半数超额但重度 rev_diff-集中 → **+2.68% = 真分析师边际(集中 rev_diff)+ 构造/size tilt 混合,
+  provisional 既非纯真也非纯假**。报告 `factor-strategy-round5-forward-oos-and-robustness-2026-06-21.md`。
+- **⏭️ NEXT(owner 拍板)**:主 = **前向窗口累积重跑**(`$PY -m scripts.factor_research.round4_forward_test`,
+  每月,≥20-40 期出可信前向 verdict;verdict 前 refresh csi300/index_weight)。改策略(缓解 rev_diff 集中/加
+  组合级 size 中性)= 新冻结 + 新前向窗口,**不可在已 4 评 test 再迭代**。本地 `c2a8c6e` 待 owner 授权 push。
 
 ═══════════════════════════════════════════════════════════════════════
 
