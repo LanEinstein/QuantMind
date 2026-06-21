@@ -1,6 +1,6 @@
 # 量化第一闸门 · 重做方案与行动计划(Quant First-Gate Re-research, QGR)
 
-> **状态**:codex 评审过(裁定 REVISE → 已据此定稿,见 §4.4) · 待 owner go · **日期**:2026-06-21 · **作者**:Claude(Opus 4.8)
+> **状态**:codex 评审过(REVISE→定稿 §4.4) · **owner「开」✅(2026-06-21)** · amendment `docs/decisions/quant-gate-rebar-amendment-2026-06-21.md` 已落 · owner 主旋律/底部确认精化已并入(§3.8) · 进 QGR-1 · **日期**:2026-06-21 · **作者**:Claude(Opus 4.8)
 > **性质**:这是对「量化选股策略研究专项」的**框架性重做**。它**取代**前四轮(round-1..4 + R5)以「组合 vs CSI300 超额」为判据、逐步滑向 benchmark-relative 增强指数的研究路线。前四轮的历史记录仍**作为诚实证据保留**,但其**问题框定(framing)已被本方案判定为错**,不再作为未来 session 的行动指针。
 > **provenance**:本方案的信号设计与评测学结论来自 2026-06-21 三路 provenance-gated 调查(系统真实角色 file:line 级核实 / A 股短线信号文献 / 非消耗型评测方法学),出处见 §8。
 
@@ -12,6 +12,7 @@
 2. **horizon = 两条腿并进**:先做 **5-10td 选股闸门**(贴系统当前最短持仓 5td + 轮动机制)上线;**同时**在研究侧用同一套评测竞技场**公平对比 5-10td vs 真·超短(T+1/1-2td)机制**,证据够再决定是否改 live 持仓机制。
 3. **sim 暂停**,直到 B 层前向确认产出一个可部署、前向过门的闸门策略——**不赶 interim**。
 4. **清理旧/错误内容**:确保未来 session 接手时不被旧设定(round-4 provisional PASS / 增强指数 / 「明天启动 sim」/「既有 test 第 N 次评测」)误导。本方案 = 新的权威接手锚点。
+5. **2026-06-21 精化(amendment `quant-gate-rebar` §2.3)**:「避热门」=紧跟国家主旋律择"场"(AI/机器人/AIDC/玻璃基板/AI 链材料,**避夕阳**)+ 不追涨已高位名,**非避战略赛道**;「买跌票」=主题内"高价值尚在低位优质股"+ **客观底部确认门**(治"跌了再跌的洗盘"/接飞刀,不凭感觉)。详 §3.8。
 
 ---
 
@@ -48,6 +49,8 @@
 
 ### 2.3 「确定上涨」必须顺着 A 股证据建(反直觉,关键)
 调查铁证(§3):**A 股短线奖励的是「买健康的近期跌票 + 避开热门高换手/高波/彩票票」,不是追涨热门**。一个朴素的「挑明天的明星股」筛子会直接踩进 MAX/IVOL/换手过度定价陷阱(已证亏钱)。所以闸门的「优质 + 确定上涨」= **流动性/涨跌停过滤后的短期反转 + 慢速质量 tilt + 强制彩票剔除**的合成,**逆人性但顺证据**。
+
+> **owner 2026-06-21 精化(amendment `quant-gate-rebar` §2.3 / 本方案 §3.8,已并入)**:① 「避热门」= 紧跟国家/时代主旋律择"场"(AI/机器人/AIDC/玻璃基板/AI 链材料 = 应进的热门赛道,**避夕阳产业**)+ 不追涨**已高位**名,**非避战略赛道**;② 「买跌票」= 主题内"高价值尚在低位的优质股" + **客观底部确认门**(缩量/站稳筹码成本/资金流企稳/无破位/无困境/质量地板,**治 A 股"跌了再跌的洗盘",不接飞刀**)。详 §3.8。
 
 ---
 
@@ -88,6 +91,26 @@
 
 ### 3.7 候选信号 → Tushare 8000 端点映射(R 阶段建因子用)
 `daily`+`adj_factor`(反转/动量/MAX/IVOL)· `daily_basic`(换手/量比/市值/PE→EP)· `stk_limit`+`limit_list_d`+`suspend_d`(涨跌停结构/停牌)· `stk_factor_pro`(预算技术因子)· `cyq_chips`(筹码,谨慎)· `report_rc`+`forecast_vip`+`express_vip`(分析师/事件,慢 tilt)· `moneyflow_hsgt`/`hsgt_top10`/`margin`(风险 overlay)。**`moneyflow`/`top_list`/日频`hk_hold` 仅作"可测但默认陷阱"对照,不进核心。**
+
+### 3.8 owner 2026-06-21 精化:紧跟主旋律 + 客观底部确认(amendment `quant-gate-rebar` §2.3 强制)
+owner 对「买跌票/避热门」给出关键客观化方向,**重塑信号架构**:
+
+**(A)「避热门」≠ 避战略赛道,而是 ① 紧跟国家/时代主旋律择"场" + ② 不追涨已高位名。**
+- **主旋律 tilt(新维度,PIT 客观)**:tilt 向国家战略主线(AI / 机器人 / AIDC / 玻璃基板 / AI 产业链必要原材料 等),**避开夕阳产业**。**PIT-clean 实现**:
+  - 概念/行业成分 PIT:`ths_index`(同花顺概念,as-of-date 成分)+ `index_classify`/`index_member_all`(申万行业 PIT)给"某票 as of d 属哪些概念/行业"。
+  - **战略主题映射 = 预注册 + 政策发布日溯源(防 hindsight 前视)**:每战略主题挂 `effective_from`=宣示它的政策文件(五年规划/政府工作报告/行业政策)发布日;tilt **只从该日起生效**(**严禁**用"现在知道 AI 赢了"从 2015 就 tilt)。映射冻结进 git(provenance-gated)作披露假设。
+  - **夕阳产业 = 客观代理**:行业级营收/盈利长期下行 + 政策不利,PIT 计算。
+- **「不追涨」= 高位/过度延展剔除**(= §3.2 彩票剔除 overlay,**作用于主题内**):主题内也避高换手/高 MAX/已大涨到高位的名。
+
+**(B)「买跌票」= 主题内"高价值尚在低位的优质股" + 客观底部确认(不凭感觉、不接飞刀)。**
+- **尚在低位 + 高价值**:主题内,quality(roe/gpm/价值 E-P)高 + **自身仍在低位**(52 周区间低分位 / 筹码成本下方 / 近期回调)= quality-value-at-low。
+- **客观底部确认门(新,替代朴素反转,治 A 股"跌了再跌的洗盘")**:**多指标综合**判健康筑底 vs 洗盘——① 缩量(成交量/换手收缩)② 站稳筹码成本带上方(`cyq_chips`)③ 资金流企稳 ④ 无新技术破位 ⑤ 无困境(非 ST/无停牌/无退市审计风险)⑥ 基本面质量地板。**符号/阈值 R 阶段从零验,不假设。**
+
+**(C)与既有 LLM 主题层的关系**:live Phase Y `backend/theme_research/`(LLM peer-sourcing)+ 知识图谱产业链是**互补的 live 定性层**;**研究闸门用上面的客观 PIT 主题信号**(LLM 永不进 PIT/评测路径)。
+
+**(D)两条腿归属**:主旋律 tilt + value-at-low + 质量 + 底部确认 = **较慢"持仓"腿**(随轮动持有数周-数月跟涨复苏);反转 + 1日动量 = **快腿**;同竞技场公平比(决策 2)。
+
+**(E)诚实 caveat(强制,见 §7 + QGR-3 codex 门)**:战略主题"哪个主题战略"有 **hindsight 前视 + 主观映射风险**(回测最易自欺一类)→ 强制:政策发布日 PIT + 预注册冻结 + **必须在 baseline 面板证明主题维度 OVER 非主题 baseline 有增量**(否则 deflation/baseline 揪出"主题 tilt 只是 hindsight")。
 
 ---
 
@@ -144,6 +167,7 @@ codex summary 落 `docs/reviews/qgr-plan-codex-review-summary.md`。
 ## 5. 数据计划(8000 积分,全面了解恰当使用)
 
 - **摄取(owner-gated,离线,字节存档 + checksum + coverage,仅 Tushare 官方 SDK)**:核心短线集 `daily`/`daily_basic`/`adj_factor`(已有)+ **新增** `stk_limit`/`limit_list_d`/`suspend_d`(涨跌停/停牌)/`stk_factor_pro`(技术因子)/`cyq_chips`(筹码,谨慎)/`forecast_vip`/`express_vip`(事件)+ 已有 `report_rc`(分析师);**风险 overlay** `moneyflow_hsgt`/`hsgt_top10`/`margin`/`margin_detail`。
+- **主旋律维度数据(新,§3.8)**:`ths_index`(同花顺概念 PIT 成分)+ `index_classify`/`index_member_all`(申万行业 PIT,已有部分)+ **预注册「政策→主题」映射**(政策文件发布日溯源,git 冻结,人工 provenance-gated,**非 Tushare**)。
 - **陷阱标注(写进 coverage manifest)**:`hk_hold` 日频 2024-08-19 后失效(只季度);`moneyflow`/`top_list` 列为"可测对照非核心"。
 - **分页铁律**:`*_vip` 及多行/票端点**必 limit+offset 分页**(round-3 截断教训 [[reference-tushare-statement-vip-row-cap]]);稀疏流(report_rc/事件)按 round-4 月范围分页。
 - **PIT 红线全留**:幸存无偏宇宙 / `report_date<d` / 复权 pin / 离线 replay / fail-closed coverage。
@@ -178,7 +202,7 @@ codex summary 落 `docs/reviews/qgr-plan-codex-review-summary.md`。
 
 **仍开放(留给执行期 + owner)**:
 1. **两条腿的真·超短机制净成本**:T+1/1-2td 翻的高换手/成本是否被超短 alpha 覆盖,QGR-4 净成本回测见真章(会不会扣成本后 edge 消失)。
-2. **彩票剔除与"确定上涨"的张力**:逆人性的"买健康跌票/避热门",owner 是否完全接受(证据如此)。
+2. **战略主题的 hindsight 前视风险(owner 2026-06-21 精化引入,§3.8E)**:"哪个主题战略"是回测最易自欺一类 → 强制政策发布日 PIT + 预注册冻结 + baseline 上证明主题维度有增量;**QGR-3 走专门 codex 门审 PIT-soundness**。(「彩票剔除/确定上涨张力」已由 §3.8 主旋律择场 + 客观底部确认门客观化解决。)
 
 ---
 
