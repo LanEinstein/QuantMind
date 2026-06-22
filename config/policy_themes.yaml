@@ -1,0 +1,138 @@
+# 政策→主题→申万 L3 成分映射(AF-001 / QGR-3 ⑧ 共享单一真相源)
+#
+# ⚠️ DRAFT — 待 owner 确认主题清单 + 政策发布日,确认后由 owner 冻结(关键人工 gate)。
+#    `status: draft` 时本映射**不参与任何 live/研究判定**(registry 载入但 resolver
+#    消费方须显式 opt-in);owner 改 `status: frozen` + 走专门 codex PIT-soundness 门后生效。
+#
+# 设计(对齐 value-sleeve-amendment-2026-06-22 §2.3 + qgr-3-short-factor-lib §6):
+#  * 防 hindsight:`effective_from` = 宣示该主题的政策文件**公开发布日**;tilt 只从该日起生效。
+#    路线 B = 长期国家战略主线用历史确立日(回测可验证『跟主旋律择场』),十五五作强化延续。
+#  * 成分 PIT:只走申万 `index_member_all` 的 L3 in/out date(312 个 L3);`ths_index` 非 PIT 不用作成分。
+#  * 排除未来产业(量子/核聚变/脑机/6G/纯具身智能 = 无盈利可估值的炒作)——by construction 不入本映射。
+#  * 红线:科创 688 / 北交 8 / ST / 可转债仍由 universe 层永禁(本映射不放行,只标 L3 行业归属)。
+#  * tier(driver 强度,复用 ThemeTier 1.0/0.75/0.5/0.25 + 单调钳制):
+#      national_event = 卡脖子自主可控 + 人工智能+全链
+#      policy         = 战略性新兴产业
+#      tech           = 传统产业升级·高股息(压舱石,主题弹性低)
+#
+# owner 确认要点:① 主题清单增删 ② 每主题 effective_from 政策依据 ③ 每主题 L3 代码集
+#                ④ traditional_upgrade_highdiv 压舱石范围(当前为起步集,可扩)。
+
+version: "draft-2026-06-22"
+status: "draft"   # draft | frozen — owner 确认后改 frozen
+
+themes:
+  # ───────── national_event(1.0):卡脖子自主可控 ─────────
+  - theme_id: semiconductor_selfsufficiency
+    name_cn: 集成电路自主可控
+    tier: national_event
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(国发〔2015〕28号, 2015-05-19);十五五『集成电路』关键核心技术决定性突破(建议 2025-10-28)"
+    sw_l3_codes: ["850814.SI", "850815.SI", "850816.SI", "850817.SI", "850813.SI", "850818.SI", "850812.SI", "850861.SI"]
+    # 数字芯片设计/模拟芯片设计/集成电路制造/集成电路封测/半导体材料/半导体设备/分立器件/电子化学品
+
+  - theme_id: machine_tools_instruments
+    name_cn: 工业母机·高端仪器
+    tier: national_event
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(2015-05-19);十五五『工业母机/高端仪器』关键核心技术攻关(建议 2025-10-28)"
+    sw_l3_codes: ["850711.SI", "850731.SI", "857323.SI", "850782.SI"]
+    # 机床工具/仪器仪表/电工仪器仪表/工控设备
+
+  - theme_id: basic_industrial_software
+    name_cn: 基础/工业软件
+    tier: national_event
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(2015-05-19);十五五『基础软件』关键核心技术攻关(建议 2025-10-28)"
+    sw_l3_codes: ["851042.SI", "851041.SI", "852226.SI"]
+    # 横向通用软件/垂直应用软件/IT服务
+
+  - theme_id: ai_plus_full_chain
+    name_cn: 人工智能+全链
+    tier: national_event
+    effective_from: "20170720"
+    policy_source: "《新一代人工智能发展规划》(国发〔2017〕35号, 2017-07-20);十五五全面实施『人工智能+』行动(建议 2025-10-28)强化"
+    sw_l3_codes: ["850703.SI", "851042.SI", "851041.SI", "852226.SI", "851024.SI"]
+    # 其他计算机设备(算力/服务器)/横向通用软件/垂直应用软件/IT服务/通信网络设备(算力网络);AI 芯片经半导体主题重叠
+
+  - theme_id: advanced_materials
+    name_cn: 先进材料
+    tier: national_event
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(2015-05-19);十五五『先进材料』关键核心技术攻关(建议 2025-10-28)"
+    sw_l3_codes: ["850521.SI", "850522.SI", "850541.SI", "850355.SI", "850382.SI", "850523.SI"]
+    # 其他金属新材料/磁性材料/稀土/膜材料/氟化工/非金属材料
+
+  - theme_id: bio_manufacturing
+    name_cn: 生物制造
+    tier: national_event
+    effective_from: "20240305"
+    policy_source: "2024 年政府工作报告首提『生物制造』(2024-03-05);十五五未来产业全链条培育(建议 2025-10-28)"
+    sw_l3_codes: ["851524.SI", "850135.SI", "851511.SI"]
+    # 其他生物制品/食品及饲料添加剂(合成生物)/原料药(发酵);新兴主题 L3 稀疏,待 owner 扩充
+
+  # ───────── policy(0.75):战略性新兴产业 ─────────
+  - theme_id: new_energy
+    name_cn: 新能源(光伏/风电/储能)
+    tier: policy
+    effective_from: "20200922"
+    policy_source: "习近平在第七十五届联合国大会宣布碳达峰碳中和目标(2020-09-22)"
+    sw_l3_codes: ["857351.SI", "857352.SI", "857353.SI", "857354.SI", "857355.SI", "857361.SI", "857362.SI", "857371.SI", "857372.SI", "857375.SI"]
+    # 硅料硅片/光伏电池组件/逆变器/光伏辅材/光伏加工设备/风电整机/风电零部件/锂电池/电池化学品/蓄电池及其他
+
+  - theme_id: intelligent_nev
+    name_cn: 智能网联新能源汽车
+    tier: policy
+    effective_from: "20201102"
+    policy_source: "《新能源汽车产业发展规划(2021—2035年)》(国办发〔2020〕39号, 2020-11-02)"
+    sw_l3_codes: ["850951.SI", "850952.SI", "850926.SI", "850923.SI", "850925.SI"]
+    # 电动乘用车/综合乘用车/汽车电子电气系统/底盘与发动机系统/其他汽车零部件
+
+  - theme_id: robotics
+    name_cn: 机器人
+    tier: policy
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(2015-05-19);十五五机器人列入战略性新兴产业(建议 2025-10-28)"
+    sw_l3_codes: ["850781.SI", "850782.SI", "850784.SI", "850783.SI"]
+    # 机器人/工控设备/其他自动化设备/激光设备
+
+  - theme_id: aerospace_commercial
+    name_cn: 航空航天·商业航天
+    tier: policy
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(2015-05-19);商业航天列入 2024 政府工作报告新增长引擎(2024-03-05);十五五战略性新兴产业(2025-10-28)"
+    sw_l3_codes: ["857411.SI", "857421.SI", "857451.SI"]
+    # 航天装备/航空装备/军工电子
+
+  - theme_id: low_altitude_economy
+    name_cn: 低空经济
+    tier: policy
+    effective_from: "20240305"
+    policy_source: "2024 年政府工作报告首提『低空经济』(2024-03-05);十五五战略性新兴产业(2025-10-28)"
+    sw_l3_codes: ["857421.SI"]
+    # 航空装备(eVTOL/无人机);跨切主题 L3 稀疏,待 owner 扩充
+
+  - theme_id: innovative_pharma
+    name_cn: 生物医药·创新药
+    tier: policy
+    effective_from: "20161025"
+    policy_source: "《“健康中国2030”规划纲要》(2016-10-25);十五五生物医药战略性新兴产业(2025-10-28)"
+    sw_l3_codes: ["851512.SI", "851523.SI", "851524.SI", "851563.SI", "851534.SI", "851532.SI"]
+    # 化学制剂/疫苗/其他生物制品/医疗研发外包(CXO)/体外诊断/医疗设备
+
+  - theme_id: high_end_equipment
+    name_cn: 高端装备
+    tier: policy
+    effective_from: "20150519"
+    policy_source: "《中国制造2025》(2015-05-19);十五五高端装备战略性新兴产业(2025-10-28)"
+    sw_l3_codes: ["850725.SI", "850771.SI", "850727.SI", "850936.SI"]
+    # 能源及重型设备/工程机械整机/其他专用设备/轨交设备
+
+  # ───────── tech(0.5):传统产业升级·高股息(压舱石,起步集待 owner 扩) ─────────
+  - theme_id: traditional_upgrade_highdiv
+    name_cn: 传统产业升级·高股息(中特估)
+    tier: tech
+    effective_from: "20221121"
+    policy_source: "证监会主席提『中国特色估值体系』(2022-11-21);十五五『巩固提升矿业/冶金/化工/机械/船舶/建筑全球产业分工地位』(2025-10-28)"
+    sw_l3_codes: ["857821.SI", "857831.SI", "851611.SI", "851612.SI", "859511.SI", "850442.SI", "850441.SI", "850552.SI", "850551.SI", "859631.SI", "851731.SI", "851771.SI", "857111.SI"]
+    # 国有大型银行/股份制银行/火力发电/水力发电/动力煤/板材/长材/铜/铝/炼油化工/高速公路/铁路运输/水泥制造
