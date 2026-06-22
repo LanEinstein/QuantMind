@@ -1,22 +1,22 @@
 # QGR-2 评测口径冻结规格(Evaluation Arena Freeze Spec)
 
-> **状态**:**DRAFT — 待 owner 确认后冻结**(QGR-2 末关键 checkpoint:先冻评测口径再进 QGR-3,主文档 §7)。
+> **状态**:**✅ FROZEN(owner 2026-06-22 确认 3 决策,全采推荐)**(QGR-2 末关键 checkpoint:先冻评测口径再进 QGR-3,主文档 §7)。**口径不再改 = amendment 先行**。
 > **日期**:2026-06-22 · **作者**:Claude(Opus 4.8)· **代码**:feature `8ad9116`(QGR-2 竞技场骨架,本地未 push)。
-> **这是什么**:把可复用竞技场的**评测口径**(主指标 + CPCV 配置 + 账本 legacy 块 + baseline 面板 + 诚实门参数 + Layer-B)一次性钉死,使 QGR-3 因子库 / QGR-4 搜索在固定标尺上进行(诚实门**永不**指导搜索)。本规格 ≈ 全部"已定",**只有 §1 的 3 个 owner 决策待拍板**;拍完即把本文件标 FROZEN。
+> **这是什么**:把可复用竞技场的**评测口径**(主指标 + CPCV 配置 + 账本 legacy 块 + baseline 面板 + 诚实门参数 + Layer-B)一次性钉死,使 QGR-3 因子库 / QGR-4 搜索在固定标尺上进行(诚实门**永不**指导搜索)。
 
 ---
 
-## 0. owner 待确认的 3 个决策(其余全为推荐默认,owner 不反对即采用)
+## 0. owner 确认的 3 个决策(2026-06-22,全采推荐)
 
-1. **主目标函数形态**(§1.1)——推荐 **(A) 主=事件循环扣成本净 P&L + MDD/换手作硬约束**。
-2. **MDD 硬上限**(§1.2)——推荐 **8%**(对齐现役 P0-6 验收门 §2.8 最大回撤 ≤8%)。
-3. **主腿 horizon**(§1.3)——推荐 **5td 为 canonical**(贴系统最短持仓 5td)+ 10td 作稳健变体;快腿 T+1/1-2td 同竞技场公平比(QGR-4)。
+1. **主目标函数形态**(§1.1)= **✅ (A) 主=事件循环扣成本净 P&L + MDD/换手作硬约束**。
+2. **MDD 硬上限**(§1.2)= **✅ 8%**(对齐现役 P0-6 验收门 §2.8 最大回撤 ≤8%)。
+3. **主腿 horizon**(§1.3)= **✅ 5td canonical + 10td 稳健变体**;快腿 T+1/1-2td 同竞技场公平比(QGR-4)。
 
 ---
 
 ## 1. 主指标(冻结对象 = ≤5 篮子本身的绝对净盈 + 控回撤)
 
-### 1.1 目标函数(owner 决策①)
+### 1.1 目标函数(✅ owner 确认 = (A))
 owner 判据 = **绝对净盈 + 控回撤**(去 CSI300 超额硬门,仅披露)。三个候选形态:
 
 | 形态 | 定义 | 评 |
@@ -25,13 +25,13 @@ owner 判据 = **绝对净盈 + 控回撤**(去 CSI300 超额硬门,仅披露)�
 | (B) Calmar 比率 | 年化净收益 / MDD | 把两者捆成一个数,但易被极小 MDD 放大、对短样本不稳 |
 | (C) 净收益−λ·MDD 效用 | 需定 λ;λ 的选择本身是自由度 | 引入隐藏超参 |
 
-**推荐 (A)**。下文按 (A) 写;若 owner 选 (B)/(C),§1.2-1.5 相应改为比率/罚项参数。
+**✅ owner 确认 (A)**。下文按 (A) 冻结。
 
-### 1.2 MDD 硬上限(owner 决策②)
-推荐 **MDD ≤ 8%**(对齐现役 P0-6 验收门「最大回撤 ≤8%」§2.8;事件循环回撤从起始资本起算,已修 codex P2 #4)。
+### 1.2 MDD 硬上限(✅ owner 确认 = 8%)
+**MDD ≤ 8%**(对齐现役 P0-6 验收门「最大回撤 ≤8%」§2.8;事件循环回撤从起始资本起算,已修 codex P2 #4)。
 
-### 1.3 horizon(owner 决策③)
-推荐 **canonical = 5td**(= `slot_rotation_policy` 最短持仓 + rebalance 间距);**robustness 变体 = 10td**;**快腿 = T+1 / 1-2td** 同竞技场公平比(QGR-4 决定是否动 live 机制,需独立 amendment)。`run_gate_backtest(horizon=...)` 已参数化;period_returns 按 horizon 非重叠重采样。
+### 1.3 horizon(✅ owner 确认 = 5td canonical + 10td 稳健)
+**canonical = 5td**(= `slot_rotation_policy` 最短持仓 + rebalance 间距);**robustness 变体 = 10td**;**快腿 = T+1 / 1-2td** 同竞技场公平比(QGR-4 决定是否动 live 机制,需独立 amendment)。`run_gate_backtest(horizon=...)` 已参数化;period_returns 按 horizon 非重叠重采样。
 
 ### 1.4 换手约束
 `GateBacktestResult.monthly_turnover` 披露;硬上限**暂留软披露**(≤5槽 + 5td 最短持仓 + 粘滞轮动已天然约束换手)。若 (A) 需硬 cap,QGR-4 标定后补(amendment)。
