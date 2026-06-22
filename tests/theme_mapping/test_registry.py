@@ -80,10 +80,13 @@ def test_real_draft_config_loads_and_is_draft() -> None:
     reg = load_policy_theme_registry(DEFAULT_POLICY_THEMES_PATH)
     assert reg.frozen is False, "draft mapping must not present as frozen"
     ids = {t.theme_id for t in reg.themes}
-    # the four owner-confirmed tiers are represented
+    # national-strategy themes are represented
     assert {"semiconductor_selfsufficiency", "ai_plus_full_chain"} <= ids
     assert "new_energy" in ids
-    assert "traditional_upgrade_highdiv" in ids
+    assert "aerospace" in ids  # v2: renamed from aerospace_commercial
+    # v2 codex PIT-gate revisions (owner-confirmed)
+    assert "traditional_upgrade_highdiv" not in ids  # dropped (BACK-FITTED) → value factor
+    assert "low_altitude_economy" not in ids  # merged into aerospace (no distinct L3)
     # no future-industry speculation leaked into the mapping
     assert not any(
         kw in t.name_cn for t in reg.themes for kw in ("量子", "核聚变", "脑机", "6G")
