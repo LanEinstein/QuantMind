@@ -12,7 +12,11 @@ import numpy as np
 import pandas as pd
 
 from scripts.factor_research.factor_ic_study import study
-from scripts.factor_research.factor_lib import FACTOR_NAMES, QGR_FACTOR_NAMES
+from scripts.factor_research.factor_lib import (
+    FACTOR_NAMES,
+    QGR2_FACTOR_NAMES,
+    QGR_FACTOR_NAMES,
+)
 from scripts.factor_research.qgr_factor_diagnostics import (
     COLLINEARITY_CEILING,
     build_report,
@@ -42,6 +46,7 @@ def _synthetic_panel(
                 "ts_code": f"{600000 + ci}.SH",
                 "industry_l1": industries[ci % len(industries)],
                 "log_circ_mv": 10.0 + rng.normal(scale=0.5),
+                "fwd_ret_1d": float(fwd5[ci] * 1.1),
                 "fwd_ret_5d": float(fwd5[ci]),
                 "fwd_ret_10d": float(fwd5[ci] * 0.8),
                 "fwd_ret_20d": float(fwd5[ci] * 0.5),
@@ -50,7 +55,7 @@ def _synthetic_panel(
             }
             for f in FACTOR_NAMES:
                 row[f] = float(rng.normal())
-            for f in QGR_FACTOR_NAMES:
+            for f in (*QGR_FACTOR_NAMES, *QGR2_FACTOR_NAMES):
                 row[f] = float(rng.normal())
             row["rev_1d"] = float(rev[ci])  # the planted signal
             rows.append(row)
@@ -72,9 +77,10 @@ def test_carry_decision_carries_aligned_strong_factor() -> None:
     panel = _synthetic_panel()
     from scripts.factor_research.neutralize import neutralize_panel
 
-    under = (*FACTOR_NAMES, *QGR_FACTOR_NAMES)
+    qgr_all = (*QGR_FACTOR_NAMES, *QGR2_FACTOR_NAMES)
+    under = (*FACTOR_NAMES, *qgr_all)
     neut = neutralize_panel(panel, list(under), min_obs=20)
-    neut_names = tuple(f"{f}{NEUT_SUFFIX}" for f in QGR_FACTOR_NAMES)
+    neut_names = tuple(f"{f}{NEUT_SUFFIX}" for f in qgr_all)
     ic = study(neut, factor_names=neut_names)
     neut_verdicts = verdicts(ic, neut_names)
     carry_collin, mutual = compute_collinearity(neut)
@@ -82,7 +88,7 @@ def test_carry_decision_carries_aligned_strong_factor() -> None:
     # rev_1d is the only planted-signal factor → it must survive; the pure-noise
     # ones land in no_signal.
     assert "rev_1d" in decision.survivors
-    assert set(decision.no_signal) <= set(QGR_FACTOR_NAMES)
+    assert set(decision.no_signal) <= set(qgr_all)
     assert "rev_1d" not in decision.no_signal
 
 

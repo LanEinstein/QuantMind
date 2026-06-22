@@ -32,7 +32,7 @@ from pathlib import Path
 import pandas as pd
 
 from .factor_ic_study import rank_ic_series, study, summarize_ic
-from .factor_lib import FACTOR_NAMES, QGR_FACTOR_NAMES
+from .factor_lib import FACTOR_NAMES, QGR2_FACTOR_NAMES, QGR_FACTOR_NAMES
 from .locked_split import LockedSplit
 from .neutralize import neutralize_panel
 from .r2_factor_diagnostics import (
@@ -54,6 +54,17 @@ MIN_COLLIN_DATES: int = 60
 # fundamental / analyst families (R2-R4) are a separate slow-leg dimension and are
 # verified there, not against the fast leg.
 CARRY_CLUSTER: tuple[str, ...] = FACTOR_NAMES
+# All QGR short factors under verdict = tranche-1 (reversal+lottery) ∪ tranche-2
+# (1-day momentum + limit-board structure).
+QGR_ALL_NAMES: tuple[str, ...] = (*QGR_FACTOR_NAMES, *QGR2_FACTOR_NAMES)
+# Forward horizons: add the fast-leg T+1 to the 5/10/20d set (the 1-day momentum
+# factor is a T+1 signal; the round-1 cousins live at 5/10/20d).
+QGR_FORWARD_COLS: tuple[str, ...] = (
+    "fwd_ret_1d",
+    "fwd_ret_5d",
+    "fwd_ret_10d",
+    "fwd_ret_20d",
+)
 # Reversal factors whose loser leg the §3.1 limit disclosure inspects.
 REVERSAL_FACTORS: tuple[str, ...] = ("rev_1d", "rev_3d")
 
@@ -92,10 +103,10 @@ def compute_collinearity(
     neut_panel: pd.DataFrame,
 ) -> tuple[dict[str, tuple[str, float, int]], dict[frozenset[str], tuple[float, int]]]:
     """Pre-compute the carry-cluster + mutual collinearity dicts (neut columns)."""
-    carry_collin = {f: max_carry_collinearity(neut_panel, f) for f in QGR_FACTOR_NAMES}
+    carry_collin = {f: max_carry_collinearity(neut_panel, f) for f in QGR_ALL_NAMES}
     mutual: dict[frozenset[str], tuple[float, int]] = {}
-    for i, a in enumerate(QGR_FACTOR_NAMES):
-        for b in QGR_FACTOR_NAMES[i + 1 :]:
+    for i, a in enumerate(QGR_ALL_NAMES):
+        for b in QGR_ALL_NAMES[i + 1 :]:
             mutual[frozenset((a, b))] = _pairwise(neut_panel, _neut(a), _neut(b))
     return carry_collin, mutual
 
@@ -121,10 +132,10 @@ def decide_carry(
     }
     no_signal = tuple(
         f
-        for f in QGR_FACTOR_NAMES
+        for f in QGR_ALL_NAMES
         if not (f in by_base and by_base[f].has_signal and by_base[f].aligned)
     )
-    candidates = [f for f in QGR_FACTOR_NAMES if f not in no_signal]
+    candidates = [f for f in QGR_ALL_NAMES if f not in no_signal]
     carry_redundant = tuple(
         f
         for f in candidates
@@ -142,7 +153,7 @@ def decide_carry(
             mutual_redundant.append(f)
         else:
             kept.append(f)
-    survivors = tuple(f for f in QGR_FACTOR_NAMES if f in kept)
+    survivors = tuple(f for f in QGR_ALL_NAMES if f in kept)
     low_support = tuple(
         f for f in survivors if carry_collin.get(f, ("-", 0.0, 0))[2] < MIN_COLLIN_DATES
     )
@@ -160,7 +171,7 @@ def _coverage_section(panel: pd.DataFrame) -> str:
         "| factor | defined-rate (of cohort rows) | mean (defined) |",
         "|---|---|---|",
     ]
-    for f in QGR_FACTOR_NAMES:
+    for f in QGR_ALL_NAMES:
         defined = float(panel[f].notna().mean()) if f in panel.columns else 0.0
         sub = panel[f].dropna() if f in panel.columns else pd.Series(dtype=float)
         mean = float(sub.mean()) if len(sub) else float("nan")
@@ -178,7 +189,7 @@ def _collinearity_section(
         f"redundant >{ceil:.1f}? |",
         "|---|---|---|---|---|",
     ]
-    for f in QGR_FACTOR_NAMES:
+    for f in QGR_ALL_NAMES:
         name, val, support = carry_collin.get(f, ("-", 0.0, 0))
         flag = "**YES**" if val > ceil else "no"
         thin = " ⚠️thin" if support < MIN_COLLIN_DATES else ""
@@ -259,15 +270,19 @@ def _limit_disclosure_section(panel: pd.DataFrame) -> str:
 
 def build_report(panel: pd.DataFrame, *, params_note: str = "") -> str:
     """Assemble the QGR-3 short-factor diagnostic Markdown (deterministic)."""
-    under_neut = (*CARRY_CLUSTER, *QGR_FACTOR_NAMES)
+    under_neut = (*CARRY_CLUSTER, *QGR_ALL_NAMES)
     neut_panel = neutralize_panel(
         panel, list(under_neut), min_obs=MIN_OBS, winsor_quantile=WINSOR_QUANTILE
     )
-    qgr_neut_names = tuple(_neut(f) for f in QGR_FACTOR_NAMES)
-    ic_all = study(neut_panel, factor_names=(*QGR_FACTOR_NAMES, *qgr_neut_names))
+    qgr_neut_names = tuple(_neut(f) for f in QGR_ALL_NAMES)
+    ic_all = study(
+        neut_panel,
+        factor_names=(*QGR_ALL_NAMES, *qgr_neut_names),
+        forward_cols=QGR_FORWARD_COLS,
+    )
     raw = [s for s in ic_all if not s.factor.endswith(NEUT_SUFFIX)]
     neut = [s for s in ic_all if s.factor.endswith(NEUT_SUFFIX)]
-    qgr_raw_verdicts = verdicts(raw, QGR_FACTOR_NAMES)
+    qgr_raw_verdicts = verdicts(raw, QGR_ALL_NAMES)
     qgr_neut_verdicts = verdicts(neut, qgr_neut_names)
 
     carry_collin, mutual = compute_collinearity(neut_panel)
@@ -285,9 +300,12 @@ def build_report(panel: pd.DataFrame, *, params_note: str = "") -> str:
         f"> Panel: {len(panel)} rows / {codes} codes / {dates} rebalance dates "
         "(train_val; the sealed test window is never read)."
         + note
-        + "> Family: reversal (rev_1d/rev_3d) + forced lottery removal "
-        "(max_5d/turn_spike/n_limit_up_5d). Carry cluster = the round-1 "
-        "cross-sectional factors (fast-leg cousins).\n"
+        + "> Family (full fast leg): tranche-1 reversal (rev_1d/rev_3d) + lottery "
+        "removal (max_5d/turn_spike/n_limit_up_5d); tranche-2 1-day momentum "
+        "(intraday_ret_1d/overnight_gap_1d) + limit-board structure "
+        "(limit_streak_prev/broke_board_prev, `<d`, limit_list_d 2020+). Carry "
+        "cluster = the round-1 cross-sectional factors. Horizons 1/5/10/20d "
+        "(fwd_ret_1d = fast-leg T+1).\n"
         f"> Neutralization: industry SW-L1 dummies + log(circ_mv), per-date OLS, "
         f"winsor={WINSOR_QUANTILE}, min_obs={MIN_OBS}. Collinearity: PAIRWISE 2-way "
         "common support on the *_neut columns.\n"
@@ -334,7 +352,12 @@ def build_report(panel: pd.DataFrame, *, params_note: str = "") -> str:
         "assumed; a refuted-sign factor is dropped.\n"
         "- **Limit-loser caveat (§5)**: the reversal loser leg is polluted by "
         "at-down-limit falling knives; the strategy filters them, the diagnostic "
-        "discloses the effect.\n",
+        "discloses the effect.\n"
+        "- **Limit-board factors are post-2020-only**: `limit_list_d` starts 2020, "
+        "so `limit_streak_prev` / `broke_board_prev` are None for every pre-2020 "
+        "rebalance date (§1 defined-rate ≈ the post-2020 fraction, NOT data loss). "
+        "Their IC is measured on the post-2020 sub-regime — read alongside the "
+        "full-window 1/5/10/20d cousins, not as comparable coverage.\n",
     ]
     return "\n".join(parts) + "\n"
 
@@ -352,7 +375,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--params-note",
-        default="rebalance=5td / reversal 1-3d / lottery max_5d+turn_spike+n_limit_up",
+        default="rebalance=5td / fast leg t1(reversal+lottery)+t2(1d-mom+limit-board)",
     )
     args = parser.parse_args()
 

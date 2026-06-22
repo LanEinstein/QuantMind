@@ -1008,14 +1008,168 @@ def compute_qgr_factors(
     }
 
 
+# ===========================================================================
+# QGR-3 ⑦ tranche-2: 1-day momentum (§3.1.2) + limit-board structure (§3.3).
+#
+# The fast-leg completion: A-share 1-day intraday momentum / overnight gap
+# (Gao-Jiang-Xiong-Xiong NBER 2023 — A-share has daily, not weekly/monthly,
+# momentum; the overnight gap is a T+1 REVERSAL, the §3.6 trap, sign verified
+# from zero) plus limit-board structure tags from ``limit_list_d`` (consecutive
+# limit-up streak / broke-board fade), used STRICTLY on the prior day (`<d`) —
+# same-day ``limit_list_d`` is only complete after the close, so using day d for
+# a day-d feature is look-ahead (§3.3 / §3.6). ``limit_list_d`` starts 2020, so a
+# day with no snapshot yields None (fail-closed), distinct from a present-but-
+# not-on-board day (0). Separate ``QGR2_FACTORS`` registry → tranche-1 / round-1..4
+# untouched; mechanisms reuse existing enum values (no governance change).
+# ===========================================================================
+
+
+def intraday_return(open_price: float, close: float) -> float | None:
+    """Day-d intraday return ``close / open − 1`` (the 1-day momentum core).
+
+    Gao et al. (2023): A-share intraday strength carries to T+1. ``None`` on a
+    non-positive / non-finite open or a non-finite close (fail-closed)."""
+    if not (math.isfinite(open_price) and math.isfinite(close)) or open_price <= 0:
+        return None
+    return close / open_price - 1.0
+
+
+def overnight_gap(pre_close: float, open_price: float) -> float | None:
+    """Overnight gap ``open / pre_close − 1`` — a T+1 REVERSAL signal in A-shares.
+
+    §3.6 trap: an up-gap is adverse-selected and fades on T+1 (attractive-low),
+    the OPPOSITE of treating it as momentum. ``None`` on a non-positive /
+    non-finite prior close or a non-finite open."""
+    if not (math.isfinite(pre_close) and math.isfinite(open_price)) or pre_close <= 0:
+        return None
+    return open_price / pre_close - 1.0
+
+
+def limit_streak_prev(
+    prev_limit: str | None,
+    prev_limit_times: float | None,
+    *,
+    available: bool,
+) -> float | None:
+    """Consecutive limit-up count as of the PRIOR day (`<d`), from ``limit_list_d``.
+
+    A high streak is a recently-run, high-attention name (§3.8 "don't chase the
+    高位"). ``available`` = whether a ``limit_list_d`` snapshot exists for the
+    prior day at all (pre-2020 → ``False`` → ``None``, can't tell). When present
+    but the stock was not limit-up (``prev_limit != 'U'``) the streak is a known
+    ``0``. A limit-up prior day with a non-finite ``limit_times`` → ``None``."""
+    if not available:
+        return None
+    if prev_limit != "U":
+        return 0.0
+    if prev_limit_times is None or not math.isfinite(prev_limit_times):
+        return None
+    return float(prev_limit_times)
+
+
+def broke_board_prev(
+    prev_limit: str | None,
+    prev_open_times: float | None,
+    *,
+    available: bool,
+) -> float | None:
+    """Did the stock SEAL then BREAK its up-limit on the prior day (`<d`)? (fade tag).
+
+    A limit-up day with ``open_times > 0`` = the board opened (sold into) = a fade
+    signal. ``available`` semantics match :func:`limit_streak_prev` (pre-2020 →
+    ``None``; present-but-not-limit-up → ``0``)."""
+    if not available:
+        return None
+    if prev_limit != "U":
+        return 0.0
+    if prev_open_times is None or not math.isfinite(prev_open_times):
+        return None  # limit-up day with unknown open_times → can't tell (fail-closed)
+    return 1.0 if prev_open_times > 0 else 0.0
+
+
+QGR2_FACTORS: tuple[FactorDef, ...] = (
+    FactorDef(
+        name="intraday_ret_1d",
+        min_history=1,
+        attractive_high=True,
+        mechanism="momentum_continuation",
+        expected_ic_sign=1,
+        description="Day-d intraday return close/open−1 — A-share 1-day momentum "
+        "(Gao et al. 2023); fast leg (T+1), expected to decay/reverse by day 2-3.",
+    ),
+    FactorDef(
+        name="overnight_gap_1d",
+        min_history=1,
+        attractive_high=False,
+        mechanism="mean_reversion",
+        expected_ic_sign=-1,
+        description="Overnight gap open/pre_close−1 — A-share T+1 REVERSAL (§3.6 "
+        "trap: up-gap fades, NOT momentum); attractive-low.",
+    ),
+    FactorDef(
+        name="limit_streak_prev",
+        min_history=1,
+        attractive_high=False,
+        mechanism="mean_reversion",
+        expected_ic_sign=-1,
+        description="Consecutive limit-up streak as of `<d` (limit_list_d, 2020+) — "
+        "high = recently-run high-attention name (§3.8 don't chase 高位), "
+        "attractive-low; verified from zero.",
+    ),
+    FactorDef(
+        name="broke_board_prev",
+        min_history=1,
+        attractive_high=False,
+        mechanism="mean_reversion",
+        expected_ic_sign=-1,
+        description="Sealed-then-broke up-limit on `<d` (limit_list_d open_times>0) "
+        "— failed limit = fade tag, attractive-low.",
+    ),
+)
+
+QGR2_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in QGR2_FACTORS)
+QGR2_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in QGR2_FACTORS}
+
+
+def compute_qgr2_factors(
+    *,
+    open_price: float,
+    close: float,
+    pre_close: float,
+    prev_limit: str | None,
+    prev_limit_times: float | None,
+    prev_open_times: float | None,
+    limit_data_available: bool,
+) -> dict[str, float | None]:
+    """The QGR-3 tranche-2 factor vector for one code as-of a date (raw values).
+
+    Price inputs are RAW same-day (intraday / gap are scale-invariant ratios).
+    The limit-board fields are the PRIOR day's ``limit_list_d`` record (`<d`);
+    ``limit_data_available`` flags whether that prior day had a snapshot at all
+    (pre-2020 → False → limit factors None). Insufficient inputs surface as
+    ``None`` per field (never fabricated)."""
+    return {
+        "intraday_ret_1d": intraday_return(open_price, close),
+        "overnight_gap_1d": overnight_gap(pre_close, open_price),
+        "limit_streak_prev": limit_streak_prev(
+            prev_limit, prev_limit_times, available=limit_data_available
+        ),
+        "broke_board_prev": broke_board_prev(
+            prev_limit, prev_open_times, available=limit_data_available
+        ),
+    }
+
+
 # Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3 + round-4
-# + QGR-3 short-term). A ``_neut`` variant resolves to its base factor's prior.
+# + QGR-3 short-term tranche-1 + tranche-2). A ``_neut`` variant resolves to its
+# base factor's prior.
 ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {
     **FACTORS_BY_NAME,
     **R2_FACTORS_BY_NAME,
     **R3_FACTORS_BY_NAME,
     **R4_FACTORS_BY_NAME,
     **QGR_FACTORS_BY_NAME,
+    **QGR2_FACTORS_BY_NAME,
 }
 
 
@@ -1030,6 +1184,9 @@ __all__ = [
     "MAX_RETURN_WINDOW",
     "MOMENTUM_LOOKBACK",
     "MOMENTUM_SKIP",
+    "QGR2_FACTORS",
+    "QGR2_FACTORS_BY_NAME",
+    "QGR2_FACTOR_NAMES",
     "QGR_FACTORS",
     "QGR_FACTORS_BY_NAME",
     "QGR_FACTOR_NAMES",
@@ -1060,18 +1217,23 @@ __all__ = [
     "accruals_sloan",
     "amihud_illiquidity",
     "asset_growth",
+    "broke_board_prev",
     "compute_factor_vector",
     "compute_fundamental_factors",
+    "compute_qgr2_factors",
     "compute_qgr_factors",
     "compute_statement_factors",
     "compute_trend_factors",
     "distance_from_high",
     "earnings_surprise_sue",
     "earnings_yield",
+    "intraday_return",
+    "limit_streak_prev",
     "limit_up_count",
     "max_daily_return",
     "mean_turnover",
     "momentum_skip",
+    "overnight_gap",
     "turnover_spike",
     "return_volatility",
     "trailing_return",

@@ -44,20 +44,21 @@ from backend.marketdata_snapshot.store import SnapshotStore
 # touch the QGR-only fields, so the round-1..4 paths remain byte-identical.
 from .build_factor_panel import (
     DEFAULT_REBALANCE_FREQ,
-    FORWARD_HORIZONS,
     _board_ok,
     _CodeSeries,
     _cohort,
-    _forward_returns,
     _latest_snapshot_key,
 )
 from .factor_lib import (
     FACTOR_NAMES,
+    QGR2_FACTOR_NAMES,
     QGR_FACTOR_NAMES,
     compute_factor_vector,
+    compute_qgr2_factors,
     compute_qgr_factors,
 )
 from .industry_pit import IndustryPIT
+from .limit_board_pit import read_limit_board
 from .limit_status_pit import read_limits
 from .locked_split import LockedSplit
 
@@ -65,6 +66,9 @@ log = structlog.get_logger(component="factor_research.build_qgr_panel")
 
 VENDOR = "tushare"
 _LIMIT_TOL = 1e-4  # rounding tolerance for "close == limit band"
+# QGR forward-return horizons: 1 (fast-leg T+1) + 5/10/20 (the round-1 set).
+# Local to the QGR panel — the round-1..4 builders keep their FORWARD_HORIZONS.
+QGR_FORWARD_HORIZONS: tuple[int, ...] = (1, 5, 10, 20)
 # Extra (non-factor) columns the QGR panel carries for the IC diagnostic.
 QGR_PANEL_EXTRA_COLS: tuple[str, ...] = (
     "industry_l1",
@@ -73,6 +77,24 @@ QGR_PANEL_EXTRA_COLS: tuple[str, ...] = (
     "at_up_limit_d",
     "at_down_limit_d",
 )
+
+
+def _forward_returns_qgr(adj_close: list[float], pos: int) -> dict[str, float | None]:
+    """Forward returns at the QGR horizons (adds the T+1 fast-leg vs round-1).
+
+    Mirrors ``build_factor_panel._forward_returns`` (incl. the ``fwd == fwd`` NaN
+    guard) — kept a separate copy only because the horizon set differs; keep the
+    two in lockstep if the forward-return formula ever changes."""
+    base = adj_close[pos]
+    out: dict[str, float | None] = {}
+    for h in QGR_FORWARD_HORIZONS:
+        nxt = pos + h
+        if nxt < len(adj_close) and base > 0:
+            fwd = adj_close[nxt]
+            out[f"fwd_ret_{h}d"] = (fwd / base - 1.0) if fwd == fwd else None
+        else:
+            out[f"fwd_ret_{h}d"] = None
+    return out
 
 
 @dataclass
@@ -86,6 +108,13 @@ class _QGRCodeSeries(_CodeSeries):
 
     up_limit: list[float] = field(default_factory=list)  # raw up-limit (NaN=missing)
     down_limit: list[float] = field(default_factory=list)
+    # tranche-2: raw open / pre_close (1-day momentum) + per-day limit_list_d record.
+    open_p: list[float] = field(default_factory=list)
+    pre_close: list[float] = field(default_factory=list)
+    lb_avail: list[bool] = field(default_factory=list)  # limit_list_d snapshot existed
+    lb_limit: list[str | None] = field(default_factory=list)  # 'U'/'D'/'Z'/None
+    lb_times: list[float | None] = field(default_factory=list)  # consecutive limit days
+    lb_open: list[float | None] = field(default_factory=list)  # board open_times
 
 
 def _ingest_day_qgr(
@@ -107,7 +136,8 @@ def _ingest_day_qgr(
     if daily_s is None or adj_s is None or basic_s is None:
         return 0
     daily = pd.read_csv(
-        io.BytesIO(daily_s.raw_payload), usecols=["ts_code", "close", "amount"]
+        io.BytesIO(daily_s.raw_payload),
+        usecols=["ts_code", "open", "close", "pre_close", "amount"],
     )
     adj = pd.read_csv(io.BytesIO(adj_s.raw_payload), usecols=["ts_code", "adj_factor"])
     basic = pd.read_csv(
@@ -115,6 +145,7 @@ def _ingest_day_qgr(
         usecols=["ts_code", "turnover_rate", "pe_ttm", "circ_mv"],
     )
     limits = read_limits(store, day)
+    lb_avail, lb_records = read_limit_board(store, day)
     m = daily.merge(adj, on="ts_code", how="inner").merge(
         basic, on="ts_code", how="left"
     )
@@ -137,9 +168,19 @@ def _ingest_day_qgr(
         cs.turnover.append(float(r.turnover_rate))
         cs.pe_ttm.append(float(r.pe_ttm))
         cs.circ_mv.append(float(r.circ_mv))
+        # open / pre_close may be NaN on a partial-trading day; not filtered here
+        # (the row's other factors stay valid) — intraday_return / overnight_gap
+        # guard with math.isfinite, so the 1-day factors fail closed to None.
         up, down = limits.get(str(r.ts_code), (nan, nan))
         cs.up_limit.append(up)
         cs.down_limit.append(down)
+        cs.open_p.append(float(r.open))
+        cs.pre_close.append(float(r.pre_close))
+        limit, times, opens = lb_records.get(str(r.ts_code), (None, None, None))
+        cs.lb_avail.append(lb_avail)
+        cs.lb_limit.append(limit)
+        cs.lb_times.append(times)
+        cs.lb_open.append(opens)
     return len(m)
 
 
@@ -210,12 +251,30 @@ def _build_rows_qgr(
                 turnover_rates=cs.turnover[: pos + 1],
                 pe_ttm=cs.pe_ttm[pos],
             )
+            # tranche-2: 1-day momentum (day-d raw open/close/pre_close) + limit-
+            # board structure from the PRIOR day (`<d`); pos 0 has no prior day →
+            # limit factors fail closed (available=False).
+            if pos >= 1:
+                prev_avail, prev_limit = cs.lb_avail[pos - 1], cs.lb_limit[pos - 1]
+                prev_times, prev_open = cs.lb_times[pos - 1], cs.lb_open[pos - 1]
+            else:
+                prev_avail, prev_limit, prev_times, prev_open = False, None, None, None
+            vec2 = compute_qgr2_factors(
+                open_price=cs.open_p[pos],
+                close=cs.raw_close[pos],
+                pre_close=cs.pre_close[pos],
+                prev_limit=prev_limit,
+                prev_limit_times=prev_times,
+                prev_open_times=prev_open,
+                limit_data_available=prev_avail,
+            )
             circ = cs.circ_mv[pos]
             raw_close = cs.raw_close[pos]
             row: dict[str, object] = {"date": day, "code": code, "ts_code": cs.ts_code}
             row.update(carry.as_dict())
             row.update(vec)
-            row.update(_forward_returns(cs.adj_close, pos))
+            row.update(vec2)
+            row.update(_forward_returns_qgr(cs.adj_close, pos))
             row["industry_l1"] = industry.l1_asof(cs.ts_code, day)
             row["circ_mv"] = circ
             row["log_circ_mv"] = (
@@ -238,7 +297,8 @@ def _panel_frame_qgr(rows: list[dict[str, object]]) -> pd.DataFrame:
         "ts_code",
         *FACTOR_NAMES,
         *QGR_FACTOR_NAMES,
-        *(f"fwd_ret_{h}d" for h in FORWARD_HORIZONS),
+        *QGR2_FACTOR_NAMES,
+        *(f"fwd_ret_{h}d" for h in QGR_FORWARD_HORIZONS),
         *QGR_PANEL_EXTRA_COLS,
     ]
     return pd.DataFrame(rows, columns=cols)

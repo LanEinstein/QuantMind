@@ -50,18 +50,26 @@ class _FakeStore:
         if trade_date in _TEST:
             raise AssertionError(f"builder read SEALED test date {trade_date}")
         i = _DATES.index(trade_date)
-        daily, adj, basic, limit = [], [], [], []
+        daily, adj, basic, limit, board = [], [], [], [], []
         for code, d in self._codes.items():
             ts = code + (".SH" if code.startswith("6") else ".SZ")
-            daily.append(f"{ts},{d['close'][i]},{d['amount'][i]}")
+            open_p = d["open"][i]
+            pre_close = d["close"][i - 1] if i > 0 else d["close"][i]
+            daily.append(f"{ts},{open_p},{d['close'][i]},{pre_close},{d['amount'][i]}")
             adj.append(f"{ts},1.0")
             basic.append(f"{ts},{d['turn'][i]},{d['pe'][i]},{d['cmv'][i]}")
             limit.append(f"{ts},{d['up'][i]},{d['down'][i]}")
+            # a code is on the limit-up board on a day its close hit the up-limit
+            if d["close"][i] >= d["up"][i] * (1 - 1e-9):
+                board.append(f"{ts},U,1,0")
         payloads = {
-            "daily": _csv("ts_code,close,amount", daily),
+            "daily": _csv("ts_code,open,close,pre_close,amount", daily),
             "adj_factor": _csv("ts_code,adj_factor", adj),
             "daily_basic": _csv("ts_code,turnover_rate,pe_ttm,circ_mv", basic),
             "stk_limit": _csv("ts_code,up_limit,down_limit", limit),
+            # limit_list_d only exists from 2020; the synthetic calendar is "2020"
+            # ids so it is always available here (board may be empty some days).
+            "limit_list_d": _csv("ts_code,limit,limit_times,open_times", board),
         }
         if endpoint not in payloads:
             return None
@@ -81,6 +89,7 @@ def _code(
         closes[idx] = up[idx]
     return {
         "close": closes,
+        "open": [c * 0.99 for c in closes],  # slight intraday gain (close/open-1>0)
         "amount": [500_000.0] * 45,
         "turn": [2.0] * 45,
         "pe": [15.0] * 45,
@@ -168,3 +177,19 @@ class TestQgrPanel:
         assert late["rev_3d"].notna().all()
         # turn_spike needs 25 trailing turnover obs → defined at the late rebalance.
         assert late["turn_spike"].notna().any()
+
+    def test_tranche2_columns_and_fwd_1d(self) -> None:
+        from scripts.factor_research.factor_lib import QGR2_FACTOR_NAMES
+
+        panel = build_qgr_panel(
+            _split(), _FakeStore(_codes()), industry=_StubIndustry(), rebalance_freq=5
+        )
+        for col in (*QGR2_FACTOR_NAMES, "fwd_ret_1d"):
+            assert col in panel.columns
+        # intraday return = close/open - 1 with open = 0.99*close → ~+1.01%, defined.
+        assert panel["intraday_ret_1d"].notna().all()
+        assert (panel["intraday_ret_1d"] > 0).all()
+        # limit_list_d available in the synthetic "2020" calendar → streak/broke not
+        # NaN (0 for the typical non-board name).
+        assert panel["limit_streak_prev"].notna().any()
+        assert (panel["limit_streak_prev"].dropna() >= 0).all()

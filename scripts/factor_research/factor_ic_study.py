@@ -127,17 +127,20 @@ def study(
     *,
     factor_names: tuple[str, ...] = FACTOR_NAMES,
     by_name: dict[str, FactorDef] = ALL_FACTORS_BY_NAME,
+    forward_cols: tuple[str, ...] = FORWARD_COLS,
 ) -> list[ICSummary]:
     """Compute IC summaries for every factor × forward horizon present.
 
     ``factor_names`` defaults to the round-1 seven (backward-compatible); the
     round-2 diagnostic passes round-1 + round-2 + their ``_neut`` variants.
+    ``forward_cols`` defaults to the 5/10/20d set; the QGR diagnostic adds the
+    fast-leg ``fwd_ret_1d``. A horizon column absent from the panel is skipped.
     """
     out: list[ICSummary] = []
     for factor in factor_names:
         if factor not in panel.columns:
             continue
-        for fwd in FORWARD_COLS:
+        for fwd in forward_cols:
             if fwd not in panel.columns:
                 continue
             out.append(
