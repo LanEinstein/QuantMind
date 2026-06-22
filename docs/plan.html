@@ -921,6 +921,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
     const SESSION_LOG = [
       {
         date: "2026-06-22",
+        session: "AF-005 价值子账户资金分仓 foundation(¥5万双门激活 latch + glide path + per-sleeve cap)— RiskEngine check#6 接线 deferred 到 AF-002 集成;owner 选『AF-001 同 session 并行 AF-005』",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "续 AF-001(infra+DRAFT done,待 owner 确认映射冻结)。owner AskUserQuestion 选『我先并行做 AF-005(¥5万分仓)』(不依赖映射冻结,depends 仅已批 amendment)。AF-005 = amendment §2.1/§2.2 核心边界变更(≤5 总仓→per-sleeve);最安全做法 = 现 sim ~¥9k<¥5万 须 byte-identical,价值仓真有持仓须 AF-002(value 候选)→ RiskEngine check#6 接线自然 couples AF-002,本 session 只做纯确定性 foundation 模块。",
+        actions: "**AF-005 foundation 全 done + 门禁全绿;RiskEngine 集成 deferred(§1.1 拆分:check#6 接线只在价值仓真有持仓才咬合,couples value_score 路径)。** 新 `backend/sleeve_policy/`(纯/确定性/0 LLM/import 隔离,同 budget_policy 范式):`SleevePolicy`=¥5万双门激活(master `enabled` switch AND 总权益 ≥ activate;**单向 latch**:一旦激活回落不强制清〔不force-liquidate 埋伏〕,只 glide target→0 停止加仓)+ glide path(价值目标权重随权益分层 <5万0%/5-10万20%/10-30万40%/≥30万60%,**短线 working floor 先留**:value_target=min(w·eq, max(0,eq−floor)))+ per-sleeve cap(短≤5/价值≤3;**休眠=value cap 0+单一≤5 池=byte-identical**)+ assign_sleeve(StyleTag.VALUE→VALUE)。`config/sleeve_policy.yaml` ships `enabled:false`+¥5万/glide/caps → 现 ~¥9k sim 双门休眠 → live 风控零改动。fail-closed config 校验(glide 单调/floor∈[0,activate]/caps≥1/bool-非-number 拒)。**codex(`</dev/null` stdin deadlock 修,见 memory feedback)1 cycle:1 P2 修**(short_working_floor_yuan 旧 `float(raw.get(...,0.0))` 漏校验→YAML true=1.0/string/missing 静默放松 floor → 改 `_require_number` fail-closed + 3 loader 测试)。门禁:27 测试 + ruff + mypy strict + redline + import 隔离 + **risk/budget_policy 回归 95(RiskEngine 一行未碰,确认 byte-identical)** 全绿。安全地基红线一条未破(仓位三连/熔断/连亏仍按合并总权益不放松 = 未碰那些 check;沿用 config runtime 不可改+amendment-gated)。",
+        commit: "feature `66c4e80`(backend/sleeve_policy 2 模块 + config/sleeve_policy.yaml〔enabled:false〕+ tests/sleeve_policy 2 文件)+ 本 docs commit(plan.html AF-005 doing 回填 + 本 SESSION_LOG)。push 待 owner 授权。",
+        next: "**AF-005 foundation done(¥5万分仓激活/glide/caps 纯模块,enabled:false 休眠 byte-identical)。剩 = RiskEngine check#6 per-sleeve 接线 + per-position sleeve 会计**(deferred:couples AF-002——价值仓须先有 value 候选〔AF-002 接 value_score〕才有 per-sleeve 持仓可校验;届时 Order/Position 加 sleeve tag + check#6 按 sleeve 计数,休眠仍 byte-identical)。**⏭️ 主 NEXT 仍 = owner 确认 AF-001 16 主题 DRAFT → frozen + codex PIT 门 → AF-002(value_score 接线,解锁 AF-004 底部确认 + AF-005 check#6 集成 + AF-006 做T + AF-007 监控/前端)**。sim 暂停直到 go-live gate。权威指针=本条 + AF-001 条 + `value-investing-strategy-2026-06-22.md` + memory [[project-value-investing-strategy-2026-06-22]]。",
+      },
+      {
+        date: "2026-06-22",
         session: "AF-001 政策→主题→申万L3 映射 registry(value sleeve + QGR-3 ⑧ 共享单一真相源)— infra + 16 主题 DRAFT;owner『审核通过.开』后 TDD,映射 status:draft 待 owner 确认冻结",
         owner: "Claude Opus 4.8 (1M context)",
         state_in: "owner『审核通过.开』批准 value-sleeve-amendment-2026-06-22 → Phase AF 实施。开工调查(强制)发现 **AF-001 = QGR-3 ⑧ 同一未建共享映射**(owner 已在 `qgr-3-short-factor-lib-2026-06-22.md` §6 定调:路线 B〔长主线历史锚+十五五强化〕/ 成分走申万 index_member_all L3 PIT〔ths_index 非 PIT〕/ 4 层 / effective_from=政策发布日 / 科创北交仍禁 / 与 AF-001 共享不重复造);另一 session QGR-3 ⑧『待实施冻结』git 树干净 → clear 由 Phase AF 建为 canonical 共享源(backend 模块,scripts/factor_research 可 import 消费)。",
@@ -4425,7 +4434,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", notes: "owner『提前埋伏』核心=买在主线确立+个股仍低位+缩量筑底确认时;不接飞刀。符号阈值 R/AF 阶段从零验。"
       },
       {
-        id: "AF-005", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P0",
+        id: "AF-005", phase: "AF 长线价值投资分仓", status: "doing", session_date: "2026-06-22", priority: "P0",
         title: "价值子账户分仓:¥5 万触发 + 资金切出 glide path + per-sleeve cap + 会计",
         summary: "amendment §2.1/§2.2 落地:总权益 ≥¥50,000 一次性激活价值仓(单向 latch+滞回 re-arm ¥45k);资金切出 glide path(<5万 0% / 5-10万 20% / 10-30万 40% / ≥30万 60%cap,短线 floor ≥¥4万);SHORT sleeve ≤5 + VALUE sleeve ≤3 独立资金池+仓位 cap+会计;RiskEngine check#6 按子账户校验;仓位三连/熔断/连亏按两子账户合并的总权益计(总杠杆红线不放松)。",
         scope: "config/risk.yaml(per-sleeve), backend/risk/(check#6 sleeve 化), backend/budget_policy/, backend/slot_portfolio/(或新 sleeve 层), backend/portfolio 会计, tests/",
@@ -4433,7 +4442,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "总权益<5万=价值仓休眠 bit-identical;≥5万激活+切出按 glide path;两 sleeve cap 独立;三连/熔断按合并总权益(不放松);价值仓只在底部确认时逐步填,不强制部署。",
         tests: "触发 latch+滞回 / glide path 各档 / per-sleeve cap / 合并总杠杆校验 / 价值仓休眠 byte-identical。",
         sources: "value-sleeve-amendment-2026-06-22 §2.1/§2.2, value-investing-strategy-2026-06-22.md §4.1, P0-7-amendment-2026-06-01",
-        commit: "", notes: "改 ≤5 总仓红线为 per-sleeve = 本 amendment 核心边界变更。触发线/glide 各档/floor/cap 为 owner config 默认(amendment-gated runtime 不可改),owner 审批时定值。"
+        commit: "66c4e80", notes: "**foundation done(feature `66c4e80`);RiskEngine check#6 per-sleeve 接线 + per-position sleeve 会计 deferred 到 AF-002 集成(只在价值仓真有持仓时才咬合,couples value_score 路径)。** 新 `backend/sleeve_policy/`(纯/0 LLM/import 隔离,同 budget_policy):¥5万双门激活(master switch AND 总权益触发,单向 latch=回落不强制清仓只缩 target)+ glide path(价值目标权重随权益升 <5万0%/5-10万20%/10-30万40%/≥30万60%,短线 floor 先留:value_target=min(w·eq,max(0,eq−floor)))+ per-sleeve cap(短≤5/价值≤3,休眠=value cap 0+单一≤5 池=byte-identical)。`config/sleeve_policy.yaml` ships `enabled:false` → 现 ~¥9k sim 双门休眠 → live 风控零改动。门禁 27 测试+ruff+mypy strict+redline+import 隔离+risk/budget_policy 回归 95(RiskEngine 未碰)全绿。codex(`</dev/null` stdin 修)1 P2 修=short_working_floor_yuan fail-closed 校验(YAML true/string/missing 拒)+测试。改 ≤5 总仓→per-sleeve = amendment 核心边界变更(仓位三连/熔断/连亏仍按合并总权益不放松)。触发线/glide/floor/cap = config 默认 owner 可调。"
       },
       {
         id: "AF-006", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P1",
