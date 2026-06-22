@@ -838,12 +838,184 @@ R4_FACTORS: tuple[FactorDef, ...] = (
 
 R4_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in R4_FACTORS)
 R4_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in R4_FACTORS}
-# Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3 + round-4).
+
+
+# ===========================================================================
+# QGR-3 short-term factor family ⑦ (fast leg): reversal + forced lottery removal.
+#
+# The framework re-research (QGR) reframes quant as the FIRST-pass stock gate, not
+# an index-tracker — so this family is the genuinely short-horizon A-share home
+# turf the round-1..4 monthly/defensive factors never touched: 1-3 day reversal
+# (the strongest A-share cross-sectional effect — Carpenter-Lu-Whitelaw RFS 2021;
+# Gao-Jiang-Xiong-Xiong NBER 2023 document daily, not weekly/monthly, reversal)
+# and the forced negative overlay that says what NOT to buy — short-window MAX,
+# abnormal turnover, and the limit-CENSORED MAX count (Leippold-Wang-Zhou JFE
+# 2022; Nartea-Wu PBFJ 2018; "MAX is not the max under daily price limits," PBFJ
+# 2021: a name that closes at its up-limit has its true demand-return censored, so
+# repeated limit-up closes are a lottery signal the raw return understates).
+#
+# They live in a SEPARATE ``QGR_FACTORS`` registry so the round-1..4 panel / IC /
+# search modules keyed on the earlier registries are byte-for-byte unaffected.
+# Every factor is attractive-LOW (high = a name to avoid); the IC study verifies
+# the sign from zero on real A-share data (the literature prior is never assumed).
+# All mechanisms are EXISTING ``EconomicMechanism`` values (mean_reversion /
+# low_volatility_anomaly / liquidity_premium) — no governance enum change.
+# ===========================================================================
+
+QGR_REVERSAL_1D: int = 1  # 1-day close-to-close reversal
+QGR_REVERSAL_3D: int = 3  # 3-day reversal
+QGR_MAX_SHORT_WINDOW: int = 5  # short-window MAX (round-1 max_20d is monthly)
+QGR_TURNOVER_SHORT_WINDOW: int = 5  # recent-attention window
+QGR_TURNOVER_BASE_WINDOW: int = 20  # baseline-attention window
+QGR_LIMIT_WINDOW: int = 5  # trailing window for the limit-up census
+
+
+def turnover_spike(
+    turnover_rates: list[float],
+    short: int = QGR_TURNOVER_SHORT_WINDOW,
+    base: int = QGR_TURNOVER_BASE_WINDOW,
+) -> float | None:
+    """Recent turnover vs its PRIOR baseline: ``mean(short) / mean(prior base) − 1``.
+
+    The ``base`` baseline window is the ``base`` days immediately BEFORE the last
+    ``short`` days (non-overlapping), so a recent surge is not diluted by being
+    averaged into its own baseline — a cleaner "abnormal attention" measure than a
+    trailing MA, and orthogonal to round-1 ``turn_20d`` (a level, not a change). A
+    burst of recent turnover proxies retail speculative attention (the China
+    turnover anomaly) → expected to underperform (attractive-low). ``None`` if
+    fewer than ``short + base`` observations, any window value is non-finite (a
+    halt's NaN turnover) or negative (malformed), or the baseline mean is
+    non-positive (fail-closed — never a fabricated spike).
+    """
+    if short <= 0 or base <= 0 or len(turnover_rates) < short + base:
+        return None
+    recent = turnover_rates[-short:]
+    prior = turnover_rates[-(short + base) : -short]
+    if not (_all_finite(recent) and _all_finite(prior)):
+        return None
+    if any(t < 0 for t in recent) or any(t < 0 for t in prior):
+        return None
+    base_mean = statistics.fmean(prior)
+    if base_mean <= 0:
+        return None
+    value = statistics.fmean(recent) / base_mean - 1.0
+    return value if math.isfinite(value) else None
+
+
+def limit_up_count(
+    raw_closes: list[float],
+    up_limits: list[float],
+    window: int = QGR_LIMIT_WINDOW,
+    tol: float = 1e-4,
+) -> float | None:
+    """Number of trailing ``window`` days that CLOSED at the up-limit.
+
+    A close at (within ``tol`` of) the day's ``up_limit`` is a censored
+    observation — the true demand-return was truncated at the price band — so a
+    high count flags a repeatedly limit-locked, retail-overbid lottery name
+    ("MAX is not the max under daily price limits"). Uses the RAW (unadjusted)
+    close vs the RAW ``up_limit`` (both same-day, so no adjustment needed).
+    ``None`` when history is too short or ANY limit price in the window is
+    missing/NaN/non-positive (fail-closed — an unknown band cannot be censused).
+    The two series must be day-aligned and equal-length (the panel appends them
+    in lockstep); a length mismatch means the trailing windows would compare
+    different days, so it fails closed rather than silently mis-censusing.
+    """
+    if len(raw_closes) != len(up_limits):
+        return None
+    if window <= 0 or len(raw_closes) < window or len(up_limits) < window:
+        return None
+    rc = raw_closes[-window:]
+    ul = up_limits[-window:]
+    if not (_all_finite(rc) and _all_finite(ul)) or any(u <= 0 for u in ul):
+        return None
+    return float(sum(1 for c, u in zip(rc, ul, strict=True) if c >= u * (1.0 - tol)))
+
+
+QGR_FACTORS: tuple[FactorDef, ...] = (
+    FactorDef(
+        name="rev_1d",
+        min_history=QGR_REVERSAL_1D + 1,
+        attractive_high=False,
+        mechanism="mean_reversion",
+        expected_ic_sign=-1,
+        description="Trailing 1d return — A-share daily reversal (Gao et al. 2023; "
+        "the strongest short-horizon cross-sectional effect).",
+    ),
+    FactorDef(
+        name="rev_3d",
+        min_history=QGR_REVERSAL_3D + 1,
+        attractive_high=False,
+        mechanism="mean_reversion",
+        expected_ic_sign=-1,
+        description="Trailing 3d return — short-term reversal (Carpenter-Lu-"
+        "Whitelaw RFS 2021); buy the oversold-but-healthy name.",
+    ),
+    FactorDef(
+        name="max_5d",
+        min_history=QGR_MAX_SHORT_WINDOW + 1,
+        attractive_high=False,
+        mechanism="low_volatility_anomaly",
+        expected_ic_sign=-1,
+        description="Max daily return over 5d — short-window anti-lottery (MAX) "
+        "effect; complements round-1 monthly max_20d at the fast-leg horizon.",
+    ),
+    FactorDef(
+        name="turn_spike",
+        min_history=QGR_TURNOVER_SHORT_WINDOW + QGR_TURNOVER_BASE_WINDOW,
+        attractive_high=False,
+        mechanism="liquidity_premium",
+        expected_ic_sign=-1,
+        description="Recent/prior-baseline turnover spike mean(5d)/mean(prior "
+        "20d)−1 — speculative-attention burst (Nartea-Wu PBFJ 2018), "
+        "attractive-low; orthogonal to round-1 turn_20d (level not change).",
+    ),
+    FactorDef(
+        name="n_limit_up_5d",
+        min_history=QGR_LIMIT_WINDOW,
+        attractive_high=False,
+        mechanism="low_volatility_anomaly",
+        expected_ic_sign=-1,
+        description="Count of up-limit closes over 5d — limit-CENSORED MAX "
+        "('MAX is not the max under daily price limits', PBFJ 2021); repeated "
+        "limit-locks flag a retail-overbid lottery name.",
+    ),
+)
+
+QGR_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in QGR_FACTORS)
+QGR_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in QGR_FACTORS}
+
+
+def compute_qgr_factors(
+    *,
+    closes: list[float],
+    turnover_rates: list[float],
+    raw_closes: list[float],
+    up_limits: list[float],
+) -> dict[str, float | None]:
+    """The QGR short-term factor vector for one code as-of a date (raw values).
+
+    ``closes`` = qfq-adjusted (returns are adjustment-invariant); ``raw_closes`` /
+    ``up_limits`` = RAW same-day prices for the limit-up census. Insufficient
+    history surfaces as ``None`` per field (never a fabricated value).
+    """
+    return {
+        "rev_1d": trailing_return(closes, QGR_REVERSAL_1D),
+        "rev_3d": trailing_return(closes, QGR_REVERSAL_3D),
+        "max_5d": max_daily_return(closes, QGR_MAX_SHORT_WINDOW),
+        "turn_spike": turnover_spike(turnover_rates),
+        "n_limit_up_5d": limit_up_count(raw_closes, up_limits),
+    }
+
+
+# Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3 + round-4
+# + QGR-3 short-term). A ``_neut`` variant resolves to its base factor's prior.
 ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {
     **FACTORS_BY_NAME,
     **R2_FACTORS_BY_NAME,
     **R3_FACTORS_BY_NAME,
     **R4_FACTORS_BY_NAME,
+    **QGR_FACTORS_BY_NAME,
 }
 
 
@@ -858,6 +1030,15 @@ __all__ = [
     "MAX_RETURN_WINDOW",
     "MOMENTUM_LOOKBACK",
     "MOMENTUM_SKIP",
+    "QGR_FACTORS",
+    "QGR_FACTORS_BY_NAME",
+    "QGR_FACTOR_NAMES",
+    "QGR_LIMIT_WINDOW",
+    "QGR_MAX_SHORT_WINDOW",
+    "QGR_REVERSAL_1D",
+    "QGR_REVERSAL_3D",
+    "QGR_TURNOVER_BASE_WINDOW",
+    "QGR_TURNOVER_SHORT_WINDOW",
     "R2_FACTORS",
     "R2_FACTORS_BY_NAME",
     "R2_FACTOR_NAMES",
@@ -881,14 +1062,17 @@ __all__ = [
     "asset_growth",
     "compute_factor_vector",
     "compute_fundamental_factors",
+    "compute_qgr_factors",
     "compute_statement_factors",
     "compute_trend_factors",
     "distance_from_high",
     "earnings_surprise_sue",
     "earnings_yield",
+    "limit_up_count",
     "max_daily_return",
     "mean_turnover",
     "momentum_skip",
+    "turnover_spike",
     "return_volatility",
     "trailing_return",
     "trend_slope",
