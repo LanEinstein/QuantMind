@@ -75,10 +75,10 @@ def test_malformed_config_fails_closed(tmp_path: Path, text: str, match: str) ->
         load_policy_theme_registry(_write(tmp_path, text))
 
 
-def test_real_draft_config_loads_and_is_draft() -> None:
-    """The shipped DRAFT mapping parses and is correctly flagged un-frozen."""
+def test_real_config_loads_and_is_frozen() -> None:
+    """The shipped mapping parses and is owner-frozen (codex PIT-gate passed)."""
     reg = load_policy_theme_registry(DEFAULT_POLICY_THEMES_PATH)
-    assert reg.frozen is False, "draft mapping must not present as frozen"
+    assert reg.frozen is True, "owner-frozen mapping must present as frozen"
     ids = {t.theme_id for t in reg.themes}
     # national-strategy themes are represented
     assert {"semiconductor_selfsufficiency", "ai_plus_full_chain"} <= ids

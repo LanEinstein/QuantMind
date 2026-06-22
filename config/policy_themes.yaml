@@ -1,7 +1,8 @@
 # 政策→主题→申万 L3 成分映射(AF-001 / QGR-3 ⑧ 共享单一真相源)
 #
-# ⚠️ DRAFT — 待 owner 最终确认 + 冻结(关键人工 gate)。`status: draft` 时本映射不参与
-#    任何 live/研究判定;owner 改 `status: frozen` 后(走 codex PIT-soundness 门已过)生效。
+# ✅ FROZEN — owner 最终确认冻结 2026-06-22(关键人工 gate 已过:codex PIT-soundness 门 v2
+#    重审 = FREEZE-READY,11 DEFENSIBLE + 1 已披露 bio L3 稀疏)。本映射现为权威单一真相源,
+#    AF-002 assembly + QGR-4 主题维度均消费它;再改须新 amendment + 重跑 codex PIT 门 + 重冻。
 #
 # 修订记录:
 #   2026-06-22 v2(codex PIT-soundness 门 NEEDS-REVISION → owner 拍板采纳):
@@ -34,8 +35,8 @@
 #                          ③ 每主题 L3 集 ④ bio_manufacturing L3 仍稀疏(合成生物无独立申万 L3,
 #                             当前为最佳可得代理,可接受或待扩)。
 
-version: "draft-2026-06-22-v2"
-status: "draft"   # draft | frozen — owner 最终确认后改 frozen
+version: "frozen-2026-06-22-v2"
+status: "frozen"   # draft | frozen — owner 最终冻结 2026-06-22(codex PIT 门已过)
 
 themes:
   # ───────── national_event(1.0):卡脖子自主可控 + 人工智能+ ─────────
