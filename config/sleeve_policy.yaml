@@ -1,0 +1,26 @@
+# 价值子账户资金分仓策略(AF-005)
+#
+# 治理:value-sleeve-amendment-2026-06-22 §2.1/§2.2(把 ≤5 单一总仓红线改为 per-sleeve:
+#       短线 ≤5 + 价值 ≤3,独立资金池;仓位三连/熔断/连亏仍按合并总权益,不放松)。
+# runtime 不可改 + hot-reload 禁;改 = git diff + amendment + 重启(同 RiskConfig 红线)。
+#
+# 双门激活(防御纵深,默认全惰性 = bit-identical):
+#   value sleeve active  ⇔  enabled(master,owner 显式开)AND
+#                            (总权益 ≥ activate_total_equity_yuan  OR  已 latch)
+# 当前 sim 账户 ~¥9k < ¥5万 且 enabled=false → 价值仓休眠 → 系统 byte-identical(纯短线 ≤5)。
+
+enabled: false                      # master switch — owner 显式开后才可能激活
+activate_total_equity_yuan: 50000   # ¥5万触发(单向 latch:一旦激活保持,回落不强制清仓,仅缩 target → 停止加仓)
+short_working_floor_yuan: 40000     # 短线 working floor(价值 target 不挤破,< activate)
+
+caps:
+  short_max_positions: 5            # 短线子账户 ≤5(P0-7 不变)
+  value_max_positions: 3            # 价值子账户 ≤3(owner 2026-06-22)
+
+# glide path:资产越大越偏稳妥价值 —— 价值仓目标权重随总权益分层提升。
+# breakpoint = [min_total_equity_yuan, value_target_weight];equity 取 ≤ 它的最高档权重。
+# <5万 = 0%(休眠) / [5,10)万 = 20% / [10,30)万 = 40% / ≥30万 = 60%(cap)
+glide_path:
+  - [50000, 0.20]
+  - [100000, 0.40]
+  - [300000, 0.60]
