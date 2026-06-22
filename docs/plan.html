@@ -921,6 +921,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
     const SESSION_LOG = [
       {
         date: "2026-06-22",
+        session: "QGR-3 ⑦ 短线因子库完整快腿(t1 反转+强制彩票剔除 / t2 1日动量+涨停结构)+ IC 从零验符号 + ⑧ 主旋律 owner 定调(与另一 session value-sleeve 并行,不碰 backend/)",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "接 QGR-2 冻结评测口径(净P&L+MDD≤8%+5td/10td)做 build-new ⑦ 短线因子库,分两 tranche 落完整快腿;另一 session 并行推 value-sleeve(AF-001/003/005),两线协调:QGR 域=scripts/factor_research/,⑧ 主题与 AF-001 共享单一真相源不重复造。",
+        actions: "**⑦ 完整快腿 done(t1 `b4dbcdf` + t2 `d7c0d5c`)。** t1=新 QGR_FACTORS(rev_1d/rev_3d/max_5d/turn_spike/n_limit_up_5d,独立 registry→round-1..4 字节不变,机制复用既有枚举=未动 governance)+limit_status_pit(stk_limit PIT band)+build_qgr_panel(train_val,sacred-split test 封存,reuse _cohort)+qgr_factor_diagnostics(R4-4 协议)。t2=新 QGR2_FACTORS(intraday_ret_1d/overnight_gap_1d/limit_streak_prev/broke_board_prev)+limit_board_pit(limit_list_d,(available,records) 区分 pre-2020 None vs 不在榜 0;涨停结构严格 `<d` 防前视)+build_qgr_panel 扩(ingest open/pre_close+涨停榜,QGR_FORWARD_HORIZONS=(1,5,10,20) 加 fwd_ret_1d)+study() 加向后兼容 forward_cols(round-1..4 字节不变)。真 panel 326854 行/498 日(同 cohort=t1 字节稳定;limit 因子 61%=post-2020,fail-closed 验证)。**IC 从零验符号(诚实,t=乐观 screen 非判据)**:幸存快腿轴 **{max_5d(neut|t|11.3)/turn_spike(4.6,与 turn_20d 正交=换手加速度)/rev_1d(3.0)}**;t1 丢 rev_3d(共线 ret_5d 0.72)/n_limit_up(中性化翻号=size 假象);**t2 四因子全丢+2 符号翻转**(intraday_ret_1d 先验+但 neut t−7.4=日频快腿是反转非动量〔印证§3.1.2〕/overnight_gap_1d 先验−但 neut+8.1=与§3.6陷阱相反/涨停结构 raw 强但中性化崩塌=size 假象;**不事后翻先验拯救=反 p-hacking**)。门禁 50 新测试/tests/factor_research 537 passed(round-1..4+t1 字节不变)/ruff+mypy strict+redline 全绿/零 backend 改动;**codex 仍因超时内真跑 25min 构建不可用→/code-review high 兜底**(t1 4路+t2 3路 finder,PIT/字节/None-vs-0/参数顺序全独立确认 clean,实修 limit_up_count 等长守卫+broke_board fail-closed 对称+空 limit 串→None)。",
+        commit: "feature `b4dbcdf`(t1)+`d7c0d5c`(t2)+ docs `34ee14c`(t1 IC)+`11e758c`(t2 IC)+ 本 SESSION_LOG。**push 待 owner 授权(QGR-1/2/3 链均本地未 push)**。",
+        next: "**⑧ 主旋律 owner 定调**=维持 value-sleeve 4 层+路线 B(历史锚+十五五,建议 2025-10-28/纲要 2026-03-16)+申万 index_member_all L3 PIT(ths_index 非 PIT)+科创红线维持(未盈利无法估值+2019-07 断点)+与 AF-001 共享真相源。**⏭️ ① ⑧ 主旋律维度实施**(关键人工 gate:owner 确认主题清单+政策日→codex PIT 门→冻结;消费 AF-001 frozen registry)② **底部确认门(§3.8B)=慢腿**(cyq_perf 成本带+缩量+资金流企稳;与 ⑧ 主旋律择场+主题内 value-at-low 一起)③ **QGR-4** 竞技场用快腿幸存轴+⑧主题+慢腿+round-1 搜候选闸门→SPA/Romano-Wolf 公平比+累计 N deflation(两条腿:已得证据=日频 T+1 是反转,真超短动量须分钟数据)。sim 暂停至 QGR-6 前向过门。权威=本条 + memory [[project-quant-first-gate-rearch-2026-06-21]] + docs/research/qgr-3-short-factor-lib-2026-06-22.md。",
+      },
+      {
+        date: "2026-06-22",
         session: "AF-003 质量基本面 fundamentals_score compute(value 线 surface tier)— 纯质量复合 ROE/GPM/EP/应计;snapshot→records reader deferred 到 AF-002;owner『继续推进』",
         owner: "Claude Opus 4.8 (1M context)",
         state_in: "续 AF-005 done。owner『继续推进』。映射 freeze 仍是 owner-gate(防 hindsight 的主题→政策日选择须 owner 担责,不擅自冻)→ 推进**独立于映射冻结**的 AF-003(质量基本面,depends 仅既有 PIT statements,且是 AF-002 的前置 component)。",
