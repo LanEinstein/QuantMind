@@ -921,6 +921,15 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
     const SESSION_LOG = [
       {
         date: "2026-06-22",
+        session: "AF-003 质量基本面 fundamentals_score compute(value 线 surface tier)— 纯质量复合 ROE/GPM/EP/应计;snapshot→records reader deferred 到 AF-002;owner『继续推进』",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "续 AF-005 done。owner『继续推进』。映射 freeze 仍是 owner-gate(防 hindsight 的主题→政策日选择须 owner 担责,不擅自冻)→ 推进**独立于映射冻结**的 AF-003(质量基本面,depends 仅既有 PIT statements,且是 AF-002 的前置 component)。",
+        actions: "**AF-003 compute 模块 done + 门禁全绿 + codex PASS;snapshot→records reader deferred 到 AF-002 assembly。** 新 `backend/quality_fundamentals/`(纯/确定性/0 LLM/import 隔离):metrics ROE/GPM/EP-TTM(高优)+ ACCRUALS(低优=现金支撑盈利非应计粉饰,符号反)/ PIT ann_date 选(复用 `value_factors.pit_fundamentals_value`,未披露季度不泄漏)/ 截面 percentile rank per metric(带符号)复合=present rank 均值→[0,1] / **无 PIT metric→None**(丢 component 不臆造 0.0,同 AF-001/AF-005 数据缺口约定)。8 测试(PIT 防泄漏/符号/应计反/None-非0/部分 metric/确定性/nan 丢弃)+ ruff + mypy strict + redline + import 隔离全绿。**codex(`</dev/null` stdin 修)read-only PASS 0 finding**(walrus population 推导式确认正确:留 0.0 丢 None,按全 PIT 码截面排名)。snapshot→records(从 income/cashflow/balancesheet/fina_indicator 算 4 metric 的 ann_date 记录)= AF-002 assembly 接(同 AF-001 的 sector_pit reader 配 AF-002)。安全地基红线一条未破(0 LLM/PIT/确定性/import 隔离/sim 暂停 live 未动)。",
+        commit: "feature `007d7f1`(backend/quality_fundamentals 2 模块 + tests 2 文件)+ 本 docs commit(plan.html AF-003 doing 回填 + 本 SESSION_LOG)。push 待 owner 授权。",
+        next: "**AF-003 compute done。三块 value-engine foundation 全就绪**:AF-001(theme_coverage)+ AF-003(fundamentals_score)+ AF-005(¥5万分仓 caps)。**⏭️ 主 NEXT 仍 = owner 确认 AF-001 16 主题 DRAFT(`config/policy_themes.yaml`)→ 我改 status:frozen + codex PIT 门 → AF-002 assembly**(把 AF-001 theme_coverage + AF-003 quality + AF-004 底部确认 + 各 reader 拼成 live `value_score`→selector,解锁 AF-004/AF-005 check#6 集成/AF-006 做T/AF-007 监控前端)。映射未冻前 AF-002 不上线。sim 暂停直到 go-live gate。权威指针=本条 + AF-001/AF-005 条 + memory [[project-value-investing-strategy-2026-06-22]]。",
+      },
+      {
+        date: "2026-06-22",
         session: "AF-005 价值子账户资金分仓 foundation(¥5万双门激活 latch + glide path + per-sleeve cap)— RiskEngine check#6 接线 deferred 到 AF-002 集成;owner 选『AF-001 同 session 并行 AF-005』",
         owner: "Claude Opus 4.8 (1M context)",
         state_in: "续 AF-001(infra+DRAFT done,待 owner 确认映射冻结)。owner AskUserQuestion 选『我先并行做 AF-005(¥5万分仓)』(不依赖映射冻结,depends 仅已批 amendment)。AF-005 = amendment §2.1/§2.2 核心边界变更(≤5 总仓→per-sleeve);最安全做法 = 现 sim ~¥9k<¥5万 须 byte-identical,价值仓真有持仓须 AF-002(value 候选)→ RiskEngine check#6 接线自然 couples AF-002,本 session 只做纯确定性 foundation 模块。",
@@ -4412,7 +4421,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         commit: "", notes: "纯接线;无需新风控。复用 AE-006 已建 value_slot_quota 端到端接线(此前缺的就是 value_scores 喂数)。"
       },
       {
-        id: "AF-003", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P1",
+        id: "AF-003", phase: "AF 长线价值投资分仓", status: "doing", session_date: "2026-06-22", priority: "P1",
         title: "质量基本面接线:fundamentals_score(roe/gpm/EP/应计,PIT ann_date)",
         summary: "surface tier 的 fundamentals_score 生产侧现 None。从既有 PIT statements(income/cashflow/balancesheet/fina_indicator,按 ann_date<d 选 as-known)派生质量复合(roe/gpm/EP-TTM/应计质量)灌入 ValueScoreInputs.fundamentals_score。严格 PIT(announcement-date keyed,never report-period end),缺则保守降 tier 不臆造。",
         scope: "backend/screening/value_factors.py(pit_fundamentals_value 扩), backend/fundamentals_pit 或 backend/data, tests/",
@@ -4420,7 +4429,7 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         acceptance: "fundamentals_score PIT replay bit-exact(ann_date 闸);缺基本面→component None 保守降 tier;质量复合符号经 R 阶段验非假设。",
         tests: "ann_date PIT 闸(未披露季度不泄漏)/ 缺数据保守降 tier / replay bit-exact。",
         sources: "value-investing-strategy-2026-06-22.md §4.2, value_factors.py:240-260, 既有 statements_pit 协议",
-        commit: "", notes: "质量因子符号(roe/gpm 正、应计反)从零验,不假设(对齐 R2-2 诊断协议)。"
+        commit: "007d7f1", notes: "**compute 模块 done(feature `007d7f1`);snapshot→metric-records reader(从 income/cashflow/balancesheet/fina_indicator 算 roe/gpm/ep_ttm/accruals)= AF-002 assembly。** 新 `backend/quality_fundamentals/`(纯/0 LLM/import 隔离):ROE/GPM/EP-TTM 高优 + 应计低优(符号反=现金支撑盈利)/ PIT ann_date 选(复用 value_factors.pit_fundamentals_value,未披露季度不泄漏)/ 截面 percentile 复合→[0,1] / 无 PIT metric→**None(丢 component 不臆造 0.0,同 AF-001 数据缺口约定)**。8 测试 + ruff + mypy strict + redline + import 隔离全绿;codex(`</dev/null`)**PASS 0 finding**。质量因子符号从零验,不假设(对齐 R2-2 诊断协议)。"
       },
       {
         id: "AF-004", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P0",
