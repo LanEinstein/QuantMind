@@ -921,6 +921,24 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
     const SESSION_LOG = [
       {
         date: "2026-06-22",
+        session: "AF-001 政策→主题→申万L3 映射 registry(value sleeve + QGR-3 ⑧ 共享单一真相源)— infra + 16 主题 DRAFT;owner『审核通过.开』后 TDD,映射 status:draft 待 owner 确认冻结",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "owner『审核通过.开』批准 value-sleeve-amendment-2026-06-22 → Phase AF 实施。开工调查(强制)发现 **AF-001 = QGR-3 ⑧ 同一未建共享映射**(owner 已在 `qgr-3-short-factor-lib-2026-06-22.md` §6 定调:路线 B〔长主线历史锚+十五五强化〕/ 成分走申万 index_member_all L3 PIT〔ths_index 非 PIT〕/ 4 层 / effective_from=政策发布日 / 科创北交仍禁 / 与 AF-001 共享不重复造);另一 session QGR-3 ⑧『待实施冻结』git 树干净 → clear 由 Phase AF 建为 canonical 共享源(backend 模块,scripts/factor_research 可 import 消费)。",
+        actions: "**AF-001 infra + 16 主题 DRAFT 全 done + 门禁全绿;映射待 owner 确认→冻结(关键人工 gate)。** ① 读真数据定形:index_member_all 带 l3_code in/out(312 L3/31 L1),index_classify=SW2021 树;拉全 L3 目录草拟映射。② 新 `backend/theme_mapping/`(0 LLM/确定性/import 隔离):models(frozen PolicyTheme/Registry+fail-closed 校验)/registry(YAML fail-closed loader,拒 present-but-null)/sector_pit(申万 L3 PIT in/out,`in<=d<out`,镜像 round-2 industry_pit 但 L3〔backend 不能 import up 进 scripts→可控复制〕)/resolver(**三 fail-closed 门**:decision_date 必 YYYYMMDD〔否则 dashed 日破词法 PIT 比较〕/registry 必 frozen 除非 allow_draft/tilt 须 active theme AND PIT L3 当日;theme_coverage 返 tier-weighted [0,1] 或 None〔数据缺口丢 component〕)。③ `config/policy_themes.yaml` DRAFT(status:draft)=16 主题×4 层真申万 L3 + effective_from 政策发布日(路线 B:中国制造2025 20150519/AI规划 20170720/双碳 20200922/中特估 20221121 等);未来产业 by-construction 排除。④ 6 测试文件 42 测试(models/sector_pit PIT 窗口/resolver 反 hindsight 双门/registry fail-closed/真 config catalog 一致性〔每 L3 对真 312 表,未 skip〕/import 隔离)。**codex CLI 超时(stdin 挂 600s exit124)→ `/code-review high` 兜底**(8 angle→3 finder):修 4 真问题(🔴 theme_coverage None-vs-0.0 数据缺口语义:无 PIT L3→None 丢 component 不臆造 0.0 / decision_date 校验防 dashed-date 破 PIT / draft-registry 守门强制 owner-gate / null-config 拒);skip 复制(scripts/backend 边界正当)+union 语义(故意有文档);**诚实 caveat:现 index_member_all=current-roster〔全开窗〕,历史重分类/退市未全捕获,L3 PIT 保真度受源表限(同 round-2 ~66% caveat),路线 B 回测反 hindsight 只与源表一样强**。门禁:42 测试 + ruff + mypy strict + redline + 邻近回归(screening/candidate_selector 171)全绿。安全地基红线一条未破(永禁下单/127.0.0.1/LLM 不写决策/单一构造点/PIT/RiskEngine 纯函数/sim 暂停 live 未动)。",
+        commit: "feature `bf3cb44`(backend/theme_mapping 5 模块 + config/policy_themes.yaml DRAFT + tests/theme_mapping 6 文件)+ 本 docs commit(设计文档 + amendment〔标 owner 批准〕+ plan.html AF-001 回填+Phase AF 立项 + 本 SESSION_LOG)。push 待 owner 授权。",
+        next: "**owner 确认 16 主题 DRAFT**(`config/policy_themes.yaml`:主题清单增删 + 每主题 effective_from 政策依据 + 每主题申万 L3 集 + traditional_upgrade 压舱石范围;**注意 low_altitude_economy 单 L3=aerospace 子集非独立可分、bio_manufacturing/低空 L3 稀疏待扩**)→ owner 改 `status: draft`→`frozen` + 走专门 codex PIT-soundness 门 → 该映射方为权威。**⏭️ 之后 AF-002**(value_score 接线消费 resolver.theme_coverage);**可并行 AF-005**(¥5万触发+独立资金分仓,depends 仅 amendment 已批)。与另一 session 协调:QGR-3 ⑧ 消费同一 `backend.theme_mapping`(已 import-friendly),不重复造;价值慢腿可入 QGR-2 已冻竞技场公平比。sim 暂停直到 go-live gate。权威指针=本条 + `docs/research/value-investing-strategy-2026-06-22.md` + `value-sleeve-amendment-2026-06-22` + memory [[project-value-investing-strategy-2026-06-22]]。",
+      },
+      {
+        date: "2026-06-22",
+        session: "长线价值投资专项立项:双引擎分仓(短线快速复利 + ¥5万触发价值仓)+ 锚定『十五五』规划 — 设计文档 + amendment 草案 + Phase AF 任务清单,docs-only,owner 审批后再 TDD",
+        owner: "Claude Opus 4.8 (1M context)",
+        state_in: "owner(另一 session 在推 QGR 短线代码)委托本 session 布局长线价值投资:短线/超短线用较低本金快速复利提升资产体量;最稳妥的还是价值投资;可用资金达 ¥5 万触发价值投资,锚定党中央十五五规划、避开热门炒作、深挖产业链、提前埋伏布局。要求先调查系统如何处理短线/超短线 vs 长线价值,以最贴合系统的方式制定战略并内化到工作流。",
+        actions: "**零运行代码,全 docs(§3 docs-only 例外)。** ① 三路 Explore 调查(file:line 级):短线机器(QGR 量化第一闸门 5-10td+screening→budget→selector→4-agent→RiskEngine→≤5 槽 T+1 轮动,默认风格 SHORT_TERM)/ 价值机器(**关键发现:价值线 ~95% 已建 ~0% 接线**——三层 value_score.py/价值槽配额价值≤2量化≥3/风格分型/持仓 thesis/1.5×软层全建好,但 line1_runner 传 value_scores=None → bit-identical 旧路径)/ 主题机器(Phase Y 5 步倒推 SOP+LLM peer-sourcing+人工 pin、Phase Q 知识图谱 choke-point、政策→主题 effective_from 防 hindsight 框架已建、十五五映射未建 owner-gated)。② 『十五五』政策研究(WebSearch/WebFetch 权威源):建议 2025-10-20~23 四中全会通过/2025-10-28 公布,纲要 2026-03-16 人大公布(=effective_from 防 hindsight 锚);4 主题层投资映射(战略性新兴产业/卡脖子自主可控-集成电路工业母机等/人工智能+全链/传统产业升级高股息)+ 排除未来产业(量子/核聚变/脑机/6G=无盈利可估值炒作)。③ owner 4 决策(AskUserQuestion):架构=独立资金分仓(>¥5万切出价值子账户 ≤3 槽,短线 ≤5 槽;须 amendment 改 ≤5 总仓红线)/ 主题=全 4 层/ 持有=容忍短暂回撤+可做T摊薄成本/ 执行=文档 only。④ 3 交付:设计文档 `docs/research/value-investing-strategy-2026-06-22.md`(现状盘点+十五五锚定+双引擎分仓+价值评分接线+持有/做T+红线+路线图+协调+诚实caveat)/ amendment 草案 `docs/decisions/value-sleeve-amendment-2026-06-22-long-term-value-investing.md`(4 边界变更:≤5→per-sleeve / ¥5万触发+glide path / 十五五映射激活 / 做T overlay;安全地基红线全留)/ plan.html Phase AF 7 任务(AF-001..007 全 todo)。",
+        commit: "docs-only 立项 commit(设计文档 + amendment 草案 + plan.html Phase AF + 本 SESSION_LOG)。**无运行代码**。push 待 owner 授权。",
+        next: "**owner 批准 amendment 草案『开』** → Phase AF 从 AF-001(十五五政策→主题映射,owner-gated 关键人工 gate+专门 codex PIT 门,**与另一 session QGR-3 映射共享单一真相源**)起 TDD 开建(codex 前置门);AF 链 AF-001→002(value_score 接线)→003(质量基本面)→004(底部确认+不追涨)→005(¥5万触发+分仓)→006(做T overlay env-OFF)→007(监控+前端)。**协调**:不碰 scripts/factor_research/(QGR 域);政策映射与 QGR-3 共享不重复造;价值慢腿可入 QGR-2 已冻评测竞技场公平比。sim 暂停直到 go-live gate(owner+LiveArtifactRegistry+45 日真管线 shadow replay+人工 pin+重启)。权威指针=本条 + `docs/research/value-investing-strategy-2026-06-22.md` + amendment 草案。",
+      },
+      {
+        date: "2026-06-22",
         session: "QGR-2 评测竞技场骨架(build-new ①-⑥⑨)— 真 CPCV 路径 + 事件循环适配器 + 累计 trial 账本含 legacy 块 + ONC/HAC 诚实门 + SPA/Romano-Wolf/BH-BY 公平比 + baseline 面板 + Layer-B 骨架;**评测口径冻结 DRAFT 待 owner 确认**",
         owner: "Claude Opus 4.8 (1M context)",
         state_in: "续 QGR-1(全 done,PIT 数据 `data/marketdata_pit/` ~29GB 已固定)。NEXT = QGR-2 评测竞技场(主文档 §4+§6+§7;build-new ①-⑥⑨ 骨架,先冻评测口径再进 QGR-3)。先读主文档 §4/§6/§7 + 数据清单 + 既有 backend/backtest、walk_forward_eval、disclosure_stats、experiment_registry、round4_forward_test。",
@@ -4360,6 +4378,84 @@ rg -n "DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|MOONSHOT_API_KEY|FEISHU_" .env .env.ex
         tests: "空 params→byte-identical 回归/clamp 违反→boot fail-closed/多步放松→冻结默认基线拒/param manifest 全程双复验。",
         sources: "AB-003-amendment-2026-06-14-param-runtime-landing, dossier §3.6+§8.4",
         commit: "30c1998", notes: "schema v1→v2(LiveArtifactLockFile 增可选 params 块 + version 收 \"1.0\"|\"2.0\";v1 无 params=空=byte-identical;抽出共享 load_lockfile 单一 fail-closed loader,registry+store 不漂移)。新 runtime_param_store.RuntimeParamStore(不可变 MappingProxyType+raising __setattr__ 镜像 LiveArtifactRegistry;boot 载入经 validate_param_set_for_activation 复验;get(name,default) 唯一消费访问;空 store=全取 code 默认)。activation 解除两处 param 拒:write_next_boot_lock + boot apply 各复验(防御纵深门#1/#2)+ apply 写 params 进 lockfile(version \"2.0\"+sorted params 仅非空时;no-param 路径 byte-identical)+ boot health-assert#3 载 RuntimeParamStore→失败走既有自动回退;build_activation_manifest 删死参 current_params。evolvable_params §2.5:FROZEN_BASELINE(safety-adjacent 冻结代码默认)+ validate_param_set_for_activation(单调基线=不可变冻结默认非上次 pin 值,防多步放松;无 baseline 的 safety-adjacent fail-closed 拒)。消费接线 P1=allocation.value_slot_quota→CandidateSelector(selector_config_with_params+SelectorConfig.value_slot_quota+_select_with_value cap;None=unbounded=bit-identical;boot 在 _init_line2_runners 接 post-activation store)。**审查驱动核心安全属性**:解除拒绝不得为无接线 consumer 的参数重开 activation(否则落 lockfile+store 日志 active 却毫无变化=静默 no-op,最坏落安全止损)→ RUNTIME_CONSUMED_PARAMS(有端到端接线的参数集,当前仅 value_slot_quota)+ activation 验证器拒其余;selector.weight_*(owner-gated factor scoring)/theme.tierN_weight(theme runtime 离线)/line2.*(无 store reader)pin 时被拒待 consumer 接;量化 lane 不受影响(用非-activation validate_param_set,仍产全 family forward-shadow mandate)。codex 撞 usage limit 至 06-18→/code-review high(3 正确性 finder 收敛于静默 no-op + 1 cleanup finder loader 重复;均修)。门禁 6070 passed(基线 6035→+35)/14 skipped/90.14% cov(runtime_param_store 100%/activation 94%/evolvable_params 99%)+ruff+mypy strict+redline 全绿。安全地基红线一条未破(零 LLM 数值晋升/晋升主门仍 45 日冻结 forward shadow+人工 pin+重启,本任务只补『pin→重启生效』最后段/config runtime 不可改+hot-reload 禁/import 隔离/127.0.0.1);新增收紧=未接线参数不可 pin。运行期激活待 owner:① selector.weight_* 真实 factor scoring 接线(owner-gated,同 AE-005 ScoreProvider 门)+ 加入 RUNTIME_CONSUMED_PARAMS;② value_slot_quota 效果待 AC-005 value-scoring 喂 value_scores(line1_runner 当前不传);③ 进化应用仍人工 pin+重启。"
+      },
+
+      {
+        id: "AF-001", phase: "AF 长线价值投资分仓", status: "doing", session_date: "2026-06-22", priority: "P0",
+        title: "十五五 政策→主题→产业链→标的映射 registry(owner-gated,effective_from 防 hindsight)",
+        summary: "git 冻结的政策→主题映射:价值仓全 4 层(战略性新兴产业/卡脖子自主可控/人工智能+全链/传统产业升级高股息),排除未来产业(量子/核聚变/脑机/6G=无盈利可估值的炒作)。每主题挂 effective_from=政策文件发布日(十五五建议 2025-10-28 / 纲要 2026-03-16),tilt 只从该日起生效。概念/行业成分 PIT(ths_index as-of + 申万 index_classify/index_member_all)。与 QGR-3『政策→主题』映射共享单一真相源(价值仓叠加长 horizon tier 权重 + 传统高股息层,不重复造);卡脖子层经知识图谱 choke-point 中心性反推断供环节。",
+        scope: "config/policy_themes(新映射), backend/theme_research/, backend/knowledge_graph/, docs",
+        depends: "value-sleeve-amendment-2026-06-22(owner 批准), QGR-3 映射门, owner 确认主题清单+政策日",
+        acceptance: "4 层主题→申万/同花顺成分 PIT 解析;每主题 effective_from 可定位政策文件;未来产业不在映射;baseline 面板证主题维度 OVER 非主题有增量(否则 deflation);与 QGR-3 同一真相源不漂移。",
+        tests: "映射 PIT replay bit-exact / effective_from 防回溯(政策日前不 tilt)/ 未来产业排除 / choke-point 中心性确定性。",
+        sources: "value-investing-strategy-2026-06-22.md §3+§4.3, quant-gate-rebar-amendment-2026-06-21 §2.3, 十五五建议(gov.cn 7046050)+纲要(npc.gov.cn)",
+        commit: "bf3cb44", notes: "**infra + 16 主题 DRAFT done(feature `bf3cb44`);映射 status:draft 待 owner 确认主题清单→冻结(关键人工 gate)再进 AF-002。** 新 backend/theme_mapping/(models/registry/sector_pit/resolver,0 LLM/确定性/import 隔离):三 fail-closed 门(decision_date 必 YYYYMMDD 否则破 PIT 词法比较 / registry 必 frozen 除非 allow_draft / tilt 须 active theme〔effective_from≤d〕AND PIT L3 成分当日)。theme_coverage 返 tier-weighted [0,1] 或 None(数据缺口→value-score tier mean 丢该 component 不臆造 0.0)。config/policy_themes.yaml DRAFT=16 主题×4 层(战新/卡脖子/AI+/传统高股息)真申万 L3 + effective_from 政策发布日(路线 B);未来产业 by-construction 排除;**诚实 caveat:现 index_member_all 是 current-roster〔开窗〕,历史重分类/退市未全捕获,L3 PIT 保真度受源表限**。门禁 42 测试/ruff/mypy strict/redline/import 隔离/catalog 一致性(每 L3 对真 312 表)全绿。codex CLI 超时(stdin 挂)→/code-review high 兜底修 4(None-vs-0.0 数据缺口/decision_date 校验/draft 守门/null-config 拒)。与 QGR-3 ⑧ 共享单一真相源(backend 模块,scripts/factor_research 可 import)。"
+      },
+      {
+        id: "AF-002", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P0",
+        title: "价值评分接线:compute_value_score 喂 selector(value_scores 现 None)",
+        summary: "把 backend/screening/value_score.py 的三层价值线(已建、确定性、0 LLM、bit-exact)灌活:大势主线=十五五主题成分(AF-001,带 tier_weights 权重)+sector_momentum+regime;资金认可+容量=CAR/容量/反 Amihud 流动性/换手/资金流;共振+弹性=共振(≥2 独立逻辑)+fundamentals_score(AF-003)+elasticity。算出 value_scores dict 传 CandidateSelector.select(现 line1_runner 不传=None=bit-identical 旧路径)→ value_score≥0.60+thesis 可派生 → 风格分型自动判 VALUE → 软层/配额/豁免全自动激活。",
+        scope: "backend/screening/value_score.py(接线), backend/screening/value_factors.py, backend/candidate_selector/selector.py, backend/orchestration/line1_runner.py, tests/",
+        depends: "AF-001",
+        acceptance: "value_scores 非 None 时价值槽配额(价值≤2/量化≥3 或 sleeve 内 ≤3)激活;None 时 bit-identical 旧路径;value_score replay bit-exact;风格分型对 VALUE 名正确打标。",
+        tests: "value_scores=None→byte-identical 回归 / 接线后 VALUE 槽填充确定性 / replay bit-exact / 风格分型门(0.60)。",
+        sources: "value-investing-strategy-2026-06-22.md §4.2, backend/screening/value_score.py, AC-003/AC-005",
+        commit: "", notes: "纯接线;无需新风控。复用 AE-006 已建 value_slot_quota 端到端接线(此前缺的就是 value_scores 喂数)。"
+      },
+      {
+        id: "AF-003", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P1",
+        title: "质量基本面接线:fundamentals_score(roe/gpm/EP/应计,PIT ann_date)",
+        summary: "surface tier 的 fundamentals_score 生产侧现 None。从既有 PIT statements(income/cashflow/balancesheet/fina_indicator,按 ann_date<d 选 as-known)派生质量复合(roe/gpm/EP-TTM/应计质量)灌入 ValueScoreInputs.fundamentals_score。严格 PIT(announcement-date keyed,never report-period end),缺则保守降 tier 不臆造。",
+        scope: "backend/screening/value_factors.py(pit_fundamentals_value 扩), backend/fundamentals_pit 或 backend/data, tests/",
+        depends: "既有 PIT statements 数据(data/marketdata_pit/)",
+        acceptance: "fundamentals_score PIT replay bit-exact(ann_date 闸);缺基本面→component None 保守降 tier;质量复合符号经 R 阶段验非假设。",
+        tests: "ann_date PIT 闸(未披露季度不泄漏)/ 缺数据保守降 tier / replay bit-exact。",
+        sources: "value-investing-strategy-2026-06-22.md §4.2, value_factors.py:240-260, 既有 statements_pit 协议",
+        commit: "", notes: "质量因子符号(roe/gpm 正、应计反)从零验,不假设(对齐 R2-2 诊断协议)。"
+      },
+      {
+        id: "AF-004", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P0",
+        title: "客观底部确认门 + 不追涨高位剔除(治洗盘/接飞刀)",
+        summary: "提前埋伏的入场门(quant-gate-rebar §2.3.C/D 落地于价值仓):多指标综合判健康筑底 vs 洗盘——缩量 / 站稳筹码成本带上方(cyq_perf)/ 资金流企稳 / 无技术破位 / 无困境(非 ST/无停牌/无退市审计风险)/ 基本面质量地板。叠『不追涨』=高位/过度延展剔除(高换手/MAX/IVOL/52 周高分位,主题内作用)。",
+        scope: "backend/screening/value_factors.py 或新 backend/value_entry/, backend/screening/value_score.py, tests/",
+        depends: "AF-002",
+        acceptance: "底部确认门确定性 0 LLM;洗盘 vs 健康筑底可区分;高位名被剔除;符号/阈值从零验有审计记录;PIT replay bit-exact。",
+        tests: "底部确认门确定性 / 高位剔除 / 缩量+筹码+资金流多指标综合 / 困境股 fail-closed 排除。",
+        sources: "value-investing-strategy-2026-06-22.md §4.2, quant-gate-rebar-amendment-2026-06-21 §2.3.B/C/D, cyq_perf(data/marketdata_pit/)",
+        commit: "", notes: "owner『提前埋伏』核心=买在主线确立+个股仍低位+缩量筑底确认时;不接飞刀。符号阈值 R/AF 阶段从零验。"
+      },
+      {
+        id: "AF-005", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P0",
+        title: "价值子账户分仓:¥5 万触发 + 资金切出 glide path + per-sleeve cap + 会计",
+        summary: "amendment §2.1/§2.2 落地:总权益 ≥¥50,000 一次性激活价值仓(单向 latch+滞回 re-arm ¥45k);资金切出 glide path(<5万 0% / 5-10万 20% / 10-30万 40% / ≥30万 60%cap,短线 floor ≥¥4万);SHORT sleeve ≤5 + VALUE sleeve ≤3 独立资金池+仓位 cap+会计;RiskEngine check#6 按子账户校验;仓位三连/熔断/连亏按两子账户合并的总权益计(总杠杆红线不放松)。",
+        scope: "config/risk.yaml(per-sleeve), backend/risk/(check#6 sleeve 化), backend/budget_policy/, backend/slot_portfolio/(或新 sleeve 层), backend/portfolio 会计, tests/",
+        depends: "value-sleeve-amendment-2026-06-22 §2.1/§2.2(owner 批准)",
+        acceptance: "总权益<5万=价值仓休眠 bit-identical;≥5万激活+切出按 glide path;两 sleeve cap 独立;三连/熔断按合并总权益(不放松);价值仓只在底部确认时逐步填,不强制部署。",
+        tests: "触发 latch+滞回 / glide path 各档 / per-sleeve cap / 合并总杠杆校验 / 价值仓休眠 byte-identical。",
+        sources: "value-sleeve-amendment-2026-06-22 §2.1/§2.2, value-investing-strategy-2026-06-22.md §4.1, P0-7-amendment-2026-06-01",
+        commit: "", notes: "改 ≤5 总仓红线为 per-sleeve = 本 amendment 核心边界变更。触发线/glide 各档/floor/cap 为 owner config 默认(amendment-gated runtime 不可改),owner 审批时定值。"
+      },
+      {
+        id: "AF-006", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P1",
+        title: "价值仓持有 + 做T降成本 overlay(底仓地板 + T+1 + 单一构造点;env-OFF)",
+        summary: "持有哲学:核心底仓长持,只在确定性 thesis-break(跌破买入锚定回撤/政策主线反转/基本面衰减)或硬风控退出;容忍短暂回撤(thesis 未破不恐慌卖,复用 thesis_break intact 豁免+1.5×宽止盈带)。做T overlay(确定性 0 LLM、env-OFF 默认):底仓地板(默认 60% 永不被做T卖破)+可做T份额(≤40%)按确定性参考成本带(cyq_perf/移动参考)高减低补,严格 T+1,round-trip 有界;订单经同一 builder+14-check,side/volume/limit_price 确定性派生。",
+        scope: "backend/monitoring/(thesis 持有), 新 backend/value_taoT 或 slot_portfolio overlay, backend/instruction_plan_builder(复用单一构造点), tests/",
+        depends: "AF-005",
+        acceptance: "做T overlay OFF 时价值仓=纯长持 bit-identical;ON 时永不卖破底仓地板;严格 T+1(只卖已结算股);单一构造点 grep 不破;阈值 config 不可改;0 LLM。",
+        tests: "overlay OFF→byte-identical / 底仓地板保护 / T+1 合规(不卖当日买入)/ 单一构造点不破 / round-trip 有界 / 成本摊薄正确。",
+        sources: "value-sleeve-amendment-2026-06-22 §2.4, value-investing-strategy-2026-06-22.md §4.4, Phase W thesis_break.py",
+        commit: "", notes: "owner『可适当做T摊薄成本』。最新颖最需 codex 审查;做T 与纯长线张力→有界/确定性/env-OFF/底仓地板保护,只降成本不伤核心 thesis。"
+      },
+      {
+        id: "AF-007", phase: "AF 长线价值投资分仓", status: "todo", session_date: "", priority: "P1",
+        title: "价值仓监控接线(Line-2 thesis-break)+ 只读前端 panel",
+        summary: "价值仓接入既有 backend/monitoring/thesis_break.py(已建已接线):日内 ANCHOR_DRAWDOWN+TIME_STOP 豁免、SCORE_DECAY 日终评;硬风控风格无关全留;SELL 方向确定性派生不经辩论(Line-2 零 LLM)。前端新增价值仓 display-only panel(现有页内 tab,GET-only,127.0.0.1,仅 2 写端点不变):持仓 thesis/effective_from 主题/底部确认状态/做T 成本摊薄/季度复检。",
+        scope: "backend/orchestration/line2*(价值仓接入), backend/api/(GET panel), frontend/(价值仓 panel/tab), tests/+vitest",
+        depends: "AF-005",
+        acceptance: "价值仓 thesis-break 日内+日终评估接线;硬风控风格无关;前端 display-only/GET-only;季度复检 cron;feishu 仅人工 display。",
+        tests: "thesis-break 价值仓接线 / 季度复检 / 前端 panel vitest / GET-only 红线(仅 2 写端点)。",
+        sources: "value-investing-strategy-2026-06-22.md §4.5, Phase W/Z, P1-5-amendment-2026-06-01",
+        commit: "", notes: "复用 Phase W thesis_break(已接线)+ Phase Z 前端只读 panel 范式。运行期激活待 owner 重启;sim 暂停直到 go-live gate。"
       }
     ];
 
