@@ -19,9 +19,10 @@ from backend.models.position_thesis import (
     ThesisInvalidationCondition,
 )
 from backend.position_thesis.store import PositionThesisStore
+from backend.style.models import StyleTag
 
 
-def _thesis(code: str = "600519") -> PositionThesis:
+def _thesis(code: str = "600519", style: StyleTag | None = None) -> PositionThesis:
     return PositionThesis(
         instruction_id="QM-20260612-093500-000001-BUY-001",
         signal_id="LINE1-20260612-0935",
@@ -45,6 +46,7 @@ def _thesis(code: str = "600519") -> PositionThesis:
         entry_score=0.82,
         snapshot_id="snap-1",
         feature_code_version="fc-v1",
+        style=style,
     )
 
 
@@ -131,6 +133,52 @@ async def test_theses_sorted_by_code(tmp_path: Path) -> None:
     assert codes == ["000001", "600519"]
 
 
+async def _get_filtered(app: FastAPI, query: str) -> dict[str, Any]:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/position-theses{query}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    return body["data"]
+
+
+@pytest.mark.asyncio
+async def test_style_filter_value_only(tmp_path: Path) -> None:
+    # AF-007: ?style=value returns only the value-sleeve holds.
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    store.open_thesis(_thesis("600519", style=StyleTag.VALUE))
+    store.open_thesis(_thesis("000001", style=StyleTag.SHORT_TERM))
+    store.open_thesis(_thesis("300750", style=StyleTag.VALUE))
+
+    data = await _get_filtered(_build_app(store), "?style=value")
+    assert data["available"] is True
+    assert data["style_filter"] == "value"
+    codes = {t["stock_code"] for t in data["theses"]}
+    assert codes == {"600519", "300750"}
+    assert all(t["style"] == "value" for t in data["theses"])
+    assert data["thesis_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_style_filter_unknown_is_empty(tmp_path: Path) -> None:
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    store.open_thesis(_thesis("600519", style=StyleTag.VALUE))
+    data = await _get_filtered(_build_app(store), "?style=bogus")
+    assert data["available"] is True
+    assert data["theses"] == []  # fail-closed: unknown style → no names
+
+
+@pytest.mark.asyncio
+async def test_no_filter_returns_all(tmp_path: Path) -> None:
+    store = PositionThesisStore(tmp_path / "theses.jsonl")
+    store.open_thesis(_thesis("600519", style=StyleTag.VALUE))
+    store.open_thesis(_thesis("000001", style=StyleTag.SHORT_TERM))
+    data = await _get_filtered(_build_app(store), "")
+    assert data["thesis_count"] == 2
+    assert data["style_filter"] is None
+
+
 def test_router_is_get_only() -> None:
     source = Path("backend/api/position_theses.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -139,9 +187,7 @@ def test_router_is_get_only() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
             for deco in node.decorator_list:
-                if isinstance(deco, ast.Call) and isinstance(
-                    deco.func, ast.Attribute
-                ):
+                if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute):
                     if deco.func.attr in write_verbs:
                         seen.append(node.name)
     assert seen == []

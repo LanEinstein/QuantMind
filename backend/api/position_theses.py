@@ -80,12 +80,19 @@ _ADVISORY_NOTE = (
 
 
 @router.get("/api/position-theses")
-async def get_position_theses(request: Request) -> dict[str, Any]:
+async def get_position_theses(
+    request: Request, style: str | None = None
+) -> dict[str, Any]:
     """Return the open position theses (pillars + invalidation thresholds).
 
     Display-only (P1-5-amendment-2026-06-01 §1.2). ``available=False`` when the
     thesis store is unwired; an empty wired store returns ``available=True`` with
     an empty list (no held position carries a thesis yet).
+
+    ``style`` (AF-007) optionally filters to one sleeve's holds (``value`` /
+    ``short_term``) so the read-only value-sleeve panel fetches only its own
+    names; an unknown value yields an empty list (fail-closed, never 500s). The
+    filter is a pure post-read predicate on the persisted thesis style label.
     """
     store = _get_store(request)
     if store is None:
@@ -100,9 +107,7 @@ async def get_position_theses(request: Request) -> dict[str, Any]:
         )
     try:
         open_theses = store.open_theses()
-        theses = [
-            _serialize_thesis(open_theses[code]) for code in sorted(open_theses)
-        ]
+        theses = [_serialize_thesis(open_theses[code]) for code in sorted(open_theses)]
     except Exception:  # noqa: BLE001 — read endpoint never 500s (house style)
         log.exception("position_theses_read_failed")
         return _ok(
@@ -115,12 +120,16 @@ async def get_position_theses(request: Request) -> dict[str, Any]:
             }
         )
 
+    if style is not None:
+        theses = [t for t in theses if t.get("style") == style]
+
     return _ok(
         {
             "available": True,
             "note": "",
             "thesis_count": len(theses),
             "theses": theses,
+            "style_filter": style,
             "advisory": {"note": _ADVISORY_NOTE},
         }
     )

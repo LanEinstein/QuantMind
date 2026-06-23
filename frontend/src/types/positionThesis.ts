@@ -38,6 +38,8 @@ export interface PositionThesesPayload {
   readonly thesis_count: number
   readonly theses: readonly PositionThesisView[]
   readonly advisory: { readonly note: string }
+  /** AF-007 — echoes the ?style filter applied (null when unfiltered). */
+  readonly style_filter?: string | null
 }
 
 /** Human-readable labels for the 3 whitelist invalidation templates. */

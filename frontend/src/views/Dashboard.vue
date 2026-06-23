@@ -91,6 +91,11 @@
       <div class="zone-dual-line">
         <DualLineStatusPanel />
       </div>
+
+      <!-- AF-007 价值仓监控(只读,长线埋伏;轮询,不扩 WS)-->
+      <div class="zone-value-sleeve">
+        <ValueSleevePanel />
+      </div>
     </div>
     <!-- G-002: status bar moved to AppShell.vue (global) -->
   </div>
@@ -105,6 +110,7 @@ import SectorHeatmap from '@/components/charts/SectorHeatmap.vue'
 import CapitalFlowChart from '@/components/charts/CapitalFlowChart.vue'
 import NewsFeed from '@/components/common/NewsFeed.vue'
 import DualLineStatusPanel from '@/components/dashboard/DualLineStatusPanel.vue'
+import ValueSleevePanel from '@/components/dashboard/ValueSleevePanel.vue'
 
 const store = useMarketStore()
 const { connected: wsConnected, connect } = useWebSocket()
