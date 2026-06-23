@@ -75,6 +75,8 @@ from backend.services.instruction_plan_builder import (
     MandatoryAgentRecords,
 )
 from backend.services.ledger import DecisionLedgerService
+from backend.services.sleeve_resolver import sleeve_limit_for
+from backend.sleeve_policy.policy import SleevePolicy
 from backend.style import StyleInputs, StyleTag, classify_style
 
 log = structlog.get_logger(component="orchestration.line1_runner")
@@ -434,6 +436,7 @@ class Line1Runner:
         advisory_provider: AdvisoryProvider | None = None,
         off_market_provider: OffMarketProvider | None = None,
         value_score_provider: ValueScoreProvider | None = None,
+        sleeve_policy: SleevePolicy | None = None,
         trader_personas: tuple[TraderPersona, ...] = (),
     ) -> None:
         self._screener = screener
@@ -477,6 +480,12 @@ class Line1Runner:
         # wired (sleeve active), it supplies the three-tier value_scores so the
         # selector's open slots can prefer VALUE-style names (AC-005).
         self._value_score_provider = value_score_provider
+        # AF-005: optional SleevePolicy. None = dormant → AssemblyContext keeps
+        # sleeve_limit=None → RiskEngine check#6 stays the single ≤5 pool, byte-
+        # identical. When wired (sleeve active), each candidate's per-sleeve cap
+        # is resolved from its buy-time style + the account equity and injected
+        # into the context so check#6 caps SHORT/VALUE independently.
+        self._sleeve_policy = sleeve_policy
         # T-002: the ≥2 frozen trader persona cards (TraderPersonaRegistry).
         # Empty by default (offline / not wired) → the traders fan-in node is a
         # no-op and the debate is bit-identical. Each persona contributes one
@@ -809,6 +818,11 @@ class Line1Runner:
         records = _mandatory_records_from_state(
             debate.state, f"{signal_id}-{candidate.code}"
         )
+        # AC-001: classify the deterministic buy-time style. Computed BEFORE the
+        # context so the AF-005 per-sleeve cap can be resolved from it; the
+        # nameplate registration stays after the route (below). Until AC-003
+        # lights up the value score this is uniformly SHORT_TERM (bit-identical).
+        style = self._classify_candidate_style(candidate, debate.state)
         context = lead_ctx.make_assembly_context(
             signal_id=signal_id,
             seq=seq,
@@ -816,6 +830,20 @@ class Line1Runner:
             analysis_record_id=f"{signal_id}-{candidate.code}-debate",
             risk_validation_id=f"{signal_id}-{candidate.code}-rv",
         )
+        # AF-005: when the value sleeve is wired + active, resolve this
+        # candidate's per-sleeve cap from its style + the account equity and
+        # inject it so RiskEngine check#6 caps SHORT/VALUE independently. Dormant
+        # (no policy / equity below the trigger) → None → context unchanged →
+        # check#6 byte-identical. ``replace`` keeps the provider Protocol intact.
+        if self._sleeve_policy is not None:
+            sleeve_limit = sleeve_limit_for(
+                self._sleeve_policy,
+                style,
+                context.account.total_assets,
+                latched=bool(getattr(provider, "value_sleeve_latched", False)),
+            )
+            if sleeve_limit is not None:
+                context = replace(context, sleeve_limit=sleeve_limit)
         built = await self._builder.assemble_plan(
             fund_manager_output=fmo, mandatory_records=records, context=context
         )
@@ -824,12 +852,10 @@ class Line1Runner:
         # NEVER written onto the InstructionPlan (single construction point
         # M-004) nor consumed by the parser / idempotency key.
         rationale = _build_buy_rationale(candidate, debate.state)
-        # AC-001: classify the deterministic buy-time style and register it on
-        # the broker nameplate BEFORE the route — the fill stamps entry_style at
-        # episode open. Display-only; it never touches the InstructionPlan or any
-        # risk number. Until AC-003 lights up the value score this is uniformly
-        # SHORT_TERM (bit-identical to the pre-AC path). Never gates routing.
-        style = self._classify_candidate_style(candidate, debate.state)
+        # AC-001: register the buy-time style (computed above) on the broker
+        # nameplate BEFORE the route — the fill stamps entry_style at episode
+        # open. Display-only; it never touches the InstructionPlan or any risk
+        # number. Never gates routing.
         if self._style_sink is not None:
             try:
                 self._style_sink.set_pending_entry_style(candidate.code, style.value)

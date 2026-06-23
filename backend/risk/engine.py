@@ -46,6 +46,7 @@ from backend.broker.models import (
 )
 from backend.risk.daily_state import DailyTradingState
 from backend.risk.price_cage import CageQuote, is_within_cage
+from backend.risk.sleeve import SleeveLimit
 from backend.risk.stock_meta import Board, StockMetadata
 from backend.utils.trading_hours import is_trading_hours
 
@@ -102,6 +103,7 @@ class RiskEngine:
         stock_meta: StockMetadata | None = None,
         concentration_exception: bool = False,
         live_quote: CageQuote | None = None,
+        sleeve_limit: SleeveLimit | None = None,
     ) -> ValidationResult:
         """Run the 14-check validation chain. First failure short-circuits.
 
@@ -132,6 +134,13 @@ class RiskEngine:
                 ceiling (a 废单) — folded INTO check #02 so the chain stays at
                 14 checks. ``None`` (legacy / SELL / monitoring callers) skips
                 the cage subcheck. A missing ``best_ask`` / board fails closed.
+            sleeve_limit: Optional per-sleeve position caps for check #06
+                (AF-005). ``None`` (value sleeve dormant — every current caller)
+                keeps check #06 as the single ``max_total_positions`` ≤5 pool,
+                BIT-IDENTICAL. When supplied, check #06 partitions held positions
+                by sleeve (VALUE iff ``entry_style == value_style_token``, else
+                SHORT) and caps the order's sleeve independently. The combined
+                exposure caps (15% / 70% / circuit breakers) are unchanged.
 
         Returns:
             ValidationResult — ``passed=True`` if all (applicable) checks
@@ -146,7 +155,8 @@ class RiskEngine:
             # masquerading as a universe miss. Codex cycle 1 P1.
             log.warning(
                 "stock_meta_code_mismatch",
-                order_code=order.code, meta_code=stock_meta.code,
+                order_code=order.code,
+                meta_code=stock_meta.code,
             )
             return ValidationResult(
                 passed=False,
@@ -189,8 +199,14 @@ class RiskEngine:
                 # extra concentration_exception flag. Special-cased here so
                 # the other 13 checks keep the uniform 7-arg signature.
                 result = self._check_position_limit(
-                    order, account, positions, prev_close, now,
-                    daily_state, stock_meta, concentration_exception,
+                    order,
+                    account,
+                    positions,
+                    prev_close,
+                    now,
+                    daily_state,
+                    stock_meta,
+                    concentration_exception,
                 )
                 # Preserve a granted concentration exception so its
                 # ``concentration_exception_granted`` reason survives into
@@ -206,13 +222,38 @@ class RiskEngine:
                 # 12 checks keep the uniform 7-arg signature and the cage stays
                 # FOLDED INTO check 2 (no 15th check).
                 result = self._check_price_reasonability(
-                    order, account, positions, prev_close, now,
-                    daily_state, stock_meta, live_quote=live_quote,
+                    order,
+                    account,
+                    positions,
+                    prev_close,
+                    now,
+                    daily_state,
+                    stock_meta,
+                    live_quote=live_quote,
+                )
+            elif check.__name__ == "_check_total_position_limit":
+                # Check 6 takes the optional per-sleeve caps. Special-cased here
+                # (like checks 2 / 5) so the other 12 checks keep the uniform
+                # 7-arg signature; ``sleeve_limit=None`` is byte-identical.
+                result = self._check_total_position_limit(
+                    order,
+                    account,
+                    positions,
+                    prev_close,
+                    now,
+                    daily_state,
+                    stock_meta,
+                    sleeve_limit=sleeve_limit,
                 )
             else:
                 result = check(
-                    order, account, positions, prev_close, now,
-                    daily_state, stock_meta,
+                    order,
+                    account,
+                    positions,
+                    prev_close,
+                    now,
+                    daily_state,
+                    stock_meta,
                 )
             if not result.passed:
                 log.warning(
@@ -326,11 +367,7 @@ class RiskEngine:
         # ``deviation > limit`` comparison silently return False and pass
         # an unbounded price through. Treat malformed values like None.
         # Codex cycle 2 P1 (same pattern as check 12).
-        if (
-            prev_close is None
-            or not math.isfinite(prev_close)
-            or prev_close <= 0
-        ):
+        if prev_close is None or not math.isfinite(prev_close) or prev_close <= 0:
             return ValidationResult(passed=True)
 
         if stock_meta is not None:
@@ -390,10 +427,7 @@ class RiskEngine:
             return ValidationResult(
                 passed=False,
                 rule_name="volume_validity",
-                message=(
-                    f"Volume {order.volume} must be a positive "
-                    f"multiple of {lot}"
-                ),
+                message=(f"Volume {order.volume} must be a positive multiple of {lot}"),
             )
         return ValidationResult(passed=True)
 
@@ -420,9 +454,7 @@ class RiskEngine:
                     ),
                 )
         else:
-            pos = next(
-                (p for p in positions if p.code == order.code), None
-            )
+            pos = next((p for p in positions if p.code == order.code), None)
             if pos is None:
                 return ValidationResult(
                     passed=False,
@@ -472,9 +504,7 @@ class RiskEngine:
                 message="Cannot trade with zero total assets",
             )
 
-        existing = next(
-            (p for p in positions if p.code == order.code), None
-        )
+        existing = next((p for p in positions if p.code == order.code), None)
         existing_shares = existing.volume if existing else 0
         proposed_shares = existing_shares + order.volume
         new_value = proposed_shares * order.price
@@ -548,18 +578,25 @@ class RiskEngine:
         now: dt.datetime | None,
         daily_state: DailyTradingState | None,
         stock_meta: StockMetadata | None,
+        sleeve_limit: SleeveLimit | None = None,
     ) -> ValidationResult:
         """Check 6: max number of distinct positions (≤5; ETF counts).
 
         ``max_total_positions`` is locked at 5 by
-        P0-7-amendment-2026-06-01-five-slot-rotation §1.1 (owner hard cap). The
-        semantics here already fit ≤5 with no change: a SELL is skipped (an exit
-        must never be trapped by the cap), adding to an already-held code does
-        not increase the count, and every distinct held code — ETF included —
-        occupies a slot. This is the hard guard that rejects the 6th
-        new-position BUY; the rotation decision (sell one to free a slot for a
-        stronger challenger) is made UPSTREAM in ``backend/slot_portfolio/`` and
-        is not a 15th check (``risk_summary`` stays min=max=14).
+        P0-7-amendment-2026-06-01-five-slot-rotation §1.1 (owner hard cap). A
+        SELL is skipped (an exit must never be trapped by the cap), adding to an
+        already-held code does not increase the count, and every distinct held
+        code — ETF included — occupies a slot. This is the hard guard that
+        rejects the over-cap new-position BUY; the rotation decision (sell one to
+        free a slot for a stronger challenger) is made UPSTREAM in
+        ``backend/slot_portfolio/`` and is not a 15th check (``risk_summary``
+        stays min=max=14).
+
+        AF-005: when ``sleeve_limit`` is supplied (value sleeve active), the cap
+        is PER-SLEEVE — held positions are partitioned into VALUE (entry_style ==
+        value_style_token) and SHORT, and the order's own sleeve is capped
+        independently (SHORT ≤5 / VALUE ≤3). ``sleeve_limit=None`` (dormant —
+        every current caller) keeps the single ≤5 pool, byte-identical.
         """
         if order.direction == OrderDirection.SELL:
             return ValidationResult(passed=True)
@@ -568,14 +605,39 @@ class RiskEngine:
         if order.code in held_codes:
             return ValidationResult(passed=True)
 
-        max_pos = self._config.position_limits.max_total_positions
-        if len(held_codes) >= max_pos:
+        if sleeve_limit is None:
+            max_pos = self._config.position_limits.max_total_positions
+            if len(held_codes) >= max_pos:
+                return ValidationResult(
+                    passed=False,
+                    rule_name="total_position_limit",
+                    message=(
+                        f"Already holding {len(held_codes)} positions (max: {max_pos})"
+                    ),
+                )
+            return ValidationResult(passed=True)
+
+        # Per-sleeve cap (AF-005). A held code's sleeve is derived from its
+        # existing entry_style nameplate (no new Position field); anything that
+        # is not the value token — including a legacy None — counts as SHORT.
+        held_value = {
+            p.code
+            for p in positions
+            if p.volume > 0 and p.entry_style == sleeve_limit.value_style_token
+        }
+        held_in_sleeve = (
+            len(held_value)
+            if sleeve_limit.is_value_order()
+            else len(held_codes) - len(held_value)
+        )
+        cap = sleeve_limit.cap_for_order()
+        if held_in_sleeve >= cap:
             return ValidationResult(
                 passed=False,
                 rule_name="total_position_limit",
                 message=(
-                    f"Already holding {len(held_codes)} positions "
-                    f"(max: {max_pos})"
+                    f"{sleeve_limit.order_sleeve} sleeve already holds "
+                    f"{held_in_sleeve} positions (max: {cap})"
                 ),
             )
         return ValidationResult(passed=True)
@@ -629,15 +691,9 @@ class RiskEngine:
                 message="Cannot trade with zero total assets",
             )
 
-        existing = next(
-            (p for p in positions if p.code == order.code), None
-        )
-        existing_value_for_this = (
-            existing.volume * order.price if existing else 0.0
-        )
-        other_value = sum(
-            p.market_value for p in positions if p.code != order.code
-        )
+        existing = next((p for p in positions if p.code == order.code), None)
+        existing_value_for_this = existing.volume * order.price if existing else 0.0
+        other_value = sum(p.market_value for p in positions if p.code != order.code)
         new_order_value = order.volume * order.price
         total_after = existing_value_for_this + other_value + new_order_value
         ratio = total_after / account.total_assets
@@ -676,10 +732,7 @@ class RiskEngine:
             return ValidationResult(
                 passed=False,
                 rule_name="single_instruction_amount",
-                message=(
-                    f"Instruction amount {amount:.2f} exceeds "
-                    f"limit {limit:.2f}"
-                ),
+                message=(f"Instruction amount {amount:.2f} exceeds limit {limit:.2f}"),
             )
         return ValidationResult(passed=True)
 
@@ -753,9 +806,7 @@ class RiskEngine:
             return ValidationResult(
                 passed=False,
                 rule_name="universe_whitelist",
-                message=(
-                    f"ST stock {order.code} ({stock_meta.name}) forbidden"
-                ),
+                message=(f"ST stock {order.code} ({stock_meta.name}) forbidden"),
             )
 
         return ValidationResult(passed=True)
@@ -800,37 +851,26 @@ class RiskEngine:
             return ValidationResult(
                 passed=False,
                 rule_name="limit_up_down_block",
-                message=(
-                    "current_price unavailable; "
-                    "cannot evaluate limit-up/down"
-                ),
+                message=("current_price unavailable; cannot evaluate limit-up/down"),
             )
 
-        if (
-            prev_close is None
-            or not math.isfinite(prev_close)
-            or prev_close <= 0
-        ):
+        if prev_close is None or not math.isfinite(prev_close) or prev_close <= 0:
             return ValidationResult(
                 passed=False,
                 rule_name="limit_up_down_block",
-                message=(
-                    "prev_close unavailable; "
-                    "cannot evaluate limit-up/down"
-                ),
+                message=("prev_close unavailable; cannot evaluate limit-up/down"),
             )
 
         if stock_meta is None:
             return ValidationResult(
                 passed=False,
                 rule_name="limit_up_down_block",
-                message=(
-                    "stock_meta unavailable; cannot get board limit_pct"
-                ),
+                message=("stock_meta unavailable; cannot get board limit_pct"),
             )
 
         limit_pct = universe.price_limit_pct_by_board.get(
-            str(stock_meta.board), 0.10,
+            str(stock_meta.board),
+            0.10,
         )
         upper_limit = _exchange_price_limit(prev_close, limit_pct, upper=True)
         lower_limit = _exchange_price_limit(prev_close, limit_pct, upper=False)
@@ -927,7 +967,8 @@ class RiskEngine:
         if daily_state.is_in_halt_cooldown:
             until = (
                 daily_state.halt_until.isoformat()
-                if daily_state.halt_until is not None else "unknown"
+                if daily_state.halt_until is not None
+                else "unknown"
             )
             return ValidationResult(
                 passed=False,
@@ -967,9 +1008,6 @@ class RiskEngine:
             return ValidationResult(
                 passed=False,
                 rule_name="consecutive_loss_halt",
-                message=(
-                    f"Last {n} trades all losing: "
-                    f"{[f'{p:.2f}' for p in recent]}"
-                ),
+                message=(f"Last {n} trades all losing: {[f'{p:.2f}' for p in recent]}"),
             )
         return ValidationResult(passed=True)

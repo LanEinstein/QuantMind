@@ -87,6 +87,7 @@ from backend.risk.circuit_breaker import CircuitBreaker
 from backend.risk.daily_state import DailyTradingState
 from backend.risk.engine import RiskEngine
 from backend.risk.price_cage import CageQuote
+from backend.risk.sleeve import SleeveLimit
 from backend.risk.stock_meta import StockMetadata as RiskStockMetadata
 from backend.services.fund_manager_output import FundManagerOutput
 from backend.services.instruction_plan import make_instruction_id
@@ -853,6 +854,7 @@ class InstructionPlanBuilder:
             stock_meta=context.stock_meta,
             concentration_exception=context.concentration_exception,
             live_quote=context.live_quote,
+            sleeve_limit=context.sleeve_limit,
         )
 
         risk_summary = _build_risk_summary(engine_result)
@@ -1049,7 +1051,8 @@ class InstructionPlanBuilder:
             # Stamp the LINE2-MON- signal_id so a bounced Line-2 candidate is
             # distinguishable from a Line-1 freeze in the audit trail.
             await self._record_audit(
-                early, candidate,
+                early,
+                candidate,
                 extra_payload={"signal_id": context.signal_id, "line": "line2"},
             )
             return early
@@ -1070,16 +1073,23 @@ class InstructionPlanBuilder:
             daily_state=context.daily_state,
             stock_meta=context.stock_meta,
             concentration_exception=context.concentration_exception,
+            # No sleeve_limit on the Line-2 monitoring path: it only emits SELLs
+            # (check#6 skips them) and ADDs to already-held codes (check#6 skips a
+            # held code), so the per-sleeve cap is moot. MonitoringAssemblyContext
+            # carries no sleeve_limit (a NEW-position BUY is Line-1's job).
         )
         risk_summary = _build_risk_summary(engine_result)
         if engine_result.passed:
             plan = self._build_monitoring_plan(
-                context, risk_summary,
-                status=InstructionStatus.VALIDATED, rejection_reason=None,
+                context,
+                risk_summary,
+                status=InstructionStatus.VALIDATED,
+                rejection_reason=None,
             )
         else:
             plan = self._build_monitoring_plan(
-                context, risk_summary,
+                context,
+                risk_summary,
                 status=InstructionStatus.REJECTED,
                 rejection_reason=(
                     f"{engine_result.rule_name}: {engine_result.message}"
@@ -1148,8 +1158,10 @@ class InstructionPlanBuilder:
             # zero-NAV guard that _derive_position_summary asserts (codex N-005
             # review). Degrade to a zeroed summary rather than raising.
             position_summary = PositionSummary(
-                pre_position_pct=0.0, post_position_pct=0.0,
-                pre_total_position_pct=0.0, post_total_position_pct=0.0,
+                pre_position_pct=0.0,
+                post_position_pct=0.0,
+                pre_total_position_pct=0.0,
+                post_total_position_pct=0.0,
                 pre_cash=max(0.0, context.account.available_cash),
                 post_cash=max(0.0, context.account.available_cash),
             )
@@ -1296,6 +1308,12 @@ class AssemblyContext:
     # rejects a BUY limit above the legal 卖一 cage (a 废单). ``None`` for SELL /
     # monitoring / legacy callers — the cage subcheck is then skipped.
     live_quote: CageQuote | None = None
+
+    # Per-sleeve position caps for RiskEngine check #6 (AF-005). ``None`` (value
+    # sleeve dormant — every current caller) keeps the single ≤5 pool, byte-
+    # identical; the runner/main resolves it via ``sleeve_limit_for`` only once
+    # the value sleeve activates (owner-gated). Forwarded into validate_order.
+    sleeve_limit: SleeveLimit | None = None
 
 
 @dataclass(frozen=True)

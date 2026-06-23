@@ -481,6 +481,7 @@ def _make_runner(
     advisory_provider: object | None = None,
     off_market_provider: object | None = None,
     selector: CandidateSelector | None = None,
+    sleeve_policy: object | None = None,
 ) -> Line1Runner:
     audit = AuditStore(
         InMemoryAuditCollection(), jsonl_path=tmp_path / "dispatch_audit.jsonl"
@@ -532,6 +533,7 @@ def _make_runner(
         style_sink=style_sink,
         advisory_provider=advisory_provider,
         off_market_provider=off_market_provider,
+        sleeve_policy=sleeve_policy,  # type: ignore[arg-type]
     )
 
 
@@ -578,6 +580,53 @@ async def builder(tmp_path: Path) -> InstructionPlanBuilder:
 # ---------------------------------------------------------------------------
 # tests
 # ---------------------------------------------------------------------------
+
+
+def _active_sleeve_policy():
+    from backend.sleeve_policy.policy import (
+        GlidePoint,
+        SleeveCaps,
+        SleevePolicy,
+        SleevePolicyConfig,
+    )
+
+    return SleevePolicy(
+        SleevePolicyConfig(
+            enabled=True,
+            activate_total_equity_yuan=50_000.0,
+            short_working_floor_yuan=40_000.0,
+            caps=SleeveCaps(short_max_positions=5, value_max_positions=3),
+            glide_path=(
+                GlidePoint(50_000.0, 0.20),
+                GlidePoint(100_000.0, 0.40),
+                GlidePoint(300_000.0, 0.60),
+            ),
+        )
+    )
+
+
+async def test_active_sleeve_policy_routes_buy_basket(builder, tmp_path) -> None:
+    # AF-005 active path: with the value sleeve wired + active (equity 100k ≥
+    # 50k trigger), the runner resolves each candidate's per-sleeve cap and
+    # injects it into the context — routing still succeeds (the glue executes;
+    # SHORT_TERM candidates with no held positions clear the SHORT ≤5 cap).
+    sender = FakeFeishuSender()
+    runner = _make_runner(
+        mode=RouteMode.FEISHU_INTERACTIVE,
+        sender=sender,
+        builder=builder,
+        tmp_path=tmp_path,
+        sleeve_policy=_active_sleeve_policy(),
+    )
+    router = _StubRouter(action="买入")
+    result = await runner.run(
+        frame=_snapshot(),
+        provider=FakeProvider(cash=98_000.0, router=router),
+        now=_NOW,
+    )
+    assert result.outcome is Line1Outcome.ROUTED
+    assert len(result.routed_buys) == 3
+    assert all(rb.plan.side.value == "BUY" for rb in result.routed_buys)
 
 
 async def test_feishu_mode_routes_validated_buy_basket(builder, tmp_path) -> None:
