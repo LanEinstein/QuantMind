@@ -973,7 +973,8 @@ fi
 yellow "[L-002] pure-quant module isolation (no backend.{llm,agents,mirofish})"
 L002_DIRS=""
 for d in backend/screening backend/budget_policy backend/candidate_selector \
-         backend/slot_portfolio backend/fundamentals_pit backend/value_assembly; do
+         backend/slot_portfolio backend/fundamentals_pit backend/value_assembly \
+         backend/value_entry; do
   [ -d "$d" ] && L002_DIRS="$L002_DIRS $d"
 done
 if [ -z "$L002_DIRS" ]; then
