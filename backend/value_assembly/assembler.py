@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from backend.fundamentals_pit.reader import (
     quality_metric_records,
@@ -41,6 +41,7 @@ DEFAULT_STATEMENT_PERIODS = 8
 """Trailing quarter-ends read for the PIT fundamentals vintage (~2 years)."""
 
 
+@runtime_checkable
 class EntryGate(Protocol):
     """AF-004 bottom-confirmation hook (a code must be a confirmed bottom).
 
