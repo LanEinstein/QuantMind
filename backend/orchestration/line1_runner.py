@@ -320,6 +320,23 @@ class AdvisoryProvider(Protocol):
     ) -> Sequence[AdvisorySignal] | None: ...
 
 
+@runtime_checkable
+class ValueScoreProvider(Protocol):
+    """AF-002: assemble per-code three-tier ``value_scores`` for the selector.
+
+    Returns ``{code: value_score ∈ [0, 1]}`` over the affordable quant set on the
+    decision (frame) date — the AF-001 theme coverage + AF-003 quality + AF-002
+    valuation composite. ``None`` (no provider wired = value sleeve dormant)
+    leaves the selector on the pure-quant path, bit-identical to the pre-AF
+    behaviour. Implementations are deterministic + PIT; the runner calls this
+    fail-open (any assembly gap falls back to the pure-quant path).
+    """
+
+    def assemble(
+        self, *, codes: Sequence[str], decision_date: str
+    ) -> dict[str, float] | None: ...
+
+
 class OffMarketProvider(Protocol):
     """O-004: resolve the off-market briefing TEXT for the debate.
 
@@ -331,9 +348,7 @@ class OffMarketProvider(Protocol):
     four allowed text fields, never a decision/numeric field.
     """
 
-    async def __call__(
-        self, codes: Sequence[str], *, trade_date: str
-    ) -> str: ...
+    async def __call__(self, codes: Sequence[str], *, trade_date: str) -> str: ...
 
 
 class ThesisWriter(Protocol):
@@ -418,6 +433,7 @@ class Line1Runner:
         style_sink: StyleNameplateSink | None = None,
         advisory_provider: AdvisoryProvider | None = None,
         off_market_provider: OffMarketProvider | None = None,
+        value_score_provider: ValueScoreProvider | None = None,
         trader_personas: tuple[TraderPersona, ...] = (),
     ) -> None:
         self._screener = screener
@@ -456,6 +472,11 @@ class Line1Runner:
         # Optional and fail-open — None (or any gap) leaves the debate
         # bit-identical; the LLM still writes only the four allowed fields.
         self._off_market_provider = off_market_provider
+        # AF-002: optional value-score assembler. None = value sleeve dormant →
+        # the selector runs the pure-quant path, bit-identical to pre-AF. When
+        # wired (sleeve active), it supplies the three-tier value_scores so the
+        # selector's open slots can prefer VALUE-style names (AC-005).
+        self._value_score_provider = value_score_provider
         # T-002: the ≥2 frozen trader persona cards (TraderPersonaRegistry).
         # Empty by default (offline / not wired) → the traders fan-in node is a
         # no-op and the debate is bit-identical. Each persona contributes one
@@ -530,7 +551,18 @@ class Line1Runner:
         advisory = await self._resolve_advisory(
             [c.code for c in quant], _selection_day_from_frame(frame.trade_date)
         )
-        selection = self._selector.select(quant, advisory=advisory)
+        # AF-002: assemble the three-tier value_scores over the affordable quant
+        # set so the selector's open slots can prefer VALUE-style names (AC-005).
+        # PIT decision date = the replayable frame trade date. Fail-open: any
+        # assembly gap (no provider / data hole / error) falls back to None =
+        # the pure-quant path, bit-identical to pre-AF. ``value_scores=None`` is
+        # passed identically to the legacy ``select(quant, advisory=advisory)``.
+        value_scores = self._resolve_value_scores(
+            [c.code for c in quant], frame.trade_date
+        )
+        selection = self._selector.select(
+            quant, advisory=advisory, value_scores=value_scores
+        )
         if not selection.shortlist:
             return self._short(sid, Line1Outcome.EMPTY_SHORTLIST, tier=assessment.tier)
 
@@ -763,17 +795,13 @@ class Line1Runner:
         # (MVP / fail-open) is a no-op (bit-identical debate).
         team_context = lead_ctx.team_context
         if off_market_context:
-            team_context = replace(
-                team_context, off_market_context=off_market_context
-            )
+            team_context = replace(team_context, off_market_context=off_market_context)
         # T-002: inject the ≥2 frozen trader personas into the (frozen)
         # TeamContext via replace — keeps the provider Protocol untouched. Empty
         # (not wired) is a no-op (bit-identical debate); the fund_manager stays
         # the sole proposer and the builder derives the order numbers (R0 §4).
         if self._trader_personas:
-            team_context = replace(
-                team_context, trader_personas=self._trader_personas
-            )
+            team_context = replace(team_context, trader_personas=self._trader_personas)
         debate = await run_shortlist(
             team_context, [lead_ctx.brief], redis_client=self._redis
         )
@@ -804,9 +832,7 @@ class Line1Runner:
         style = self._classify_candidate_style(candidate, debate.state)
         if self._style_sink is not None:
             try:
-                self._style_sink.set_pending_entry_style(
-                    candidate.code, style.value
-                )
+                self._style_sink.set_pending_entry_style(candidate.code, style.value)
             except Exception as exc:  # noqa: BLE001 — nameplate never blocks
                 log.warning(
                     "line1_style_register_failed",
@@ -989,9 +1015,7 @@ class Line1Runner:
                 instruction_id=plan.instruction_id,
                 side=plan.side.value,
             )
-            return _CandidateResult(
-                outcome=Line1Outcome.NON_BUY_DISCARDED, plan=plan
-            )
+            return _CandidateResult(outcome=Line1Outcome.NON_BUY_DISCARDED, plan=plan)
 
         # VALIDATED BUY → pick the template from the ENGINE's authoritative
         # result (U-C4): if RiskEngine check 5 granted an over-15% ETF
@@ -1059,11 +1083,33 @@ class Line1Runner:
         if last is not None:
             # 0 BUYs, walk completed: reflect the last candidate's terminal
             # (all-HOLD → HOLD, all-rejected → REJECTED, …) + its plan for audit.
-            return Line1RunResult(
-                outcome=last.outcome, plan=last.plan, **common
-            )
+            return Line1RunResult(outcome=last.outcome, plan=last.plan, **common)
         # Unreachable (the shortlist is non-empty), kept fail-closed.
         return Line1RunResult(outcome=Line1Outcome.EMPTY_SHORTLIST, **common)
+
+    def _resolve_value_scores(
+        self, codes: Sequence[str], decision_date: str
+    ) -> dict[str, float] | None:
+        """Best-effort three-tier value_scores; ``None`` on any gap (AF-002).
+
+        ``None`` (no provider = value sleeve dormant) keeps the selector on the
+        pure-quant path, bit-identical to pre-AF. Never raises and never gates
+        selection — a provider error or empty candidate set falls back to the
+        pure-quant path (fail-open; the value path is purely additive).
+        """
+        if self._value_score_provider is None or not codes or not decision_date:
+            return None
+        try:
+            scores = self._value_score_provider.assemble(
+                codes=codes, decision_date=decision_date
+            )
+        except Exception as exc:  # noqa: BLE001 — value path is never load-bearing
+            log.warning("value_score_resolve_failed", error=str(exc))
+            return None
+        # An empty / None map is coerced to None so the selector keeps the
+        # pure-quant path bit-identical (a non-None map would engage value
+        # ordering even with no value name selected, codex AF-002 P2).
+        return scores or None
 
     async def _resolve_advisory(
         self, codes: Sequence[str], trade_date: str
@@ -1083,9 +1129,7 @@ class Line1Runner:
             log.warning("advisory_resolve_failed", error=str(exc))
             return None
 
-    async def _resolve_off_market(
-        self, codes: Sequence[str], trade_date: str
-    ) -> str:
+    async def _resolve_off_market(self, codes: Sequence[str], trade_date: str) -> str:
         """Best-effort off-market briefing TEXT; ``""`` on any gap (O-004).
 
         Never raises and never gates the debate — a provider error or absent
@@ -1142,8 +1186,7 @@ def _concentration_exception_granted(plan: InstructionPlan) -> bool:
     match what the engine actually allowed.
     """
     return any(
-        row.passed is True
-        and _CONCENTRATION_EXCEPTION_GRANTED in (row.message or "")
+        row.passed is True and _CONCENTRATION_EXCEPTION_GRANTED in (row.message or "")
         for row in plan.risk_summary
     )
 

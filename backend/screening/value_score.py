@@ -10,8 +10,11 @@ cross-sectional percentile helper) into one deterministic ``value_score`` ∈
 * **Mid · 资金认可+容量**: event-study CAR + capacity + turnover/northbound
   percentiles + (inverted) Amihud illiquidity — all already percentile-ranked
   against the candidate cross-section.
-* **Surface · 共振+弹性**: independent-evidence-family resonance + PIT
-  fundamentals support + elasticity (beta/amplitude/free-float).
+* **Surface · 共振+弹性+估值**: independent-evidence-family resonance + PIT
+  fundamentals support + elasticity (beta/amplitude/free-float) + the AF-002
+  valuation factor (high-dividend / low PE-PB cheapness — the replacement for the
+  policy-theme map's deleted 传统高股息 layer, moved here as a value factor per the
+  AF-001 codex PIT-soundness gate).
 
 Pure, deterministic, 0 LLM, import-isolated. A tier score is the equal-weight
 mean of its **present** (non-None) components — a missing component (no pinned
@@ -27,8 +30,14 @@ from dataclasses import dataclass, field
 
 from backend.screening.value_factors import clamp01
 
-VALUE_SCORE_FEATURE_VERSION = "screening.value_score/v1"
-"""Pinned composite-code version; bump on any maths change (stale replay fails)."""
+VALUE_SCORE_FEATURE_VERSION = "screening.value_score/v2"
+"""Pinned composite-code version; bump on any maths change (stale replay fails).
+
+v2 (AF-002): the surface tier gains the optional ``valuation_score`` component
+(high-dividend / low PE-PB). A ``None`` valuation (every pre-AF-002 caller) keeps
+the tier mean over the present components unchanged, so the composite is
+bit-identical for the legacy inputs — but the composite *code* changed, so the
+version is bumped to fail a stale value-sleeve replay pinned to v1."""
 
 
 def _tier_mean(components: tuple[float | None, ...]) -> float:
@@ -59,10 +68,14 @@ class ValueScoreInputs:
     liquidity_pct: float | None = None  # inverted Amihud (higher = more liquid)
     turnover_pct: float | None = None
     capital_flow_pct: float | None = None  # northbound / main-capital
-    # Surface · 共振+弹性
+    # Surface · 共振+弹性+估值
     resonance_score: float | None = None
     fundamentals_score: float | None = None
     elasticity_score: float | None = None
+    valuation_score: float | None = None
+    """AF-002 cheapness factor ∈ [0, 1] (high-dividend / low PE-PB, cross-
+    sectionally ranked). ``None`` pre-AF-002 / on a data gap → dropped from the
+    surface mean (conservative), keeping the legacy composite bit-identical."""
 
 
 @dataclass(frozen=True)
@@ -111,7 +124,12 @@ _MID_FIELDS = (
     "turnover_pct",
     "capital_flow_pct",
 )
-_SURFACE_FIELDS = ("resonance_score", "fundamentals_score", "elasticity_score")
+_SURFACE_FIELDS = (
+    "resonance_score",
+    "fundamentals_score",
+    "elasticity_score",
+    "valuation_score",
+)
 
 
 def compute_value_score(

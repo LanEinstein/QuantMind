@@ -145,3 +145,45 @@ class TestComputeValueScore:
             ValueScoreWeights(bottom=-1.0)
         with pytest.raises(ValueError):
             ValueScoreWeights(bottom=0.0, mid=0.0, surface=0.0)
+
+
+class TestValuationFactorField:
+    """AF-002: the surface-tier ``valuation_score`` is additive (None-default)."""
+
+    def test_none_valuation_is_bit_identical(self) -> None:
+        # A pre-AF-002 input (valuation_score defaults None) is dropped from the
+        # surface mean → the composite is unchanged from the v1 behaviour.
+        legacy = ValueScoreInputs(
+            theme_coverage=0.8, fundamentals_score=0.6, resonance_score=0.4
+        )
+        out = compute_value_score(legacy)
+        assert "valuation_score" not in out.components_present
+        # surface = mean(resonance 0.4, fundamentals 0.6) = 0.5 (valuation dropped)
+        assert out.surface == pytest.approx(0.5)
+
+    def test_present_valuation_enters_surface_mean(self) -> None:
+        out = compute_value_score(
+            ValueScoreInputs(fundamentals_score=0.6, valuation_score=1.0)
+        )
+        # surface = mean(fundamentals 0.6, valuation 1.0) = 0.8
+        assert out.surface == pytest.approx(0.8)
+        assert "valuation_score" in out.components_present
+
+    def test_full_twelve_components(self) -> None:
+        inputs = ValueScoreInputs(
+            theme_coverage=1.0,
+            sector_momentum_pct=1.0,
+            regime_score=1.0,
+            abnormal_return_pct=1.0,
+            capacity_pct=1.0,
+            liquidity_pct=1.0,
+            turnover_pct=1.0,
+            capital_flow_pct=1.0,
+            resonance_score=1.0,
+            fundamentals_score=1.0,
+            elasticity_score=1.0,
+            valuation_score=1.0,
+        )
+        out = compute_value_score(inputs)
+        assert out.value_score == pytest.approx(1.0)
+        assert len(out.components_present) == 12
