@@ -42,6 +42,10 @@ from backend.marketdata_snapshot.store import SnapshotStore
 
 # Reuse the pure, already-tested primitives + exclusion constants. These never
 # touch the QGR-only fields, so the round-1..4 paths remain byte-identical.
+from .bottom_confirmation import (
+    BOTTOM_CONFIRM_COLUMNS,
+    compute_bottom_confirmation,
+)
 from .build_factor_panel import (
     DEFAULT_REBALANCE_FREQ,
     _board_ok,
@@ -49,6 +53,7 @@ from .build_factor_panel import (
     _cohort,
     _latest_snapshot_key,
 )
+from .cyq_perf_pit import ChipRecord, read_cyq_perf
 from .factor_lib import (
     FACTOR_NAMES,
     QGR2_FACTOR_NAMES,
@@ -57,10 +62,13 @@ from .factor_lib import (
     compute_qgr2_factors,
     compute_qgr_factors,
 )
+from .fundamentals_pit import FundamentalsPIT
 from .industry_pit import IndustryPIT
+from .ingest_round2_data import report_periods
 from .limit_board_pit import read_limit_board
 from .limit_status_pit import read_limits
 from .locked_split import LockedSplit
+from .namechange_pit import NameChangePIT, namechange_snapshot_keys
 
 log = structlog.get_logger(component="factor_research.build_qgr_panel")
 
@@ -115,6 +123,10 @@ class _QGRCodeSeries(_CodeSeries):
     lb_limit: list[str | None] = field(default_factory=list)  # 'U'/'D'/'Z'/None
     lb_times: list[float | None] = field(default_factory=list)  # consecutive limit days
     lb_open: list[float | None] = field(default_factory=list)  # board open_times
+    # ⑧ bottom gate: day-d cyq_perf chip-distribution record (None where missing /
+    # pre-2018 / model could not fit a band). EOD vintage = same timing as the
+    # day-d close, so day-d (not `<d`) is PIT-correct for an EOD overlay.
+    chip: list[ChipRecord | None] = field(default_factory=list)
 
 
 def _ingest_day_qgr(
@@ -146,6 +158,7 @@ def _ingest_day_qgr(
     )
     limits = read_limits(store, day)
     lb_avail, lb_records = read_limit_board(store, day)
+    chips = read_cyq_perf(store, day)  # ⑧ bottom gate (empty pre-2018 → chip None)
     m = daily.merge(adj, on="ts_code", how="inner").merge(
         basic, on="ts_code", how="left"
     )
@@ -181,6 +194,7 @@ def _ingest_day_qgr(
         cs.lb_limit.append(limit)
         cs.lb_times.append(times)
         cs.lb_open.append(opens)
+        cs.chip.append(chips.get(str(r.ts_code)))
     return len(m)
 
 
@@ -209,18 +223,61 @@ def _at_limit(raw_close: float, band: float, *, upper: bool) -> bool:
     return raw_close <= band * (1.0 + _LIMIT_TOL)
 
 
+def _bottom_confirmation_row(
+    cs: _QGRCodeSeries,
+    pos: int,
+    day: str,
+    *,
+    closes: list[float],
+    raw_close: float,
+    ep_ttm: float | None,
+    fundamentals: FundamentalsPIT | None,
+    namechange: NameChangePIT | None,
+) -> dict[str, float | None]:
+    """The §3.8B bottom-confirmation columns for one (code, day).
+
+    Quality / distress use the SAME PIT lookups as round-3/4 (ann_date < d; PIT
+    ST); EP reuses the carry vector's ``ep_ttm`` (1/pe_ttm). The cyq_perf band is
+    the day-d EOD record. Optional PIT lookups (``None``) → those conditions fail
+    closed to ``None``."""
+    is_st = (
+        namechange.is_st_asof(cs.ts_code, day) if namechange is not None else None
+    )
+    roe = gpm = None
+    if fundamentals is not None:
+        rec = fundamentals.asof(cs.ts_code, day)
+        if rec is not None:
+            roe = rec.get("roe")
+            gpm = rec.get("grossprofit_margin")
+    return compute_bottom_confirmation(
+        adj_closes=closes,
+        turnover_rates=cs.turnover[: pos + 1],
+        raw_close=raw_close,
+        is_st=is_st,
+        roe=roe,
+        gpm=gpm,
+        ep_ttm=ep_ttm,
+        chip=cs.chip[pos],
+    )
+
+
 def _build_rows_qgr(
     series: dict[str, _QGRCodeSeries],
     rebalance_dates: list[str],
     *,
     industry: IndustryPIT,
+    fundamentals: FundamentalsPIT | None = None,
+    namechange: NameChangePIT | None = None,
 ) -> list[dict[str, object]]:
     """One row per (rebalance-date × surviving code): features <= d, labels > d.
 
     Same investable cross-section + bottom-30% size cut as the round-1 builder
     (reused ``_cohort``); adds the QGR short factors, the round-1 cross-sectional
-    carry cluster (for the orthogonality check), the day-``d`` limit flags, and
-    the PIT industry / log-size neutralization inputs.
+    carry cluster (for the orthogonality check), the day-``d`` limit flags, the
+    PIT industry / log-size neutralization inputs, and the §3.8B bottom-confirmation
+    columns. ``fundamentals`` / ``namechange`` are OPTIONAL (default ``None``): the
+    quality-floor / distress conditions then fail closed to ``None`` (so existing
+    callers / synthetic tests need not wire the PIT lookups).
     """
     rows: list[dict[str, object]] = []
     # _cohort is typed for the parent _CodeSeries; the dict is invariant, so cast
@@ -284,6 +341,19 @@ def _build_rows_qgr(
             row["at_down_limit_d"] = _at_limit(
                 raw_close, cs.down_limit[pos], upper=False
             )
+            # ⑧ §3.8B bottom-confirmation gate (slow leg) — extracted helper.
+            row.update(
+                _bottom_confirmation_row(
+                    cs,
+                    pos,
+                    day,
+                    closes=closes,
+                    raw_close=raw_close,
+                    ep_ttm=carry.ep_ttm,
+                    fundamentals=fundamentals,
+                    namechange=namechange,
+                )
+            )
             rows.append(row)
         log.info("qgr_panel_rebalance", day=day, cohort=len(cohort), rows=len(rows))
     return rows
@@ -300,6 +370,7 @@ def _panel_frame_qgr(rows: list[dict[str, object]]) -> pd.DataFrame:
         *QGR2_FACTOR_NAMES,
         *(f"fwd_ret_{h}d" for h in QGR_FORWARD_HORIZONS),
         *QGR_PANEL_EXTRA_COLS,
+        *BOTTOM_CONFIRM_COLUMNS,
     ]
     return pd.DataFrame(rows, columns=cols)
 
@@ -309,6 +380,8 @@ def build_qgr_panel(
     store: SnapshotStore,
     *,
     industry: IndustryPIT,
+    fundamentals: FundamentalsPIT | None = None,
+    namechange: NameChangePIT | None = None,
     rebalance_freq: int = DEFAULT_REBALANCE_FREQ,
     max_rebalances: int = 0,
 ) -> pd.DataFrame:
@@ -316,7 +389,10 @@ def build_qgr_panel(
 
     Same sacred-split discipline as ``build_factor_panel.build_panel`` (feature
     window = train_val + embargo, ``assert_all_not_test`` guard); the injected
-    PIT industry lookup is in/out-date gated by ``day`` so no test bar is read.
+    PIT industry / fundamentals / namechange lookups are in/out-date or ann_date
+    gated by ``day`` so no test bar is read. ``fundamentals`` / ``namechange`` are
+    optional — when omitted the bottom-confirmation quality / distress conditions
+    fail closed to ``None``.
     """
     feature_dates = [*split.train_val_dates, *split.embargo_dates]
     split.assert_all_not_test(feature_dates)  # hard guard: never touch test
@@ -324,7 +400,15 @@ def build_qgr_panel(
     rebalance_dates = list(split.train_val_dates[::rebalance_freq])
     if max_rebalances:
         rebalance_dates = rebalance_dates[:max_rebalances]
-    return _panel_frame_qgr(_build_rows_qgr(series, rebalance_dates, industry=industry))
+    return _panel_frame_qgr(
+        _build_rows_qgr(
+            series,
+            rebalance_dates,
+            industry=industry,
+            fundamentals=fundamentals,
+            namechange=namechange,
+        )
+    )
 
 
 def main() -> None:
@@ -346,10 +430,20 @@ def main() -> None:
     store = SnapshotStore(args.snapshot_root)
     asof = args.asof or _latest_snapshot_key(args.snapshot_root, "index_member_all")
     industry = IndustryPIT.build(store, asof)
+    # ⑧ bottom-gate PIT lookups (same sources as round-3/4): fundamentals vintage
+    # index (ann_date < d) + PIT ST namechange. fail-closed if namechange missing.
+    fundamentals = FundamentalsPIT.build(
+        store, report_periods(2015, split.train_val_dates[-1])
+    )
+    namechange = NameChangePIT.build(
+        store, namechange_snapshot_keys(args.snapshot_root)
+    )
     panel = build_qgr_panel(
         split,
         store,
         industry=industry,
+        fundamentals=fundamentals,
+        namechange=namechange,
         rebalance_freq=args.rebalance_freq,
         max_rebalances=args.max_rebalances,
     )

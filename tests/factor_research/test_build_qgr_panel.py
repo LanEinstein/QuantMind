@@ -50,7 +50,7 @@ class _FakeStore:
         if trade_date in _TEST:
             raise AssertionError(f"builder read SEALED test date {trade_date}")
         i = _DATES.index(trade_date)
-        daily, adj, basic, limit, board = [], [], [], [], []
+        daily, adj, basic, limit, board, cyq = [], [], [], [], [], []
         for code, d in self._codes.items():
             ts = code + (".SH" if code.startswith("6") else ".SZ")
             open_p = d["open"][i]
@@ -62,6 +62,12 @@ class _FakeStore:
             # a code is on the limit-up board on a day its close hit the up-limit
             if d["close"][i] >= d["up"][i] * (1 - 1e-9):
                 board.append(f"{ts},U,1,0")
+            # cyq_perf median cost = 80% of close → raw close is above the band.
+            band = d["close"][i] * 0.8
+            cyq.append(
+                f"{band},{band},{band},{band * 1.2},{band * 1.3},{d['close'][i]},"
+                f"{band * 0.5},{trade_date},{ts},{band},60.0"
+            )
         payloads = {
             "daily": _csv("ts_code,open,close,pre_close,amount", daily),
             "adj_factor": _csv("ts_code,adj_factor", adj),
@@ -70,10 +76,34 @@ class _FakeStore:
             # limit_list_d only exists from 2020; the synthetic calendar is "2020"
             # ids so it is always available here (board may be empty some days).
             "limit_list_d": _csv("ts_code,limit,limit_times,open_times", board),
+            "cyq_perf": _csv(
+                "cost_15pct,cost_50pct,cost_5pct,cost_85pct,cost_95pct,his_high,"
+                "his_low,trade_date,ts_code,weight_avg,winner_rate",
+                cyq,
+            ),
         }
         if endpoint not in payloads:
             return None
         return SimpleNamespace(raw_payload=payloads[endpoint])
+
+
+class _StubFundamentals:
+    """Minimal ``FundamentalsPIT``-shaped lookup: every code profitable."""
+
+    def asof(self, ts_code: str, day: str, *, extra_lag_days: int = 0):  # noqa: ANN201
+        return SimpleNamespace(
+            get=lambda field: {"roe": 12.0, "grossprofit_margin": 30.0}.get(field)
+        )
+
+
+class _StubNamechange:
+    """Minimal ``NameChangePIT``-shaped lookup: one code flagged ST."""
+
+    def __init__(self, st_code: str) -> None:
+        self._st = st_code
+
+    def is_st_asof(self, ts_code: str, day: str) -> bool:
+        return ts_code == self._st
 
 
 def _code(
@@ -177,6 +207,40 @@ class TestQgrPanel:
         assert late["rev_3d"].notna().all()
         # turn_spike needs 25 trailing turnover obs → defined at the late rebalance.
         assert late["turn_spike"].notna().any()
+
+    def test_bottom_confirmation_columns_present_without_pit(self) -> None:
+        # No fundamentals / namechange wired → quality / distress fail closed to
+        # NaN, but the columns + clean-PIT conditions are still emitted.
+        from scripts.factor_research.bottom_confirmation import BOTTOM_CONFIRM_COLUMNS
+
+        panel = build_qgr_panel(
+            _split(), _FakeStore(_codes()), industry=_StubIndustry(), rebalance_freq=5
+        )
+        for col in BOTTOM_CONFIRM_COLUMNS:
+            assert col in panel.columns
+        assert panel["bc_no_distress"].isna().all()  # no namechange wired
+        assert panel["bc_quality_floor"].isna().all()  # no fundamentals wired
+        # cyq_perf IS served → above-cost-band evaluable (close > 0.8*close band).
+        assert (panel["bc_above_cost_band"].dropna() == 1.0).all()
+
+    def test_bottom_confirmation_with_pit_st_veto(self) -> None:
+        panel = build_qgr_panel(
+            _split(),
+            _FakeStore(_codes()),
+            industry=_StubIndustry(),
+            fundamentals=_StubFundamentals(),
+            namechange=_StubNamechange("600010.SH"),
+            rebalance_freq=5,
+        )
+        # The ST code is core-rejected (distress veto); a non-ST code is not.
+        st = panel[panel["code"] == "600010"]
+        assert not st.empty
+        assert (st["bc_no_distress"].dropna() == 0.0).all()
+        assert (st["bc_core_confirmed"].dropna() == 0.0).all()
+        assert (st["bc_full_confirmed"].dropna() == 0.0).all()  # one veto is enough
+        nonst = panel[panel["code"] == "600011"]
+        assert (nonst["bc_no_distress"].dropna() == 1.0).all()
+        assert (nonst["bc_quality_floor"].dropna() == 1.0).all()
 
     def test_tranche2_columns_and_fwd_1d(self) -> None:
         from scripts.factor_research.factor_lib import QGR2_FACTOR_NAMES
