@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Redline scanner for QuantMind (P0-1 / P0-10 / P1-5 / P1-6 / P1-7).
 #
-# Exits non-zero on any violation so it can gate CI / pre-commit hooks.
+# Exits non-zero on any violation. WIRED into pre-commit as the ``redline-check``
+# local hook (.pre-commit-config.yaml, pass_filenames=false / always_run) so it
+# gates every commit alongside gitleaks — bypassing it via ``--no-verify`` is a
+# CLAUDE.md §3 red line (Sc1, production-hardening 2026-06-25; previously this
+# header claimed it "can gate" but it was never actually wired).
 # Runs from the repo root regardless of where it was invoked from.
 #
 # Add new checks here as new red lines are locked. Each check should:
@@ -1709,6 +1713,14 @@ if [ -d backend/backtest ]; then
     printf '%s\n' "$BT_REF" | sed 's/^/        /'
     BT_FAIL=1
   fi
+  # Sc4 (production-hardening 2026-06-25): this catches only FLOAT-literal
+  # threshold comparisons by design — integer thresholds (e.g. ``if count > 0:``,
+  # ``len(x) >= 5``) are deliberately EXEMPT. The red line targets float-precision
+  # drift in decision comparisons (use ``decision_compare``); integer comparisons
+  # are exact and precision-safe, and widening the regex to integers would flag
+  # ubiquitous loop/length guards (``i < n``, ``len(x) > 0``) as false positives,
+  # making the check unusable. A decision threshold that must be exact should use
+  # a float literal (caught here) or decision_compare regardless.
   BT_FLOAT="$(grep -rnE --exclude-dir=rqalpha_entry '(<|>|<=|>=|==|!=)[[:space:]]*-?[0-9]+\.[0-9]|-?[0-9]+\.[0-9]+[[:space:]]*(<|>|<=|>=|==|!=)' backend/backtest --include='*.py' 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
   if [ -n "$BT_FLOAT" ]; then
     red "  FAIL  backend/backtest has a bare float threshold comparison (use decision_compare):"
