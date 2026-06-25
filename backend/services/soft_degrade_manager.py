@@ -1,6 +1,7 @@
 """H-003 — SoftDegradeManager: P1-7 §1.5 Kimi-escalation block + monthly milestones.
 
-When the daily soft ceiling (¥14) is breached the manager turns OFF
+When the daily soft ceiling (¥70 = 0.70 × the ¥100 hard cap; ¥14→¥70 by
+P1-7-amendment-2026-05-26) is breached the manager turns OFF
 Kimi escalation only — the 4 mandatory agents stay running and
 DeepSeek + Qwen keep serving them. When a monthly milestone (50 / 80 /
 100%) is reached the manager publishes an idempotent ``SETNX`` flag so

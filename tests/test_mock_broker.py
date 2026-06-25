@@ -135,6 +135,37 @@ class TestBuyLifecycle:
         assert len(trades) == 1
 
     @pytest.mark.asyncio
+    async def test_order_result_carries_resolvable_trade_id(
+        self, broker: MockBroker
+    ) -> None:
+        # B5 (production-hardening 2026-06-25): place_order surfaces the fill's
+        # trade_id, and get_trade resolves THAT exact trade — so a caller never
+        # has to race on _trades[-1].
+        result = await broker.place_order(
+            "600519", 100.0, 100, OrderDirection.BUY, OrderType.LIMIT
+        )
+        assert result.success
+        assert result.trade_id is not None
+        trade = await broker.get_trade(result.trade_id)
+        assert trade is not None
+        assert trade.trade_id == result.trade_id
+        assert trade.code == "600519"
+        # Even after later fills append more trades, the id still resolves to
+        # the original fill — not whatever happens to be last.
+        await broker.place_order(
+            "000001", 12.0, 100, OrderDirection.BUY, OrderType.LIMIT
+        )
+        again = await broker.get_trade(result.trade_id)
+        assert again is not None and again.code == "600519"
+
+    @pytest.mark.asyncio
+    async def test_get_trade_none_for_unknown_id(
+        self, broker: MockBroker
+    ) -> None:
+        assert await broker.get_trade(None) is None
+        assert await broker.get_trade("deadbeef0000") is None
+
+    @pytest.mark.asyncio
     async def test_buy_creates_position(self, broker: MockBroker) -> None:
         await broker.place_order(
             "600519", 100.0, 100, OrderDirection.BUY, OrderType.LIMIT

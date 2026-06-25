@@ -45,8 +45,9 @@ class CostProbeSummary:
     """Result of :func:`scan_costs`.
 
     Aggregates spend by day + provider so callers can drive both the
-    P1-7 daily ¥20 hard cap, the daily ¥14 soft cut, the monthly ¥440
-    soft 3-tier nodes, and the Kimi-only ¥4 daily cap from one scan.
+    P1-7 daily ¥100 hard cap, the daily ¥70 soft cut, the monthly ¥440
+    soft 3-tier nodes, and the Kimi-only ¥4 daily cap from one scan
+    (daily ¥20→¥100 / soft ¥14→¥70 by P1-7-amendment-2026-05-26).
     """
 
     days: int

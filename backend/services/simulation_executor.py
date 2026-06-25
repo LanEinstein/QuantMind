@@ -159,9 +159,31 @@ class SimulationExecutor:
             payload={"broker_order_id": order_result.order_id},
         )
 
-        trades = await self._broker.get_trades()
-        last_trade = trades[-1] if trades else None
-        trade_id = last_trade.trade_id if last_trade else None
+        # B5 (production-hardening 2026-06-25): resolve THIS place_order's exact
+        # fill by its returned trade_id, never ``_trades[-1]`` — a concurrent
+        # fill (Line-2 intraday tick, basket walk) could land between place_order
+        # returning and a tail read, misattributing trade_id / economics.
+        trade_id = order_result.trade_id
+        last_trade = await self._broker.get_trade(trade_id)
+        if last_trade is None:
+            # Fail-closed (§3 data-corruption): place_order reported success but
+            # its trade_id did not resolve to a trade — a broker-contract breach
+            # (every successful fill MUST yield a resolvable trade). Surface it
+            # LOUDLY rather than returning FILLED with NO ORDER_PLACED/ORDER_FILLED
+            # events, which would desync recovery + the P0-7 daily-cap count from
+            # the broker mirror. Unreachable with MockBroker (success ⟹ trade_id
+            # set); the guard defends the IBroker.get_trade contract for any
+            # future broker (codex B5 review P-finding).
+            log.error(
+                "fill_trade_unresolved",
+                instruction_id=plan.instruction_id,
+                broker_order_id=order_result.order_id,
+                trade_id=trade_id,
+            )
+            raise RuntimeError(
+                f"place_order succeeded for {plan.instruction_id} but trade_id "
+                f"{trade_id!r} did not resolve to a trade (broker-contract breach)"
+            )
 
         # Persist BOTH ORDER_PLACED and ORDER_FILLED atomically so
         # recovery sees the same lifecycle MockBroker.place_order

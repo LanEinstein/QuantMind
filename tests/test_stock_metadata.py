@@ -228,6 +228,53 @@ def test_get_price_limits_uses_decimal_arithmetic_end_to_end() -> None:
     assert high == 1.82  # 1.65 * 1.1 = 1.815, HALF_UP → 1.82
 
 
+@pytest.mark.parametrize(
+    "board", [Board.SH_MAIN, Board.SZ_MAIN, Board.CHUANGYE, Board.ETF]
+)
+def test_at_fill_recheck_parity_with_risk_engine(board: Board) -> None:
+    """B8 (production-hardening 2026-06-25): MockBroker's at-fill price-limit
+    recheck now uses ``get_price_limits`` (Decimal HALF_UP). It must equal
+    RiskEngine's independent ``_exchange_price_limit`` (also Decimal HALF_UP)
+    across the whole price range — including the ``.xx5``-cent boundaries where
+    MockBroker's prior ``round()`` (banker's HALF_EVEN) diverged and produced
+    spurious at-fill rejects. RiskEngine keeps its own copy of the formula
+    because backend/risk must not import backend.data, so this is the parity
+    guard that keeps the two in lock-step.
+    """
+    from backend.data.stock_metadata import get_price_limit_pct
+    from backend.risk.engine import _exchange_price_limit
+
+    pct = get_price_limit_pct(board)
+    for cents in range(1, 20_001):  # 0.01 .. 200.00, every cent
+        prev_close = cents / 100.0
+        low, high = get_price_limits(board, prev_close)
+        assert high == _exchange_price_limit(prev_close, pct, upper=True), (
+            board, prev_close
+        )
+        assert low == _exchange_price_limit(prev_close, pct, upper=False), (
+            board, prev_close
+        )
+
+
+def test_price_limit_pct_constants_match_risk_config() -> None:
+    """B8 drift guard (codex review): the parity above feeds RiskEngine's
+    ``_exchange_price_limit`` the hardcoded ``get_price_limit_pct`` constant,
+    but at runtime RiskEngine reads pct from ``risk.yaml``'s
+    ``universe.price_limit_pct_by_board``. They agree today; this asserts they
+    STAY in lock-step so a future risk.yaml edit that diverges from the
+    stock_metadata constants fails CLOSED here instead of silently passing the
+    parity test (and silently diverging MockBroker's at-fill recheck from
+    RiskEngine's limit-up block).
+    """
+    from backend.broker.models import load_risk_config
+    from backend.data.stock_metadata import get_price_limit_pct
+
+    cfg = load_risk_config("config/risk.yaml")
+    by_board = cfg.universe.price_limit_pct_by_board
+    for board in (Board.SH_MAIN, Board.SZ_MAIN, Board.CHUANGYE, Board.ETF):
+        assert by_board[str(board)] == get_price_limit_pct(board), str(board)
+
+
 # ---------------------------------------------------------------------------
 # Lot size
 # ---------------------------------------------------------------------------

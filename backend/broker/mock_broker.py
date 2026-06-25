@@ -56,7 +56,7 @@ from backend.data.stock_metadata import (
     ForbiddenCodeError,
     UnknownCodeError,
     classify_board,
-    get_price_limit_pct,
+    get_price_limits,
 )
 from backend.models.execution import REPORT_SCHEMA_V1_OWNER_FEE
 from backend.utils.trading_hours import SHANGHAI, is_trading_hours
@@ -391,7 +391,7 @@ class MockBroker(IBroker):
                 self._cash -= cost.net_amount
                 self._frozen_cash += cost.net_amount
 
-            self._fill_order(order, cost, now)
+            trade_id = self._fill_order(order, cost, now)
             self._orders[order_id] = order
 
             self._log.info(
@@ -400,7 +400,8 @@ class MockBroker(IBroker):
                 direction=direction, status=order.status,
             )
             return OrderResult(
-                order_id=order_id, success=True, message="Order filled"
+                order_id=order_id, success=True, message="Order filled",
+                trade_id=trade_id,
             )
 
     async def _recheck_price_limit(
@@ -437,9 +438,15 @@ class MockBroker(IBroker):
                 f"Order rejected: {PRICE_LIMIT_VIOLATION_REASON} "
                 f"(live quote unavailable; cost_price fallback forbidden)"
             )
-        pct = get_price_limit_pct(board)
-        upper = round(prev_close * (1.0 + pct), 2)
-        lower = round(prev_close * (1.0 - pct), 2)
+        # B8 (production-hardening 2026-06-25): use the canonical Decimal
+        # ROUND_HALF_UP SSoT (data.stock_metadata.get_price_limits) instead of
+        # ``round(prev_close * (1±pct), 2)`` — Python's round() is banker's
+        # rounding (HALF_EVEN), so a `…x5`-cent boundary (e.g. 9.225) diverged
+        # from RiskEngine's Decimal HALF_UP (engine._exchange_price_limit),
+        # producing spurious at-fill rejects. test_price_limit_parity asserts the
+        # two compute identical ceilings. (RiskEngine keeps its own copy of the
+        # formula because backend/risk must not import backend.data.)
+        lower, upper = get_price_limits(board, prev_close)
         if direction is OrderDirection.BUY and (
             fill_price >= upper or current >= upper
         ):
@@ -515,13 +522,17 @@ class MockBroker(IBroker):
         order: _MutableOrder,
         cost: OrderCostBreakdown,
         now: datetime,
-    ) -> None:
+    ) -> str:
         """Fill an order ALL_OR_NONE using the pre-computed cost breakdown.
 
         ``cost`` was computed by :func:`calculate_cost` in
         :meth:`place_order` and includes slippage / commission floor /
         stamp tax / SZ transfer fee. We do NOT recompute here so the
         affordability check and the fill see identical numbers.
+
+        Returns the ``trade_id`` of the appended fill (B5) so ``place_order``
+        can surface it on the :class:`OrderResult` — the caller then looks up
+        THIS exact trade rather than racing on ``_trades[-1]``.
         """
         # Fail-closed pre-check (Batch-3 B4, 2026-06-23): never COMMIT a BUY fill
         # that would drive cash below zero. Unreachable in normal operation (the
@@ -595,6 +606,8 @@ class MockBroker(IBroker):
         else:
             self._apply_sell(order.code, order.volume)
             self._cash += cost.net_amount
+
+        return trade.trade_id
 
     def _apply_buy(
         self,
@@ -771,6 +784,20 @@ class MockBroker(IBroker):
     async def get_trades(self) -> tuple[Trade, ...]:
         """Get all executed trades."""
         return tuple(self._trades)
+
+    async def get_trade(self, trade_id: str | None) -> Trade | None:
+        """Return the trade with ``trade_id`` (B5), or ``None`` if absent.
+
+        Lets a caller resolve the EXACT fill its ``place_order`` produced
+        (via :attr:`OrderResult.trade_id`) instead of reading ``_trades[-1]``,
+        which a concurrent fill could have overwritten across a lock gap.
+        """
+        if trade_id is None:
+            return None
+        for trade in reversed(self._trades):
+            if trade.trade_id == trade_id:
+                return trade
+        return None
 
     async def advance_day(self) -> None:
         """Advance to the next trading day (T+1 resolution).

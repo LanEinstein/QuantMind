@@ -9,10 +9,12 @@ it reads via :mod:`backend.services.cost_probe` (Redis-only) and answers:
                             ``threshold_100``
 * ``kimi.status``        — ``ok`` | ``hard_breach``
 
-P1-7 locked constants (CLAUDE.md §2.10 / docs/decisions/p1-7.md):
+P1-7 locked constants (CLAUDE.md §2.10 / P1-7-amendment-2026-05-26):
 
-* Daily hard ceiling = ¥20         — ONLY full-LLM circuit breaker
-* Daily soft ceiling = 0.70 × ¥20 = ¥14 — Kimi-escalation cut, NEVER full halt
+* Daily hard ceiling = ¥100         — ONLY full-LLM circuit breaker (¥20→¥100
+                                       by the 2026-05-26 amendment so Line-1 can
+                                       debate multiple shortlist candidates/day)
+* Daily soft ceiling = 0.70 × ¥100 = ¥70 — Kimi-escalation cut, NEVER full halt
 * Kimi daily ceiling = ¥4          — only stops Kimi escalations, not full LLM
 * Monthly soft budget = ¥440       — 50/80/100% audit/alert nodes, never stops
 
@@ -64,7 +66,8 @@ _DEFAULT_SOFT_CEIL_PCT = 0.7
 hard). Unchanged by the 2026-05-26 amendment (it is a fraction, not ¥14)."""
 
 _DEFAULT_MONTHLY_BUDGET_RMB = 440.0
-"""P1-7 monthly soft budget = 22 trading days × ¥20."""
+"""P1-7 monthly soft budget = ¥440 (unchanged by the 2026-05-26 amendment;
+50/80/100% audit/alert nodes, never a full stop)."""
 
 _DEFAULT_KIMI_DAILY_CAP_RMB = 4.0
 """P1-7 Kimi daily cap — only blocks Kimi escalation, never DeepSeek/Qwen."""
@@ -109,7 +112,7 @@ _DEBATE_COUNT_TTL_SECONDS = 36 * 3600
 # trigger budget (max_anomaly_llm_per_day); the dedup SET stops the same
 # (code, kind) trigger from firing twice in one UTC day. Both live in the
 # ``llm:anomaly`` namespace, and the actual spend still reserves on the unified
-# ``llm:usage`` counter via reserve_budget so Line-2 cannot bypass the ¥20 cap.
+# ``llm:usage`` counter via reserve_budget so Line-2 cannot bypass the ¥100 cap.
 _ANOMALY_COUNT_KEY_PREFIX = "llm:anomaly"
 _ANOMALY_DEDUP_KEY_PREFIX = "llm:anomaly:dedup"
 _ANOMALY_TTL_SECONDS = 36 * 3600
@@ -333,9 +336,9 @@ async def get_daily_budget_state(
         )
 
     # Fold in-flight pre-call reservations into the effective spend so the
-    # ¥20 hard cap holds for EVERY caller — including legacy ones that still
+    # ¥100 hard cap holds for EVERY caller — including legacy ones that still
     # use ``assert_budget_allows`` (analysis_scheduler / shadow / GEPA). Without
-    # this, ¥19 actual + a ¥1 in-flight debate reservation would read < ¥20 on
+    # this, ¥99 actual + a ¥1 in-flight debate reservation would read < ¥100 on
     # the legacy path and let another paid call start, defeating the cap
     # (codex M-005 P1). ``reserve_budget`` itself keeps using ``get_daily_spent``
     # + its own counter read, so there is no double-count.
@@ -487,7 +490,7 @@ async def assert_kimi_budget_allows(
 ) -> KimiBudgetState:
     """Return the Kimi state or raise on ``hard_breach``.
 
-    Only stops Kimi escalations — the daily ¥20 hard cap stays the
+    Only stops Kimi escalations — the daily ¥100 hard cap stays the
     sole full-LLM circuit breaker (P1-7 §1.3 / CLAUDE.md §2.10).
     """
     state = await get_kimi_budget_state(redis_client)
@@ -625,11 +628,11 @@ async def reserve_budget(
     estimated_rmb: float,
     today: datetime.date | None = None,
 ) -> BudgetReservation:
-    """Reserve ``estimated_rmb`` against the daily ¥20 hard cap BEFORE the call.
+    """Reserve ``estimated_rmb`` against the daily ¥100 hard cap BEFORE the call.
 
     P1-7-amendment-2026-05-24: this replaces the old post-hoc trailing-stop
     (``assert_budget_allows`` only raised once spend had *already* crossed
-    ¥20, letting the crossing call complete). Here the estimate is reserved
+    ¥100, letting the crossing call complete). Here the estimate is reserved
     atomically first; if ``spent + reserved`` would exceed the hard ceiling
     the reservation is rolled back and :class:`DailyBudgetExceededError` is
     raised — **the crossing call never happens**.
@@ -638,6 +641,19 @@ async def reserve_budget(
     MUST reserve here so the unified ``llm:usage:{utc_date}`` counter governs
     the whole system (amendment §2.4). Fail-closed: a non-finite/negative
     observed spend is treated as already over budget.
+
+    D4 (production-hardening 2026-06-25, investigated — bounded by design, not a
+    fixable bug): the cap is a PRE-FLIGHT admission gate. The reservation holds
+    the *estimate*; the *actual* spend is recorded into ``spent`` (the
+    ``llm:usage`` hashes) by the router's ``track_usage`` and is released
+    verbatim by :func:`settle_budget`. After settle, the cap therefore reflects
+    cumulative ACTUAL spend, so every SUBSEQUENT call is gated against the truth.
+    The one residual: a single admitted call whose actual exceeds its estimate
+    can overshoot the cap by its own overage (you cannot un-spend tokens already
+    consumed). That overshoot is bounded by one call's overage and self-corrects
+    — the next ``reserve_budget`` sees the higher ``spent`` and refuses. A
+    settle-time "true-up" cannot prevent it (the spend already happened) and
+    would risk double-counting; conservative estimates are the only lever.
     """
     if not math.isfinite(estimated_rmb) or estimated_rmb < 0:
         raise ValueError(f"estimated_rmb must be finite and >= 0, got {estimated_rmb}")
@@ -963,11 +979,11 @@ async def reserve_anomaly_llm_slot(
     Line-2 is a pure-quant poll (zero LLM); an LLM fires only on a deduplicated
     trigger, bounded by ``max_anomaly_llm_per_day``, and the spend reserves on
     the SAME ``llm:usage:{utc_date}`` counter as every other LLM path so the
-    ¥20/day hard cap cannot be bypassed (P1-7-amendment §2.4 / N-004).
+    ¥100/day hard cap cannot be bypassed (P1-7-amendment §2.4 / N-004).
 
     Returns a :class:`BudgetReservation` when the call is permitted, or ``None``
     when it must be **skipped** — already fired today for this ``trigger_key``
-    (dedup), the daily anomaly cap is exhausted, or the ¥20 reservation refuses.
+    (dedup), the daily anomaly cap is exhausted, or the ¥100 reservation refuses.
     The LLM here is non-decision enrichment, so any limit simply skips it; this
     function never raises (the caller treats ``None`` as "do not call the LLM").
     """
@@ -1008,7 +1024,7 @@ async def reserve_anomaly_llm_slot(
             today=today,
         )
     except DailyBudgetExceededError:
-        # ¥20 hard cap would be crossed — skip the optional enrichment and roll
+        # ¥100 hard cap would be crossed — skip the optional enrichment and roll
         # back the anomaly count so it reflects fired calls only. Leave the
         # dedup member: the day's budget is exhausted, a same-day retry is moot.
         await _safe_decr(redis_client, count_key)

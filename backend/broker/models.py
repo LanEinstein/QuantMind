@@ -60,6 +60,12 @@ class OrderResult(BaseModel):
     order_id: str
     success: bool
     message: str = ""
+    # B5 (production-hardening 2026-06-25): the trade_id of the fill this
+    # place_order produced, so a caller can look up THIS exact trade
+    # (broker.get_trade) instead of reading the shared ``_trades[-1]`` across a
+    # lock gap — a concurrent fill could otherwise misattribute trade_id /
+    # economics. ``None`` on a rejected order or a no-fill path.
+    trade_id: str | None = None
 
 
 class Order(BaseModel):
