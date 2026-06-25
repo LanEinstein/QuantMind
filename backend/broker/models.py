@@ -284,7 +284,11 @@ class PositionLimitsConfig(BaseModel):
 
     max_single_stock_pct: float = Field(default=0.15, ge=0.0, le=1.0)
     max_sector_pct: float = Field(default=0.40, ge=0.0, le=1.0)
-    max_total_positions: int = Field(default=10, ge=1)
+    # Default agrees with the ≤5 owner hard cap (P0-7-amendment-2026-06-23 §2.1
+    # R5): the live engine loads 5 from config/risk.yaml, but a bare
+    # ``RiskConfig()`` default of 10 was a foot-gun that would silently allow 10
+    # concurrent positions if a future path constructed the config without yaml.
+    max_total_positions: int = Field(default=5, ge=1)
     price_deviation_limit: float = Field(default=0.05, ge=0.0, le=1.0)
     volume_lot_size: int = Field(default=100, ge=1)
     max_total_position_pct: float = Field(default=0.70, ge=0.0, le=1.0)

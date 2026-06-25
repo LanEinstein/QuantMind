@@ -1362,6 +1362,25 @@ async def _init_line2_runners(
         cb = getattr(application.state, "circuit_breaker", None)
         return cb if cb is not None else CircuitBreaker(CircuitBreakerConfig())
 
+    async def _daily_risk_inputs(now: datetime) -> tuple[int, float]:
+        # P0-7-amendment-2026-06-23: (today_instruction_count,
+        # today_portfolio_pnl_pct) from the live persisted broker_events +
+        # equity_points stores, so check 10 (≤5 orders/day) binds across
+        # runs/restarts and check 13 (daily -5% halt) + the breaker cooldown
+        # bind to the real MTM NAV drawdown. Fail-safe per source inside the
+        # assembler (an infra glitch yields that source's 0-default).
+        from backend.services.daily_state_assembler import (
+            assemble_daily_risk_inputs,
+        )
+
+        return await assemble_daily_risk_inputs(
+            event_store=getattr(application.state, "broker_event_store", None),
+            equity_repo=getattr(
+                application.state, "equity_point_repository", None
+            ),
+            now=now,
+        )
+
     def _names(positions: object) -> dict[str, str]:
         # Key by BARE code (Codex U-D1 review): the monitoring detectors +
         # build_line2_code_contexts look names up by the suffix-stripped code,
@@ -1422,6 +1441,7 @@ async def _init_line2_runners(
         open_tickets = await _open_tickets_or_skip()
         if open_tickets is None:
             return
+        _today_count, _today_pnl = await _daily_risk_inputs(now)
         run_state = await build_line2_run_state(
             broker=broker,
             risk_engine=risk_engine,
@@ -1429,6 +1449,8 @@ async def _init_line2_runners(
             watchlist_policy=policy,
             now=now,
             open_tickets=open_tickets,
+            today_instruction_count=_today_count,
+            today_portfolio_pnl_pct=_today_pnl,
         )
         if not run_state.positions:
             return
@@ -1464,6 +1486,7 @@ async def _init_line2_runners(
         open_tickets = await _open_tickets_or_skip()
         if open_tickets is None:
             return
+        _today_count, _today_pnl = await _daily_risk_inputs(now)
         run_state = await build_line2_run_state(
             broker=broker,
             risk_engine=risk_engine,
@@ -1471,6 +1494,8 @@ async def _init_line2_runners(
             watchlist_policy=policy,
             now=now,
             open_tickets=open_tickets,
+            today_instruction_count=_today_count,
+            today_portfolio_pnl_pct=_today_pnl,
         )
         if not run_state.positions:
             return
@@ -1609,6 +1634,7 @@ async def _init_line2_runners(
         open_tickets = await _open_tickets_or_skip()
         if open_tickets is None:
             return
+        _today_count, _today_pnl = await _daily_risk_inputs(now)
         run_state = await build_line1_run_state(
             broker=broker,
             risk_engine=risk_engine,
@@ -1617,7 +1643,8 @@ async def _init_line2_runners(
             risk_config=risk_config,
             now=now,
             open_tickets=open_tickets,
-            # Real today_instruction_count (broker_events) wired in U-D3.
+            today_instruction_count=_today_count,
+            today_portfolio_pnl_pct=_today_pnl,
         )
         provider = Line1ContextProvider(
             run_state=run_state,
@@ -1667,6 +1694,7 @@ async def _init_line2_runners(
             compute_qualified_codes,
         )
 
+        _today_count, _today_pnl = await _daily_risk_inputs(now)
         run_state = await build_line2_run_state(
             broker=broker,
             risk_engine=risk_engine,
@@ -1674,6 +1702,8 @@ async def _init_line2_runners(
             watchlist_policy=policy,
             now=now,
             open_tickets=open_tickets,
+            today_instruction_count=_today_count,
+            today_portfolio_pnl_pct=_today_pnl,
         )
         if not run_state.positions:
             return  # nothing held → no rotation (Line-1 fills empty slots)

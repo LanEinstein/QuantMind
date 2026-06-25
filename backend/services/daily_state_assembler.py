@@ -19,8 +19,10 @@ broker / data / ledger stores.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -155,4 +157,90 @@ async def _count_dispatched_today(
     return count
 
 
-__all__ = ["assemble_daily_state"]
+async def compute_today_portfolio_pnl_pct(
+    equity_repo: Any,
+    *,
+    now: datetime,
+) -> float:
+    """Day-open-NAV-relative MTM P&L ratio for the daily-loss brake (check 13).
+
+    ``current_nav`` = TODAY's latest MTM ``EquityPoint.total_equity``;
+    ``day_open_nav`` = the prior trading day's CLOSING MTM equity (via
+    ``get_latest_before_trade_date``, unbounded lookback). Both read the
+    persisted ``equity_points`` collection, so the value is restart-safe and the
+    brake re-binds immediately after a mid-day restart
+    (``P0-7-amendment-2026-06-23``).
+
+    Two correctness guards (codex review 2026-06-23):
+
+    * **Today-tick guard** — ``get_latest()`` returns the newest point by
+      ``snapshot_at`` regardless of date. Before today's first 30s MTM tick
+      (pre-open, or a lagging/failed MTM cron), that is YESTERDAY's close, which
+      would mis-state today's drawdown as yesterday's full-day P&L and could
+      spuriously halt the 09:35 BUY scan. So if the latest point is not dated
+      today, there is no computable intraday drawdown → ``0.0`` (fail-safe
+      inactive — identical to the pre-amendment behaviour at that moment).
+    * **Unbounded prior lookback** — a fixed N-day window would drop the prior
+      close across a long A-share holiday; ``get_latest_before_trade_date`` has
+      no window. A genuine first session (no prior point) falls back to seed
+      capital. A near-zero ``current_nav`` (validated real wipeout) yields a
+      large negative ratio → halt (fail-SAFE).
+
+    Fail-OPEN to ``0.0`` when the equity store is absent / has no point yet, or
+    on a read error caught by the caller (infra glitch; the always-on
+    per-position stops + ≤5 caps still bind). Returns a finite ratio.
+    """
+    if equity_repo is None:
+        return 0.0
+    latest = await equity_repo.get_latest()
+    today_iso = now.astimezone(SHANGHAI).date().isoformat()
+    if latest is None or latest.trade_date != today_iso:
+        return 0.0  # no today MTM tick → no intraday drawdown (fail-safe)
+    current_nav = float(latest.total_equity)
+    prior = await equity_repo.get_latest_before_trade_date(today_iso)
+    day_open_nav = (
+        prior.total_equity
+        if prior is not None and prior.total_equity > 0
+        else latest.initial_capital
+    )
+    if day_open_nav <= 0:
+        return 0.0
+    ratio = (current_nav - day_open_nav) / day_open_nav
+    return ratio if math.isfinite(ratio) else 0.0
+
+
+async def assemble_daily_risk_inputs(
+    *,
+    event_store: BrokerEventStore | None,
+    equity_repo: Any,
+    now: datetime,
+) -> tuple[int, float]:
+    """``(today_instruction_count, today_portfolio_pnl_pct)`` for the daily
+    14-check state, wired from the live persisted stores by the crons
+    (``P0-7-amendment-2026-06-23``).
+
+    Fail-safe per source (CLAUDE.md §3 fail-open-for-infra): a broker-events or
+    equity-store read fault yields that source's 0-default so a transient store
+    glitch never blocks trading — the always-on per-position stops + the ≤5
+    position/order caps remain. The order count still binds across runs/restarts
+    because it reads the persisted append-only ``broker_events`` (not in-memory).
+    """
+    count = 0
+    if event_store is not None:
+        try:
+            count = await _count_dispatched_today(event_store, now=now)
+        except Exception:  # noqa: BLE001 — count glitch must not block trading
+            log.warning("daily_instruction_count_failed", exc_info=True)
+    pnl = 0.0
+    try:
+        pnl = await compute_today_portfolio_pnl_pct(equity_repo, now=now)
+    except Exception:  # noqa: BLE001 — equity glitch → brake best-effort
+        log.warning("daily_pnl_pct_failed", exc_info=True)
+    return count, pnl
+
+
+__all__ = [
+    "assemble_daily_state",
+    "compute_today_portfolio_pnl_pct",
+    "assemble_daily_risk_inputs",
+]

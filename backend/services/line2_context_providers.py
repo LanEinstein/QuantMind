@@ -467,6 +467,11 @@ async def build_line2_run_state(
     """
     account = await broker.get_account()
     positions = tuple(await broker.get_positions())
+    # Daily-loss brake: trip the 60-min cooldown latch off the live MTM NAV
+    # drawdown before reading the halt state (P0-7-amendment-2026-06-23). With
+    # the default today_portfolio_pnl_pct=0.0 this is a no-op (byte-identical to
+    # the pre-amendment path); the cron passes the real equity-point-derived pnl.
+    circuit_breaker.observe_daily_drawdown(today_portfolio_pnl_pct, now)
     halted = circuit_breaker.is_halted(now)
     return Line2RunState(
         account=account,

@@ -269,6 +269,7 @@ class Line1RunState:
     risk_config: RiskConfig
     open_tickets: tuple[Any, ...] = ()
     today_instruction_count: int = 0
+    today_portfolio_pnl_pct: float = 0.0
     halted: bool = False
     halt_until: datetime | None = None
 
@@ -531,10 +532,12 @@ class Line1ContextProvider:
             # day's pre-run count (codex P1) — otherwise a partially-used day
             # could route more than its remaining order slots.
             today_new_instruction_count=rs.today_instruction_count + len(committed),
-            # Daily-loss + consecutive-loss breaker inputs default to 0/(): a
-            # pre-open / morning-open BUY scan is unaffected (real day-open NAV +
-            # ledger PnLs wired in U-D3 for the breaker to bind a BUY).
-            today_portfolio_pnl_pct=0.0,
+            # Daily-loss brake bound to the live MTM NAV drawdown
+            # (P0-7-amendment-2026-06-23): rs carries the equity-point-derived
+            # today_portfolio_pnl_pct so check 13 halts a BUY on a -5% day. The
+            # consecutive-loss streak (check 14 / last_3_trade_pnls) needs
+            # realized per-trade PnL → deferred (stays () = check 14 PASSes).
+            today_portfolio_pnl_pct=rs.today_portfolio_pnl_pct,
             last_3_trade_pnls=(),
             # Live last drives check #12 (limit-up block) so the BUY is gated
             # against the real intraday price, not the T-1 close.
@@ -799,6 +802,7 @@ async def build_line1_run_state(
     now: datetime,
     open_tickets: Sequence[Any] = (),
     today_instruction_count: int = 0,
+    today_portfolio_pnl_pct: float = 0.0,
 ) -> Line1RunState:
     """Assemble the run-wide :class:`Line1RunState` from live broker state.
 
@@ -808,6 +812,10 @@ async def build_line1_run_state(
     """
     account = await broker.get_account()
     positions = tuple(await broker.get_positions())
+    # Daily-loss brake: trip the 60-min cooldown latch off the live MTM NAV
+    # drawdown before reading the halt state (P0-7-amendment-2026-06-23). With
+    # the default 0.0 this is a no-op; the cron passes the equity-point pnl.
+    circuit_breaker.observe_daily_drawdown(today_portfolio_pnl_pct, now)
     halted = circuit_breaker.is_halted(now)
     return Line1RunState(
         account=account,
@@ -818,6 +826,7 @@ async def build_line1_run_state(
         risk_config=risk_config,
         open_tickets=tuple(open_tickets),
         today_instruction_count=today_instruction_count,
+        today_portfolio_pnl_pct=today_portfolio_pnl_pct,
         halted=halted,
         halt_until=derive_halt_until(circuit_breaker, halted=halted),
     )

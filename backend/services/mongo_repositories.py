@@ -419,6 +419,30 @@ class MongoEquityPointRepository:
             by_date[point.trade_date] = point  # last tick of the day wins
         return [by_date[d] for d in sorted(by_date)]
 
+    async def get_latest_before_trade_date(
+        self, trade_date: str
+    ) -> EquityPoint | None:
+        """Latest MTM point STRICTLY before ``trade_date`` (``YYYY-MM-DD``).
+
+        The prior trading day's closing equity = the day-open reference for the
+        daily-loss brake (P0-7-amendment-2026-06-23). UNBOUNDED lookback (not a
+        fixed window) so a long A-share holiday gap (Spring Festival / National
+        Day, 7-12 calendar days) never drops the reference. Sorting by
+        ``snapshot_at`` desc returns the LAST tick of the most recent earlier
+        trade_date (its closing mark). ``None`` only on a genuine first session.
+        """
+        cursor = (
+            self._db[self.COLLECTION]
+            .find({"trade_date": {"$lt": trade_date}})
+            .sort("snapshot_at", -1)
+            .limit(1)
+        )
+        async for raw in cursor:
+            return EquityPoint.model_validate(
+                _ensure_utc(_strip_id(raw)), strict=False
+            )
+        return None
+
 
 # ===========================================================================
 # 3. ReconciliationTicket

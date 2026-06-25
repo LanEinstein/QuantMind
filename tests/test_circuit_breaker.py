@@ -98,3 +98,58 @@ class TestCircuitBreaker:
         breaker.reset()
         now = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
         assert breaker.is_halted(now) is False
+
+
+class TestObserveDailyDrawdown:
+    """P0-7-amendment-2026-06-23 — NAV-based daily-loss brake.
+
+    ``observe_daily_drawdown`` trips the cooldown latch off the mark-to-market
+    NAV daily drawdown (authoritative, overwriting) without touching the
+    per-trade consecutive-loss counter (deferred realized-PnL task).
+    """
+
+    def test_trips_at_threshold(self, breaker: CircuitBreaker) -> None:
+        now = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(-0.05, now)  # exactly -5%
+        assert breaker.is_halted(now) is True
+
+    def test_no_trip_just_above_threshold(
+        self, breaker: CircuitBreaker
+    ) -> None:
+        now = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(-0.0499, now)
+        assert breaker.is_halted(now) is False
+
+    def test_overwrites_not_accumulates(
+        self, breaker: CircuitBreaker
+    ) -> None:
+        now = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(-0.03, now)
+        breaker.observe_daily_drawdown(-0.03, now)  # NAV value, not summed
+        assert breaker.is_halted(now) is False  # would trip if it summed to -6%
+
+    def test_latches_cooldown_even_if_nav_recovers(
+        self, breaker: CircuitBreaker
+    ) -> None:
+        trip = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(-0.06, trip)
+        later = dt.datetime(2026, 3, 23, 10, 30, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(-0.01, later)  # NAV recovered
+        assert breaker.is_halted(later) is True  # 60-min latch still holds
+
+    def test_ignores_non_finite(self, breaker: CircuitBreaker) -> None:
+        now = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(float("nan"), now)
+        breaker.observe_daily_drawdown(float("-inf"), now)
+        assert breaker.is_halted(now) is False
+
+    def test_does_not_touch_consecutive_streak(
+        self, breaker: CircuitBreaker
+    ) -> None:
+        now = dt.datetime(2026, 3, 23, 10, 0, tzinfo=SHANGHAI)
+        breaker.observe_daily_drawdown(-0.01, now)
+        breaker.observe_daily_drawdown(-0.01, now)
+        breaker.observe_daily_drawdown(-0.01, now)
+        # 3 small drawdowns are NOT 3 consecutive losing trades — streak
+        # stays 0 (fed only by record_trade_result), so no halt.
+        assert breaker.is_halted(now) is False

@@ -28,6 +28,14 @@ class CircuitBreaker:
 
     def __init__(self, config: CircuitBreakerConfig) -> None:
         self._config = config
+        # NOTE: two writers with DIFFERENT semantics share this field.
+        # ``record_trade_result`` ACCUMULATES per-trade pnl (the deferred
+        # realized-PnL task / Batch1b); ``observe_daily_drawdown`` OVERWRITES it
+        # with the NAV-based daily figure (P0-7-amendment-2026-06-23). Today only
+        # ``observe_daily_drawdown`` has production callers; Batch1b MUST
+        # reconcile the two (e.g. keep them on separate fields) before wiring
+        # ``record_trade_result`` live, or an ``observe`` call would discard an
+        # accumulated per-trade sum and vice-versa.
         self._daily_pnl_pct: float = 0.0
         self._consecutive_losses: int = 0
         self._halted_at: dt.datetime | None = None
@@ -62,6 +70,43 @@ class CircuitBreaker:
                     daily_pnl_pct=f"{self._daily_pnl_pct:.2%}",
                     consecutive_losses=self._consecutive_losses,
                 )
+
+    def observe_daily_drawdown(
+        self,
+        daily_pnl_pct: float,
+        now: dt.datetime | None = None,
+    ) -> None:
+        """Trip the daily-loss halt from an externally-computed NAV drawdown.
+
+        Used when realized per-trade P&L is unavailable
+        (``P0-7-amendment-2026-06-23``): the mark-to-market NAV daily P&L
+        (``(current_nav - day_open_nav) / day_open_nav``, computed by the caller
+        from the EquityPoint store) is the authoritative daily-loss signal.
+
+        Unlike :meth:`record_trade_result`, this *overwrites* the daily figure
+        (NAV is a cumulative day-relative value, not a per-trade delta) and never
+        touches the consecutive-loss counter. A trip latches the 60-min cooldown
+        via the existing :meth:`is_halted` machinery. Non-finite input is ignored
+        (fail-safe — never fabricate a halt or clear a real one).
+
+        Args:
+            daily_pnl_pct: day-open-NAV-relative P&L ratio (-0.05 = -5%).
+            now: current time (injectable for testing).
+        """
+        if not math.isfinite(daily_pnl_pct):
+            log.error("invalid_daily_pnl_pct", daily_pnl_pct=daily_pnl_pct)
+            return
+
+        self._daily_pnl_pct = daily_pnl_pct
+
+        if self._halted_at is None and (
+            self._daily_pnl_pct <= -self._config.daily_loss_limit_pct
+        ):
+            self._halted_at = now or dt.datetime.now(tz=SHANGHAI)
+            log.error(
+                "circuit_breaker_tripped_daily_drawdown",
+                daily_pnl_pct=f"{self._daily_pnl_pct:.2%}",
+            )
 
     def _should_halt(self) -> bool:
         """Check if either halt condition is met."""
