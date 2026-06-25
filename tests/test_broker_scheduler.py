@@ -414,6 +414,24 @@ class TestAdvanceDayHolidayGating:
         )
 
 
+class TestEodPipelineHolidayGating:
+    """P0-6-amendment-2026-06-23 — EOD chain must not run on a weekday holiday."""
+
+    @pytest.mark.asyncio
+    async def test_eod_pipeline_skipped_on_weekday_holiday(
+        self, tmp_path: Path
+    ) -> None:
+        # 2026-05-01 (Fri) is 劳动节 — a weekday exchange holiday. The 16:00 cron
+        # still fires, but the gate must return before run_eod_pipeline so no
+        # EOD snapshot/result is produced for a session that never happened.
+        sched = _scheduler_with(
+            tmp_path=tmp_path,
+            now=dt.datetime(2026, 5, 1, 16, 0, tzinfo=SHANGHAI),
+        )
+        await sched._eod_pipeline_job()  # noqa: SLF001
+        assert sched.last_eod_result() is None
+
+
 class TestThesisReviewCron:
     """W-002 — Line-2 post-close thesis-review cron callback + gating."""
 

@@ -569,6 +569,18 @@ class BrokerScheduler:
     # ------------------------------------------------------------------
 
     async def _eod_pipeline_job(self) -> None:
+        # Holiday gating (P0-6-amendment-2026-06-23): the 16:00 cron fires every
+        # weekday, but the EOD snapshot/chain must NOT run for a session that
+        # never happened — mirrors _advance_day_job and every sibling trading
+        # job. (run_eod_pipeline stays ungated for its other callers / tests.)
+        now = self._now()
+        trade_date = now.astimezone(SHANGHAI).date()
+        if not is_trading_day(trade_date):
+            log.info(
+                "eod_pipeline_skipped_non_trading_day",
+                date=trade_date.isoformat(),
+            )
+            return
         await self.run_eod_pipeline()
 
     async def _intraday_mtm_job(self) -> None:

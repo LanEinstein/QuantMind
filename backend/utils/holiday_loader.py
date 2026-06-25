@@ -126,8 +126,98 @@ def reload_holiday_table() -> HolidayTable:
         return _cache
 
 
+# ---------------------------------------------------------------------------
+# Fail-closed staleness guard (P0-6-amendment-2026-06-23)
+# ---------------------------------------------------------------------------
+
+_MIN_HOLIDAYS_PER_YEAR = 10
+"""A fully-curated A-share year lists ~15-20 holiday weekdays (Spring Festival +
+National Day alone are ~10); a placeholder / half-curated year has <=3. 10 is a
+conservative floor that every complete year clears and every placeholder fails."""
+
+
+class CalendarStaleError(RuntimeError):
+    """The static holiday calendar is not curated for the operating year.
+
+    Raised by :func:`assert_calendar_covers` so an unattended run fails CLOSED
+    (refuses to boot / open positions) rather than trading on what
+    ``is_trading_day`` would mis-classify as a normal weekday inside an
+    un-curated holiday week (P0-6-amendment-2026-06-23).
+    """
+
+
+def _holidays_in_year(table: HolidayTable, year: int) -> int:
+    return sum(1 for h in table.holidays if h.year == year)
+
+
+def calendar_staleness_reason(
+    today: dt.date, *, table: HolidayTable | None = None
+) -> str | None:
+    """Reason the calendar is stale for the CURRENT operating year, else ``None``.
+
+    The HARD, fail-closed condition: the current year's ``holidays_YYYY`` block is
+    missing or a placeholder (< ``_MIN_HOLIDAYS_PER_YEAR``). Operating inside an
+    un-curated year lets ``is_trading_day`` mis-classify a holiday week as normal
+    trading. ``assert_calendar_covers`` raises on this; the Line-1 cron skips +
+    alerts on it. ``last_verified`` is folded into the message but the per-year
+    count is authoritative. (Next-year forward coverage is a SOFT warning, not a
+    stale condition — see :func:`calendar_forward_warning`.)
+    """
+    tbl = table if table is not None else get_holiday_table()
+    this_year = _holidays_in_year(tbl, today.year)
+    if this_year < _MIN_HOLIDAYS_PER_YEAR:
+        return (
+            f"holidays_{today.year} has only {this_year} curated dates "
+            f"(< {_MIN_HOLIDAYS_PER_YEAR}); calendar not curated for the current "
+            f"operating year (last_verified={tbl.last_verified})"
+        )
+    return None
+
+
+def calendar_forward_warning(
+    today: dt.date, *, table: HolidayTable | None = None
+) -> str | None:
+    """Soft early-warning that NEXT year is not yet curated, else ``None``.
+
+    From December on, a long unattended run will cross into next year, so its
+    ``holidays_YYYY`` block should already be curated. This is **warn-only**, NOT
+    fail-closed: the current year still trades fine, and the State Council 放假安排
+    notice for next year only publishes mid-November — a hard boot-block here would
+    brick startup weeks before ops can act. Boot logs this; it never raises
+    (P0-6-amendment-2026-06-23).
+    """
+    tbl = table if table is not None else get_holiday_table()
+    if today.month == 12:
+        next_year = _holidays_in_year(tbl, today.year + 1)
+        if next_year < _MIN_HOLIDAYS_PER_YEAR:
+            return (
+                f"holidays_{today.year + 1} has only {next_year} curated dates "
+                f"(< {_MIN_HOLIDAYS_PER_YEAR}); a year-end unattended run will "
+                f"cross into an un-curated year — backfill it before year-end"
+            )
+    return None
+
+
+def assert_calendar_covers(
+    today: dt.date, *, table: HolidayTable | None = None
+) -> None:
+    """Raise :class:`CalendarStaleError` if the calendar is stale for ``today``.
+
+    Boot/fail-fast form of :func:`calendar_staleness_reason` — called at startup
+    (refuse to boot an unattended run on a placeholder calendar) and on the
+    position-opening path (P0-6-amendment-2026-06-23).
+    """
+    reason = calendar_staleness_reason(today, table=table)
+    if reason is not None:
+        raise CalendarStaleError(reason)
+
+
 __all__ = [
+    "CalendarStaleError",
     "HolidayTable",
+    "assert_calendar_covers",
+    "calendar_forward_warning",
+    "calendar_staleness_reason",
     "get_holiday_table",
     "reload_holiday_table",
 ]

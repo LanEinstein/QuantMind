@@ -1605,6 +1605,33 @@ async def _init_line2_runners(
         await intraday_runner.run(provider=provider, now=now)
 
     async def _line1_daily_callback(now: datetime) -> None:
+        # P0-6-amendment-2026-06-23: fail-closed on a stale/un-curated holiday
+        # calendar. is_trading_day mis-classifies an un-curated holiday week as
+        # normal weekday trading; never OPEN new positions on a calendar we
+        # cannot trust. Boot already fail-fasts; this catches a long unattended
+        # run that crosses into a stale year between restarts.
+        from backend.utils.holiday_loader import calendar_staleness_reason
+
+        _cal_today = now.astimezone(SHANGHAI_TZ).date()
+        _cal_stale = calendar_staleness_reason(_cal_today)
+        if _cal_stale is not None:
+            log.error("line1_daily_skipped_calendar_stale", reason=_cal_stale)
+            alerter = getattr(application.state, "feishu_alerter", None)
+            if alerter is not None:
+                try:
+                    await alerter.fire(
+                        alert_type="health_critical",
+                        severity="critical",
+                        message=(
+                            f"Holiday calendar is stale: {_cal_stale}. Line-1 will"
+                            " OPEN no new positions until config/holidays.yaml is"
+                            " backfilled and the app is restarted."
+                        ),
+                        dedup_key=f"calendar_stale:{_cal_today}",
+                    )
+                except Exception as alert_exc:  # noqa: BLE001 — alert best-effort
+                    log.warning("calendar_stale_alert_failed", error=str(alert_exc))
+            return
         # Line-1 reads the SAME T-1 EOD frame as Line-2 daily, assembled
         # lazily + cached by _ensure_daily_frame (U-D6c). Fail-open: a frame
         # assembly failure leaves it unset and Line-1 skips (no BUY routed).
@@ -3149,6 +3176,35 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
     # that diverges the durable mirror. The
     # QUANTMIND_BROKER_SKIP_RS_GATE=1 env var is the only sanctioned
     # opt-out, applied above by leaving replica_set_gate=None.
+    # P0-6-amendment-2026-06-23: fail-fast on a stale/un-curated holiday calendar
+    # BEFORE the trading crons start — an unattended run must never START on a
+    # placeholder calendar (e.g. the 2027 block before ops backfills it), where
+    # is_trading_day would mis-classify a holiday week as normal weekday trading.
+    from backend.utils.holiday_loader import (
+        assert_calendar_covers,
+        calendar_forward_warning,
+        calendar_staleness_reason,
+    )
+
+    _boot_cal_today = datetime.now(tz=SHANGHAI_TZ).date()
+    # Soft early-warning (NEVER blocks boot): from December, next year not yet
+    # curated. A hard block here would brick startup weeks before the State
+    # Council publishes the next-year notice.
+    _boot_fwd = calendar_forward_warning(_boot_cal_today)
+    if _boot_fwd is not None:
+        log.warning("calendar_forward_coverage", reason=_boot_fwd)
+    if os.environ.get("QUANTMIND_HOLIDAYS_PATH"):
+        # Test / alternate-deploy override (P0-6 §2.8: production leaves it
+        # unset) — warn instead of fail-fast so a minimal test calendar boots.
+        _boot_reason = calendar_staleness_reason(_boot_cal_today)
+        if _boot_reason is not None:
+            log.warning("calendar_staleness_override_mode", reason=_boot_reason)
+    else:
+        # Production fail-fast ONLY on the current operating year being
+        # un-curated (the dangerous condition where is_trading_day mis-classifies
+        # a holiday week as trading).
+        assert_calendar_covers(_boot_cal_today)
+
     await broker_scheduler.start()
     application.state.broker_scheduler = broker_scheduler
 
