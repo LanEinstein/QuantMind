@@ -8,6 +8,59 @@
 
 ---
 
+## 0b. Session 2 (2026-06-25) — Batches 5–9 DONE (local commits, push pending)
+
+The next session executed all of Batches 5–9 per §2's protocol (TDD →
+`/code-review high` workflow → fix CONFIRMED/PLAUSIBLE findings → full gate →
+one commit per batch). Baseline → **6928 passed / 14 skipped**, ruff clean
+(backend/tests/scripts), `redline-check.sh` EXIT=0; frontend type-check + vitest
+176 + build green. **Not yet pushed (owner-gated).**
+
+| Commit | Batch | What |
+|--------|-------|------|
+| `dc1bb55` | **B5 scheduler** | S2 whole-tick `wait_for` ceiling + explicit `max_instances=1` (anti-wedge; honest `to_thread`-leak caveat) / S5 5-field cron SSoT / S6 interval misfire grace / S8 startup EOD-snapshot watchdog (alert-only, same-day-aware, bounded read, reuses canonical `prev_trading_day`) / S9 catch-up task retained+cancelled+logged / S4+S7 docstrings. |
+| `2df7a2e` | **B6 monitoring/value** | M1 GPM size-tilt bug (`gross_margin`→`grossprofit_margin`, verified vs raw PIT) / M2 PIT cutoff strict-exclusive (amendment `P0-8-amendment-2026-06-25`) / M4 anomaly whole-series non-positive screen (fail-closed) / M3+M5 docs. |
+| `90a216a` | **B7 broker/cost** | B5 `OrderResult.trade_id` + `IBroker.get_trade` + executor fail-closed on unresolved fill / B8 at-fill price-limit via Decimal SSoT `get_price_limits` + parity test + config-drift guard / D5 ¥20→¥100 docstring sweep / D4 documented (bounded single-call overshoot). **B6 verified already-protected** (unique index on `broker_events.sequence`). |
+| `7e46d15` | **B8 frontend** | F1 WS reconnect (stability-window + jitter + cap → persistent banner bound in Dashboard+Portfolio with 立即重连, keeps retrying) / F2 regex byte-equal artifact bridge / F3 `num()` crash-safe tables / F4 account-switch reset / F5 60s polling / F6 sparkline relabel / F7 ms-seq / F8 SELL cap / F9 optional-chain / F10 outage flags. **Playwright exam run: 58 passed / 11 failed, all 11 PRE-EXISTING** (4 portfolio reproduce on stashed baseline; 7 need a live backend). |
+| `79e5364` | **B9 process** | Sc1 redline-check wired into pre-commit (`local` hook) + headers corrected / Sc4 BT_FLOAT integer-exemption documented. |
+
+**Dispositions of the §3 items NOT changed as code (investigated, justified):**
+- **B6** — already protected; the unique index on `broker_events.sequence`
+  (`backend/data/database.py`) is exactly what makes a racing-transaction
+  duplicate raise `DuplicateKeyError`. The §3 finding was based on reading
+  `store.py` (indexes live in `database.py`). No change.
+- **B7** — **deferred, coupled to #11.** The EOD snapshot state+cursor
+  non-atomicity is downstream of the deferred #11 sim-fill write-ahead
+  (broker mutated before the event is persisted). A rushed lock around the
+  build risks blocking on a slow Mongo / deadlock — the §2 "worse bug". Do it
+  WITH #11 (atomic capture under a write-ahead-backed freeze).
+- **D4** — **documented design property, no code change.** The ¥100 cap is a
+  pre-flight admission gate; actual spend is reconciled into the unified
+  counter by `track_usage` and released verbatim on settle, so every
+  *subsequent* call is gated against truth. The lone residual — a single
+  admitted call overshooting its own estimate — is bounded by one call's
+  overage and cannot be un-spent; a settle-time true-up cannot prevent it and
+  risks double-counting. Documented in `reserve_budget`.
+- **Sc2** — **deferred to the QGR owner.** The CPCV embargo
+  (`scripts/factor_research/walk_forward_eval.py` `DEFAULT_EMBARGO=4`) currently
+  DOES cover the max label horizon exactly (4 rebalances × 5td = 20td), so there
+  is no present leak. Bumping it (the §3 `ceil(max_horizon/freq)+1` fix) changes
+  CPCV methodology + the cumulative trial ledger — a QGR-owner amendment, not a
+  unilateral hardening edit (memory: 不碰 `scripts/factor_research/`).
+  Recommended fix when QGR next revisits cadence/horizon: derive
+  `embargo = ceil(max_label_horizon / rebalance_freq) + 1` and assert
+  `embargo * rebalance_freq >= max_label_horizon`.
+
+**Still open (untouched this session):** the §4 deferred tasks #10–#13 (each
+needs its own amendment + careful TDD / vendor-data validation), B7 (with #11),
+Sc2 (QGR), and the §5 doc-drift list (QGR-gated CLAUDE.md/README rewrite).
+**Env note for the Playwright exam:** inotify watchers are exhausted in this
+sandbox; run vite with `CHOKIDAR_USEPOLLING=true` (the e2e suite needs the DEV
+build's mocks, so `vite preview` won't substitute) and a live `uvicorn` for the
+7 backend-dependent specs.
+
+---
+
 ## 0. Honest framing (do NOT regress this)
 
 - This is a **simulation + Feishu-manual-execution** research platform. **永禁真实
