@@ -290,6 +290,14 @@ def _observable_index_closes(
 
 async def _init_data_layer(application: FastAPI, redis_pool: object) -> None:
     """Initialize the data layer: MongoDB, services, scheduler."""
+    # D6 (P0-8-amendment-2026-06-23): pin requests/urllib3 egress to IPv4 BEFORE
+    # any data SDK (tushare/adata/akshare) runs, so the §2.9 IPv4-only egress
+    # invariant holds for the data layer (not just the httpx LLM/alerter clients
+    # that already pin local_address='0.0.0.0').
+    from backend.data.ipv4_egress import force_ipv4_egress
+
+    force_ipv4_egress()
+
     import motor.motor_asyncio as motor
 
     from backend.data.config import load_data_sources_config

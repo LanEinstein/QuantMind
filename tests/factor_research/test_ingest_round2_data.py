@@ -292,7 +292,11 @@ class _FakeRound2Client:
             {"con_code": ["600519.SH"], "trade_date": [end_date], "weight": [5.0]}
         )
 
-    async def fina_indicator_vip(self, period: str) -> pd.DataFrame:
+    async def fina_indicator_vip(
+        self, period: str, *, throttle: Any | None = None
+    ) -> pd.DataFrame:
+        if throttle is not None:
+            await throttle()  # one page → one token (mirrors the real client)
         self.calls.append(("fina_indicator_vip", period))
         if period in self._empty_periods:
             return pd.DataFrame()

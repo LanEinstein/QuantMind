@@ -212,12 +212,22 @@ class TestFullMarketPull:
         assert pro.calls == [("adj_factor", {"trade_date": "20260522"})]
 
     @pytest.mark.asyncio
-    async def test_fina_indicator_vip_by_period(self) -> None:
-        pro = _FakePro({"fina_indicator_vip": pd.DataFrame({"x": range(7194)})})
+    async def test_fina_indicator_vip_paginates_full_period(self) -> None:
+        # D2 (2026-06-23): the one *_vip endpoint still on a single _fetch. Its
+        # single-call row cap silently truncates the universe once listings
+        # approach it; the client now pages with limit+offset and assembles the
+        # COMPLETE period (PIT completeness red line, like its statement siblings).
+        backing = pd.DataFrame(
+            {"ts_code": [f"{i:06d}.SZ" for i in range(12345)]}
+        )
+        pro = _FakePro({"fina_indicator_vip": backing})
         client = TushareClient(pro=pro, token=VALID_TOKEN)
         df = await client.fina_indicator_vip("20251231")
-        assert len(df) == 7194  # 5000档 vip confirmed in live test
-        assert pro.calls == [("fina_indicator_vip", {"period": "20251231"})]
+        assert len(df) == 12345
+        assert df["ts_code"].nunique() == 12345  # nothing dropped past the cap
+        offsets = [c[1]["offset"] for c in pro.calls]
+        assert offsets == [0, 5000, 10000]  # paged until a short final page
+        assert all(c[1]["limit"] == 5000 for c in pro.calls)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

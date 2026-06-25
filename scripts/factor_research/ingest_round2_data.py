@@ -163,7 +163,9 @@ class _Round2Client(Protocol):
         start_date: str = "",
         end_date: str = "",
     ) -> pd.DataFrame: ...
-    async def fina_indicator_vip(self, period: str) -> pd.DataFrame: ...
+    async def fina_indicator_vip(
+        self, period: str, *, throttle: _Throttle | None = None
+    ) -> pd.DataFrame: ...
     async def income_vip(
         self, period: str, *, throttle: _Throttle | None = None
     ) -> pd.DataFrame: ...
@@ -489,7 +491,15 @@ async def ingest_fina_indicator(
     now: Callable[[], datetime],
     rate_limiter: RateLimiter | None = None,
 ) -> list[EndpointResult]:
-    """One full-market fundamentals snapshot per report period."""
+    """One full-market fundamentals snapshot per report period.
+
+    fina_indicator_vip paginates INSIDE the client (D2, 2026-06-23), so — like
+    the statement pulls — the throttle is handed to the client (awaited once per
+    page) and ``_ingest_one`` is told NOT to throttle (``rate_limiter=None``);
+    otherwise a multi-page period would acquire one token for N real SDK calls
+    and silently overrun Tushare's per-minute cap.
+    """
+    throttle = _make_throttle(rate_limiter)
     out: list[EndpointResult] = []
     for period in periods:
         out.append(
@@ -498,10 +508,10 @@ async def ingest_fina_indicator(
                 endpoint=EP_FINA,
                 trade_date=period,
                 params={"period": period},
-                fetch=partial(client.fina_indicator_vip, period),
+                fetch=partial(client.fina_indicator_vip, period, throttle=throttle),
                 now=now,
                 require_non_empty=True,
-                rate_limiter=rate_limiter,
+                rate_limiter=None,
             )
         )
     return out

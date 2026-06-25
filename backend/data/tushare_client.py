@@ -329,10 +329,24 @@ class TushareClient:
         self._check_trade_date(trade_date)
         return await self._fetch("adj_factor", {"trade_date": trade_date})
 
-    async def fina_indicator_vip(self, period: str) -> pd.DataFrame:
-        """Full-market fundamentals for a report period (~7194 rows, 5000档 vip)."""
+    async def fina_indicator_vip(
+        self, period: str, *, throttle: Callable[[], Awaitable[None]] | None = None
+    ) -> pd.DataFrame:
+        """Full-market fundamentals for a report period (vip, paginated).
+
+        D2 (2026-06-23): routed through ``_fetch_paginated`` like its statement
+        siblings. This was the one ``*_vip`` endpoint still on a single
+        ``_fetch``; its single-call row cap (~12000) silently truncates the
+        universe once listings approach it, corrupting the PIT survivorship
+        denominator the quality/value factors depend on — a red-line-class
+        data-corruption gap (CLAUDE.md §2.5 redline 6 / memory
+        ``reference-tushare-statement-vip-row-cap``). Paging is cheap insurance;
+        ``throttle`` is awaited per page.
+        """
         self._check_period(period)
-        return await self._fetch("fina_indicator_vip", {"period": period})
+        return await self._fetch_paginated(
+            "fina_indicator_vip", {"period": period}, throttle=throttle
+        )
 
     async def income_vip(
         self, period: str, *, throttle: Callable[[], Awaitable[None]] | None = None
