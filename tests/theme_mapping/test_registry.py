@@ -85,7 +85,8 @@ def test_real_config_loads_and_is_frozen() -> None:
     assert "new_energy" in ids
     assert "aerospace" in ids  # v2: renamed from aerospace_commercial
     # v2 codex PIT-gate revisions (owner-confirmed)
-    assert "traditional_upgrade_highdiv" not in ids  # dropped (BACK-FITTED) → value factor
+    # dropped (BACK-FITTED) → moved to a value factor
+    assert "traditional_upgrade_highdiv" not in ids
     assert "low_altitude_economy" not in ids  # merged into aerospace (no distinct L3)
     # no future-industry speculation leaked into the mapping
     assert not any(

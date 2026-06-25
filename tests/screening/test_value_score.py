@@ -67,6 +67,17 @@ class TestPitFundamentals:
         records = [("2026-07-31", 3.0)]
         assert pit_fundamentals_value(records, "2026-06-01") is None
 
+    def test_same_day_announcement_is_excluded(self) -> None:
+        # M2 (P0-8-amendment-2026-06-25): strict-exclusive cutoff — a report
+        # announced ON the decision date must NOT leak in (it may post after the
+        # 09:35 decision). Falls back to the prior announced vintage.
+        records = [("2026-04-30", 2.0), ("2026-06-01", 9.0)]
+        assert pit_fundamentals_value(records, "2026-06-01") == 2.0
+
+    def test_same_day_only_is_none(self) -> None:
+        records = [("2026-06-01", 9.0)]
+        assert pit_fundamentals_value(records, "2026-06-01") is None
+
     def test_dirty_value_skipped(self) -> None:
         records = [("2026-01-31", math.nan), ("2026-02-28", 5.0)]
         assert pit_fundamentals_value(records, "2026-06-01") == 5.0

@@ -77,7 +77,7 @@ class TestBackendStatementPIT:
                     "ann_date": ["20230420", "20230610"],  # original + restatement
                     "update_flag": ["0", "1"],
                     "roe": [10.0, 10.5],
-                    "gross_margin": [90.0, 90.0],
+                    "grossprofit_margin": [90.0, 90.0],
                 }
             ),
         )
@@ -92,7 +92,7 @@ class TestBackendStatementPIT:
                     "ann_date": ["20230820"],
                     "update_flag": ["0"],
                     "roe": [20.0],
-                    "gross_margin": [91.0],
+                    "grossprofit_margin": [91.0],
                 }
             ),
         )
@@ -100,7 +100,7 @@ class TestBackendStatementPIT:
             store,
             ["20230331", "20230630"],
             endpoint=EP_FINA,
-            fields=["roe", "gross_margin"],
+            fields=["roe", "grossprofit_margin"],
             report_type_filter=None,
         )
         roe = pit.announced_values("600519.SH", "roe")
@@ -158,7 +158,7 @@ class TestQualityMetricRecords:
                     "ann_date": ["20240328", "20240328"],
                     "update_flag": ["0", "0"],
                     "roe": [18.0, 6.0],
-                    "gross_margin": [40.0, 25.0],
+                    "grossprofit_margin": [40.0, 25.0],
                 }
             ),
         )
@@ -195,6 +195,41 @@ class TestQualityMetricRecords:
         ann, val = a[QualityMetric.ACCRUALS][0]
         assert ann == "20240328"
         assert val == pytest.approx(-0.02)
+
+    def test_gpm_reads_ratio_not_absolute_gross_profit(
+        self, store: SnapshotStore
+    ) -> None:
+        """M1 regression: GPM must be the RATIO (grossprofit_margin), never the
+        absolute gross profit in yuan (gross_margin) — ranking the cross-section
+        by the absolute amount ranks by company SIZE (the QGR-rejected size
+        tilt). Seed BOTH columns with the real-world scale gap and assert the
+        reader picks the ratio.
+        """
+        _put(
+            store,
+            EP_FINA,
+            "20231231",
+            pd.DataFrame(
+                {
+                    "ts_code": ["002210.SZ"],
+                    "end_date": ["20231231"],
+                    "ann_date": ["20240328"],
+                    "update_flag": ["0"],
+                    "roe": [12.0],
+                    # gross_margin = absolute 毛利 in yuan (size); grossprofit_margin
+                    # = the ratio. The reader must return the ratio.
+                    "gross_margin": [43_243_968.86],
+                    "grossprofit_margin": [0.6119],
+                }
+            ),
+        )
+        recs = quality_metric_records(
+            store, codes=["002210.SZ"], periods=["20231231"]
+        )
+        gpm = recs["002210.SZ"][QualityMetric.GPM]
+        assert gpm == [("20240328", 0.6119)]
+        # Guard against the size-tilt value sneaking back in.
+        assert all(abs(v) < 1.0e4 for _ann, v in gpm)
 
     def test_feeds_af003_pit_gated(self, store: SnapshotStore) -> None:
         self._seed_full(store)

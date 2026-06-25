@@ -183,7 +183,14 @@ def _returns(closes: tuple[float, ...]) -> list[float]:
 
 
 def rsi(closes: tuple[float, ...], window: int) -> float | None:
-    """Wilder-style RSI scaled 0-100; ``None`` if too short."""
+    """Simple-average RSI scaled 0-100; ``None`` if too short.
+
+    M5 (production-hardening 2026-06-25): this uses a plain arithmetic mean of
+    gains/losses over ``window`` (NOT Wilder's recursive EMA smoothing) — the
+    docstring previously mislabelled it "Wilder-style". The simple average is
+    the intended deterministic MVP behaviour; a true Wilder upgrade would be a
+    behavioural change to the (currently dormant) ADD path, not a doc fix.
+    """
     rets = _returns(closes)
     if len(rets) < window:
         return None
@@ -405,6 +412,14 @@ def evaluate_add_intents(
     ``series_by_code`` maps a held 6-digit code to its ``(closes, amounts)``
     series (oldest → newest), parsed from the PIT snapshot by
     :func:`parse_held_series`. Output is ordered by code for replayable results.
+
+    M3 (production-hardening 2026-06-25): this anti-martingale ADD evaluator is
+    DORMANT in production — it is exercised by tests (incl. the MVP e2e) but is
+    deliberately NOT wired into any live runner yet (Line-2 ships SELL-only;
+    ADD = BUY needs the full 5 builder early-returns + RiskEngine 14-check +
+    Feishu human gate, and routing live ADD orders is a feature decision, not a
+    hardening fix). Wiring it requires an amendment + a regime-deriving runner;
+    until then the dormancy is intentional and documented here, not a silent gap.
     """
     cfg = config or AddConfig()
     names = name_by_code or {}

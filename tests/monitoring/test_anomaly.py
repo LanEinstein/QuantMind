@@ -117,6 +117,32 @@ def test_non_positive_last_close_skipped_no_price() -> None:
     assert result.signals == ()
 
 
+def test_non_positive_interior_close_skipped_no_price() -> None:
+    # M4 regression (production-hardening 2026-06-25): an INTERIOR non-positive
+    # close (a corrupt/halted bar) with a valid LAST close must still be screened
+    # NO_PRICE. _returns yields 0.0 for that step, which would inflate the
+    # baseline σ and MASK a real anomaly; the prior screen only checked the last
+    # bar and would have scanned the poisoned series. Intentionally stricter than
+    # the Line-1 screener (which screens only the last bar).
+    closes = _calm_closes()
+    closes[len(closes) // 2] = 0.0  # corrupt interior bar; last bar still valid
+    assert closes[-1] > 0  # guard: the LAST bar is fine, only an interior one
+    snap = _snapshot(_frame([_row(closes=closes)]))
+    result = AnomalyDetector().scan(snap, ["600519"], "LINE2-MON-4b")
+    assert result.skipped == {"600519": SkipReason.NO_PRICE.value}
+    assert result.signals == ()
+    assert result.scanned_codes == ()
+
+
+def test_negative_interior_close_skipped_no_price() -> None:
+    # Same screen also catches a negative interior bar (clearly corrupt data).
+    closes = _calm_closes()
+    closes[5] = -1.0
+    snap = _snapshot(_frame([_row(closes=closes)]))
+    result = AnomalyDetector().scan(snap, ["600519"], "LINE2-MON-4c")
+    assert result.skipped == {"600519": SkipReason.NO_PRICE.value}
+
+
 def test_insufficient_history_skipped() -> None:
     snap = _snapshot(_frame([_row(closes=[100.0, 101.0, 102.0])]))
     result = AnomalyDetector().scan(snap, ["600519"], "LINE2-MON-5")

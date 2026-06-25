@@ -51,10 +51,14 @@ MetricRecords = Mapping[QualityMetric, Sequence[tuple[str, float]]]
 def quality_pit_values(
     records: MetricRecords, as_of_date: str
 ) -> dict[QualityMetric, float | None]:
-    """PIT as-known value per metric (latest announced on/before ``as_of_date``).
+    """PIT as-known value per metric (latest announced **strictly before**
+    ``as_of_date``).
 
     Keyed by announcement date, so a quarter not yet disclosed by the decision
-    date can never leak in. ``None`` for a metric with no qualifying vintage.
+    date can never leak in. The cutoff is strict-exclusive
+    (P0-8-amendment-2026-06-25 / M2): a report announced *on* the decision date
+    is excluded, matching the research PIT convention. ``None`` for a metric
+    with no qualifying vintage.
     """
     return {
         metric: pit_fundamentals_value(recs, as_of_date)

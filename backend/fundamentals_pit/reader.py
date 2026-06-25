@@ -256,7 +256,14 @@ def quality_metric_records(
         store,
         periods,
         endpoint=EP_FINA,
-        fields=["roe", "gross_margin"],
+        # M1 (production-hardening 2026-06-25): GPM must read
+        # ``grossprofit_margin`` (the RATIO, 销售毛利率) — NOT ``gross_margin``,
+        # which in fina_indicator_vip is the ABSOLUTE gross profit in yuan
+        # (毛利). Ranking the cross-section by the absolute amount ranks by
+        # company SIZE — the exact spurious size-tilt the QGR research
+        # rejected (verified vs the raw PIT payload: 002210.SZ gross_margin
+        # ≈4.3e7 vs grossprofit_margin≈0.61).
+        fields=["roe", "grossprofit_margin"],
         report_type_filter=None,
     )
     income = BackendStatementPIT.build(
@@ -282,7 +289,7 @@ def quality_metric_records(
     for code in code_set:
         metrics: dict[QualityMetric, list[tuple[str, float]]] = {}
         roe = fina.announced_values(code, "roe")
-        gpm = fina.announced_values(code, "gross_margin")
+        gpm = fina.announced_values(code, "grossprofit_margin")  # M1: the ratio
         if roe:
             metrics[QualityMetric.ROE] = roe
         if gpm:

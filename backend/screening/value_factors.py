@@ -241,18 +241,27 @@ def pit_fundamentals_value(
     records: Sequence[tuple[str, float]],
     as_of_date: str,
 ) -> float | None:
-    """Latest fundamentals value **announced on or before** ``as_of_date`` (PIT).
+    """Latest fundamentals value **announced strictly before** ``as_of_date``.
 
-    ``records`` is ``(announce_date, value)`` pairs (ISO ``YYYY-MM-DD``). Keyed
-    by **announcement date**, never the report-period end, so a quarter that has
-    not been disclosed by the decision date can never leak in (codex P1-5).
-    Returns the most recently announced finite value, or ``None`` if none
-    qualifies.
+    ``records`` is ``(announce_date, value)`` pairs. ``announce_date`` and
+    ``as_of_date`` are compared as **strings**, so they MUST share one date
+    format — both lexicographically-sortable (zero-padded ``YYYYMMDD`` as the
+    live AF-002/AF-003 caller chain passes, or dashed ``YYYY-MM-DD`` as the
+    tests use); do not mix the two within one call. Keyed by **announcement
+    date**, never the report-period end, so a quarter that has not been
+    disclosed by the decision date can never leak in (codex P1-5). Returns the
+    most recently announced finite value, or ``None`` if none qualifies.
+
+    M2 (P0-8-amendment-2026-06-25): the cutoff is **strict-exclusive**
+    (``ann_date < as_of_date``) to match the research PIT convention
+    (``scripts/factor_research/fundamentals_pit.py``) and the §2.0 no-look-ahead
+    red line — a report announced **on** the decision date may post after the
+    09:35 decision, so it must not leak in. Previously inclusive (``<=``).
     """
     best_date = ""
     best_value: float | None = None
     for announce_date, value in records:
-        if announce_date > as_of_date or not math.isfinite(value):
+        if announce_date >= as_of_date or not math.isfinite(value):
             continue
         if announce_date >= best_date:
             best_date = announce_date

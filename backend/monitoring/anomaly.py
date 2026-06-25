@@ -503,7 +503,21 @@ class AnomalyDetector:
             consumed.append(
                 build_consumed_row(snapshot.snapshot_id, row.row_key, row.row_bytes)
             )
-            if not row.closes or row.closes[-1] <= 0:
+            # M4 (production-hardening 2026-06-25): screen the WHOLE closes
+            # series, not just the last bar. A non-positive *interior* close
+            # leaves _returns yielding 0.0 for that step, which inflates the
+            # baseline σ and can MASK a real anomaly (z shrinks toward 0).
+            # A real A-share close is always > 0, so a non-positive bar anywhere
+            # in the window is a data-corruption signal — fail closed (§3) and
+            # drop the code as NO_PRICE rather than scan a poisoned baseline.
+            # NOTE: this is intentionally STRICTER than the Line-1 screener,
+            # which only rejects a non-positive *last* bar (screener.py last_price
+            # check); the anomaly baseline needs every bar clean, whereas the
+            # screener only needs a valid spot to rank. The tradeoff: one corrupt
+            # interior bar removes the code from monitoring until it ages out of
+            # the window — acceptable, since scanning a corrupt series could
+            # silently mask a true anomaly (the worse outcome).
+            if not row.closes or any(c <= 0 for c in row.closes):
                 skipped[code] = SkipReason.NO_PRICE.value
                 continue
             if len(row.closes) < self._cfg.min_bars:

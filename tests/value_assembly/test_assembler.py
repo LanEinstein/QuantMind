@@ -84,7 +84,7 @@ def _seed_fundamentals(store: SnapshotStore) -> None:
                 "ann_date": ["20240320", "20240320"],
                 "update_flag": ["0", "0"],
                 "roe": [25.0, 5.0],
-                "gross_margin": [55.0, 20.0],
+                "grossprofit_margin": [55.0, 20.0],
             }
         ),
     )
