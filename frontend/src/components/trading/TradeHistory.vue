@@ -49,23 +49,23 @@
       </el-table-column>
       <el-table-column prop="price" label="价格" width="90" align="right">
         <template #default="{ row }">
-          {{ row.price.toFixed(2) }}
+          {{ num(row.price).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column prop="volume" label="数量" width="80" align="right" />
       <el-table-column prop="amount" label="金额" width="120" align="right">
         <template #default="{ row }">
-          {{ row.amount.toFixed(2) }}
+          {{ num(row.amount).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column prop="commission" label="佣金" width="80" align="right">
         <template #default="{ row }">
-          {{ row.commission.toFixed(2) }}
+          {{ num(row.commission).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column prop="stamp_tax" label="印花税" width="80" align="right">
         <template #default="{ row }">
-          {{ row.stamp_tax.toFixed(2) }}
+          {{ num(row.stamp_tax).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column
@@ -75,12 +75,12 @@
         align="right"
       >
         <template #default="{ row }">
-          {{ (row.transfer_fee ?? 0).toFixed(4) }}
+          {{ num(row.transfer_fee).toFixed(4) }}
         </template>
       </el-table-column>
       <el-table-column prop="slippage_cost" label="滑点" width="80" align="right">
         <template #default="{ row }">
-          {{ row.slippage_cost.toFixed(2) }}
+          {{ num(row.slippage_cost).toFixed(2) }}
         </template>
       </el-table-column>
       <template #empty>
@@ -94,6 +94,7 @@
 import { ref } from 'vue'
 import { Download } from '@element-plus/icons-vue'
 import { usePortfolioStore, getStockName } from '@/stores/portfolio'
+import { num } from '@/utils/num'
 import dayjs from 'dayjs'
 
 const store = usePortfolioStore()

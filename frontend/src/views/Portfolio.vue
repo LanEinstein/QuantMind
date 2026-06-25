@@ -1,5 +1,22 @@
 <template>
   <div class="portfolio-layout">
+    <!-- F1 (codex): persistent banner when the live WS feed is down — critical
+         here because an operator could otherwise record a manual Feishu trade
+         against stale prices/positions believing the feed is live. -->
+    <el-alert
+      v-if="wsConnectionLost"
+      type="error"
+      :closable="false"
+      show-icon
+      class="ws-down-banner"
+      title="实时连接断开 — 持仓/价格可能为过期数据,请勿据此手工执行"
+    >
+      <template #default>
+        实时数据通道已断开,页面数据可能已过期。
+        <el-button text type="primary" size="small" @click="reconnectWsNow">立即重连</el-button>
+      </template>
+    </el-alert>
+
     <!-- Section F: Multi-Account Tabs -->
     <AccountTabs />
 
@@ -195,7 +212,11 @@ import ManualTradeForm from '@/components/trading/ManualTradeForm.vue'
 
 const store = usePortfolioStore()
 const riskStore = useRiskStore()
-const { connect: connectWs } = useWebSocket()
+const {
+  connect: connectWs,
+  connectionLost: wsConnectionLost,
+  reconnectNow: reconnectWsNow,
+} = useWebSocket()
 const activeTab = ref('orders')
 const showPositionDrawer = ref(false)
 const selectedPosition = ref<PositionItem | null>(null)

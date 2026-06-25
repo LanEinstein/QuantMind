@@ -8,7 +8,12 @@
     </template>
 
     <div v-if="error" class="placeholder-text error-text">加载失败:{{ error }}</div>
-    <el-timeline v-else class="pipeline-timeline">
+    <template v-else>
+      <div v-if="failedSources.length" class="placeholder-text error-text">
+        数据获取失败:{{ failedSources.join('、') }}(对应阶段状态可能不准)
+      </div>
+    </template>
+    <el-timeline v-if="!error" class="pipeline-timeline">
       <el-timeline-item
         v-for="stage in stages"
         :key="stage.key"
@@ -34,7 +39,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { instructionPlansApi } from '@/api/instructionPlans'
 import { slotRotationApi } from '@/api/slotRotation'
 import { acceptanceApi } from '@/api/acceptance'
@@ -69,6 +74,12 @@ const acceptance = ref<AcceptanceLatestPayload | null>(null)
 const dualLine = ref<DualLineStatusPayload | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+// F10 (production-hardening 2026-06-25): the 3 secondary fetches used a bare
+// `.catch(() => null)`, so a backend OUTAGE for any of them rendered as a normal
+// idle/"未接线" stage — indistinguishable from a genuinely-not-yet-run pipeline.
+// Track which secondary sources failed so the view can say "数据获取失败" instead
+// of masking the outage as idle.
+const failedSources = ref<string[]>([])
 
 function earliestCreatedAt(items: readonly InstructionPlanSummary[]): string {
   if (!items.length) return ''
@@ -166,17 +177,30 @@ const stages = computed<Stage[]>(() => {
 async function reload(): Promise<void> {
   loading.value = true
   error.value = null
+  // F10: reset + re-track per-source failures each reload. A secondary source
+  // that 404s/500s/times out is recorded (not silently nulled), so the view can
+  // surface "数据获取失败" rather than render it as a normal idle stage. Cleared
+  // up-front (not only on the success path) so a primary-fetch reject can't leave
+  // a stale failed list behind (codex F10).
+  failedSources.value = []
+  const failed: string[] = []
+  const track = <T,>(label: string, p: Promise<T>): Promise<T | null> =>
+    p.catch(() => {
+      failed.push(label)
+      return null
+    })
   try {
     const [planPayload, rot, acc, dl] = await Promise.all([
       instructionPlansApi.list({ trade_date: today, limit: 200 }),
-      slotRotationApi.get().catch(() => null),
-      acceptanceApi.getLatest().catch(() => null),
-      dualLineStatusApi.get().catch(() => null),
+      track('轮动', slotRotationApi.get()),
+      track('验收', acceptanceApi.getLatest()),
+      track('双线状态', dualLineStatusApi.get()),
     ])
     plans.value = planPayload.plans
     rotation.value = rot
     acceptance.value = acc
     dualLine.value = dl
+    failedSources.value = failed
   } catch (err: unknown) {
     error.value = err instanceof Error ? err.message : 'failed to load pipeline'
   } finally {
@@ -184,7 +208,19 @@ async function reload(): Promise<void> {
   }
 }
 
-onMounted(reload)
+// F5 (production-hardening 2026-06-25): poll so the pipeline view stays live on
+// a days-open dashboard instead of freezing on its mount snapshot.
+const POLL_INTERVAL_MS = 60_000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  void reload()
+  pollTimer = setInterval(() => void reload(), POLL_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 
 defineExpose({ reload })
 </script>

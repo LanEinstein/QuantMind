@@ -131,3 +131,36 @@ def test_frontend_mirror_uses_same_keys() -> None:
         assert f"'{key}'" in mirror, (
             f"frontend mirror missing pattern id {key!r}"
         )
+
+
+# F2 (production-hardening 2026-06-25): byte-equal pattern-STRING mirror.
+# The sample-based tests above only prove BEHAVIOURAL equivalence on the fixture
+# rows — a one-sided edit to a pattern string that still happens to match every
+# sample would pass both suites. This generated artifact is the bridge: this
+# backend test asserts it byte-matches the (JS-normalized) backend SSoT, and the
+# vitest spec asserts the TS PATTERN_STRINGS byte-match the SAME artifact — so
+# any single-side string edit breaks exactly one of the two suites.
+NORMALIZED_ARTIFACT_PATH = (
+    Path("frontend/src/utils/__tests__/execution_regex_patterns.normalized.json")
+)
+
+
+def _js_normalize(pattern: str) -> str:
+    """Python named groups ``(?P<name>)`` → JS named groups ``(?<name>)``.
+
+    The ONLY syntactic difference between the anchored Python pattern strings
+    and the TS mirror; everything else must be byte-identical.
+    """
+    return pattern.replace("(?P<", "(?<")
+
+
+def test_normalized_pattern_artifact_matches_backend_ssot() -> None:
+    artifact = json.loads(NORMALIZED_ARTIFACT_PATH.read_text(encoding="utf-8"))
+    expected = {
+        pid: _js_normalize(pattern) for pid, pattern in PATTERNS_AS_DICT.items()
+    }
+    assert artifact == expected, (
+        "execution_regex_patterns.normalized.json is stale — regenerate it from "
+        "backend.execution.regex_patterns.PATTERNS_AS_DICT (replace '(?P<'→'(?<') "
+        "in the SAME commit that edits the backend patterns."
+    )

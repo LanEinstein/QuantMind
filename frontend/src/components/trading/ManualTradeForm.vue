@@ -36,6 +36,12 @@
         <span v-if="form.side === 'SELL' && sellableVolume !== null" class="hint">
           可卖 {{ sellableVolume }} 股(T+1)
         </span>
+        <span
+          v-else-if="form.side === 'SELL'"
+          class="hint hint-warn"
+        >
+          ⚠ 可卖数量未知 — 请勿超过实际可卖,后端将按 T+1 可卖量校验
+        </span>
       </el-form-item>
       <el-form-item label="成交价">
         <el-input-number v-model="form.price" :min="0.01" :step="0.01" :precision="2" />
@@ -141,18 +147,33 @@ const sellableVolume = computed(() =>
 )
 const maxVolume = computed(() =>
   form.side === 'SELL' && sellableVolume.value !== null
-    ? Math.max(LOT, Math.floor(sellableVolume.value / LOT) * LOT)
+    ? // F8 (codex): the SELL cap is the sellable volume floored to a whole lot —
+      // NOT Math.max(LOT, …), which rounded a sub-lot holding (e.g. 50 sellable)
+      // UP to a full 100-lot and let the form over-sell. A sub-lot holding floors
+      // to 0 → canSubmit blocks the lot-form SELL (the odd lot can't be lot-sold
+      // here; the backend remains the authoritative available-volume gate).
+      Math.floor(sellableVolume.value / LOT) * LOT
     : undefined,
 )
 
-const canSubmit = computed(
-  () =>
+const canSubmit = computed(() => {
+  const base =
     /^\d{6}$/.test(form.code) &&
     form.volume >= LOT &&
     form.volume % LOT === 0 &&
     form.price > 0 &&
-    Boolean(form.executedAt),
-)
+    Boolean(form.executedAt)
+  if (!base) return false
+  // F8 (production-hardening 2026-06-25): a SELL must not exceed the known T+1
+  // sellable volume — an over-sell would write a position the ledger can't back.
+  // When sellable is UNKNOWN (null → maxVolume undefined) we allow + warn (the
+  // template shows ⚠), since the backend RiskEngine/broker is the authoritative
+  // available-volume gate.
+  if (form.side === 'SELL' && maxVolume.value !== undefined) {
+    return form.volume <= maxVolume.value
+  }
+  return true
+})
 
 const confirmText = computed(
   () =>
@@ -235,5 +256,8 @@ function getErrorMessage(err: unknown): string {
   margin-left: 10px;
   font-size: 12px;
   color: $text-muted;
+}
+.manual-trade-form .hint-warn {
+  color: $status-yellow;
 }
 </style>

@@ -66,6 +66,27 @@ describe('executionRegex (G-005 SSoT mirror)', () => {
     }
   })
 
+  it('PATTERN_STRINGS byte-match the backend-generated artifact (F2)', () => {
+    // F2 (production-hardening 2026-06-25): the sample-based tests below only
+    // prove BEHAVIOURAL equivalence — a one-sided pattern-STRING edit that still
+    // matches every fixture row would pass both suites. This asserts byte-
+    // equality against the backend-generated normalized artifact; the backend
+    // test (test_execution_regex_mirror_backend.py) asserts the SAME artifact
+    // equals PATTERNS_AS_DICT with '(?P<'→'(?<'. So a single-side string edit
+    // breaks exactly one of the two suites.
+    const artifactPath = resolve(
+      __dirname,
+      'execution_regex_patterns.normalized.json',
+    )
+    const artifact: Record<string, string> = JSON.parse(
+      readFileSync(artifactPath, 'utf-8'),
+    )
+    expect(Object.keys(artifact).sort()).toEqual([...PATTERN_IDS].sort())
+    for (const id of PATTERN_IDS) {
+      expect(PATTERN_STRINGS[id], `pattern ${id}`).toBe(artifact[id])
+    }
+  })
+
   it('every fixture valid sample matches the expected pattern and groups', () => {
     for (const sample of fixture.valid) {
       const preview = previewExecutionReport(sample.raw_text)

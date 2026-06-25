@@ -1,6 +1,22 @@
 <template>
   <div class="dashboard-layout">
     <div class="dashboard-content">
+      <!-- F1 (codex): persistent banner when the live WS feed is down so the
+           dashboard never silently shows stale prices/positions. -->
+      <el-alert
+        v-if="connectionLost"
+        type="error"
+        :closable="false"
+        show-icon
+        class="ws-down-banner"
+        title="实时连接断开 — 行情/持仓可能为过期数据"
+      >
+        <template #default>
+          实时数据通道已断开,页面数据可能已过期。
+          <el-button text type="primary" size="small" @click="reconnectNow">立即重连</el-button>
+        </template>
+      </el-alert>
+
       <!-- Zone A: Three Major Indices -->
       <el-row :gutter="12" class="zone-a">
         <el-col :span="8" v-for="idx in store.indices" :key="idx.code">
@@ -113,7 +129,7 @@ import DualLineStatusPanel from '@/components/dashboard/DualLineStatusPanel.vue'
 import ValueSleevePanel from '@/components/dashboard/ValueSleevePanel.vue'
 
 const store = useMarketStore()
-const { connected: wsConnected, connect } = useWebSocket()
+const { connected: wsConnected, connectionLost, reconnectNow, connect } = useWebSocket()
 void wsConnected
 
 // Market stats percentages

@@ -5,8 +5,8 @@
         <h2 class="page-title">用户回报录入(备用通道)</h2>
         <p class="page-subtitle">
           P0-4 §1.1 备用通道 — 与飞书主通道共用同一后端 parser。提交前请先确认
-          预览区显示 ✓ 通过,JS 正则镜像与后端 PATTERNS_AS_DICT 单一真相源
-          强一致;不一致前端 fail-closed 拒绝提交。
+          预览区显示 ✓ 通过。预览仅为前端便捷校验,<strong>后端 parser 为最终权威</strong>;
+          JS 正则镜像与后端 <code>PATTERNS_AS_DICT</code> 由单元测试断言逐字节相等。
         </p>
       </div>
     </header>
@@ -106,9 +106,11 @@
     <article class="mirror-card">
       <header class="mirror-header">JS 正则镜像</header>
       <p class="mirror-text">
-        本页正则与 <code>backend/execution/regex_patterns.py</code> 的
-        <code>PATTERNS_AS_DICT</code> 单一真相源:任何一边修改都需要在同一 commit
-        同步另一边,vitest 单元测试断言两边按 id 一一相等(P0-4 §1.1)。
+        本页正则镜像 <code>backend/execution/regex_patterns.py</code> 的
+        <code>PATTERNS_AS_DICT</code>(单一真相源)。后端生成 normalized 工件
+        (<code>(?P&lt;…&gt;)</code>→<code>(?&lt;…&gt;)</code>),后端测试断言工件 == SSoT、
+        vitest 断言本页 <code>PATTERN_STRINGS</code> == 工件,二者逐字节相等;任何一边
+        单方修改都会让其中一个测试失败(P0-4 §1.1)。
       </p>
     </article>
   </section>

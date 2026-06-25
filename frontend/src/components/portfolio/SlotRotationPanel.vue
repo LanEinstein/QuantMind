@@ -81,7 +81,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { slotRotationApi } from '@/api/slotRotation'
 import {
   ROTATION_EVENT_LABELS,
@@ -120,7 +120,19 @@ async function fetchRotation(): Promise<void> {
   }
 }
 
-onMounted(fetchRotation)
+// F5 (production-hardening 2026-06-25): poll like ValueSleevePanel so the panel
+// stays live on a days-open dashboard instead of freezing on its mount snapshot.
+const POLL_INTERVAL_MS = 60_000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  void fetchRotation()
+  pollTimer = setInterval(() => void fetchRotation(), POLL_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 
 defineExpose({ fetchRotation })
 </script>

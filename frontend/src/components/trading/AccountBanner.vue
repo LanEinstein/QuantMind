@@ -58,7 +58,7 @@
       <!-- Mini Equity Curve -->
       <el-col :span="3">
         <div class="stat-card sparkline-card">
-          <div class="stat-label">净值曲线 (30日)</div>
+          <div class="stat-label">净值走势(示意)</div>
           <VChart :option="sparklineOption" autoresize class="sparkline-chart" />
         </div>
       </el-col>
@@ -117,7 +117,11 @@ function formatNumber(n: number): string {
   return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-// Deterministic 30-day equity curve
+// F6 (production-hardening 2026-06-25): this is a DETERMINISTIC ILLUSTRATIVE
+// shape (a sine), NOT real equity — the real 30-day NAV curve lives on the
+// Performance page (equityPointsApi). The label says "(示意)" so it cannot be
+// mistaken for live account equity; wiring the real series here is a Performance-
+// page concern, deliberately out of this hardening scope.
 const sparklineData = computed(() => {
   const base = props.account.initial_capital
   const points: number[] = []

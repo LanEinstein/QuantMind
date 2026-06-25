@@ -141,8 +141,25 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     status.value = allFailed ? 'error' : 'loaded'
   }
 
+  function resetAccountScopedState() {
+    // F4 (production-hardening 2026-06-25): per-account state that MUST NOT
+    // bleed across an account switch. ``accounts`` (the tab list) is global and
+    // intentionally retained.
+    account.value = null
+    positions.value = []
+    orders.value = []
+    trades.value = []
+    circuitBreakerStatus.value = null
+  }
+
   async function switchAccount(accountId: string) {
     activeAccountId.value = accountId
+    // F4: clear the PREVIOUS account's cash/positions/orders/trades up-front so
+    // a slow or FAILED fetch never leaves the old account's data on screen under
+    // the new tab — a human could otherwise mis-execute on the wrong account.
+    // fetchAll repopulates on success; on error the panes stay empty (correct),
+    // not stale.
+    resetAccountScopedState()
     await fetchAll()
   }
 

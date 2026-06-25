@@ -21,9 +21,16 @@ export const manualTradesApi = {
 
 /**
  * Mint a `UT-YYYYMMDD-HHMMSS-CODE-SIDE-SEQ` id mirroring the backend
- * `EXTERNAL_TRADE_ID_PATTERN`. The 3-digit seq is a small random suffix so
- * two trades on the same code+second don't collide; the same value is reused
- * across retries of one form submit (idempotency key).
+ * `EXTERNAL_TRADE_ID_PATTERN` (SEQ is locked to exactly 3 digits, so a UUID
+ * slice is not format-legal here).
+ *
+ * F7 (production-hardening 2026-06-25): the 3-digit seq is now the timestamp's
+ * **milliseconds** (sub-second precision), not `Math.random()*1000`. Random
+ * 1000-buckets could collide for two trades on the same code+side+second (and a
+ * collision is silently deduped away by the backend idempotency key). Millis is
+ * (a) deterministic for the same `at` — so retries of one submit keep reusing
+ * the same id (idempotency) — and (b) distinct across any two submits that fall
+ * in different milliseconds of the same second, which random could not promise.
  */
 export function mintExternalTradeId(
   code: string,
@@ -36,6 +43,6 @@ export function mintExternalTradeId(
   const h = String(at.getHours()).padStart(2, '0')
   const mi = String(at.getMinutes()).padStart(2, '0')
   const s = String(at.getSeconds()).padStart(2, '0')
-  const seq = String(Math.floor(Math.random() * 1000)).padStart(3, '0')
+  const seq = String(at.getMilliseconds()).padStart(3, '0')
   return `UT-${y}${mo}${d}-${h}${mi}${s}-${code}-${side}-${seq}`
 }

@@ -1,0 +1,11 @@
+{
+  "FILLED": "^已执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) (?<side_zh>买入|卖出) (?<stock_code>\\d{6}) (?<volume>\\d+)股 成交价 (?<fill_price>\\d+(?:\\.\\d+)?)$",
+  "PARTIAL": "^部分执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) (?<side_zh>买入|卖出) (?<stock_code>\\d{6}) (?<filled_volume>\\d+)股 成交价 (?<fill_price>\\d+(?:\\.\\d+)?) 剩余未成交 (?<remain_volume>\\d+)股$",
+  "UNFILLED": "^未执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) 原因[::]\\s?(?<reason>.{1,200})$",
+  "AMEND_FILLED": "^更正 已执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) (?<side_zh>买入|卖出) (?<stock_code>\\d{6}) (?<volume>\\d+)股 成交价 (?<fill_price>\\d+(?:\\.\\d+)?)$",
+  "AMEND_PARTIAL": "^更正 部分执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) (?<side_zh>买入|卖出) (?<stock_code>\\d{6}) (?<filled_volume>\\d+)股 成交价 (?<fill_price>\\d+(?:\\.\\d+)?) 剩余未成交 (?<remain_volume>\\d+)股$",
+  "AMEND_UNFILLED": "^更正 未执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) 原因[::]\\s?(?<reason>.{1,200})$",
+  "POST_CLOSE_FILLED": "^盘后补录 已执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) (?<side_zh>买入|卖出) (?<stock_code>\\d{6}) (?<volume>\\d+)股 成交价 (?<fill_price>\\d+(?:\\.\\d+)?)$",
+  "POST_CLOSE_PARTIAL": "^盘后补录 部分执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) (?<side_zh>买入|卖出) (?<stock_code>\\d{6}) (?<filled_volume>\\d+)股 成交价 (?<fill_price>\\d+(?:\\.\\d+)?) 剩余未成交 (?<remain_volume>\\d+)股$",
+  "POST_CLOSE_UNFILLED": "^盘后补录 未执行 (?<instruction_id>QM-\\d{8}-\\d{6}-\\d{6}-(?:BUY|SELL)-\\d{3}) 原因[::]\\s?(?<reason>.{1,200})$"
+}

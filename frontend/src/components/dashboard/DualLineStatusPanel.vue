@@ -12,34 +12,38 @@
     <div v-if="error" class="placeholder-text error-text">加载失败:{{ error }}</div>
     <div v-else-if="!payload" class="placeholder-text">加载中…</div>
     <div v-else class="dual-line-grid">
+      <!-- F9 (production-hardening 2026-06-25): optional-chain every nested
+           sub-object so a PARTIAL payload (a sub-object missing on a degraded
+           backend response) renders "—"/"未接线" instead of throwing and
+           blanking the whole panel. -->
       <article class="line-card">
         <header class="line-head">
-          <span class="line-name">{{ payload.line1.label }}</span>
-          <span :class="['live-dot', payload.line1.wired ? 'on' : 'off']">
-            {{ payload.line1.wired ? '运行中' : '未接线' }}
+          <span class="line-name">{{ payload.line1?.label ?? '线路一' }}</span>
+          <span :class="['live-dot', payload.line1?.wired ? 'on' : 'off']">
+            {{ payload.line1?.wired ? '运行中' : '未接线' }}
           </span>
         </header>
         <dl class="line-kv">
           <dt>每日辩论上限</dt>
-          <dd>{{ payload.line1.max_debates_per_day ?? '—' }}</dd>
+          <dd>{{ payload.line1?.max_debates_per_day ?? '—' }}</dd>
         </dl>
       </article>
 
       <article class="line-card">
         <header class="line-head">
-          <span class="line-name">{{ payload.line2.label }}</span>
+          <span class="line-name">{{ payload.line2?.label ?? '线路二' }}</span>
         </header>
         <dl class="line-kv">
           <dt>日线监控</dt>
           <dd>
-            <span :class="['live-dot', payload.line2.daily_wired ? 'on' : 'off']">
-              {{ payload.line2.daily_wired ? '运行中' : '未接线' }}
+            <span :class="['live-dot', payload.line2?.daily_wired ? 'on' : 'off']">
+              {{ payload.line2?.daily_wired ? '运行中' : '未接线' }}
             </span>
           </dd>
           <dt>盘中监控</dt>
           <dd>
-            <span :class="['live-dot', payload.line2.intraday_wired ? 'on' : 'off']">
-              {{ payload.line2.intraday_wired ? '运行中' : '未接线' }}
+            <span :class="['live-dot', payload.line2?.intraday_wired ? 'on' : 'off']">
+              {{ payload.line2?.intraday_wired ? '运行中' : '未接线' }}
             </span>
           </dd>
         </dl>
@@ -47,14 +51,14 @@
 
       <article class="line-card">
         <header class="line-head">
-          <span class="line-name">{{ payload.rotation.label }}</span>
-          <span :class="['live-dot', payload.rotation.wired ? 'on' : 'off']">
-            {{ payload.rotation.wired ? '运行中' : '未接线' }}
+          <span class="line-name">{{ payload.rotation?.label ?? '轮动' }}</span>
+          <span :class="['live-dot', payload.rotation?.wired ? 'on' : 'off']">
+            {{ payload.rotation?.wired ? '运行中' : '未接线' }}
           </span>
         </header>
         <dl class="line-kv">
           <dt>持仓槽上限</dt>
-          <dd>{{ payload.rotation.max_total_positions ?? '—' }}</dd>
+          <dd>{{ payload.rotation?.max_total_positions ?? '—' }}</dd>
         </dl>
       </article>
     </div>
@@ -69,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { dualLineStatusApi } from '@/api/dualLineStatus'
 import type { DualLineStatusPayload } from '@/types/dualLineStatus'
 
@@ -89,7 +93,19 @@ async function fetchStatus(): Promise<void> {
   }
 }
 
-onMounted(fetchStatus)
+// F5 (production-hardening 2026-06-25): poll so the panel stays live on a
+// days-open dashboard instead of freezing on its mount snapshot.
+const POLL_INTERVAL_MS = 60_000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  void fetchStatus()
+  pollTimer = setInterval(() => void fetchStatus(), POLL_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 
 defineExpose({ fetchStatus })
 </script>

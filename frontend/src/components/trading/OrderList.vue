@@ -25,7 +25,7 @@
       </el-table-column>
       <el-table-column prop="price" label="价格" width="90" align="right">
         <template #default="{ row }">
-          {{ row.price.toFixed(2) }}
+          {{ num(row.price).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column prop="volume" label="数量" width="80" align="right" />
@@ -46,6 +46,7 @@
 <script setup lang="ts">
 import type { OrderItem, OrderStatusType } from '@/types/trading'
 import { getStockName } from '@/stores/portfolio'
+import { num } from '@/utils/num'
 import dayjs from 'dayjs'
 
 defineProps<{

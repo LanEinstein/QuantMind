@@ -73,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { positionThesesApi } from '@/api/positionTheses'
 import {
   INVALIDATION_TEMPLATE_LABELS,
@@ -103,7 +103,19 @@ async function fetchTheses(): Promise<void> {
   }
 }
 
-onMounted(fetchTheses)
+// F5 (production-hardening 2026-06-25): poll so the panel stays live on a
+// days-open dashboard instead of freezing on its mount snapshot.
+const POLL_INTERVAL_MS = 60_000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  void fetchTheses()
+  pollTimer = setInterval(() => void fetchTheses(), POLL_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 
 defineExpose({ fetchTheses })
 </script>

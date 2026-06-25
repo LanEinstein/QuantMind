@@ -33,7 +33,7 @@
       <el-table-column prop="volume" label="持仓" width="80" align="right" />
       <el-table-column prop="cost_price" label="成本" width="90" align="right">
         <template #default="{ row }">
-          {{ row.cost_price.toFixed(2) }}
+          {{ num(row.cost_price).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column label="现价" width="90" align="right">
@@ -51,14 +51,14 @@
       <el-table-column label="盈亏%" width="80" align="right">
         <template #default="{ row }">
           <span :class="pnlClass(row.unrealized_pnl_pct)">
-            {{ (row.unrealized_pnl_pct * 100).toFixed(2) }}%
+            {{ (num(row.unrealized_pnl_pct) * 100).toFixed(2) }}%
           </span>
         </template>
       </el-table-column>
       <el-table-column label="仓位占比" width="110">
         <template #default="{ row }">
           <el-progress
-            :percentage="Math.round(row.position_pct * 100)"
+            :percentage="Math.round(num(row.position_pct) * 100)"
             :stroke-width="14"
             :text-inside="true"
             :color="positionColor(row.position_pct)"
@@ -67,13 +67,13 @@
       </el-table-column>
       <el-table-column label="止损线" width="90" align="right">
         <template #default="{ row }">
-          {{ row.stop_loss_line.toFixed(2) }}
+          {{ num(row.stop_loss_line).toFixed(2) }}
         </template>
       </el-table-column>
       <el-table-column label="止损距离" width="90" align="right">
         <template #default="{ row }">
           <span :class="distanceClass(row.stop_loss_distance)">
-            {{ (row.stop_loss_distance * 100).toFixed(1) }}%
+            {{ (num(row.stop_loss_distance) * 100).toFixed(1) }}%
           </span>
         </template>
       </el-table-column>
@@ -107,6 +107,7 @@
 import type { PositionItem, RiskStatusLevel } from '@/types/trading'
 import { getStockName } from '@/stores/portfolio'
 import { styleBadge } from '@/utils/styleBadge'
+import { num } from '@/utils/num'
 
 withDefaults(
   defineProps<{
@@ -124,31 +125,37 @@ const emit = defineEmits<{
 }>()
 
 function currentPrice(row: PositionItem): number {
-  return row.volume > 0 ? row.market_value / row.volume : row.cost_price
+  return row.volume > 0 ? num(row.market_value) / row.volume : num(row.cost_price)
 }
 
-function pnlClass(value: number): string {
-  if (value > 0) return 'text-up'
-  if (value < 0) return 'text-down'
+function pnlClass(value: number | null | undefined): string {
+  const v = num(value)
+  if (v > 0) return 'text-up'
+  if (v < 0) return 'text-down'
   return ''
 }
 
-function formatPnl(value: number): string {
-  const prefix = value > 0 ? '+' : ''
-  return prefix + value.toFixed(2)
+function formatPnl(value: number | null | undefined): string {
+  const v = num(value)
+  const prefix = v > 0 ? '+' : ''
+  return prefix + v.toFixed(2)
 }
 
-function distanceClass(distance: number): string {
-  if (distance > 0.05) return 'distance-safe'
-  if (distance >= 0.02) return 'distance-warn'
+function distanceClass(distance: number | null | undefined): string {
+  const d = num(distance)
+  if (d > 0.05) return 'distance-safe'
+  if (d >= 0.02) return 'distance-warn'
   return 'distance-danger'
 }
 
-function positionColor(pct: number): string {
+function positionColor(pct: number | null | undefined): string {
   // P0-7 single-stock hard cap = 0.15. Keep this gauge in sync with the
   // enforced limit; previously the red threshold was 0.20 (pre-P0-7).
-  if (pct > 0.15) return '#ff1744'
-  if (pct > 0.10) return '#ffd600'
+  // F3 (codex): coerce — a null/NaN pct must not silently colour the gauge blue
+  // (normal) while the bar reads 0%; 0 is the safe under-statement.
+  const v = num(pct)
+  if (v > 0.15) return '#ff1744'
+  if (v > 0.10) return '#ffd600'
   return '#448aff'
 }
 
