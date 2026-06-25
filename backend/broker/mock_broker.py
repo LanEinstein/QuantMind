@@ -63,6 +63,18 @@ from backend.utils.trading_hours import SHANGHAI, is_trading_hours
 
 log = structlog.get_logger(component="mock_broker")
 
+
+class CashUnderflowError(RuntimeError):
+    """A BUY fill drove cash below zero — an accounting-invariant breach.
+
+    Unreachable in normal operation: the affordability preflight + the broker
+    lock + synchronous fill guarantee ``frozen_amount == net_amount``, so a BUY
+    fill nets zero cash change and cash can never go negative. If it ever fires
+    it signals real corruption, so fail CLOSED (raise) instead of the old silent
+    ``cash = 0.0`` clamp that fabricated phantom cash and destroyed the
+    ``cash + frozen + market_value`` audit identity (Batch-3 B4, 2026-06-23).
+    """
+
 PRICE_LIMIT_VIOLATION_REASON = "price_limit_violation_at_fill"
 """Locked rejection reason emitted when the MockBroker's at-fill
 price-limit recheck fires. Distinct from the RiskEngine reasons
@@ -511,6 +523,28 @@ class MockBroker(IBroker):
         stamp tax / SZ transfer fee. We do NOT recompute here so the
         affordability check and the fill see identical numbers.
         """
+        # Fail-closed pre-check (Batch-3 B4, 2026-06-23): never COMMIT a BUY fill
+        # that would drive cash below zero. Unreachable in normal operation (the
+        # affordability preflight + lock + synchronous fill guarantee
+        # frozen_amount == net_amount → zero net cash change), but if that
+        # invariant is ever broken, reject CLEANLY here — BEFORE appending the
+        # trade or mutating the position/cash — so a corrupt fill can never leave
+        # a half-applied, unpersisted state that desyncs the durable mirror.
+        if order.direction == OrderDirection.BUY:
+            projected_cash = self._cash + (order.frozen_amount - cost.net_amount)
+            if projected_cash < -0.01:
+                self._log.error(
+                    "cash_underflow_detected",
+                    projected_cash=projected_cash,
+                    frozen=order.frozen_amount,
+                    net=cost.net_amount,
+                )
+                raise CashUnderflowError(
+                    f"BUY fill would drive cash to {projected_cash:.2f} "
+                    f"(frozen={order.frozen_amount:.2f}, "
+                    f"net={cost.net_amount:.2f}); accounting invariant breached"
+                )
+
         fill_price = cost.fill_price
         gross = cost.gross_amount
         commission = cost.commission
@@ -556,11 +590,8 @@ class MockBroker(IBroker):
             self._frozen_cash -= order.frozen_amount
             delta = order.frozen_amount - cost.net_amount
             self._cash += delta
-            if self._cash < -0.01:
-                self._log.error(
-                    "cash_underflow_detected", cash=self._cash, delta=delta
-                )
-                self._cash = 0.0
+            # Cash cannot underflow here — the fail-closed pre-check at the top
+            # of _fill_order already rejected any BUY that would (Batch-3 B4).
         else:
             self._apply_sell(order.code, order.volume)
             self._cash += cost.net_amount

@@ -2156,6 +2156,10 @@ async def _init_orchestration_layer(application: FastAPI) -> None:
         event_store=event_store,
         snapshot_store=snapshot_store,
         initial_capital=broker._initial_capital,  # noqa: SLF001
+        # Batch-3 B3+S3: re-derive T+1 today_bought_volume from bought_by_date vs
+        # the recovery date so a same-day user BUY stays locked and a multi-day
+        # outage's settled shares unlock on restart.
+        now=datetime.now(tz=SHANGHAI_TZ),
     )
     await broker.seed_from_recovery(
         cash=recovered.cash,

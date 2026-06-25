@@ -129,6 +129,9 @@ async def _amain(args: argparse.Namespace) -> int:
         event_store=event_store,
         snapshot_store=snapshot_store,
         initial_capital=100000.0,
+        # Batch-3 B3+S3: re-derive T+1 today_bought_volume from bought_by_date vs
+        # the recovery date so the reconciliation artifact reflects settled state.
+        now=now_sh,
     )
     snap_positions = recovered.to_snapshot_positions()
     trade_date = now_sh.strftime("%Y-%m-%d")

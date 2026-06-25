@@ -25,7 +25,7 @@ matches all events).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import structlog
@@ -383,6 +383,8 @@ async def recover_state(
     event_store: BrokerEventStore,
     snapshot_store: BrokerSnapshotStore,
     initial_capital: float,
+    *,
+    now: datetime | None = None,
 ) -> RecoveredState:
     """Load latest snapshot, verify checksum, replay newer events.
 
@@ -467,6 +469,23 @@ async def recover_state(
         _apply_event(state, event)
         state.last_sequence = event.sequence
         state.events_replayed += 1
+
+    # T+1 re-derivation (Batch-3 B3+S3, 2026-06-23). ``bought_by_date`` is the
+    # single source of truth — EVERY buy path records it (sim ORDER_FILLED +
+    # external/manual delta). The replayed ``today_bought_volume`` is NOT
+    # reliable: the external/manual delta path never set it (a same-day user BUY
+    # would be wrongly sellable after a restart — B3), and a multi-day outage
+    # misses the 16:30 DAY_ADVANCED events (settled shares would stay wrongly
+    # T+1-locked all of the restart day — S3). Re-derive from bought_by_date vs
+    # the recovery date: only shares bought TODAY are still locked; everything
+    # older has settled. ``now`` is None for back-compat callers that don't need
+    # this (legacy tests); the production boot always passes it.
+    if now is not None:
+        recovery_today = now.astimezone(SHANGHAI).date()
+        for pos in state.positions.values():
+            pos.today_bought_volume = min(
+                pos.bought_by_date.get(recovery_today, 0), pos.volume
+            )
 
     log.info(
         "broker_state_recovered",

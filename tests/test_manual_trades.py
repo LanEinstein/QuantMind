@@ -374,6 +374,64 @@ class TestManualTradeRecovery:
         assert state.positions["600519"].volume == 100
         assert state.cash == pytest.approx(1_000_000.0 - 180_027.0)
 
+    async def _seed_manual_buy(self) -> tuple[Any, Any]:
+        """Event+snapshot stores holding one 2026-06-12 manual BUY of 100."""
+        from backend.broker.persistence.store import BrokerSnapshotStore
+
+        client = _FakeClient()
+        es = BrokerEventStore(client, _FakeCollection())
+        ss = BrokerSnapshotStore(client, _FakeCollection())
+        await es.append(
+            event_type=BrokerEventType.MANUAL_TRADE_APPLIED,
+            occurred_at=dt.datetime(2026, 6, 12, 10, 5, tzinfo=SHANGHAI),
+            correlation_id="UT-20260612-100500-600519-BUY-001",
+            payload={
+                "external_trade_id": "UT-20260612-100500-600519-BUY-001",
+                "report_schema_version": 2,
+                "cash_delta": -180_027.0,
+                "net": 180_027.0,
+                "commission": 27.0,
+                "positions_delta": [
+                    {"code": "600519", "volume_delta": 100, "cost_price": 1800.27}
+                ],
+                "origin": "user_discretionary",
+            },
+        )
+        return es, ss
+
+    @pytest.mark.asyncio
+    async def test_same_day_manual_buy_relocked_on_recovery(self) -> None:
+        # B3 (Batch-3, 2026-06-23): the external/manual delta replay never set
+        # today_bought_volume, so a same-day user BUY would be wrongly sellable
+        # after a restart. With the recovery date supplied it must be RE-LOCKED
+        # from bought_by_date.
+        from backend.broker.persistence.recovery import recover_state
+
+        es, ss = await self._seed_manual_buy()
+        state = await recover_state(
+            es,
+            ss,
+            initial_capital=1_000_000.0,
+            now=dt.datetime(2026, 6, 12, 14, 0, tzinfo=SHANGHAI),  # same day
+        )
+        assert state.positions["600519"].today_bought_volume == 100
+
+    @pytest.mark.asyncio
+    async def test_manual_buy_settles_after_multiday_outage(self) -> None:
+        # S3 (Batch-3, 2026-06-23): recovered DAYS later (no DAY_ADVANCED events
+        # fired during the outage), the buy must be SETTLED — not stay T+1-locked
+        # all of the restart day.
+        from backend.broker.persistence.recovery import recover_state
+
+        es, ss = await self._seed_manual_buy()
+        state = await recover_state(
+            es,
+            ss,
+            initial_capital=1_000_000.0,
+            now=dt.datetime(2026, 6, 16, 10, 0, tzinfo=SHANGHAI),  # 4 days later
+        )
+        assert state.positions["600519"].today_bought_volume == 0
+
 
 # ---------------------------------------------------------------------------
 # Renderer — adversarial parser immunity
