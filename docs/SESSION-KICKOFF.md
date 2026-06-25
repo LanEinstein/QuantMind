@@ -1,5 +1,12 @@
 # QuantMind 开工协议(每个新 session 通用)
 
+> **🔧 进行中(2026-06-23):实战化加固 production-hardening 第 2 程 —— 新 session 先读
+> [`docs/handoff/production-hardening-handoff-2026-06-23.md`](handoff/production-hardening-handoff-2026-06-23.md)。**
+> 上一 session 完成 Batch 1-4 安全关键修复(已 push `origin/main` 至 `d2edb88`:风控闸接 live 数据 / 日历 fail-closed /
+> T+1 恢复 + 现金 fail-closed / 数据层分页+IPv4)。剩余 = **全修 Batch 5-9**(handoff §3,findings 已 pre-verified file:line)
+> + 4 个 deferred 专项(#10-13,handoff §4)。按 handoff §6 接手 prompt 继续。**盈利不认证(QGR-gated);CLAUDE.md/README
+> 重写仍暂缓**(待 QGR 前向过门)。此加固任务与下方通用『最早字母 Phase』协议正交——以 handoff 文档为准。
+
 > **用法**:新 session 开始时,对 Claude 说"读 `docs/SESSION-KICKOFF.md` 开工"(或直接粘贴下方代码块)。
 > 本协议**通用、不写死 Phase** —— 靠"最早含 todo 的字母 Phase"自动定位,所以每次都用同一段即可无缝衔接上一次工作。
 > 与 `CLAUDE.md §1`(进度管理协议)+ `§2/§2.0`(红线)一致;此处把"检查上次节点 / 开工改状态 / 完成改 done+记录 / 末尾一句话指下一步"显式拎出,确保每次可靠触发。
