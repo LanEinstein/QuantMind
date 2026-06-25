@@ -200,25 +200,28 @@ async def run_shortlist(
     checkpointer: BaseCheckpointSaver | None = None,
     thread_id: str | None = None,
 ) -> ShortlistDebateResult:
-    """Run exactly ONE budgeted 4-agent debate for a converged shortlist.
+    """Run exactly ONE budgeted 4-agent debate for the lead of ``shortlist``.
 
-    P1-7-amendment-2026-05-24 (fan-out cap): a debate runs **once per daily
-    shortlist, never once per candidate** — a 20-candidate shortlist still
-    triggers a single debate. Order of guards (all BEFORE any LLM call, so a
-    refused budget means the crossing call never happens):
+    P1-7-amendment-2026-05-26 (per-candidate fan-out): the Line-1 runner calls
+    this ONCE PER CANDIDATE with a single-element shortlist, walking the basket
+    and falling through on any REJECTED/HOLD/non-BUY (``line1_runner``). Each
+    call debates ``shortlist[0]``; the day's fan-out is bounded by the
+    ``max_debates_per_day`` slot cap + the ¥100 daily reservation (NOT by
+    debating only the top-1 name once — that was the superseded MVP model).
+    Order of guards (all BEFORE any LLM call, so a refused budget means the
+    crossing call never happens):
 
-    1. ``reserve_budget`` — pre-call ¥20 hard-cap reservation (raises
+    1. ``reserve_budget`` — pre-call ¥100 hard-cap reservation (raises
        :class:`DailyBudgetExceededError` and runs nothing if it would cross).
     2. ``reserve_debate_slot`` — the ``max_debates_per_day`` fan-out cap
        (raises if the day's debate budget is exhausted).
     3. one ``run_team`` debate on the lead (top-ranked) candidate; the
        reservation is always settled in ``finally`` (no leaked reservation,
-       even on a mid-run error). MVP debates the lead candidate only; richer
-       multi-candidate deliberation in one debate is a Phase T enhancement.
+       even on a mid-run error).
 
     Raises:
         ValueError: empty shortlist.
-        DailyBudgetExceededError: ¥20 reservation or debate-slot cap refused.
+        DailyBudgetExceededError: ¥100 reservation or debate-slot cap refused.
     """
     if not shortlist:
         raise ValueError("run_shortlist requires a non-empty shortlist")

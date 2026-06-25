@@ -736,10 +736,13 @@ async def reset_daily_gate_counters(
     """Clear the day's TRANSIENT fan-out / reservation gate counters.
 
     Deletes the debate-slot counter, the in-flight reservation counter, and the
-    Line-2 anomaly count + dedup keys for the UTC day — the gates that normally
-    reset at the BrokerScheduler 00:00 cron. It does NOT touch the audited LLM
-    *spend* (the ``llm:usage:{date}`` per-agent hashes), so budget history is
-    preserved.
+    Line-2 anomaly count + dedup keys for the UTC day. These gates have NO 00:00
+    reset cron — their reset mechanism is the per-UTC-date key naming + the
+    36h TTL each setter applies (a new UTC day is a new key; yesterday's expires
+    on its own). This helper is the on-demand fresh-day reset for dry-runs / the
+    same-day rerun harness, NOT the daily reset path. It does NOT touch the
+    audited LLM *spend* (the ``llm:usage:{date}`` per-agent hashes), so budget
+    history is preserved.
 
     Used by the render-only dry-run harness so each invocation simulates a
     FRESH trading day (otherwise a second same-day dry-run inherits the first

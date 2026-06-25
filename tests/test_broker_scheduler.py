@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from apscheduler.triggers.cron import CronTrigger
 
 from backend.audit.models import AuditActor, AuditEventType
 from backend.audit.store import AuditStore, InMemoryAuditCollection
 from backend.broker.mock_broker import MockBroker
 from backend.broker.models import BrokerConfig
 from backend.broker.persistence.events import BrokerEventType
+from backend.broker.persistence.snapshots import BrokerSnapshot
 from backend.broker.persistence.store import (
     BrokerEventStore,
     BrokerSnapshotStore,
@@ -639,3 +643,183 @@ class TestEodSnapshotCarriesTodayBought:
         # BrokerSnapshot v2: the full per-trade-date buy map is persisted so
         # multi-day buy dates survive the snapshot cursor (codex cycle-7 P1).
         assert rows["600519"]["bought_by_date"] == {"2026-05-15": 200}
+
+
+# ---------------------------------------------------------------------------
+# Production-hardening Batch 5 — scheduler robustness (S5 / S6 / S8)
+# ---------------------------------------------------------------------------
+
+
+class TestCronConstantsAreValid5Field:
+    """S5: every ``*_CRON`` constant is a standard 5-field crontab.
+
+    The 6-field (seconds-prefixed) constants were dead but would have *raised*
+    in ``CronTrigger.from_crontab`` (which is 5-field only) the moment they were
+    wired. They are now the SSoT referenced directly by ``start``.
+    """
+
+    def test_all_cron_constants_parse_as_5_field(self) -> None:
+        constants = {
+            "EOD_CRON": BrokerScheduler.EOD_CRON,
+            "MIROFISH_POSTCLOSE_CRON": BrokerScheduler.MIROFISH_POSTCLOSE_CRON,
+            "THESIS_REVIEW_CRON": BrokerScheduler.THESIS_REVIEW_CRON,
+            "ADVANCE_DAY_CRON": BrokerScheduler.ADVANCE_DAY_CRON,
+            "LINE2_DAILY_CRON": BrokerScheduler.LINE2_DAILY_CRON,
+            "LINE1_DAILY_CRON": BrokerScheduler.LINE1_DAILY_CRON,
+            "EVOLUTION_SHADOW_RUN_CRON": BrokerScheduler.EVOLUTION_SHADOW_RUN_CRON,
+            "WEEKEND_DEEP_REVIEW_CRON": BrokerScheduler.WEEKEND_DEEP_REVIEW_CRON,
+            "HOLIDAY_CATCHUP_REVIEW_CRON": BrokerScheduler.HOLIDAY_CATCHUP_REVIEW_CRON,
+            "DAILY_ATTRIBUTION_REVIEW_CRON": (
+                BrokerScheduler.DAILY_ATTRIBUTION_REVIEW_CRON
+            ),
+            "SIM_AUTO_RECONCILIATION_CRON": (
+                BrokerScheduler.SIM_AUTO_RECONCILIATION_CRON
+            ),
+        }
+        for name, expr in constants.items():
+            assert len(expr.split()) == 5, f"{name} is not 5-field: {expr!r}"
+            # Must not raise — the old 6-field strings would have here.
+            CronTrigger.from_crontab(expr, timezone="Asia/Shanghai")
+
+
+class TestIntervalMisfireGrace:
+    """S6: the 30s interval jobs carry explicit misfire grace.
+
+    APScheduler's default ``misfire_grace_time=1`` silently drops any tick that
+    is >1s late (e.g. behind a brief event-loop stall).
+    """
+
+    @pytest.mark.asyncio
+    async def test_interval_jobs_have_explicit_misfire_grace(
+        self, env: _Env
+    ) -> None:
+        try:
+            await env.scheduler.start()
+            for job_id in ("intraday_mtm", "line2_intraday_runner"):
+                job = env.scheduler._scheduler.get_job(job_id)
+                assert job is not None, job_id
+                assert (
+                    job.misfire_grace_time
+                    == BrokerScheduler.INTERVAL_MISFIRE_GRACE_SECONDS
+                ), job_id
+        finally:
+            await env.scheduler.stop()
+
+
+def _watchdog_snapshot(trade_date: str) -> BrokerSnapshot:
+    return BrokerSnapshot(
+        created_at=dt.datetime(2026, 5, 15, 16, 0, tzinfo=SHANGHAI),
+        trade_date=trade_date,
+        last_event_sequence=0,
+        cash=1_000_000.0,
+        frozen_cash=0.0,
+        initial_capital=1_000_000.0,
+        checksum="0" * 16,
+    )
+
+
+class _StubSnapshotStore:
+    def __init__(self, latest: BrokerSnapshot | None, raises: bool = False) -> None:
+        self._latest = latest
+        self._raises = raises
+
+    async def read_latest(self) -> BrokerSnapshot | None:
+        if self._raises:
+            raise RuntimeError("mongo down")
+        return self._latest
+
+
+class TestEodSnapshotWatchdog:
+    """S8: startup watchdog flags a missed EOD snapshot — alert-only."""
+
+    _NOW = dt.datetime(2026, 5, 15, 9, 0, tzinfo=SHANGHAI)  # Friday pre-open
+    _EXPECTED = "2026-05-14"  # prev trading day (Thursday)
+
+    @pytest.mark.asyncio
+    async def test_stale_snapshot_is_flagged_missed(self, env: _Env) -> None:
+        env.scheduler._snapshots = _StubSnapshotStore(
+            _watchdog_snapshot("2026-05-08")
+        )
+        result = await env.scheduler._eod_snapshot_watchdog(self._NOW)
+        assert result["status"] == "missed"
+        assert result["expected_trade_date"] == self._EXPECTED
+        assert result["latest_snapshot_date"] == "2026-05-08"
+
+    @pytest.mark.asyncio
+    async def test_recent_snapshot_is_ok(self, env: _Env) -> None:
+        env.scheduler._snapshots = _StubSnapshotStore(
+            _watchdog_snapshot("2026-05-14")
+        )
+        result = await env.scheduler._eod_snapshot_watchdog(self._NOW)
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_same_day_missed_eod_flagged_after_threshold(
+        self, env: _Env
+    ) -> None:
+        """Codex S8: a same-evening restart (after 16:30) on a trading day whose
+        16:00 EOD was skipped must be flagged TODAY, not deferred to tomorrow.
+        """
+        env.scheduler._snapshots = _StubSnapshotStore(
+            _watchdog_snapshot("2026-05-14")  # yesterday — today's EOD skipped
+        )
+        evening = dt.datetime(2026, 5, 15, 17, 0, tzinfo=SHANGHAI)  # Fri 17:00
+        result = await env.scheduler._eod_snapshot_watchdog(evening)
+        assert result["status"] == "missed"
+        assert result["expected_trade_date"] == "2026-05-15"  # today
+        assert result["latest_snapshot_date"] == "2026-05-14"
+
+    @pytest.mark.asyncio
+    async def test_same_day_eod_present_is_ok(self, env: _Env) -> None:
+        env.scheduler._snapshots = _StubSnapshotStore(
+            _watchdog_snapshot("2026-05-15")  # today's EOD already written
+        )
+        evening = dt.datetime(2026, 5, 15, 17, 0, tzinfo=SHANGHAI)
+        result = await env.scheduler._eod_snapshot_watchdog(evening)
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_hung_read_degrades_to_unknown(self, env: _Env) -> None:
+        class _HangStore:
+            async def read_latest(self) -> BrokerSnapshot | None:
+                await asyncio.sleep(30)
+                return None
+
+        env.scheduler._snapshots = _HangStore()
+        with patch(
+            "backend.broker.scheduler._WATCHDOG_READ_TIMEOUT_SECONDS", 0.05
+        ):
+            result = await asyncio.wait_for(
+                env.scheduler._eod_snapshot_watchdog(self._NOW), timeout=2.0
+            )
+        assert result["status"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_fresh_deploy_is_not_an_alert(self, env: _Env) -> None:
+        env.scheduler._snapshots = _StubSnapshotStore(None)
+        result = await env.scheduler._eod_snapshot_watchdog(self._NOW)
+        assert result["status"] == "fresh_deploy"
+
+    @pytest.mark.asyncio
+    async def test_read_error_degrades_to_unknown(self, env: _Env) -> None:
+        env.scheduler._snapshots = _StubSnapshotStore(None, raises=True)
+        result = await env.scheduler._eod_snapshot_watchdog(self._NOW)
+        assert result["status"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_watchdog_result_is_in_startup_audit(self, env: _Env) -> None:
+        env.scheduler._snapshots = _StubSnapshotStore(
+            _watchdog_snapshot("2026-05-08")
+        )
+        env.scheduler._now = lambda: self._NOW
+        try:
+            await env.scheduler.start()
+        finally:
+            await env.scheduler.stop()
+        started = [
+            e
+            for e in env.audit_coll.documents
+            if e["event_type"] == AuditEventType.BROKERSCHEDULER_STARTED.value
+        ]
+        assert started, "no BROKERSCHEDULER_STARTED audit"
+        assert started[0]["payload"]["eod_watchdog"]["status"] == "missed"

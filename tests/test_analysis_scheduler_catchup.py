@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -190,3 +191,59 @@ class TestCatchUpTargets:
             dt_mock.now.return_value = fake_now
             result = await scheduler._compute_catch_up_targets()
         assert result == ["600519"]
+
+
+class TestCatchUpTaskLifecycle:
+    """S9: the fire-and-forget catch-up task is retained + cancelled on stop.
+
+    Previously ``asyncio.create_task`` was called without keeping a reference —
+    the event loop only weak-refs tasks, so it could be GC'd mid-flight, and
+    ``stop`` could not cancel it (it would keep running against a torn-down
+    scheduler).
+    """
+
+    @pytest.mark.asyncio
+    async def test_catch_up_task_retained_then_cancelled_on_stop(self) -> None:
+        scheduler = AnalysisScheduler(
+            watchlist=_watchlist(["600519"]),
+            services=MagicMock(),
+            mongodb=_mongodb_with_signals({}),
+            redis_client=None,
+        )
+        started = asyncio.Event()
+
+        async def _never_finishes(_codes: list[str]) -> None:
+            started.set()
+            await asyncio.Event().wait()  # block until cancelled
+
+        scheduler._run_catch_up = _never_finishes  # type: ignore[assignment]
+        with patch.object(
+            scheduler,
+            "_compute_catch_up_targets",
+            AsyncMock(return_value=["600519"]),
+        ):
+            await scheduler.start()
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            task = scheduler._catch_up_task
+            assert task is not None
+            assert not task.done()
+            await scheduler.stop()
+        assert scheduler._catch_up_task is None
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_no_missed_targets_leaves_task_none(self) -> None:
+        scheduler = AnalysisScheduler(
+            watchlist=_watchlist([]),
+            services=MagicMock(),
+            mongodb=_mongodb_with_signals({}),
+            redis_client=None,
+        )
+        with patch.object(
+            scheduler,
+            "_compute_catch_up_targets",
+            AsyncMock(return_value=[]),
+        ):
+            await scheduler.start()
+            assert scheduler._catch_up_task is None
+            await scheduler.stop()

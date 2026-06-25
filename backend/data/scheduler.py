@@ -17,6 +17,7 @@ the 30s cadence will retry on the next tick.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -41,6 +42,31 @@ BENCHMARK_BACKFILL_DAYS = 60
 # requirement on read, doubled for headroom against scheduler missfires).
 QUOTE_CACHE_TTL_SECONDS = 120
 QUOTE_CACHE_KEY_PREFIX = "quote:"
+
+# S2 (production-hardening 2026-06-25): one hard ceiling on the WHOLE 30s market
+# tick (vendor fetch + Mongo persist + Redis publish/cache). Without it a hung
+# dependency pins the job forever and APScheduler's ``max_instances=1`` (set
+# explicitly on the interval job) then silently drops every later tick —
+# market-data collection wedges with no log. ``asyncio.wait_for`` fails the tick
+# CLOSED (skip, free the slot) so the next 30s tick recovers; 20s < the 30s
+# cadence so a timed-out tick never overlaps the next one (this is a per-TICK
+# budget, not per-fetch — two sequential fetches share the one ceiling).
+#
+# Caveat (codex 2026-06-25): the adata/akshare fetch runs inside
+# ``asyncio.to_thread``, whose worker thread CANNOT be cancelled by wait_for — it
+# keeps running until the vendor SDK's own socket timeout. The event-loop slot
+# frees regardless (the scheduler never wedges), but under a SUSTAINED vendor
+# outage abandoned threads can accumulate in the shared default executor. A
+# dedicated bounded fetch executor that fully contains that is tracked as a
+# deferred-infra follow-up (handoff §4-style) — not bolted on here.
+MARKET_TICK_TIMEOUT_SECONDS = 20.0
+
+# S6 (production-hardening 2026-06-25): explicit misfire grace on the interval
+# jobs. APScheduler's default ``misfire_grace_time=1`` means any >1s event-loop
+# stall silently drops the tick; one cadence of grace lets a briefly-late tick
+# still fire instead of being skipped.
+MARKET_MISFIRE_GRACE_SECONDS = 30
+NEWS_MISFIRE_GRACE_SECONDS = 60
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -86,6 +112,7 @@ class DataScheduler:
         mirofish_writer: MiroFishEvidenceWriter | None = None,
         held_codes_provider: Callable[[], Awaitable[list[str]]] | None = None,
         eod_pipeline: Callable[[], Awaitable[None]] | None = None,
+        tick_timeout_seconds: float = MARKET_TICK_TIMEOUT_SECONDS,
     ) -> None:
         self._market_data = market_data
         self._news_crawler = news_crawler
@@ -94,6 +121,8 @@ class DataScheduler:
         self._watchlist = watchlist
         self._market_interval = market_interval_seconds
         self._news_interval = news_interval_seconds
+        # S2: whole-tick ceiling (see MARKET_TICK_TIMEOUT_SECONDS).
+        self._tick_timeout = tick_timeout_seconds
         # P0-8-amendment-2026-06-03-collect-held-positions: the 30s
         # collector unions the configured watchlist with the broker's
         # currently-held codes so intraday MTM / the equity curve can mark
@@ -125,6 +154,11 @@ class DataScheduler:
             seconds=self._market_interval,
             id="market_data_job",
             name="Market data collection",
+            misfire_grace_time=MARKET_MISFIRE_GRACE_SECONDS,
+            # S2 (codex): the wedge-prevention reasoning relies on at most one
+            # in-flight instance; APScheduler defaults to 1 but we pin it so a
+            # future job_defaults change cannot silently let ticks overlap.
+            max_instances=1,
         )
 
         self._scheduler.add_job(
@@ -133,6 +167,8 @@ class DataScheduler:
             seconds=self._news_interval,
             id="news_job",
             name="News collection",
+            misfire_grace_time=NEWS_MISFIRE_GRACE_SECONDS,
+            max_instances=1,
         )
 
         # C-005: CCTV ingestion is locked to three Asia/Shanghai
@@ -221,11 +257,29 @@ class DataScheduler:
         # together for downstream missing-rate / divergence checks.
         snapshot_at = datetime.now(tz=UTC)
 
+        # S2: one ceiling on the whole tick — see MARKET_TICK_TIMEOUT_SECONDS.
+        try:
+            await asyncio.wait_for(
+                self._collect_market_tick(snapshot_at),
+                timeout=self._tick_timeout,
+            )
+        except TimeoutError:
+            self._log.warning(
+                "market_job_tick_timeout", timeout=self._tick_timeout
+            )
+
+    async def _collect_market_tick(self, snapshot_at: datetime) -> None:
+        """Index + watchlist collection — the body bounded by the tick timeout."""
         await self._collect_index_snapshot()
         await self._collect_watchlist_snapshot(snapshot_at)
 
     async def _collect_index_snapshot(self) -> None:
-        """Fetch the benchmark index batch and persist + publish."""
+        """Fetch the benchmark index batch and persist + publish.
+
+        Fail-open per-step (the tick-level S2 timeout in ``_run_market_job`` is
+        the hard ceiling that frees the slot; here we only swallow transient
+        infra errors so the watchlist half still runs).
+        """
         try:
             quotes = await self._market_data.get_index_realtime()
         except Exception as exc:

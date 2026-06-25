@@ -56,7 +56,7 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any, Protocol, runtime_checkable
 from zoneinfo import ZoneInfo
 
@@ -77,10 +77,25 @@ from backend.broker.persistence.store import (
     BrokerEventStore,
     BrokerSnapshotStore,
 )
+from backend.data.trading_calendar import prev_trading_day
 from backend.utils.trading_hours import is_trading_day, is_trading_hours
 
 log = structlog.get_logger(component="broker.scheduler")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+# S8 (production-hardening 2026-06-25): the EOD-snapshot watchdog treats today's
+# own session as "completed" only after this wall-clock time. The 16:00 EOD cron
+# (+5min misfire grace, chain ≤16:00:35) is always done by 16:30, so a restart
+# after this on a trading day expects TODAY's snapshot; before it (or on a
+# non-trading day) it expects the previous trading day's. Codex 2026-06-25 (S8
+# same-day gap): without this, a same-evening restart after a skipped 16:00 cron
+# reported "ok" and the missed run was not flagged until the next morning.
+_EOD_DONE_THRESHOLD = time(16, 30)
+
+# S8 (codex): the watchdog snapshot read is bounded so a hung Mongo cannot block
+# the FastAPI lifespan startup — a hang degrades to status='unknown', never a
+# boot hang (the watchdog is alert-only diagnostics, not a gate).
+_WATCHDOG_READ_TIMEOUT_SECONDS = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +226,12 @@ class BrokerScheduler:
     replica-set gate runs once at :meth:`start`.
     """
 
-    EOD_CRON = "0 0 16 * * mon-fri"
+    # S5 (production-hardening 2026-06-25): all ``*_CRON`` constants are the
+    # standard 5-field crontab SSoT that ``add_job`` references directly — the
+    # previous 6-field strings (seconds-prefixed) were dead constants that would
+    # have *raised* in ``CronTrigger.from_crontab`` (5-field only) if ever wired,
+    # while ``start`` used divergent inline 5-field strings. Same firing times.
+    EOD_CRON = "0 16 * * mon-fri"
     """16:00 sequential chain on weekdays (Asia/Shanghai). The plan.html
     EOD chain runs 16:00 → 16:00:35 within this single job; sub-steps
     are sequential awaits inside :meth:`_run_eod_pipeline`."""
@@ -221,22 +241,28 @@ class BrokerScheduler:
     gating is applied inside the callback to keep the trigger config
     plain."""
 
-    MIROFISH_POSTCLOSE_CRON = "0 0 17 * * mon-fri"
+    INTERVAL_MISFIRE_GRACE_SECONDS = 30
+    """S6 (production-hardening 2026-06-25): explicit misfire grace on the
+    30s interval jobs (intraday MTM + Line-2 intraday). APScheduler's default
+    ``misfire_grace_time=1`` means any >1s event-loop stall silently drops the
+    tick; one cadence of grace lets a briefly-late tick still fire."""
+
+    MIROFISH_POSTCLOSE_CRON = "0 17 * * mon-fri"
     """17:00 MiroFish post-close re-analysis (P0-8). Failures are
     best-effort — audit + log, no freeze."""
 
-    THESIS_REVIEW_CRON = "0 30 17 * * mon-fri"
+    THESIS_REVIEW_CRON = "30 17 * * mon-fri"
     """17:30 mon-fri — Line-2 post-close thesis review (W-002 / P1-2.A-amendment-
     2026-06-02). Runs AFTER mirofish_postclose 17:00 so the day's evidence is
     already written. LLM advisory in the orchestration layer (monitoring stays
     zero-LLM); writes evidence + a display-only Feishu digest only — owner acts
     manually. Holiday-gated; a no-op when no callback is wired."""
 
-    ADVANCE_DAY_CRON = "0 30 16 * * mon-fri"
+    ADVANCE_DAY_CRON = "30 16 * * mon-fri"
     """16:30 advance_day — clears today_bought_volume so T+1 holdings
     are sellable on the next session."""
 
-    LINE2_DAILY_CRON = "0 35 9 * * mon-fri"
+    LINE2_DAILY_CRON = "35 9 * * mon-fri"
     """09:35 weekday — Line-2 daily anomaly scan over the T-1 EOD frame
     (U-D1). Runs just after the 09:30 open (inside trading hours) so the
     RiskEngine 14-check #7 trading-hours gate passes for every routed SELL —
@@ -248,7 +274,7 @@ class BrokerScheduler:
     (U-D1 / U-C3). Trading-hours gating is applied inside the job to keep the
     trigger config plain; the runner re-checks as the authoritative gate."""
 
-    LINE1_DAILY_CRON = "0 35 9 * * mon-fri"
+    LINE1_DAILY_CRON = "35 9 * * mon-fri"
     """09:35 weekday — Line-1 full-market BUY-selection run over the T-1 EOD
     frame (U-D1b). Shares the 09:35 slot with ``line2_daily_runner``: it runs
     just after the 09:30 open (inside trading hours) so the RiskEngine 14-check
@@ -389,7 +415,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._eod_pipeline_job,
             trigger=CronTrigger.from_crontab(
-                "0 16 * * mon-fri", timezone="Asia/Shanghai"
+                self.EOD_CRON, timezone="Asia/Shanghai"
             ),
             id="eod_pipeline",
             replace_existing=True,
@@ -402,11 +428,12 @@ class BrokerScheduler:
             ),
             id="intraday_mtm",
             replace_existing=True,
+            misfire_grace_time=self.INTERVAL_MISFIRE_GRACE_SECONDS,
         )
         self._scheduler.add_job(
             self._mirofish_postclose_job,
             trigger=CronTrigger.from_crontab(
-                "0 17 * * mon-fri", timezone="Asia/Shanghai"
+                self.MIROFISH_POSTCLOSE_CRON, timezone="Asia/Shanghai"
             ),
             id="mirofish_postclose",
             replace_existing=True,
@@ -415,7 +442,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._advance_day_job,
             trigger=CronTrigger.from_crontab(
-                "30 16 * * mon-fri", timezone="Asia/Shanghai"
+                self.ADVANCE_DAY_CRON, timezone="Asia/Shanghai"
             ),
             id="advance_day",
             replace_existing=True,
@@ -444,7 +471,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._line2_daily_job,
             trigger=CronTrigger.from_crontab(
-                "35 9 * * mon-fri", timezone="Asia/Shanghai"
+                self.LINE2_DAILY_CRON, timezone="Asia/Shanghai"
             ),
             id="line2_daily_runner",
             replace_existing=True,
@@ -457,6 +484,7 @@ class BrokerScheduler:
             ),
             id="line2_intraday_runner",
             replace_existing=True,
+            misfire_grace_time=self.INTERVAL_MISFIRE_GRACE_SECONDS,
         )
         # U-D1b — Line-1 production runner. Same always-register / no-op-when-
         # unwired pattern as the Line-2 crons so a deploy without the
@@ -464,7 +492,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._line1_daily_job,
             trigger=CronTrigger.from_crontab(
-                "35 9 * * mon-fri", timezone="Asia/Shanghai"
+                self.LINE1_DAILY_CRON, timezone="Asia/Shanghai"
             ),
             id="line1_runner",
             replace_existing=True,
@@ -476,7 +504,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._thesis_review_job,
             trigger=CronTrigger.from_crontab(
-                "30 17 * * mon-fri", timezone="Asia/Shanghai"
+                self.THESIS_REVIEW_CRON, timezone="Asia/Shanghai"
             ),
             id="thesis_review_runner",
             replace_existing=True,
@@ -488,7 +516,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._sim_auto_reconciliation_job,
             trigger=CronTrigger.from_crontab(
-                "10 16 * * mon-fri", timezone="Asia/Shanghai"
+                self.SIM_AUTO_RECONCILIATION_CRON, timezone="Asia/Shanghai"
             ),
             id="sim_auto_reconciliation",
             replace_existing=True,
@@ -500,7 +528,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._daily_attribution_review_job,
             trigger=CronTrigger.from_crontab(
-                "0 18 * * mon-fri", timezone="Asia/Shanghai"
+                self.DAILY_ATTRIBUTION_REVIEW_CRON, timezone="Asia/Shanghai"
             ),
             id="daily_attribution_review",
             replace_existing=True,
@@ -512,7 +540,7 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._weekend_deep_review_job,
             trigger=CronTrigger.from_crontab(
-                "0 10 * * sat", timezone="Asia/Shanghai"
+                self.WEEKEND_DEEP_REVIEW_CRON, timezone="Asia/Shanghai"
             ),
             id="weekend_deep_review",
             replace_existing=True,
@@ -521,13 +549,18 @@ class BrokerScheduler:
         self._scheduler.add_job(
             self._holiday_catchup_review_job,
             trigger=CronTrigger.from_crontab(
-                "0 10 * * *", timezone="Asia/Shanghai"
+                self.HOLIDAY_CATCHUP_REVIEW_CRON, timezone="Asia/Shanghai"
             ),
             id="holiday_catchup_review",
             replace_existing=True,
             misfire_grace_time=300,
         )
         self._scheduler.start()
+        # S8: missed-EOD-run watchdog. A process-down at the 16:00 cron instant
+        # is otherwise silently skipped (in-memory jobstore, no catch-up). Folded
+        # into the startup audit + a structured warning on a gap — alert-only,
+        # never a freeze (see :meth:`_eod_snapshot_watchdog`).
+        eod_watchdog = await self._eod_snapshot_watchdog(self._now())
         await self._audit.write(
             event_type=AuditEventType.BROKERSCHEDULER_STARTED,
             actor=AuditActor.SCHEDULER,
@@ -540,10 +573,77 @@ class BrokerScheduler:
                               "sim_auto_reconciliation",
                               "daily_attribution_review",
                               "weekend_deep_review",
-                              "holiday_catchup_review"]},
+                              "holiday_catchup_review"],
+                     "eod_watchdog": eod_watchdog},
             outcome=AuditOutcome.SUCCESS,
         )
         log.info("broker_scheduler_started")
+
+    async def _eod_snapshot_watchdog(self, now: datetime) -> dict[str, Any]:
+        """S8: detect a missed EOD snapshot for the last completed session.
+
+        Compares the newest persisted :class:`BrokerSnapshot`'s ``trade_date``
+        with the most recent COMPLETED trading day (the trading day strictly
+        before ``today`` — its 16:00 EOD has unambiguously passed). A gap means
+        the 16:00 EOD cron was skipped (e.g. the process was down at that
+        instant) — emit a structured warning + an audit-payload flag so ops can
+        run the catch-up.
+
+        Read-only + alert-only by design: a missing snapshot at startup can be a
+        legitimate multi-day downtime, NOT data corruption, so it must NEVER
+        trigger a freeze — a spurious trading halt is the worse failure mode
+        (handoff §2). Fail-open: a read error/timeout or a broken trading
+        calendar degrades to ``status='unknown'`` and never blocks boot. Returns
+        a JSON-safe dict for the audit payload.
+        """
+        local_now = now.astimezone(SHANGHAI)
+        today = local_now.date()
+        try:
+            # Codex S8: today's own session counts as completed only once its
+            # 16:00 EOD has had time to run — so a same-evening restart after a
+            # skipped cron is flagged TODAY, not deferred to tomorrow's boot.
+            if is_trading_day(today) and local_now.time() >= _EOD_DONE_THRESHOLD:
+                expected = today
+            else:
+                expected = prev_trading_day(today)
+        except RuntimeError as exc:
+            # prev_trading_day exhausts its bounded walk on a broken/over-broad
+            # holiday calendar — degrade to unknown rather than alarm spuriously.
+            log.warning("eod_snapshot_watchdog_calendar_error", error=str(exc))
+            return {"status": "unknown", "expected_trade_date": None}
+        expected_str = expected.isoformat()
+        try:
+            # Codex S8: bound the read so a hung Mongo cannot wedge startup.
+            latest = await asyncio.wait_for(
+                self._snapshots.read_latest(),
+                timeout=_WATCHDOG_READ_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            log.warning("eod_snapshot_watchdog_read_timeout")
+            return {"status": "unknown", "expected_trade_date": expected_str}
+        except Exception as exc:  # noqa: BLE001 — watchdog never blocks boot
+            log.warning("eod_snapshot_watchdog_read_failed", error=str(exc))
+            return {"status": "unknown", "expected_trade_date": expected_str}
+        if latest is None:
+            # Fresh deploy — no snapshot history yet, nothing was missed.
+            log.info("eod_snapshot_watchdog_fresh_deploy")
+            return {"status": "fresh_deploy", "expected_trade_date": expected_str}
+        if latest.trade_date < expected_str:
+            log.warning(
+                "eod_snapshot_missing",
+                expected_trade_date=expected_str,
+                latest_snapshot_date=latest.trade_date,
+            )
+            return {
+                "status": "missed",
+                "expected_trade_date": expected_str,
+                "latest_snapshot_date": latest.trade_date,
+            }
+        return {
+            "status": "ok",
+            "expected_trade_date": expected_str,
+            "latest_snapshot_date": latest.trade_date,
+        }
 
     async def stop(self) -> None:
         if self._scheduler is None or not self._scheduler.running:

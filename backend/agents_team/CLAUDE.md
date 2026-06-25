@@ -10,7 +10,7 @@
 2. RiskEngine 14-check + InstructionPlanBuilder 作 **LangGraph 纯 Python 节点**,**LLM 无边可写**它们(确定性工具门)。
 3. `fund_manager` 仍**唯一 BUY/SELL/HOLD 倡议者**(仅倡议方向);4 必经缺失降级 HOLD;`debate_round_count≥1`。
 4. **人格卡 frozen git 版本化**(身份/mandate/输出 schema 不可变);行为进化经 Reflexion/exemplars(≤3/prompt,仅 RiskEngine 通过案例)作批准 artifact,与人格卡分离。
-5. LLM positive list 4 字段;单调用 30s + **per-stage 0 重试**;cost 经 `cost_guard` 真·预留(**一次辩论/每日 shortlist 非 per candidate**)。
+5. LLM positive list 4 字段;单调用 30s + **per-stage 0 重试**;cost 经 `cost_guard` 真·预留。fan-out 模型 = **每候选一次辩论**(P1-7-amendment-2026-05-26:`run_shortlist` 由 line1_runner 按 basket **逐候选**调用,每次单元素 shortlist;由 `max_debates_per_day` 槽 cap + 日 ¥100 真·预留双重 fail-closed 兜底;推翻旧"一次辩论/每日 shortlist 非 per candidate"MVP 模型)。
 6. agent 数/路由/人格卡 runtime 不可改 + hot-reload 禁用;新增走 amendment + 重启;`LiveArtifactRegistry` 认 `prompt_version_hash`。
 
 ## import 隔离

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -655,3 +656,94 @@ class TestMiroFishEodCronJob:
         )
         # Should not raise — failure is logged at warning level.
         await s._run_mirofish_eod_job()
+
+
+class TestMarketJobFetchTimeout:
+    """S2: a hung vendor socket must NOT wedge the 30s market job.
+
+    Without ``asyncio.wait_for`` a blocking adata/akshare call pins the job
+    forever and APScheduler's ``max_instances=1`` then drops every later tick.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hung_index_fetch_times_out_and_returns(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        async def _hang(*_a: object, **_k: object) -> list[object]:
+            await asyncio.sleep(30)
+            return []
+
+        mock_deps["market_data"].get_index_realtime = _hang
+        mock_deps["market_data"].get_watchlist_snapshot = AsyncMock(return_value=[])
+        mock_deps["watchlist"].list_stocks = AsyncMock(return_value=[])
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            watchlist=mock_deps["watchlist"],
+            tick_timeout_seconds=0.05,
+        )
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            # If the timeout regressed this awaits 30s and the 2s guard fires.
+            await asyncio.wait_for(s._run_market_job(), timeout=2.0)
+        # The index persist never happened (fetch timed out, returned early).
+        mock_deps["mongodb"].save_market_snapshot.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hung_watchlist_fetch_times_out_and_returns(
+        self, mock_deps: dict[str, AsyncMock]
+    ) -> None:
+        mock_deps["market_data"].get_index_realtime = AsyncMock(return_value=[])
+
+        async def _hang(*_a: object, **_k: object) -> list[object]:
+            await asyncio.sleep(30)
+            return []
+
+        mock_deps["market_data"].get_watchlist_snapshot = _hang
+        mock_deps["watchlist"].list_stocks = AsyncMock(
+            return_value=[{"stock_code": "600519"}]
+        )
+        s = DataScheduler(
+            market_data=mock_deps["market_data"],
+            news_crawler=mock_deps["news_crawler"],
+            mongodb=mock_deps["mongodb"],
+            redis_client=mock_deps["redis_client"],
+            watchlist=mock_deps["watchlist"],
+            tick_timeout_seconds=0.05,
+        )
+        with patch(
+            "backend.data.scheduler.is_trading_hours", return_value=True
+        ):
+            await asyncio.wait_for(s._run_market_job(), timeout=2.0)
+        mock_deps["mongodb"].save_watchlist_snapshot.assert_not_called()
+
+
+class TestIntervalMisfireGrace:
+    """S6: the 30s/news interval jobs carry explicit misfire grace.
+
+    APScheduler's default ``misfire_grace_time=1`` silently drops any tick that
+    is >1s late behind an event-loop stall.
+    """
+
+    @pytest.mark.asyncio
+    async def test_interval_jobs_have_explicit_grace(
+        self, scheduler: DataScheduler
+    ) -> None:
+        from backend.data.scheduler import (
+            MARKET_MISFIRE_GRACE_SECONDS,
+            NEWS_MISFIRE_GRACE_SECONDS,
+        )
+
+        await scheduler.start()
+        try:
+            market = scheduler._scheduler.get_job("market_data_job")
+            news = scheduler._scheduler.get_job("news_job")
+            assert market is not None
+            assert news is not None
+            assert market.misfire_grace_time == MARKET_MISFIRE_GRACE_SECONDS
+            assert news.misfire_grace_time == NEWS_MISFIRE_GRACE_SECONDS
+        finally:
+            await scheduler.stop()

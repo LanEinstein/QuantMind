@@ -10,9 +10,11 @@ line1_frame.Line1FrameAssembler`, U-B1):
     to_fund_manager_output → assemble_plan (14-check single construction
     point) → RouteCoordinator
 
-Cost (P1-7-amendment-2026-05-24): exactly ONE 4-agent debate runs per daily
-shortlist (never per candidate); ``run_shortlist`` reserves the ¥20 hard-cap
-budget BEFORE any LLM call (真·预留) + claims the fan-out-cap debate slot.
+Cost (P1-7-amendment-2026-05-26): the basket walk runs ONE 4-agent debate PER
+CANDIDATE (each ``run_shortlist`` call takes a single-element shortlist), bounded
+by the ``max_debates_per_day`` slot cap + the ¥100 daily reservation; each call
+reserves the ¥100 hard-cap budget BEFORE any LLM call (真·预留) + claims a
+fan-out-cap debate slot, and falls through on REJECTED/HOLD/non-BUY.
 
 LLM red line (orchestration isolation): this module imports NO
 ``backend.{api,broker,risk,llm,agents,mirofish,data}``. The heavy risk /

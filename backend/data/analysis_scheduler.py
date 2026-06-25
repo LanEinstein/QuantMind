@@ -116,6 +116,10 @@ class AnalysisScheduler:
         # a Redis lock and are out of scope while the eval-period
         # backend runs as a single instance.
         self._run_lock = asyncio.Lock()
+        # S9 (production-hardening 2026-06-25): retain the fire-and-forget
+        # catch-up task so it is not garbage-collected mid-flight (asyncio holds
+        # only a weak reference) and is cancelled cleanly on ``stop``.
+        self._catch_up_task: asyncio.Task[None] | None = None
 
     @property
     def policy(self) -> UniversePolicy | None:
@@ -206,7 +210,9 @@ class AnalysisScheduler:
             missed = []
         if missed:
             log.info("catch_up_scheduling", missed=missed)
-            asyncio.create_task(self._run_catch_up(missed))
+            # S9: keep a strong reference (asyncio only weak-refs tasks) so the
+            # catch-up is not GC'd mid-flight, and so ``stop`` can cancel it.
+            self._catch_up_task = asyncio.create_task(self._run_catch_up(missed))
 
     def _add_category_cron(self, category: Category, cron_expr: str) -> None:
         """Register one cron job per category, parsed from the YAML string.
@@ -248,6 +254,22 @@ class AnalysisScheduler:
 
     async def stop(self) -> None:
         """Shutdown scheduler."""
+        # S9: cancel + await the in-flight catch-up task (if any) before tearing
+        # down so it cannot keep running against a half-stopped scheduler.
+        if self._catch_up_task is not None and not self._catch_up_task.done():
+            self._catch_up_task.cancel()
+            try:
+                await self._catch_up_task
+            except asyncio.CancelledError:
+                # Expected — we just cancelled it. Never re-raise (would abort
+                # the surrounding shutdown), but do not mute genuine errors.
+                pass
+            except Exception as exc:  # noqa: BLE001 — stop() must not raise
+                # A real in-flight catch-up failure. stop() still must not
+                # raise during shutdown, but the error is logged (never silently
+                # swallowed) so a botched shutdown is diagnosable.
+                log.warning("catch_up_task_failed_on_stop", error=str(exc))
+        self._catch_up_task = None
         if self._scheduler and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
             log.info("analysis_scheduler_stopped")
