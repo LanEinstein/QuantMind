@@ -1160,9 +1160,175 @@ def compute_qgr2_factors(
     }
 
 
+# ===========================================================================
+# Main-force-intent batch A: crowding / over-extension / blow-off EXIT family.
+#
+# The macro program's load-bearing finding (§2.1) is an ASYMMETRY: the tradable
+# edge of main-force footprints is on the RISK/EXIT side, not entry timing. This
+# family operationalises that — per-name proxies for a crowded / over-extended /
+# blow-off state, used as a REDUCE/EXIT/veto gate (NOT a ranking alpha): high =
+# a name to TRIM, attractive-LOW. The honest prior (arXiv 2512.11913 / SSRN
+# 3803954 / PMO AEL2024) is that crowding predicts CRASH PROBABILITY (fat left
+# tail), not mean return — so the diagnostic's load-bearing test is a conditional
+# left-tail, with the mean-IC expected weak; the sign is still verified from zero.
+# Every mechanism is an EXISTING ``EconomicMechanism`` value (no governance enum
+# change); a SEPARATE ``CROWDING_FACTORS`` registry keeps round-1..4 / QGR panels
+# byte-for-byte unaffected.
+# ===========================================================================
+
+CROWDING_BIAS_WINDOW: int = 20  # trailing window for the close-to-mean deviation
+CROWDING_AMPLITUDE_WINDOW: int = 20  # high/low-state amplitude window
+CROWDING_BLOWOFF_WINDOW: int = 20  # run-up window for the blow-off product
+CROWDING_BLOWOFF_SHORT: int = 5  # recent-turnover window
+CROWDING_BLOWOFF_BASE: int = 15  # prior-baseline turnover window (5+15=20d total)
+
+
+def price_bias(closes: list[float], window: int = CROWDING_BIAS_WINDOW) -> float | None:
+    """Close-to-trailing-mean deviation (乖离): ``close / mean(close[-window:]) - 1``.
+
+    The §2.2 crowding 'close-price deviation' component — price stretched far above
+    its own ``window``-day mean is over-extended (attractive-LOW: a high positive
+    bias flags an EXIT/avoid). qfq closes (scale-invariant within the window).
+    ``None`` if fewer than ``window`` observations, any is non-finite, or the
+    trailing mean is non-positive (fail-closed — never a fabricated bias).
+    """
+    if window <= 0 or len(closes) < window:
+        return None
+    recent = closes[-window:]
+    if not _all_finite(recent):
+        return None
+    mean = statistics.fmean(recent)
+    if mean <= 0:
+        return None
+    value = recent[-1] / mean - 1.0
+    return value if math.isfinite(value) else None
+
+
+def ideal_amplitude(
+    adj_closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    pre_closes: list[float],
+    window: int = CROWDING_AMPLITUDE_WINDOW,
+) -> float | None:
+    """Ideal-amplitude factor (理想振幅, Kaiyuan): high-state minus low-state mean
+    intraday amplitude over the trailing ``window`` days.
+
+    For each day, amplitude = ``(high - low) / pre_close`` (same-day RAW ratio,
+    scale-invariant); a day is 'high-state' if its qfq close ``>=`` the window
+    median close, else 'low-state'. Factor = ``mean(amp|high) - mean(amp|low)``.
+    Kaiyuan reports it a NEGATIVE/exit factor (a name that thrashes harder in its
+    high-price state is distributing, not accumulating — the OPPOSITE of the
+    bullish 'violent wash-out then rally' folklore; attractive-LOW). The macro
+    program (§8) flags the broker's size-neutral claim as UNREPLICATED → the
+    diagnostic re-tests the sign from zero with our own size neutralization.
+    ``None`` if fewer than ``window`` aligned days, any input is non-finite, any
+    ``pre_close`` is non-positive, any ``high < low``, or either state is empty
+    (degenerate split — fail-closed).
+    """
+    n = window
+    if n <= 1 or min(len(adj_closes), len(highs), len(lows), len(pre_closes)) < n:
+        return None
+    c, h, lo, pc = adj_closes[-n:], highs[-n:], lows[-n:], pre_closes[-n:]
+    if not (_all_finite(c) and _all_finite(h) and _all_finite(lo) and _all_finite(pc)):
+        return None
+    if any(p <= 0 for p in pc) or any(hi < lw for hi, lw in zip(h, lo, strict=True)):
+        return None
+    med = statistics.median(c)
+    high_amps = [(h[i] - lo[i]) / pc[i] for i in range(n) if c[i] >= med]
+    low_amps = [(h[i] - lo[i]) / pc[i] for i in range(n) if c[i] < med]
+    if not high_amps or not low_amps:
+        return None
+    value = statistics.fmean(high_amps) - statistics.fmean(low_amps)
+    return value if math.isfinite(value) else None
+
+
+def blowoff(
+    closes: list[float],
+    turnover_rates: list[float],
+    window: int = CROWDING_BLOWOFF_WINDOW,
+    short: int = CROWDING_BLOWOFF_SHORT,
+    base: int = CROWDING_BLOWOFF_BASE,
+) -> float | None:
+    """Blow-off top intensity: ``max(ret_window, 0) × max(turnover_spike, 0)``.
+
+    Only a name that BOTH ran up over ``window`` days AND on a recent turnover
+    surge scores (negative parts clipped to 0): a crowded high-volume blow-off —
+    the 'reversal blow-off' EXIT signal the macro program names (attractive-LOW;
+    high = exhausted, trim). Reuses :func:`trailing_return` + :func:`turnover_spike`
+    (so it inherits their fail-closed guards). ``None`` if either component is
+    undefined (insufficient / non-finite history).
+    """
+    ret = trailing_return(closes, window)
+    tspike = turnover_spike(turnover_rates, short, base)
+    if ret is None or tspike is None:
+        return None
+    value = max(ret, 0.0) * max(tspike, 0.0)
+    return value if math.isfinite(value) else None
+
+
+CROWDING_FACTORS: tuple[FactorDef, ...] = (
+    FactorDef(
+        name="bias_20d",
+        min_history=CROWDING_BIAS_WINDOW,
+        attractive_high=False,
+        mechanism="mean_reversion",
+        expected_ic_sign=-1,
+        description="Close / trailing-20d-mean − 1 (乖离 over-extension) — §2.2 "
+        "crowding close-deviation component; high positive bias = stretched, EXIT.",
+    ),
+    FactorDef(
+        name="ideal_amplitude_20d",
+        min_history=CROWDING_AMPLITUDE_WINDOW,
+        attractive_high=False,
+        mechanism="low_volatility_anomaly",
+        expected_ic_sign=-1,
+        description="High-state minus low-state mean intraday amplitude over 20d "
+        "(理想振幅, Kaiyuan) — a negative/exit factor; size-neutral claim re-tested "
+        "from zero (macro program §8).",
+    ),
+    FactorDef(
+        name="blowoff_20d",
+        min_history=CROWDING_BLOWOFF_WINDOW + 1,
+        attractive_high=False,
+        mechanism="liquidity_premium",
+        expected_ic_sign=-1,
+        description="max(ret_20d,0)·max(turnover_spike_5/15,0) — crowded high-volume "
+        "blow-off top (reversal blow-off); high = exhausted, EXIT/trim.",
+    ),
+)
+
+CROWDING_FACTOR_NAMES: tuple[str, ...] = tuple(f.name for f in CROWDING_FACTORS)
+CROWDING_FACTORS_BY_NAME: dict[str, FactorDef] = {f.name: f for f in CROWDING_FACTORS}
+
+
+def compute_crowding_factors(
+    *,
+    adj_closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    pre_closes: list[float],
+    turnover_rates: list[float],
+) -> dict[str, float | None]:
+    """The batch-A crowding/blow-off EXIT factor vector for one code as-of a date.
+
+    ``adj_closes`` = qfq (bias + amplitude state splits are adjustment-consistent);
+    ``highs`` / ``lows`` / ``pre_closes`` = RAW same-day (amplitude is a
+    scale-invariant ratio); ``turnover_rates`` = ``daily_basic`` turnover. All
+    attractive-LOW (high = a crowded/over-extended name to TRIM). Insufficient
+    history surfaces as ``None`` per field (never fabricated); the sign is verified
+    from zero in :mod:`crowding_factor_diagnostics`.
+    """
+    return {
+        "bias_20d": price_bias(adj_closes),
+        "ideal_amplitude_20d": ideal_amplitude(adj_closes, highs, lows, pre_closes),
+        "blowoff_20d": blowoff(adj_closes, turnover_rates),
+    }
+
+
 # Merged lookup for the diagnostic IC study (round-1 + round-2 + round-3 + round-4
-# + QGR-3 short-term tranche-1 + tranche-2). A ``_neut`` variant resolves to its
-# base factor's prior.
+# + QGR-3 short-term tranche-1 + tranche-2 + batch-A crowding). A ``_neut`` variant
+# resolves to its base factor's prior.
 ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {
     **FACTORS_BY_NAME,
     **R2_FACTORS_BY_NAME,
@@ -1170,12 +1336,21 @@ ALL_FACTORS_BY_NAME: dict[str, FactorDef] = {
     **R4_FACTORS_BY_NAME,
     **QGR_FACTORS_BY_NAME,
     **QGR2_FACTORS_BY_NAME,
+    **CROWDING_FACTORS_BY_NAME,
 }
 
 
 __all__ = [
     "ALL_FACTORS_BY_NAME",
     "AMIHUD_WINDOW",
+    "CROWDING_AMPLITUDE_WINDOW",
+    "CROWDING_BIAS_WINDOW",
+    "CROWDING_BLOWOFF_BASE",
+    "CROWDING_BLOWOFF_SHORT",
+    "CROWDING_BLOWOFF_WINDOW",
+    "CROWDING_FACTORS",
+    "CROWDING_FACTORS_BY_NAME",
+    "CROWDING_FACTOR_NAMES",
     "FACTORS",
     "FACTORS_BY_NAME",
     "FACTOR_NAMES",
@@ -1217,7 +1392,9 @@ __all__ = [
     "accruals_sloan",
     "amihud_illiquidity",
     "asset_growth",
+    "blowoff",
     "broke_board_prev",
+    "compute_crowding_factors",
     "compute_factor_vector",
     "compute_fundamental_factors",
     "compute_qgr2_factors",
@@ -1227,6 +1404,7 @@ __all__ = [
     "distance_from_high",
     "earnings_surprise_sue",
     "earnings_yield",
+    "ideal_amplitude",
     "intraday_return",
     "limit_streak_prev",
     "limit_up_count",
@@ -1234,6 +1412,7 @@ __all__ = [
     "mean_turnover",
     "momentum_skip",
     "overnight_gap",
+    "price_bias",
     "turnover_spike",
     "return_volatility",
     "trailing_return",
