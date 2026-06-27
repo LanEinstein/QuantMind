@@ -14,6 +14,7 @@ from backend.backtest.portfolio import AppliedFill
 from scripts.factor_research.avoid_top_ablation import (
     ArmResult,
     _build_placebo_plans,
+    _crash_slice_table,
     _match_avoid_top_fills,
     decompose_pnl,
 )
@@ -188,6 +189,19 @@ def test_decompose_identity_and_avoided_loss() -> None:
     )
     assert abs(recon - net) < 1e-9
     assert pnl["favourable_trade_off"] is True  # ① 100 > ② 0 + ④ 0.20
+
+
+def test_crash_slice_table_assigns_periods_by_start_date() -> None:
+    # 3 periods; the middle one starts inside the 2018 bear window.
+    arm = ArmResult("avoid_top", 0.0, 0.0, 0.0, 0.0, 0, 0.0, True, 0, (0.1, -0.2, 0.05))
+    period_dates = ["20170101", "20180601", "20190101"]
+    table = _crash_slice_table([arm], period_dates)
+    bear = table["avoid_top"]["2018_bear"]
+    assert bear["n"] == 1.0
+    assert abs(bear["cum_return"] - (-0.2)) < 1e-9
+    assert abs(bear["worst_period"] - (-0.2)) < 1e-9
+    # A window with no period falls back to 0 cum / NaN worst.
+    assert table["avoid_top"]["2015_jun_crash"]["n"] == 0.0
 
 
 def test_build_placebo_plans_matches_calendar_and_total() -> None:

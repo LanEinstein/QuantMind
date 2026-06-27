@@ -92,6 +92,18 @@ MIN_AVOID_TOP_EXITS: int = 30  # fail-closed: fewer → placebo comparison under
 REGIME_LOOKBACK_PERIODS: int = 4
 BULL_BAND: float = 0.03
 BEAR_BAND: float = -0.03
+# §A6 / A1 crash slices — the P-D "不被挂山顶 / 逆境非永久套牢" stress windows (all
+# within train_val). Per-arm cumulative return + worst single period in each: an
+# avoid-top EXIT that protects shows a less-negative crash cumret than the
+# baseline; permanent entrapment (a deep, never-recovering slice) is a FAIL.
+CRASH_SLICES: tuple[tuple[str, str, str], ...] = (
+    ("2015_jun_crash", "20150615", "20150831"),
+    ("2016_circuit_breaker", "20160101", "20160229"),
+    ("2018_bear", "20180101", "20181231"),
+    ("2020_covid", "20200201", "20200331"),
+    ("2022_drawdown", "20220101", "20221031"),
+    ("2024_microcap_crash", "20240101", "20240229"),
+)
 ARMS: tuple[str, ...] = (
     "baseline",
     "stop_only",
@@ -418,6 +430,34 @@ def _regime_table(
     return out
 
 
+def _crash_slice_table(
+    arms: list[ArmResult], period_dates: list[str]
+) -> dict[str, dict[str, dict[str, float]]]:
+    """``{arm: {slice: {n, cum_return, worst_period}}}`` over the §A6 crash windows.
+
+    A period is assigned to a crash slice if its start date falls in the window.
+    ``cum_return`` = compounded return across the slice's periods (the "did this
+    arm survive the crash / not get permanently trapped" read, P-D).
+    """
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for arm in arms:
+        per: dict[str, dict[str, float]] = {}
+        for name, lo, hi in CRASH_SLICES:
+            rs = [
+                r
+                for i, r in enumerate(arm.period_returns)
+                if i < len(period_dates) and lo <= period_dates[i] <= hi
+            ]
+            cum = math.prod(1.0 + r for r in rs) - 1.0 if rs else 0.0
+            per[name] = {
+                "n": float(len(rs)),
+                "cum_return": float(cum),
+                "worst_period": float(min(rs)) if rs else float("nan"),
+            }
+        out[arm.label] = per
+    return out
+
+
 def _ledger_n_trials(
     ledger_path: str, arms: list[ArmResult], window: tuple[str, str], *, persist: bool
 ) -> int:
@@ -605,6 +645,12 @@ def run_ablation(
         for a in ARMS
     }
     regimes = _classify_regimes(bench)
+    # Period j (a HORIZON-day chunk of daily_returns) starts on daily day j*HORIZON.
+    n_periods = len(arms["avoid_top"].period_returns)
+    period_dates = [
+        daily_days[min(j * HORIZON, len(daily_days) - 1)] for j in range(n_periods)
+    ]
+    crash = _crash_slice_table(list(arms.values()), period_dates)
     at = arms["avoid_top"]
     vs_stop = _paired_t(at.period_returns, arms["stop_only"].period_returns)
     vs_cal = _paired_t(at.period_returns, arms["placebo_sell_calendar"].period_returns)
@@ -646,6 +692,7 @@ def run_ablation(
         "avoid_top_vs_placebo_rate": {"mean_diff": vs_rate[0], "t": vs_rate[1]},
         "regimes": _regime_table(list(arms.values()), regimes),
         "regime_counts": {r: regimes.count(r) for r in ("bull", "bear", "sideways")},
+        "crash_slices": crash,
         "verdict": _verdict(arms, pnl, dsr, vs_cal, vs_rate),
     }
 
