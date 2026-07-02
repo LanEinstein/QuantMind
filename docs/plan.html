@@ -760,8 +760,8 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         session: "#1 alpha-pivot SSoT 重构(DOCS phase)",
         owner: "Claude Fable 5 + owner",
         state_in: "旧 SSoT 33 phase 全 done;alpha-pivot spec v3 已 codex 2 轮收敛但 untracked;owner 迷茫求梳理 → plan mode 拍板 6 决策点(块间权重 0.5/0.25/0.25 / K=2 / no-go 降纯诊断 / provisional 冻结等前向 / 双容器 joint pass / 全集入 spec)。",
-        actions: "DOC-001 spec outline 入库(537530b);DOC-002 施工图 alpha-pivot-implementation-plan-2026-07-02.md(0785489);DOC-003 旧 plan.html git mv 归档 + 本文件重建(本 commit);DOC-004 CLAUDE.md 重指(后续 commit,见 TASKS 回填)。",
-        commit: "537530b / 0785489 / 本 commit + 后续(session 末回填)",
+        actions: "DOC-001 spec outline 入库(537530b);DOC-002 施工图 alpha-pivot-implementation-plan-2026-07-02.md(0785489);DOC-003 旧 plan.html git mv 归档 + 本文件重建(471b4f4);DOC-004 CLAUDE.md 状态段重指(8c474a2);末尾 SSoT 回填 bookkeeping commit。",
+        commit: "537530b / 0785489 / 471b4f4 / 8c474a2 + 本 bookkeeping commit",
         next: "AP-0(AP0-001 spec 常量模块 + AP0-002 账本预登记 2445/2417)→ AP-0.5 power 前置;push 全部积压本地 commit 待 owner 授权(PK-004)。",
       },
     ];
@@ -802,12 +802,12 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         acceptance: "浏览器渲染正常(22 任务/9 phase/进度条);git log --follow 可追旧历史;#current 自举完备。",
         tests: "TASKS 声明唯一(grep 数组声明行 = 1);node --check 提取脚本。",
         sources: "plan mode 设计(peppy-zooming-dragon)",
-        commit: "(本 commit,session 末回填)",
+        commit: "471b4f4",
         session_date: "2026-07-02",
-        notes: "协议/任务 schema 字段名不变,CLAUDE.md §1 跨 session 协议继续生效;codex 行修正为现行政策。"
+        notes: "协议/任务 schema 字段名不变,CLAUDE.md §1 跨 session 协议继续生效;codex 行修正为现行政策。JS 数据数组经 node 校验(22 任务/9 phase/14 字段)。"
       },
       {
-        id: "DOC-004", phase: "DOCS 2026-07-02 SSoT 重构", status: "todo", priority: "P1",
+        id: "DOC-004", phase: "DOCS 2026-07-02 SSoT 重构", status: "done", priority: "P1",
         title: "CLAUDE.md 状态段重指新 SSoT",
         summary: "压缩重写 CLAUDE.md 开头「当前状态」段(工程冻结 + 唯一主线 alpha-pivot + 指向新 plan.html 与施工图);§1 协议/§2 红线/数据资产段零改动。",
         scope: "CLAUDE.md(仅状态段 + §4 表 plan.html 行)",
@@ -815,9 +815,9 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         acceptance: "diff 仅限状态段与 §4 行;§1/§2 零改动。",
         tests: "git diff 审读。",
         sources: "plan mode 设计",
-        commit: "",
+        commit: "8c474a2",
         session_date: "2026-07-02",
-        notes: ""
+        notes: "diff --stat 确认仅 2 行改动(状态段 + §4 plan.html 行)。"
       },
       {
         id: "AP0-001", phase: "AP-0 预声明 fixed prior spec", status: "todo", priority: "P0",
