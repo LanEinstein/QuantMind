@@ -1041,17 +1041,17 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "blocked_by: owner 排期。"
       },
       {
-        id: "PK-004", phase: "PARKED 遗留承接", status: "blocked", priority: "P1",
+        id: "PK-004", phase: "PARKED 遗留承接", status: "done", priority: "P1",
         title: "push backlog(积压本地 commit)",
-        summary: "2026-06-22 以来研究线本地 commit 一摞(C0a/C0b/QGR-4/batch-A/B1/B2/C1a/frontier/alpha-pivot docs)待 push origin/main。",
+        summary: "积压本地 commit push origin/main(研究线早前已随 2026-06 各次授权上库;本次清尾 = DOCS phase 5 commit)。",
         scope: "git push(不改文件)",
         depends: "无",
         acceptance: "owner 明示「push」授权后执行;git status clean。",
         tests: "git log origin/main..HEAD 清单核对。",
         sources: "feedback_push_main_gated",
-        commit: "",
-        session_date: "",
-        notes: "blocked_by: push = owner-gated。"
+        commit: "537530b..af2c120",
+        session_date: "2026-07-02",
+        notes: "owner 2026-07-02「push」授权:f002031..af2c120(5 commit)已上 origin/main,本地与远端同步。后续 push 仍逐次 owner-gated(常态门,非一次性任务)。"
       },
     ];
 
