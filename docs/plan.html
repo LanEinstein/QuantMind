@@ -739,6 +739,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
       </div>
       <h3>修订记录</h3>
       <ul class="revision">
+        <li>2026-07-02 · AP-0 phase full:AP0-001 spec 常量模块(707de2a,hash 469f8547b62d2452)+ AP0-002 账本预登记 2445/2417(443f48e);两任务均 docs/ledger gate 豁免 codex;suite 688→704;活动 Phase 推进至 AP-0.5。</li>
         <li>2026-07-02 · 彻底重构:旧 SSoT(33 phase 全 done)归档 <code>docs/archive/plan-legacy-2026-07-02.html</code>;新主线 = alpha-pivot(DOCS + AP-0..AP-3 + gated FW/SR/SIM + PARKED);codex 协议修正为现行 commit 前置门(2026-05-24 锁定);localStorage key 升 v2。</li>
       </ul>
     </section>
@@ -755,6 +756,15 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
     // Session log — newest first. Each session start/end must write here.
     // Pre-2026-07-02 history: docs/archive/plan-legacy-2026-07-02.html
     const SESSION_LOG = [
+      {
+        date: "2026-07-02",
+        session: "#2 AP-0 预声明 fixed prior spec(full phase)",
+        owner: "Claude Opus 4.8 + owner",
+        state_in: "DOCS phase 全 done + 已 push;活动 Phase = AP-0(AP0-001 spec 常量 + AP0-002 账本预登记,均 todo,docs/ledger gate 豁免 codex)。owner 睡前授「按 plan 稳步推进」。",
+        actions: "AP0-001 alpha_pivot_spec.py frozen 常量模块(10 因子+先验符号+块权重 0.5/0.25/0.25+core-4 过滤+双容器 byte-anchor slot_frontier+四门校准 N=2417+收益盲 power 输入 K=2+spec_hash;12 测试)commit 707de2a;AP0-002 alpha_pivot_ledger_register.py 幂等 runner 把 spec_hash 嵌三记录预登记(base 2412/2387→2445/2417)+ 4 tmp-ledger 测试 commit 443f48e。各任务 ruff/mypy/redline 绿,factor_research suite 688→704。",
+        commit: "707de2a / 443f48e + 本 docs commit",
+        next: "AP-0.5(AP05-001 收益盲 power 前置:SR_req 反解 vs 2·SR_ref → go/no-go;施工图 §4)。spec 已 hash=469f8547b62d2452,评测中绝不改。积压本地 commit(707de2a/443f48e/本 docs)待 owner push 授权。",
+      },
       {
         date: "2026-07-02",
         session: "#1 alpha-pivot SSoT 重构(DOCS phase)",
@@ -820,7 +830,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "diff --stat 确认仅 2 行改动(状态段 + §4 plan.html 行)。"
       },
       {
-        id: "AP0-001", phase: "AP-0 预声明 fixed prior spec", status: "todo", priority: "P0",
+        id: "AP0-001", phase: "AP-0 预声明 fixed prior spec", status: "done", priority: "P0",
         title: "alpha_pivot_spec 常量模块(冻结)",
         summary: "10 因子+先验符号(rev_1d− max_5d− turn_spike− / np_rev+ rev_diff+ cover_chg+ / roe+ gpm+ ep_ttm+ accr−)+ BLOCK_WEIGHTS 0.5/0.25/0.25 + UNIVERSE_FILTERS(底部确认 core-4 原样)+ CONTAINERS(eq_5/buf40_5 与 slot_frontier.FRONTIER 字节一致)+ GATE_CALIBRATION + POWER_INPUTS + spec_hash()。",
         scope: "scripts/factor_research/alpha_pivot_spec.py + tests/factor_research/test_alpha_pivot_spec.py",
@@ -828,22 +838,22 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         acceptance: "全 frozen 零 IO;因子/符号/权重与施工图 §3 完全一致;容器逐字段断言相等;spec_hash 确定性;redline grep 空。",
         tests: "$PY -m pytest tests/factor_research/test_alpha_pivot_spec.py -q + 逐文件 ruff/mypy",
         sources: "施工图 §3;spec outline §3/§4",
-        commit: "",
-        session_date: "",
-        notes: "docs/ledger gate,豁免 codex 代码门;hash 后评测中绝不改。"
+        commit: "707de2a",
+        session_date: "2026-07-02",
+        notes: "frozen dataclass/tuple 常量,零 IO;spec_hash()[:16]=469f8547b62d2452(确定性);容器 byte-anchor slot_frontier.FRONTIER;bottom_confirmation core-4 逐字对齐;12 测试 pin 全值,suite 688→700;ruff/mypy 绿;redline 空。docs/ledger gate 豁免 codex。hash 后评测中绝不改。"
       },
       {
-        id: "AP0-002", phase: "AP-0 预声明 fixed prior spec", status: "todo", priority: "P0",
+        id: "AP0-002", phase: "AP-0 预声明 fixed prior spec", status: "done", priority: "P0",
         title: "trial ledger 预登记(先于任何结果)",
         summary: "append 三记录:diagnostics qgr.alpha_pivot.ic 28/28 + ablation qgr.alpha_pivot.attribution 3/1 + single qgr.alpha_pivot.composite 2/1;spec_hash 前 16 位嵌 description;窗口 train_val。",
-        scope: "data/factor_research/mfi_trial_ledger.jsonl(append-only)",
+        scope: "scripts/factor_research/alpha_pivot_ledger_register.py(可复现 runner)+ tests + data/factor_research/mfi_trial_ledger.jsonl(gitignored append-only)",
         depends: "AP0-001",
         acceptance: "累计 nominal 2445 / effective 2417(基数 2412/2387 已于 2026-07-02 实测核对);登记时间先于任何 AP-1/AP-2 结果 artifact。",
         tests: "施工图 §3 核验一行(assert 2445/2417)",
         sources: "施工图 §3;spec outline §4.4",
-        commit: "",
-        session_date: "",
-        notes: "TrialRecord 无独立 spec_hash 字段 → 嵌 description;trial_id 为 design-only 内容寻址,幂等 re-append。"
+        commit: "443f48e",
+        session_date: "2026-07-02",
+        notes: "已登记:base 2412/2387 → nominal 2445 / effective 2417(= A4 deflation N),spec=469f8547b62d2452。可复现 runner(读 spec_hash 单一真相源)幂等 content-addressed;ledger jsonl 在 gitignored data/(同 frontier 历史 append),tracked 源=runner+test;4 tmp-ledger 测试,suite 700→704。TrialRecord 无独立 hash 字段 → 嵌 description。"
       },
       {
         id: "AP05-001", phase: "AP-0.5 收益盲 power 前置", status: "todo", priority: "P0",
