@@ -764,7 +764,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         state_in: "AP-0 全 done 且已 push;owner『push and go on』授权继续。活动 Phase = AP-0.5(AP05-001 todo,代码任务需 codex 门;AP05-002 no-go 时才激活)。",
         actions: "先 push AP-0 积压(313e0ee..d77c0a0)。AP05-001 alpha_pivot_power_precheck.py(收益盲:无 backtest/bar_source/panel import;Bailey–LdP DSR 反解 + HAC 保守上界 3.40 闭式 + SR_ref 反解 eq_5 已披露 DSR)+ 10 hermetic 测试 + 结果 doc + JSON;codex review --uncommitted 1 轮抓 1 P1(测试依赖 gitignored artifact)→ 改 tmp_path fixture 修复。commit 4ec0af1。suite 688→714。**判据 = NO-GO**(SR_req 年化 2.67 vs K·SR_ref 0.62,gap 8.6×,稳健)。",
         commit: "4ec0af1 + 本 docs commit",
-        next: "🔔 AP05-002 owner gate(no-go 已激活):owner 定向 fork —(a) 重审 ≤5 前提 /(b) 认可降纯诊断只做 attribution IC 披露+相对纯反转 SPA(AP-1 panel 合并,不申报四门)/(c) 其他。证据在 power-precheck doc §6。**不自动越门跑 AP-2 四门**。AP05-001 commit 4ec0af1 + 本 docs 待 owner push。",
+        next: "✅ owner 定向(2026-07-03,AskUserQuestion):fork (a) 重审 ≤5 前提 → 子方向『look-once 前向裁决』。→ 转 FW-001,但 **ACCRUAL-GATED**:前向窗口(test_end 20260612 后)仅累积 4 td,ACCRUING 无裁决;候选 ffc1db3 + pipeline round4_forward_test.py 已冻/已建;verdict-ready ≈ 2026-08 中(需 owner-gated 摄取 + look-once 一次读)。今晚无可执行。AP-2 四门仍不跑。",
       },
       {
         date: "2026-07-02",
@@ -879,7 +879,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "判据 = NO-GO:SR_req 年化 2.67(过 DSR≥0.95 所需)vs K·SR_ref 年化 0.62(纯反转 eq_5 边 2×)→ gap 8.6×。稳健(HAC=1.0 最松仍 5.4× no-go)。收益盲(grep 验:无 backtest/bar_source/panel import)+ HAC 保守上界 3.40 闭式 + SR_ref 反解 eq_5 已披露 DSR(零 peek)。10 hermetic 测试;codex 1 轮 1 P1 修(测试改 tmp_path fixture 去 gitignored 依赖);suite 704→714。坐实绑定约束=alpha 质量非容器。→ AP05-002 owner gate。"
       },
       {
-        id: "AP05-002", phase: "AP-0.5 收益盲 power 前置", status: "blocked", priority: "P0",
+        id: "AP05-002", phase: "AP-0.5 收益盲 power 前置", status: "done", priority: "P0",
         title: "no-go owner gate(预承诺:降纯诊断)",
         summary: "仅当 AP05-001 判 no-go 触发:本刀降纯诊断(只跑 attribution IC 披露 + 相对纯反转 SPA,不申报四门)+ 整理「≤5 前提可能装不下可过门 alpha」数据证据上报 owner。",
         scope: "docs/research/(诊断报告)",
@@ -889,7 +889,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         sources: "owner 决策 #3(2026-07-02)",
         commit: "",
         session_date: "2026-07-03",
-        notes: "🔔 已激活:AP05-001 判 NO-GO(2026-07-03)。数据证据已整理于 docs/research/alpha-pivot-power-precheck-2026-07-03.md §6(收益盲硬数学:≤5+2417 债下无路径把年化 Sharpe 0.3→2.7)。blocked_by: owner 定向 —— fork:(a) 重审 ≤5 闸门前提 /(b) 认可降纯诊断只做 attribution IC 披露+相对纯反转 SPA(需 AP-1 panel 合并,不申报四门)/(c) 其他。**越门直接跑 AP-2 四门 = 违规**(no-go 预承诺不烧 promotion trial)。"
+        notes: "✅ owner 定向已给(2026-07-03):选 fork (a) 重审 ≤5 前提 → 子方向选『look-once 前向裁决』(AskUserQuestion 记录)。逻辑:≤5 已被 frontier 证风控最优(松绑数据反驳);真绑定约束 = alpha 强度 + 2417 deflation 可能过罚 → 唯一裁决 = 处子前向(原则 #1)。**转入 FW-001**(accrual+ingest gated,见其 notes)。AP-2 四门仍不跑(no-go 不烧 promotion trial)。"
       },
       {
         id: "AP1-001", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "todo", priority: "P0",
@@ -987,13 +987,13 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         title: "look-once 前向验证(处子 OOS)",
         summary: "post-2026-06-12 处子数据一次性验证:round-4 冻结候选 ffc1db3(分析师修正)+ AP 复合(若 AP-3 批准);模板 round4_forward_test.py / forward_gate_test.py。",
         scope: "scripts/factor_research/(前向 runner)+ docs/research/",
-        depends: "AP3-001",
-        acceptance: "look-once:一次读取一次判定,兑现/不兑现如实报。",
+        depends: "AP05-002(owner 选 look-once 前向,绕过 AP-1/2/3 直测冻结候选)",
+        acceptance: "look-once:一次读取一次判定,兑现/不兑现如实报;<MIN_FORWARD_PERIODS 时报 ACCRUING 绝不裁决。",
         tests: "前向 runner 单测(不触 sealed test)。",
-        sources: "施工图 §8;QGR B 层",
+        sources: "施工图 §8;QGR B 层;round4_forward_test.py(已建)",
         commit: "",
-        session_date: "",
-        notes: "blocked_by: AP3-001 owner 批准 + 前向数据摄取 owner-gated + look-once 第 5 次极慎。"
+        session_date: "2026-07-03",
+        notes: "🕒 ACCRUAL-GATED,今晚不可裁决。基础设施+候选已就绪:round4_forward_test.py(已建)测 git-冻结 ffc1db3(round-4 分析师修正,四轮最接近显著 SPA p=0.056);候选 2 = 纯反转 eq_5(可另 pre-register)。**现状 = ACCRUING**(round4_forward_status.json:test_end 20260612 后仅 4 td〔20260615-18〕,scoreable_periods=0,需 MIN_FORWARD_PERIODS=8 = 40+ 前向 td 才出暂定裁决,稳健确认要 ~20-40 期)。今 2026-07-03 距 test_end 仅 ~15 td=3 期<8。**verdict-ready ≈ 2026 年 8 月中**(需 owner-gated 摄取累积数据 + look-once 一次读)。blocked_by: 前向窗口累积 + owner-gated 数据摄取 + look-once 一次读授权。绝不烧 peek/不 ingest without owner。"
       },
       {
         id: "SR-001", phase: "SR/SIM 上线门(owner-gated)", status: "blocked", priority: "P0",
