@@ -1150,6 +1150,19 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         session_date: "2026-07-02",
         notes: "owner 2026-07-02「push」授权:f002031..af2c120(5 commit)已上 origin/main,本地与远端同步。后续 push 仍逐次 owner-gated(常态门,非一次性任务)。"
       },
+      {
+        id: "PK-005", phase: "PARKED 遗留承接", status: "blocked", priority: "P1",
+        title: "买卖点/仓位管理 agent harness(FABLE 5 计划书)",
+        summary: "选股成功后确定准确的建仓/加仓/减仓/清仓时机 + sizing 的 agent 系统级 harness;整合选股+买卖点→稳定盈利。owner 2026-07-03 要求新 FABLE 5 clean-context session 做调研+计划书。",
+        scope: "docs/handoff/buy-sell-timing-harness-fable5-kickoff-prompt-2026-07-03.md(kickoff prompt 已写)→ 未来 docs/research/(调研+计划书)→ 敲定后并入 plan.html 新 phase",
+        depends: "选股 alpha 敲定(DS 线 dev+holdout 出结论)",
+        acceptance: "FABLE 5 session 产出调研+计划书(过 codex ≥1 轮);计划书整合进 plan.html = 选股敲定后 owner gate。",
+        tests: "计划书审读;负结果(C1a/B1/B2/QGR-4)已正视 + 冻结引擎验证方案。",
+        sources: "owner 2026-07-03;kickoff prompt doc;feedback-owner-trading-principles P-A..P-E;C0b e2e_simulator 契约",
+        commit: "",
+        session_date: "2026-07-03",
+        notes: "🕒 时机门 = 选股 alpha 敲定之后(owner 明示:计划书『落入 plan.html 中量化策略敲定之后』)。kickoff prompt 已存档待用。核心纪律:别重蹈 C1a/B1/B2/QGR-4 择时 overlay 失败;timing 决策须冻结引擎验证非假设;执行机制 C0b 契约已冻不动;LLM 建议-only 决策确定性。"
+      },
     ];
 
     const phaseOrder = [...new Set(TASKS.map(t => t.phase))];
