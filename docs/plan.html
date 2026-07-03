@@ -513,8 +513,9 @@
     <section id="current">
       <h2>现状与自举(clean-context session 从这里开始)</h2>
       <p class="section-lead">
-        一句话:工程全冻结,唯一主线 = alpha-pivot(把 ≤5 槽选股 ranker 的风险调整 alpha 做强到能过四门,不放宽)。
-        本次活动 Phase = 最早一个含 <code>status="todo"</code> 的 Phase(FW/SR/SIM/PARKED 为 blocked,永不自动认领)。
+        一句话(2026-07-03 更新):alpha-pivot 复合线走完 —— AP-0.5 收益盲 power 判 <b>NO-GO</b>(SR_req 年化 2.67 ≫ K·SR_ref 0.62),owner 看 dev-screen 后判定<b>现有 alpha(反转/复合)不合格</b>(熊市亏 + 回撤 56%),
+        <b>令搜寻/设计低回撤防御性选股新候选</b>。<b>当前活动 Phase = DS 防御选股(D1→D4 依次测试)</b>,下一步 = <code>DS-D1 红利低波防御核心</code>。
+        AP-1/2/3(A4 复合晋级路)已 SUPERSEDED;FW look-once 前向已选定但 accrual-gated(~2026-08)。本次活动 Phase = 最早一个含 <code>status="todo"</code> 的 Phase。
       </p>
       <div class="callout">
         <b>阅读顺序(接手必读,按序):</b>
@@ -651,8 +652,9 @@
           <tr><td><b>AP-0.5</b></td><td>收益盲 power 前置(SR_req 反解 vs 2·SR_ref)</td><td>no-go → owner gate(预承诺:降纯诊断)</td><td>§4</td></tr>
           <tr><td><b>AP-1</b></td><td>panel 合并(分析师+质量列)+ PIT 五硬验收 + IC 披露(不改 spec)</td><td>门禁绿 + codex + leak_probe 全绿</td><td>§5</td></tr>
           <tr><td><b>AP-2</b></td><td>committed 复合 + 竞技场(A0-A4 × 双容器 + B1-B5 + 四门 + CPCV + 切片 + size-drift)</td><td>门禁绿 + codex + FAIL 报 FAIL</td><td>§6</td></tr>
-          <tr><td><b>AP-3</b></td><td>决策树落点 → owner 定向</td><td><b>owner gate</b></td><td>§7</td></tr>
-          <tr><td><b>FW</b></td><td>look-once 前向(ffc1db3 + AP 复合如批准,post-2026-06-12 处子数据)</td><td><b>owner gate</b>(blocked)</td><td>§8</td></tr>
+          <tr><td><b>AP-3</b></td><td>决策树落点 → owner 定向 <b>[SUPERSEDED 2026-07-03]</b></td><td>owner 已定向(no-go→pivot)</td><td>§7</td></tr>
+          <tr><td><b>DS</b> 🆕</td><td>防御选股候选(D1 红利低波 / D2 防御宇宙反转 / D3 彩票排除低波 / D4 质量安全防御价值)依次测试;owner 2026-07-03 令搜寻新候选(现有 alpha 熊市亏+回撤大不合格)</td><td>每候选 dev 表 → owner 判 → 幸存送 holdout</td><td>synthesis + D1-D4 doc</td></tr>
+          <tr><td><b>FW</b></td><td>look-once 前向(ffc1db3 处子 OOS,post-2026-06-12 数据累积中)</td><td><b>owner gate</b>(accrual-gated ~2026-08)</td><td>§8</td></tr>
           <tr><td><b>SR/SIM</b></td><td>45 日真管线 shadow → ¥1万执行可行性</td><td><b>owner gate</b>(blocked)</td><td>§8</td></tr>
           <tr><td><b>PARKED</b></td><td>价值线激活 / 主旋律 / hardening #10-13 / push backlog</td><td>全 blocked,owner 解锁</td><td>§9</td></tr>
         </tbody>
@@ -739,6 +741,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
       </div>
       <h3>修订记录</h3>
       <ul class="revision">
+        <li>2026-07-03 · <b>owner pivot → DS 防御选股线立项</b>:现有 alpha(反转/复合)dev-screen 熊市亏+回撤 56% 不合格 → owner 令搜寻新候选;两路调研收敛红利低波+彩票排除+质量安全;4 候选(D1-D4)独立存档 + synthesis;测试序 D1→D2→D3→D4;AP-1/2/3 SUPERSEDED(A4 四门 no-go 永不跑);活动 Phase 转 DS-D1。</li>
         <li>2026-07-03 · AP-0.5 power 前置:AP05-001 收益盲 power precheck(4ec0af1)判 <b>NO-GO</b>(SR_req 年化 2.67 vs K·SR_ref 0.62,gap 8.6×);AP05-002 owner gate 激活等定向;suite 704→714;AP-0 积压已 push(313e0ee..d77c0a0)。</li>
         <li>2026-07-02 · AP-0 phase full:AP0-001 spec 常量模块(707de2a,hash 469f8547b62d2452)+ AP0-002 账本预登记 2445/2417(443f48e);两任务均 docs/ledger gate 豁免 codex;suite 688→704;活动 Phase 推进至 AP-0.5。</li>
         <li>2026-07-02 · 彻底重构:旧 SSoT(33 phase 全 done)归档 <code>docs/archive/plan-legacy-2026-07-02.html</code>;新主线 = alpha-pivot(DOCS + AP-0..AP-3 + gated FW/SR/SIM + PARKED);codex 协议修正为现行 commit 前置门(2026-05-24 锁定);localStorage key 升 v2。</li>
@@ -757,6 +760,15 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
     // Session log — newest first. Each session start/end must write here.
     // Pre-2026-07-02 history: docs/archive/plan-legacy-2026-07-02.html
     const SESSION_LOG = [
+      {
+        date: "2026-07-03",
+        session: "#4 owner pivot → 防御选股 DS 线立项 + 4 候选存档",
+        owner: "Claude Opus 4.8 + owner",
+        state_in: "AP-0.5 NO-GO 后 owner 选 fork(a)look-once 前向(FW accrual-gated)。owner 追问『如何确定量化策略』→ 方法论讨论 → owner 提『老牛熊初筛+近期验证』框架;我用既有 frontier 展示纯反转 A0 家族 dev-screen(全配置熊市累计负+每股灾亏+MDD 56%,过不了 owner 两门)。",
+        actions: "owner 判定现有 alpha 不合格 → 令搜寻/设计新候选(目标=熊市/股灾不亏+回撤可控的防御选股,非择时)。两路并行 research agent(外部低波/BAB/QMJ/红利低波/彩票规避 provenance + 内部复用件/数据盘点)→ 收敛到红利低波+彩票排除+质量安全。owner 定测试序 D1→D2→D3→D4 + 令先各自独立存档。DS-000:synthesis doc + D1-D4 四候选 spec doc 落盘(docs-only)。AP-1/2/3 flip blocked(SUPERSEDED)。",
+        commit: "本 docs commit(DS-000 存档 + plan.html 立 DS 线)",
+        next: "DS-D1 红利低波防御核心:spec 冻结 + dev regime-stratified 回测(train_val 老牛熊,不碰近期)→ 中文结果表 owner 判 → 幸存送近期 holdout。代码任务需 codex 门 + beta 新因子。owner:present 结果我判,不替我选。",
+      },
       {
         date: "2026-07-03",
         session: "#3 AP-0.5 收益盲 power 前置(→ NO-GO owner gate)",
@@ -892,7 +904,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "✅ owner 定向已给(2026-07-03):选 fork (a) 重审 ≤5 前提 → 子方向选『look-once 前向裁决』(AskUserQuestion 记录)。逻辑:≤5 已被 frontier 证风控最优(松绑数据反驳);真绑定约束 = alpha 强度 + 2417 deflation 可能过罚 → 唯一裁决 = 处子前向(原则 #1)。**转入 FW-001**(accrual+ingest gated,见其 notes)。AP-2 四门仍不跑(no-go 不烧 promotion trial)。"
       },
       {
-        id: "AP1-001", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "todo", priority: "P0",
+        id: "AP1-001", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "blocked", priority: "P0",
         title: "QGR panel 合并分析师 + 质量列",
         summary: "build_qgr_panel 新增 np_rev/rev_diff/cover_chg(AnalystRevisionPIT,report_date&lt;d)+ roe/gpm/ep_ttm/accr(FundamentalsPIT.asof,ann_date&lt;d vintage;accr=Sloan);防火墙 train_val 不变。",
         scope: "scripts/factor_research/build_qgr_panel.py + tests/factor_research/test_build_qgr_panel.py(扩展)",
@@ -902,10 +914,10 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         sources: "施工图 §5;spec outline §6.1",
         commit: "",
         session_date: "",
-        notes: "report_rc 范围分页坑已在 R4 处理;禁重下数据,只读既有 PIT 存档。"
+        notes: "⚠️ [SUPERSEDED 2026-07-03] AP-1/2/3(A4 复合晋级路)被 owner pivot 超越:AP-0.5 no-go→现有 alpha 不合格→防御选股 DS 线;A4 复合四门永不跑(no-go 预承诺不烧 promotion trial)。原 notes:report_rc 范围分页坑已在 R4 处理;禁重下数据,只读既有 PIT 存档。"
       },
       {
-        id: "AP1-002", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "todo", priority: "P0",
+        id: "AP1-002", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "blocked", priority: "P0",
         title: "PIT 五硬验收测试(红线级)",
         summary: "① 未来 report_date/ann_date 闸 ② EOD close 特征只 T+1 执行 ③ ep/accr vintage PIT 不混 vendor 当日重述 ④ 复权因子 as-of pin ⑤ leak_probe 对新增列全绿。",
         scope: "tests/factor_research/test_alpha_pivot_pit.py",
@@ -918,7 +930,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "全绿是 AP-2 前置条件。"
       },
       {
-        id: "AP1-003", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "todo", priority: "P1",
+        id: "AP1-003", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "blocked", priority: "P1",
         title: "IC 披露 runner(纯披露,不改 spec)",
         summary: "28 预登记诊断(分析师 3 + 质量 4 因子 × horizons 1/5/10/20td),size+行业中性删30% IC/ICIR/t + 先验符号兑现表 + vs 反转簇共线披露。",
         scope: "scripts/factor_research/alpha_pivot_ic_disclosure.py + tests + docs/research/alpha-pivot-ic-disclosure-*.md",
@@ -931,7 +943,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "IC t = 乐观 screen 非裁决(round-1..4 全有强 IC 却三次 test FAIL)。"
       },
       {
-        id: "AP2-001", phase: "AP-2 committed 复合 + 竞技场四门", status: "todo", priority: "P0",
+        id: "AP2-001", phase: "AP-2 committed 复合 + 竞技场四门", status: "blocked", priority: "P0",
         title: "committed 复合 assembler",
         summary: "先验符号对齐 → 截面 z-score(中性化后)→ 块内等权 → 块间 0.5/0.25/0.25 → PanelScoreProvider;缺失值规则 committed(块内重归一/整块缺失按剩余块比例重分)。",
         scope: "scripts/factor_research/alpha_pivot_composite.py + tests/factor_research/test_alpha_pivot_composite.py",
@@ -944,7 +956,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: ""
       },
       {
-        id: "AP2-002", phase: "AP-2 committed 复合 + 竞技场四门", status: "todo", priority: "P0",
+        id: "AP2-002", phase: "AP-2 committed 复合 + 竞技场四门", status: "blocked", priority: "P0",
         title: "竞技场 runner(A0-A4 × 双容器 + 四门)",
         summary: "臂 A0 纯反转 / A1 +过滤 / A2 +质量 / A3 +分析师 / A4 全复合,eq_5 与 buf40_5 各一套只同容器比;B1-B5 baseline 匹配;四门(DSR-HAC N≈2417 / PBO / SPA / RW)+ CPCV(purge+embargo≥4)+ 6 股灾切片 + size-drift 暴露回归。",
         scope: "scripts/factor_research/alpha_pivot_arena.py + tests/factor_research/test_alpha_pivot_arena.py",
@@ -957,7 +969,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "引擎全留:run_gate_backtest 冻结引擎 + 真摩擦 + T+1 + 涨跌停不可成交。"
       },
       {
-        id: "AP2-003", phase: "AP-2 committed 复合 + 竞技场四门", status: "todo", priority: "P0",
+        id: "AP2-003", phase: "AP-2 committed 复合 + 竞技场四门", status: "blocked", priority: "P0",
         title: "全窗跑 + 结果 doc(诚实分级 + 决策树落点)",
         summary: "全窗真实跑(~40-50min/容器组)+ 结果 doc:每臂×容器净盈/MDD/DSR/四门 + attribution 表 + 切片 + size-drift 回归 + ✅/🟡/🔴 分级 + §7 决策树落点。",
         scope: "data/factor_research/alpha_pivot_arena_result.json + docs/research/alpha-pivot-arena-results-*.md",
@@ -970,7 +982,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "必须 nohup setsid $PY -u -m scripts.factor_research.alpha_pivot_arena --out … &gt; logs/alpha_pivot_arena.log 2&gt;&amp;1 &lt; /dev/null &amp;(harness 后台 bash turn 边界被杀)+ structlog WARNING + Monitor 轮询。"
       },
       {
-        id: "AP3-001", phase: "AP-3 owner 决策门", status: "todo", priority: "P0",
+        id: "AP3-001", phase: "AP-3 owner 决策门", status: "blocked", priority: "P0",
         title: "决策树落点 → owner 定向",
         summary: "按 §7 预承诺分支报 owner:过门 → 冻结 + look-once 提案;provisional → 冻结等前向(决策 #4);size-drift/不胜 A0 → FAIL 报 FAIL + fork 选项。",
         scope: "SESSION_LOG(+ 如改边界:docs/decisions/*-amendment-*.md)",
@@ -981,6 +993,71 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         commit: "",
         session_date: "",
         notes: "绝不为过门移球门/调权重凑 DSR(= round-4 死法)。"
+      },
+      {
+        id: "DS-000", phase: "DS 防御选股候选(D1→D4 顺序)", status: "done", priority: "P0",
+        title: "防御选股调研综合 + 4 候选独立存档",
+        summary: "两路并行调研(外部文献 provenance + 内部复用件/数据盘点)综合;4 候选(红利低波 D1 / 防御宇宙反转 D2 / 彩票排除低波 D3 / 质量安全防御价值 D4)各独立存档为 committed 设计 spec(先验符号评测前定)。",
+        scope: "docs/research/defensive-selection-research-synthesis-2026-07-03.md + defensive-candidate-D{1,2,3,4}-*-2026-07-03.md",
+        depends: "无(owner 2026-07-03 令搜寻/设计新候选)",
+        acceptance: "5 doc 落盘;每候选含因子+committed 先验符号+排除阈值+horizon+数据(今天可建)+机制+provenance+dev 测试协议+诚实预期。",
+        tests: "文档审读;provenance 可溯源。",
+        sources: "两路 research agent(外部文献+内部盘点);synthesis §1-§6",
+        commit: "",
+        session_date: "2026-07-03",
+        notes: "调研收敛:方向未探索且有据(旧 C1a/B1/B2/QGR-4 全是择时 overlay,防御选股空白);红利低波内外独立佐证;全部今天可建无需摄取(唯一新代码=beta 滚动回归)。5 日下防御因子=宇宙过滤器非择时器(吻合 QGR-3 ⑧)。docs-only 豁免 codex。"
+      },
+      {
+        id: "DS-D1", phase: "DS 防御选股候选(D1→D4 顺序)", status: "todo", priority: "P0",
+        title: "D1 红利低波防御核心 — spec 冻结 + dev 回测",
+        summary: "低波+可持续高股息+质量安全纯防御选股(horizon 20d);spec 模块 hash 冻结 → dev regime-stratified 回测(train_val 老牛熊,不碰近期)→ 中文结果表 owner 判。",
+        scope: "scripts/factor_research/defensive_D1_*.py + tests + docs/research/(结果 doc)",
+        depends: "DS-000",
+        acceptance: "spec 先验 hash;dev 表含牛/熊/震荡+6 股灾切片净盈/MDD;熊市非负+股灾不崩为判据;size 中性化删30%;账本 append kind=ablation;placebo 消融。",
+        tests: "$PY -m pytest tests/factor_research/test_defensive_D1_*.py -q + 全窗 nohup setsid",
+        sources: "defensive-candidate-D1-*.md;synthesis §3/§4;slot_frontier/gate_backtest 模板",
+        commit: "",
+        session_date: "",
+        notes: "代码任务需 codex 前置门。beta/tail-beta 需写新因子。owner:present 结果我判,不替我选。"
+      },
+      {
+        id: "DS-D2", phase: "DS 防御选股候选(D1→D4 顺序)", status: "blocked", priority: "P0",
+        title: "D2 防御宇宙上的反转 — spec 冻结 + dev 回测",
+        summary: "保留已验证 5 日反转 ranker,但宇宙限到防御过滤集(低波+非彩票+股息/质量门);对照 A0 全宇宙反转,隔离宇宙过滤对熊市亏损的因果。",
+        scope: "scripts/factor_research/defensive_D2_*.py + tests + docs/research/(结果 doc)",
+        depends: "DS-D1",
+        acceptance: "反转 ranker 与 A0 字节一致;仅宇宙过滤差异;熊市累计 vs A0(−0.22)改善为判据;同宇宙 placebo 消融。",
+        tests: "$PY -m pytest tests/factor_research/test_defensive_D2_*.py -q + 全窗",
+        sources: "defensive-candidate-D2-*.md",
+        commit: "",
+        session_date: "",
+        notes: "blocked_by: DS-D1 测完 + owner 判。依次测试(owner 2026-07-03)。无新因子(仅过滤门)。"
+      },
+      {
+        id: "DS-D3", phase: "DS 防御选股候选(D1→D4 顺序)", status: "blocked", priority: "P1",
+        title: "D3 彩票排除+低波 — spec 冻结 + dev 回测",
+        summary: "硬排除高 MAX/高 IVOL/彩票名(A股最特异防御边)+ 低波倾斜;最小设计,可作宇宙过滤器叠加 D1/D2。",
+        scope: "scripts/factor_research/defensive_D3_*.py + tests + docs/research/(结果 doc)",
+        depends: "DS-D2",
+        acceptance: "股灾切片左尾显著收窄为判据;随机剔等量名 placebo 消融;一期 raw max/total-vol 近似 RMAX/IVOL 须披露。",
+        tests: "$PY -m pytest tests/factor_research/test_defensive_D3_*.py -q + 全窗",
+        sources: "defensive-candidate-D3-*.md",
+        commit: "",
+        session_date: "",
+        notes: "blocked_by: DS-D2 测完 + owner 判。RMAX/IVOL 精确版需新代码。"
+      },
+      {
+        id: "DS-D4", phase: "DS 防御选股候选(D1→D4 顺序)", status: "blocked", priority: "P1",
+        title: "D4 质量安全防御价值(F-score 门) — spec 冻结 + dev 回测",
+        summary: "便宜(低 PE/PB/高息)∧ 高 F-score/质量安全,避价值陷阱(horizon 20d);对照纯便宜隔离 F-score 门作用。",
+        scope: "scripts/factor_research/defensive_D4_*.py + tests + docs/research/(结果 doc)",
+        depends: "DS-D3",
+        acceptance: "F-score 门 vs 纯便宜改善回撤为判据;placebo 消融;一期 4 点近似 F-score 须披露。D1-D4 全 FAIL → 上报 owner。",
+        tests: "$PY -m pytest tests/factor_research/test_defensive_D4_*.py -q + 全窗",
+        sources: "defensive-candidate-D4-*.md",
+        commit: "",
+        session_date: "",
+        notes: "blocked_by: DS-D3 测完 + owner 判。F-score 派生需新代码。"
       },
       {
         id: "FW-001", phase: "FW look-once 前向(owner-gated)", status: "blocked", priority: "P0",
