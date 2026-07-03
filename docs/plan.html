@@ -741,6 +741,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
       </div>
       <h3>修订记录</h3>
       <ul class="revision">
+        <li>2026-07-03 · <b>session #5</b>:买卖点/仓位 harness 计划书(调研+草案落 docs/research/,codex-oracle 2 轮红队,gated 等 alpha 锁定,c5ce177 本地)+ <b>DS-D1 基础</b>(defensive_d1_spec 冻结 hash 883640b2 + beta_factor 新因子,codex R1 无 P0+4 findings 修,714→741 passed,1557609 本地);DS-D1 剩 panel+ablation+回测+结果表。</li>
         <li>2026-07-03 · <b>owner pivot → DS 防御选股线立项</b>:现有 alpha(反转/复合)dev-screen 熊市亏+回撤 56% 不合格 → owner 令搜寻新候选;两路调研收敛红利低波+彩票排除+质量安全;4 候选(D1-D4)独立存档 + synthesis;测试序 D1→D2→D3→D4;AP-1/2/3 SUPERSEDED(A4 四门 no-go 永不跑);活动 Phase 转 DS-D1。</li>
         <li>2026-07-03 · AP-0.5 power 前置:AP05-001 收益盲 power precheck(4ec0af1)判 <b>NO-GO</b>(SR_req 年化 2.67 vs K·SR_ref 0.62,gap 8.6×);AP05-002 owner gate 激活等定向;suite 704→714;AP-0 积压已 push(313e0ee..d77c0a0)。</li>
         <li>2026-07-02 · AP-0 phase full:AP0-001 spec 常量模块(707de2a,hash 469f8547b62d2452)+ AP0-002 账本预登记 2445/2417(443f48e);两任务均 docs/ledger gate 豁免 codex;suite 688→704;活动 Phase 推进至 AP-0.5。</li>
@@ -760,6 +761,15 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
     // Session log — newest first. Each session start/end must write here.
     // Pre-2026-07-02 history: docs/archive/plan-legacy-2026-07-02.html
     const SESSION_LOG = [
+      {
+        date: "2026-07-03",
+        session: "#5 买卖点 harness 计划书(R1+R2)+ DS-D1 基础(spec+beta 因子)",
+        owner: "Claude Opus 4.8 + owner",
+        state_in: "owner 令按 handoff 做买卖点/仓位管理 harness 调研+计划书;完成后 owner 令『推进当前主线 DS-D1』。",
+        actions: "① 买卖点/仓位 harness:4 路并行文献 agent(sizing/entry/exit/reuse)→ 调研 doc + 计划书草案落 docs/research/(codex-oracle 红队 2 轮:R1 7 findings 全处置 + R2 verify 挖出更深结构墙 NEW-P0-A〔decide_day rotation-only 表达不了常驻目标权重簿=B1/B2 同墙〕全处置);gated 等选股 alpha 锁定,不并入 plan.html;commit c5ce177(本地)。核心=sizing(现金 buffer,属容器层非 harness 贡献)承重、timing overlay 陷阱、P-B 改事件驱动异质安全退出(Kaminski-Lo)。② DS-D1 基础:defensive_d1_spec.py(冻结 spec_hash=883640b2)+ beta_factor.py 新因子,codex R1 无 P0+4 findings 修,27 新测 714→741 passed,commit 1557609(本地)。",
+        commit: "c5ce177(harness)+ 1557609(DS-D1 基础)+ 本 docs commit(均本地,push 待 owner)",
+        next: "DS-D1 剩余(见 DS-D1 notes):panel builder + 块加权 ablation + 全窗回测 ~40-50min + 中文结果表 → owner 判。买卖点 harness 计划书 park 等 alpha 锁定 + owner 批 Q1-Q4。push 积压待 owner 授权。",
+      },
       {
         date: "2026-07-03",
         session: "#4 owner pivot → 防御选股 DS 线立项 + 4 候选存档",
@@ -1008,7 +1018,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "调研收敛:方向未探索且有据(旧 C1a/B1/B2/QGR-4 全是择时 overlay,防御选股空白);红利低波内外独立佐证;全部今天可建无需摄取(唯一新代码=beta 滚动回归)。5 日下防御因子=宇宙过滤器非择时器(吻合 QGR-3 ⑧)。docs-only 豁免 codex。"
       },
       {
-        id: "DS-D1", phase: "DS 防御选股候选(D1→D4 顺序)", status: "todo", priority: "P0",
+        id: "DS-D1", phase: "DS 防御选股候选(D1→D4 顺序)", status: "doing", priority: "P0",
         title: "D1 红利低波防御核心 — spec 冻结 + dev 回测",
         summary: "低波+可持续高股息+质量安全纯防御选股(horizon 20d);spec 模块 hash 冻结 → dev regime-stratified 回测(train_val 老牛熊,不碰近期)→ 中文结果表 owner 判。",
         scope: "scripts/factor_research/defensive_D1_*.py + tests + docs/research/(结果 doc)",
@@ -1016,9 +1026,9 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         acceptance: "spec 先验 hash;dev 表含牛/熊/震荡+6 股灾切片净盈/MDD;熊市非负+股灾不崩为判据;size 中性化删30%;账本 append kind=ablation;placebo 消融。",
         tests: "$PY -m pytest tests/factor_research/test_defensive_D1_*.py -q + 全窗 nohup setsid",
         sources: "defensive-candidate-D1-*.md;synthesis §3/§4;slot_frontier/gate_backtest 模板",
-        commit: "",
-        session_date: "",
-        notes: "代码任务需 codex 前置门。beta/tail-beta 需写新因子。owner:present 结果我判,不替我选。"
+        commit: "1557609(foundation;完整 done 待 panel+ablation+backtest+results)",
+        session_date: "2026-07-03",
+        notes: "进行中(session #5,Opus 4.8):✅ 基础已落 commit 1557609 —— defensive_d1_spec.py(冻结先验 spec_hash=883640b2,7 因子/4 块 0.35/0.35/0.20/0.10,评测前定死)+ beta_factor.py(新 beta/tail-beta 滚动 OLS vs CSI300,PIT-clean fail-closed);codex read-only R1 无 P0、4 findings 全修(spec_hash 绑定 beta 定义/var epsilon/current-close 守卫/container 锚 scientific-only);27 新测,factor_research 714→741 passed,ruff+mypy+redline 绿。⏭️ 剩余(下一 session):① defensive_d1_panel.py(仿 build_factor_panel/build_qgr_panel 读 PIT 存档→逐 reb 日算 7 因子+industry_l1+log_circ_mv+beta〔用 fund_daily 510300.SH 市场序列〕→ 排除门〔max_20d 顶10%/质量地板 ROE≤0+GPM 底10%/红利分位≥中位/四件套/涨跌停/删最小30%〕→ panel CSV)② defensive_d1_ablation.py(仿 defensive_sleeve_ablation/slot_frontier+arena_ablation:firewall+neutralize〔industry+log_size 删30%〕+**块加权 z-blend ranker**〔非 xv 等权,按 spec BLOCK_WEIGHTS〕→ PanelScoreProvider→run_gate_backtest horizon=20 × eq_5/buf40_5 × regime 分层 × 6 股灾切片 × deflated_sharpe_hac〔账本 append kind=ablation〕× SPA/RW × placebo〔size-matched random 低波 + 纯反转 A0 baseline〕)③ 全窗 nohup setsid 回测 ~40-50min ④ 中文结果表 doc→owner 判。owner:present 结果我判,不替我选。"
       },
       {
         id: "DS-D2", phase: "DS 防御选股候选(D1→D4 顺序)", status: "blocked", priority: "P0",
