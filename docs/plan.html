@@ -739,6 +739,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
       </div>
       <h3>修订记录</h3>
       <ul class="revision">
+        <li>2026-07-03 · AP-0.5 power 前置:AP05-001 收益盲 power precheck(4ec0af1)判 <b>NO-GO</b>(SR_req 年化 2.67 vs K·SR_ref 0.62,gap 8.6×);AP05-002 owner gate 激活等定向;suite 704→714;AP-0 积压已 push(313e0ee..d77c0a0)。</li>
         <li>2026-07-02 · AP-0 phase full:AP0-001 spec 常量模块(707de2a,hash 469f8547b62d2452)+ AP0-002 账本预登记 2445/2417(443f48e);两任务均 docs/ledger gate 豁免 codex;suite 688→704;活动 Phase 推进至 AP-0.5。</li>
         <li>2026-07-02 · 彻底重构:旧 SSoT(33 phase 全 done)归档 <code>docs/archive/plan-legacy-2026-07-02.html</code>;新主线 = alpha-pivot(DOCS + AP-0..AP-3 + gated FW/SR/SIM + PARKED);codex 协议修正为现行 commit 前置门(2026-05-24 锁定);localStorage key 升 v2。</li>
       </ul>
@@ -756,6 +757,15 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
     // Session log — newest first. Each session start/end must write here.
     // Pre-2026-07-02 history: docs/archive/plan-legacy-2026-07-02.html
     const SESSION_LOG = [
+      {
+        date: "2026-07-03",
+        session: "#3 AP-0.5 收益盲 power 前置(→ NO-GO owner gate)",
+        owner: "Claude Opus 4.8 + owner",
+        state_in: "AP-0 全 done 且已 push;owner『push and go on』授权继续。活动 Phase = AP-0.5(AP05-001 todo,代码任务需 codex 门;AP05-002 no-go 时才激活)。",
+        actions: "先 push AP-0 积压(313e0ee..d77c0a0)。AP05-001 alpha_pivot_power_precheck.py(收益盲:无 backtest/bar_source/panel import;Bailey–LdP DSR 反解 + HAC 保守上界 3.40 闭式 + SR_ref 反解 eq_5 已披露 DSR)+ 10 hermetic 测试 + 结果 doc + JSON;codex review --uncommitted 1 轮抓 1 P1(测试依赖 gitignored artifact)→ 改 tmp_path fixture 修复。commit 4ec0af1。suite 688→714。**判据 = NO-GO**(SR_req 年化 2.67 vs K·SR_ref 0.62,gap 8.6×,稳健)。",
+        commit: "4ec0af1 + 本 docs commit",
+        next: "🔔 AP05-002 owner gate(no-go 已激活):owner 定向 fork —(a) 重审 ≤5 前提 /(b) 认可降纯诊断只做 attribution IC 披露+相对纯反转 SPA(AP-1 panel 合并,不申报四门)/(c) 其他。证据在 power-precheck doc §6。**不自动越门跑 AP-2 四门**。AP05-001 commit 4ec0af1 + 本 docs 待 owner push。",
+      },
       {
         date: "2026-07-02",
         session: "#2 AP-0 预声明 fixed prior spec(full phase)",
@@ -856,7 +866,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "已登记:base 2412/2387 → nominal 2445 / effective 2417(= A4 deflation N),spec=469f8547b62d2452。可复现 runner(读 spec_hash 单一真相源)幂等 content-addressed;ledger jsonl 在 gitignored data/(同 frontier 历史 append),tracked 源=runner+test;4 tmp-ledger 测试,suite 700→704。TrialRecord 无独立 hash 字段 → 嵌 description。"
       },
       {
-        id: "AP05-001", phase: "AP-0.5 收益盲 power 前置", status: "todo", priority: "P0",
+        id: "AP05-001", phase: "AP-0.5 收益盲 power 前置", status: "done", priority: "P0",
         title: "power 前置:SR_req 反解 + go/no-go",
         summary: "Bailey–LdP DSR 反解过门所需 period-SR(N=2417,T=onc_effective_n≈497,normal 矩,HAC lag=4 保守上界);SR_ref = frontier 已披露纯反转 eq_5 SR(零新 peek);go iff SR_req ≤ 2·SR_ref。",
         scope: "scripts/factor_research/alpha_pivot_power_precheck.py + tests/factor_research/test_alpha_pivot_power_precheck.py + data/factor_research/alpha_pivot_power.json + docs/research/alpha-pivot-power-precheck-*.md",
@@ -864,9 +874,9 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         acceptance: "零收益读取(不 import panel/backtest/bar_source,grep 验证);JSON 输出 SR0/SR_req/SR_ref/K/go + 全输入 echo;零新 trial 债。",
         tests: "$PY -m pytest tests/factor_research/test_alpha_pivot_power_precheck.py -q(闭式 fixture + SR_req 对 N 单调增/对 T 单调减)",
         sources: "施工图 §4;spec outline §5.0;honest_gates.deflated_sharpe_hac",
-        commit: "",
-        session_date: "",
-        notes: "省债关键:先判过门数学可达性再决定是否花 promotion trial。"
+        commit: "4ec0af1",
+        session_date: "2026-07-03",
+        notes: "判据 = NO-GO:SR_req 年化 2.67(过 DSR≥0.95 所需)vs K·SR_ref 年化 0.62(纯反转 eq_5 边 2×)→ gap 8.6×。稳健(HAC=1.0 最松仍 5.4× no-go)。收益盲(grep 验:无 backtest/bar_source/panel import)+ HAC 保守上界 3.40 闭式 + SR_ref 反解 eq_5 已披露 DSR(零 peek)。10 hermetic 测试;codex 1 轮 1 P1 修(测试改 tmp_path fixture 去 gitignored 依赖);suite 704→714。坐实绑定约束=alpha 质量非容器。→ AP05-002 owner gate。"
       },
       {
         id: "AP05-002", phase: "AP-0.5 收益盲 power 前置", status: "blocked", priority: "P0",
@@ -878,8 +888,8 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         tests: "—",
         sources: "owner 决策 #3(2026-07-02)",
         commit: "",
-        session_date: "",
-        notes: "blocked_by: AP05-001 结果为 no-go 时才激活;go 则跳过本任务。"
+        session_date: "2026-07-03",
+        notes: "🔔 已激活:AP05-001 判 NO-GO(2026-07-03)。数据证据已整理于 docs/research/alpha-pivot-power-precheck-2026-07-03.md §6(收益盲硬数学:≤5+2417 债下无路径把年化 Sharpe 0.3→2.7)。blocked_by: owner 定向 —— fork:(a) 重审 ≤5 闸门前提 /(b) 认可降纯诊断只做 attribution IC 披露+相对纯反转 SPA(需 AP-1 panel 合并,不申报四门)/(c) 其他。**越门直接跑 AP-2 四门 = 违规**(no-go 预承诺不烧 promotion trial)。"
       },
       {
         id: "AP1-001", phase: "AP-1 panel 合并 + PIT + IC 披露", status: "todo", priority: "P0",
