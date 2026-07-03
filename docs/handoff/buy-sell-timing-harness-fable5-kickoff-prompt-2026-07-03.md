@@ -73,3 +73,23 @@
 调研 doc + 计划书 doc 落 `docs/research/`;计划书过 codex ≥1 轮;末尾一句话指下一步 + 在 SESSION_LOG(若已并入 plan.html)或 handoff 记录 owner 待决点。**记住:本 session 只调研 + 写计划书,不写实现代码;计划书整合进 plan.html 的时机 = 选股 alpha 敲定之后(owner gate)。**
 
 ====================================================================
+
+---
+
+## ✅ 本 session 产出记录(2026-07-03,Claude Opus 4.8 执行)
+
+> owner「按 prompt 开展工作」。**时机门确认**:选股线仍在 DS 防御选股(D1→D4 未开跑,alpha **未锁定**)→ 严格按 kickoff **只产调研 + 计划书草案,不并入 plan.html、不写实现代码**。
+
+**两份交付(docs/research/)**:
+1. **调研** `buy-sell-timing-position-management-research-2026-07-03.md` —— 四域文献综合(sizing/entry/exit/reuse)+ 四刀负结果对账 + 复用面 + 诚实分级。核心锚:Cederburg(2020 JFE,vol-managed OOS 崩)/ Zakamulin(2017)/ Han-Yang-Zhou(2013 JFQA,择时 alpha 仅高波名)/ **Kaminski-Lo(2014,止损定理:均值回复净有害、永久减值加值最大)**。
+2. **计划书草案** `buy-sell-timing-harness-implementation-plan-2026-07-03.md` —— 问题分解 + agent 系统级架构 + 与选股线整合 + 验证方案 + 分 phase(BT-0..7 + gated FW'/SIM')+ 决策树 + owner 待决。**过 codex-oracle 红队 2 轮(R1 7 findings 全处置 §8.1;R2 verify 复核 6/7 闭合 + 挖出更深结构墙 NEW-P0-A/P1-B/P2-C 全处置 §8.2 = 2 轮收敛)**。
+
+**核心结论(R2 后诚实收窄)**:载重杠杆 = **现金 buffer**——但 codex R2 澄清它属**容器层、slot_frontier 已证 DSR-invariant、本就来自 DS 线 buf40_5/buf60_5,非 harness 新贡献**;harness 唯一新 sizing 贡献 = conf60 置信集中,而**冻结引擎 rotation-only 结构上表达不了常驻目标权重簿**(=B1/B2 同墙,现于 sizing 侧)→ conf60 高成本、低 P(success)。timing overlay 是已证陷阱(默认 OFF 须胜 placebo)。P-B 止损从「固定 −12% 价格」改「事件驱动异质安全退出」(Kaminski-Lo + 我们 −431k 双证)。
+
+**⏸ owner 待决点(2026-07-03 AskUserQuestion 发出,owner away 未答;下方 = Claude 推荐,R2 后更新)**:
+- **Q1** P-E 置信集中如何上引擎 → **R2 后推荐下调:倾向冻结引擎原生容器(eq_5/buf40_5/buf60_5 暴露匹配)探暴露/集中 + 真·P-E 常驻 60% 作 live RiskEngine amendment**;若仍研究侧验 conf60,须先 BT-0 裁定读法 A(可 byte-exact 但非 P-E)vs B(实现 P-E 但重建+放弃锚)。
+- **Q2** harness 范围 → 推荐 **A Sizing-first 分层**。
+- **Q3** P-B 止损口径 → 推荐 **A 事件驱动异质安全退出**(+ 宽 ATR profit-ratchet 作独立 gated 实验)。
+- **Q4**(codex 新增)置信集中上限 X% **of total** → 待 owner 拍(P-E 三约束数学互斥,60%-of-total+40%现金+≤5 名仅 1 名时自洽)。
+
+**⏭️ 下一步(一句话)**:本计划书草案 park 等**选股 alpha 敲定**(DS D1→D4 dev + 近期 holdout 出结论);其后 owner 批 Q1-Q4 → 仿 DS phase 把 BT-0..7 并入 `docs/plan.html` 实施。**docs 已本地 commit,push 待 owner 授权。**
