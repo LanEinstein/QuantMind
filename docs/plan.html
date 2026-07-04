@@ -513,9 +513,9 @@
     <section id="current">
       <h2>现状与自举(clean-context session 从这里开始)</h2>
       <p class="section-lead">
-        一句话(2026-07-03 更新):alpha-pivot 复合线走完 —— AP-0.5 收益盲 power 判 <b>NO-GO</b>(SR_req 年化 2.67 ≫ K·SR_ref 0.62),owner 看 dev-screen 后判定<b>现有 alpha(反转/复合)不合格</b>(熊市亏 + 回撤 56%),
-        <b>令搜寻/设计低回撤防御性选股新候选</b>。<b>当前活动 Phase = DS 防御选股(D1→D4 依次测试)</b>,下一步 = <code>DS-D1 红利低波防御核心</code>。
-        AP-1/2/3(A4 复合晋级路)已 SUPERSEDED;FW look-once 前向已选定但 accrual-gated(~2026-08)。本次活动 Phase = 最早一个含 <code>status="todo"</code> 的 Phase。
+        一句话(2026-07-04 更新):DS-D1 dev 回测 <b>FAIL 报 FAIL</b>(排名输同宇宙随机 placebo;正面 partial = 防御宇宙过滤 + 现金 buffer 控回撤,buf40_5 MDD 14.78%)→ Fable 5 战略裁决已交
+        <code>docs/handoff/fable5-strategic-assessment-2026-07-04.md</code>:<b>DSR≥0.95 样本内认证 = 算术性永久不可达(候选无关)</b>;对策 = sleeve 地基 + 排名层由 <b>D2 重定性一刀裁决</b>(选拔制 placebo 判据 + 补 A0-vs-random 臂 + 预注册三分支)+ 认证全移前向。
+        <b>等 owner 拍三决定(assessment §5,优先级 ①判据架构 amendment &gt; ③D2 授权 &gt; ②产品分层)</b>;批 ③ 即开工 <code>DS-D2</code>(已 todo);D3/D4 默认跳过待 owner 确认。AP-1/2/3 已 SUPERSEDED;FW look-once accrual-gated(~2026-08,弹药留给 sleeve/D2 胜者)。
       </p>
       <div class="callout">
         <b>阅读顺序(接手必读,按序):</b>
@@ -741,6 +741,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
       </div>
       <h3>修订记录</h3>
       <ul class="revision">
+        <li>2026-07-04 · <b>session #6(Fable 5,docs-only)</b>:应答 owner handoff → 战略裁决 <code>docs/handoff/fable5-strategic-assessment-2026-07-04.md</code>:<b>DSR≥0.95 样本内认证 = 算术性永久不可达(候选无关,AP-0.5 SR_req 2.67 适用于全部剩余候选)</b>;对策 = sleeve 地基(防御宇宙+现金 buffer,承重=风险性质)+ 排名层由 D2 重定性一刀裁决(选拔制 placebo 判据 + 补 A0-vs-random 证据洞臂 + 预注册三分支)+ 认证全移前向(预注册零债 + kill-switch 存活认证);D3/D4 默认跳过,test#5/FW-on-ffc1db3 不烧。等 owner 拍三决定(§5,优先级 1&gt;3&gt;2)。四门不放宽/账本不清零维持。</li>
         <li>2026-07-04 · <b>session #5 续</b>:<b>DS-D1 全 done = FAIL 报 FAIL</b>(panel+ranker+ablation c6a9d9d;全窗回测 rankable 2017-2025〔accr 限制,2015/2016 空缺〕;D1 排名输同宇宙随机 placebo t−0.98/−0.85 + DSR≪0.95 + 2018/2022 股灾负;正面 partial=防御宇宙+现金 buffer 控回撤 buf40_5 MDD14.78%;结果 doc defensive-d1-results-2026-07-04.md;账本 2417→2418;suite→762)。DS-D2 unblock todo,待 owner 定向。</li>
         <li>2026-07-03 · <b>session #5</b>:买卖点/仓位 harness 计划书(调研+草案落 docs/research/,codex-oracle 2 轮红队,gated 等 alpha 锁定,c5ce177 本地)+ <b>DS-D1 基础</b>(defensive_d1_spec 冻结 hash 883640b2 + beta_factor 新因子,codex R1 无 P0+4 findings 修,714→741 passed,1557609 本地);DS-D1 剩 panel+ablation+回测+结果表。</li>
         <li>2026-07-03 · <b>owner pivot → DS 防御选股线立项</b>:现有 alpha(反转/复合)dev-screen 熊市亏+回撤 56% 不合格 → owner 令搜寻新候选;两路调研收敛红利低波+彩票排除+质量安全;4 候选(D1-D4)独立存档 + synthesis;测试序 D1→D2→D3→D4;AP-1/2/3 SUPERSEDED(A4 四门 no-go 永不跑);活动 Phase 转 DS-D1。</li>
@@ -762,6 +763,15 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
     // Session log — newest first. Each session start/end must write here.
     // Pre-2026-07-02 history: docs/archive/plan-legacy-2026-07-02.html
     const SESSION_LOG = [
+      {
+        date: "2026-07-04",
+        session: "#6 Fable 5 战略判断(handoff 应答,docs-only)",
+        owner: "Claude Fable 5 + owner",
+        state_in: "owner 备 handoff `research-situation-and-next-move-2026-07-04.md` 请 Fable 5 干净上下文判「下一步方向」(§5 Q1:DSR≥0.95 从未被满足,目标是否可达;明示别急着实施)。DS-D1 FAIL 已落账,DS-D2 todo 待定向。",
+        actions: "读齐证据链(D1 结果 / slot frontier / AP-0.5 power precheck / D2 spec)后交战略裁决 `docs/handoff/fable5-strategic-assessment-2026-07-04.md`:① **Q1 = 不可达(算术性、永久、候选无关)**——AP-0.5 的 SR_req(年化 2.67,最松 1.66)只依赖 N/T/矩,对 D2/D3/D4/分析师动量全体适用;压到可及需 ~70–185 年数据而 N 只增;≤5 长-only 书 Sharpe 天花板 ~0.5–0.8 ≪ 2.67 → 「找可过四门排名 alpha」目标应正式关闭(不可认证 ≠ 不存在)。② **前向 95% 认证同样不可行**(t≈SR·√yrs:SR0.62 需 ~7 年)→ 关键不对称 = 风险性质(暴露/MDD∝gross,机械)数月可验,收益均值需数十年 → 承重主张应放风险层。③ **对策 = 三层**:sleeve 地基(防御宇宙过滤+现金 buffer,判据=绝对净盈+熊市不亏+机械 MDD 上界+前向)/ 排名层可选非承重由 D2 一刀裁决(重定性=选拔制 placebo 判据,预声明 DSR 必 FAIL 照报;**补证据洞:A0 纯反转从未在书层过随机 placebo 检验**,D2 ablation 须含 A0-vs-全宇宙随机臂;预注册三分支 a/b/c)/ 认证全移前向(预注册冻结=零 deflation 债+风险 kill-switch 存活认证)。④ 不做:D3/D4 默认跳过、test 第 5 次不烧、FW 不烧在 ffc1db3、分析师动量排队候选 #2。四门不放宽/账本不清零/FAIL 报 FAIL 全维持。",
+        commit: "本 docs commit(战略应答 + SSoT 记账;push 待 owner)",
+        next: "**owner 拍三决定(assessment §5,优先级 1>3>2)**:① 判据架构 amendment(dev=选拔/前向=认证;四门保留照披露,promotion 改基于 placebo+前向存活)② 产品分层批准(sleeve 地基判据;sleeve-only 为合法终态)③ D2 按重定性协议授权(补 A0-vs-random 臂+预注册三分支)。批 ① 后 D2 才有意义;批 ③ 即可开工(DS-D2 已 todo,复用 D1 全件)。",
+      },
       {
         date: "2026-07-03",
         session: "#5 买卖点 harness 计划书(R1+R2)+ DS-D1 全窗 dev 回测(FAIL)",
