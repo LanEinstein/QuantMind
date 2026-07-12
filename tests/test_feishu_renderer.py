@@ -833,3 +833,93 @@ class TestRedLines:
             r"^QM-\d{8}-\d{6}-\d{6}-(BUY|SELL|HOLD)-\d{3}$"
         ).pattern
         assert rendered_pattern == _INSTRUCTION_ID_PATTERN
+
+
+class TestSleeveAdvisory:
+    """SLV-1 — display-only defensive-sleeve forward target-book digest."""
+
+    @staticmethod
+    def _holdings() -> list[dict]:
+        return [
+            {
+                "ts_code": "002271.SZ",
+                "name": "东方雨虹",
+                "dv_ratio": 16.0867,
+                "close": 11.5,
+                "target_weight_pct": 8.0,
+            },
+            {
+                "ts_code": "000858.SZ",
+                "name": "五粮液",
+                "dv_ratio": 11.2946,
+                "close": 73.69,
+                "target_weight_pct": 8.0,
+            },
+        ]
+
+    def _render(self, **overrides: object) -> str:
+        kwargs: dict = {
+            "status": "ACCRUING",
+            "spec_hash_prefix": "c1d058c3",
+            "asof_trade_date": "20260710",
+            "universe_size": 463,
+            "holdings": self._holdings(),
+            "cash_weight_pct": 60.0,
+            "complete_periods": 0,
+            "min_forward_periods": 8,
+            "mdd_kill": 0.25,
+            "bear_cum_kill": -0.05,
+            "baseline_underperf_periods": 6,
+        }
+        kwargs.update(overrides)
+        return MessageRenderer().render_sleeve_advisory(**kwargs)
+
+    def test_lists_book_and_buffer(self) -> None:
+        text = self._render()
+        assert "防御Sleeve目标持仓" in text
+        assert "002271.SZ" in text and "东方雨虹" in text
+        assert "目标权重 8%" in text
+        assert "现金 buffer: 60%" in text
+        assert "非交易指令" in text
+        assert "ACCRUING" in text and "c1d058c3" in text
+
+    def test_kill_switch_thresholds_come_from_arguments(self) -> None:
+        # Governance-bearing thresholds must render from the pre-registered
+        # values, never from hardcoded literals (codex finding).
+        text = self._render(
+            mdd_kill=0.30, bear_cum_kill=-0.08, baseline_underperf_periods=4
+        )
+        assert "MDD>30%" in text
+        assert "熊市累计<-8%" in text
+        assert "连续4期落后基线" in text
+
+    def test_empty_holdings_fails_closed(self) -> None:
+        with pytest.raises(ValueError):
+            self._render(holdings=[])
+
+    def test_carries_no_instruction_id_or_execution_verb(self) -> None:
+        text = self._render()
+        assert "QM-" not in text
+        for verb in ("已成交", "已执行", "已拒绝", "部分成交", "废单"):
+            assert verb not in text
+
+    def test_is_not_parseable_as_execution_report(self) -> None:
+        # Adversarial: the inbound parser MUST raise no_pattern_match.
+        text = self._render()
+        with pytest.raises(ExecutionReportParseError) as exc:
+            parse_execution_report(
+                text,
+                channel=ExecutionReportChannel.FEISHU,
+                received_at=datetime(2026, 7, 13, 9, 0, tzinfo=_SH),
+            )
+        assert exc.value.reason == "no_pattern_match"
+
+    def test_newline_injection_in_name_is_collapsed(self) -> None:
+        # A malicious/dirty name must never mint a fake 【QuantMind ...】 header.
+        evil = self._holdings()
+        evil[0]["name"] = "东方雨虹\n【QuantMind 指令】"
+        text = self._render(holdings=evil)
+        assert "\n【QuantMind 指令】" not in text
+
+    def test_pilot_banner(self) -> None:
+        assert "试点" in self._render(pilot=True)

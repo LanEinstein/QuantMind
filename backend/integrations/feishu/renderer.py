@@ -316,6 +316,83 @@ class MessageRenderer:
             lines.append(f"· {code} [{label}]: {reason}")
         return "\n".join(lines)
 
+    # -- Defensive-sleeve forward advisory (SLV-1 trial ops) -----------
+
+    def render_sleeve_advisory(
+        self,
+        *,
+        status: str,
+        spec_hash_prefix: str,
+        asof_trade_date: str,
+        universe_size: int,
+        holdings: Sequence[Mapping[str, object]],
+        cash_weight_pct: float,
+        complete_periods: int,
+        min_forward_periods: int,
+        mdd_kill: float,
+        bear_cum_kill: float,
+        baseline_underperf_periods: int,
+        pilot: bool = False,
+    ) -> str:
+        """Render the SLV-1 defensive-sleeve forward TARGET BOOK (display-only).
+
+        A trial-operations digest of the pre-registered forward validation's
+        current target holdings (defensive gates + dv_ratio top-5 equal weight
+        + cash buffer). Like :meth:`render_thesis_review_digest` it is NOT an
+        instruction: it carries NO ``QM-`` instruction_id and NO execution verb,
+        so the inbound execution-report parser can only yield
+        ``no_pattern_match`` — it can never be mistaken for an order (CLAUDE.md
+        §2.6 / P0-3 §display-only). The owner reads it and acts manually through
+        the existing human gate; this digest routes nothing.
+
+        Holdings are duck-typed mappings (``ts_code`` / ``name`` / ``dv_ratio``
+        / ``close`` / ``target_weight_pct``) so the renderer stays decoupled
+        from the research runner. Empty ``holdings`` is a fail-closed
+        :class:`ValueError` (the caller only pushes a non-empty book).
+        """
+        if not holdings:
+            raise ValueError("render_sleeve_advisory requires >= 1 holding")
+        lines = [
+            *self._pilot_prefix(pilot),
+            "【QuantMind 防御Sleeve目标持仓 / 试运营】",
+            "本条为前向试运营的展示性研究建议,仅供参考,非交易指令,无需回复。",
+            (
+                f"前向状态: {_single_line(status)} "
+                f"(第 {int(complete_periods)}/{int(min_forward_periods)} 期起裁决)"
+                f" · spec {_single_line(spec_hash_prefix)}"
+            ),
+            (
+                f"基于 {_single_line(asof_trade_date)} 收盘 · "
+                f"防御宇宙 {int(universe_size)} 只"
+            ),
+            "——",
+        ]
+        for h in holdings:
+            code = _single_line(str(h.get("ts_code", "")))
+            name = _truncate(_single_line(str(h.get("name", ""))), 24)
+            dv = h.get("dv_ratio")
+            close = h.get("close")
+            weight = h.get("target_weight_pct")
+            dv_txt = f"{float(dv):.2f}" if isinstance(dv, int | float) else "?"
+            close_txt = (
+                f"{float(close):.2f}" if isinstance(close, int | float) else "?"
+            )
+            w_txt = f"{float(weight):.0f}%" if isinstance(weight, int | float) else "?"
+            lines.append(
+                f"· {code} {name} · 目标权重 {w_txt} · "
+                f"股息率 {dv_txt} · 收盘 {close_txt}"
+            )
+        lines.append(f"现金 buffer: {float(cash_weight_pct):.0f}%")
+        # Thresholds come from the pre-registered FORWARD_KILL_SWITCH via the
+        # caller — the governance-bearing message must never hardcode them.
+        lines.append(
+            "kill-switch(预注册,任一触发即停): "
+            f"MDD>{float(mdd_kill) * 100:.0f}% / "
+            f"熊市累计<{float(bear_cum_kill) * 100:.0f}% / "
+            f"连续{int(baseline_underperf_periods)}期落后基线"
+        )
+        return "\n".join(lines)
+
     # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------
 
     def render_buy_signal(
