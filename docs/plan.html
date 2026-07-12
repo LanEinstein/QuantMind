@@ -742,6 +742,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
       </div>
       <h3>修订记录</h3>
       <ul class="revision">
+        <li>2026-07-12 · <b>session #7(SLV-1 前向试运营启动,Fable 5)</b>:owner『明早开盘前试运营』= owner-gate 开门 → 增量摄取至 20260710(60 快照 failed=0)+ 前向 runner <code>defensive_sleeve_forward.py</code>(预注册冻结 fail-closed:spec c1d058c3 / forward_start 20260615 / kill-switch;首读 <b>ACCRUING 0/8 无 breach,MDD 3.70%</b> vs eq_5 9.28%)+ 明日(20260713,恰第 2 rebalance)建议 dv-top5(东方雨虹/洋河/广汇能源/中远海控/五粮液 各 8%+现金 60%)+ <b>飞书 display-only 推送已发</b>(render_sleeve_advisory,无指令 id/动词,对抗 parser 测试)+ 每日 pipeline(cron owner 自装)。codex 门 /code-review high 10 findings 全处置。commit 0e5ce0d + 33bc816;SLV-1 → doing(存活认证 ~2027-02 + P0-6 shadow 才 go-live)。</li>
         <li>2026-07-04 · <b>session #6 续(sleeve Step1 科学门 PASS,Opus 4.8)</b>:owner『继续』→ 跑 SLV-0 Step1 确认性科学门回测 = <b>✅ science_gate_pass=True = DS 线首个过判据的东西</b>。部署 sleeve_buf40_5 net <b>+1.5M</b> / MDD <b>19.58%</b>(≤20%,CSI300 46%)/ 熊市 +0.196 / turnover 0.01,<b>且胜随机 placebo +2.54 t</b>(dv_ratio 真有边,三 regime 全胜;vs sizematched +1.13=部分 size)。caveat DSR 0.228≪0.95(披露)+ 股灾非全正(2018 −15%)。code 1cb0cda(code-review 4 修:超集诚实/删死 neut byte-identical/gate 列/isfinite)+ 结果 doc defensive-sleeve-science-gate-results-2026-07-04.md;账本 2420→2421;suite 811→828。⏭️ Step2 前向验证 owner-gated。</li>
         <li>2026-07-04 · <b>session #6 续(收敛 sleeve 产品化 + 多 Agent 预期规划,Opus 4.8)</b>:排名层跨机制双证否后 owner 批推荐 → <b>SLV-0 冻结可部署防御 sleeve spec</b>(<code>defensive_sleeve_spec.py</code> hash c1d058c3:D1 防御宇宙过滤 + dv_ratio top5 等权 + buf40 buffer;风险性质承重;前向 kill-switch 预注册)+ 前向验证方案 doc(commit 4aa845a,code-review 2 修)。<b>MAE-0 多 Agent 预期驱动买卖点</b>(owner 新方向:买卖点核心=预期,多 agent 共同制定)初步规划已写交 Fable 5(核心 surface LLM 训练泄漏污染等硬问题)。suite 811→823。⏭️ sleeve Step1 确认性回测(build-ready)→ 前向;MAE-0 交 Fable 5。</li>
         <li>2026-07-04 · <b>session #6 续(DS-AM 分析师修正动量 done,Opus 4.8)</b>:owner 定向测信息流因子(branch c 唯一未覆盖)+ 提供外部 memo 校准。全窗 = <b>candidate_edge=False 但唯一薄边活口</b>:选拔门 joint FAIL(am_eq_5 t −0.49 / am_buf40_5 t +0.14)但**部署容器唯一对随机呈正向**(+854k>620k)+ 双容器熊市正 + DSR 0.039 全候选最高(≪0.95)+ 慢稳。<b>排名层作独立核心=跨机制(反转+信息流)双证否</b>。反 p-hacking=复用 round-4 committed 子集不重选(spec_hash a84dd243)。code f41434e + 结果 doc analyst-momentum-results-2026-07-04.md;账本 2419→2420;suite 790→811。⏭️ owner 判:更坚定 sleeve-only / 分析师动量作辅助分量 / 下一批事件信息流数据(memo §3)。</li>
@@ -769,6 +770,15 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
     // Session log — newest first. Each session start/end must write here.
     // Pre-2026-07-02 history: docs/archive/plan-legacy-2026-07-02.html
     const SESSION_LOG = [
+      {
+        date: "2026-07-12",
+        session: "#7 SLV-1 前向试运营启动(Fable 5;owner『争取明天开盘之前试运营』= owner-gate 开门)",
+        owner: "Claude Fable 5 + owner(2026-07-12 定向:向可稳定盈利复利的选股+买卖点系统推进,明早开盘前试运营)",
+        state_in: "SLV-0 科学门 PASS 后 SLV-1 owner-gated(摄取+前向+推送)。owner 本指令 = 开门授权;明天 2026-07-13(周一)= 交易日,且恰为前向 schedule 第 2 个 rebalance 日。",
+        actions: "① **增量摄取**:ingest_historical_pit 20260619..20260710(15 td × 4 端点 = 60 快照,failed=0;0619 节假日;日历末 20260618→20260710)。② **SLV-1 前向 runner**(`defensive_sleeve_forward.py`+15 单测):处子窗口(>test_end 20260612)+ 盘前 100td 仅作特征 buffer(r4 先例)+ rebalance 日断言 >test_end;**预注册冻结 fail-closed**(spec_hash c1d058c3 / test_end / forward_start 20260615 / kill-switch 四阈值,任一漂移 abort 含 forward_start 重锚定);kill-switch 按 spec 原文(mdd>0.25 / bear_cum<−0.05 / 连6期跑输 naive dv-top5 eq_5 / <8 期 ACCRUING,breach 随时 KILLED);收益只披露不 t 检验;财报期 clamp 到店内最新报表期(20260331,statement_periods_through 披露)。③ **首读 = ACCRUING 0/8 期,无 breach,实现 MDD 3.70%**(eq_5 无 buffer 9.28% —— buffer 生效);复用 science gate _run_arm 保测量一致。④ **明日建议**(基于 20260710 收盘,防御宇宙 463 只):002271 东方雨虹 / 002304 洋河 / 600256 广汇能源 / 601919 中远海控 / 000858 五粮液,各 8% + 现金 60%;实况复核 5 票在市非 ST 未停牌。⑤ **飞书 display-only 推送**:renderer 新增 render_sleeve_advisory(无 QM- id/无执行动词,对抗测试证 no_pattern_match;阈值从预注册值渲染)+ push_sleeve_advisory.py(本地 sent-marker 按 asof 去重)→ **已发送决策群(asof 20260710)**。⑥ **每日 pipeline** sleeve_trial_daily.sh(cron-safe 凭证提取 + 自愈式摄取续传);cron 安装被权限组拦,owner 一行命令自装(trial-ops doc §4)。⑦ **codex 门**:/code-review high 工作流(18 agents)10 findings **全处置**(cron bashrc no-op / 摄取 7 天洞 / forward_start 漂移 / 注册溯源 git add -f / 推送假幂等 / 阈值硬编码 / _run_arm 去重 / run_forward 拆分 / 死变量 / 全量重算披露),summary=docs/reviews/slv1-forward-codex-review-summary-2026-07-12.md。测试:feishu 族 438 + factor_research 842 + 新 76 全绿;ruff 全绿;redline 全绿。",
+        commit: "0e5ce0d(runner+冻结注册)+ 33bc816(推送+pipeline)+ 本 docs commit;push 待 owner 授权",
+        next: "**试运营已启动**:owner ① 明早开盘按飞书建议人工执行(P-A 确认门;¥1万 执行资本整手取舍见 trial-ops doc §3)② 自装 cron(一行命令,doc §4)或每日手动跑 sleeve_trial_daily.sh。**每日推送自动持续**;KILLED 出现即停+上报。8 完整期(~2027-02)存活认证 → P0-6 45日 shadow(SR-001)→ go-live。**MAE-0 多 Agent 预期出具体计划仍是 Fable 5 排队任务**(本 session 被 owner 试运营指令置后)。Q2 财报季(7 月末起)记得增量摄取报表端点(doc §4)。push 积压待 owner。",
+      },
       {
         date: "2026-07-04",
         session: "#6 续 sleeve Step1 确认性科学门回测(owner『继续』)= ✅ PASS = DS 线首个过判据",
@@ -1149,7 +1159,7 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         notes: "✅ DONE(session #6,Opus 4.8,owner 批推荐 + 『继续』)。**① 冻结 spec `defensive_sleeve_spec.py`(hash c1d058c3**;universe filter==D1 验证过滤器 asdict drift-guard / container==frontier buf40_5 / selection=dv_ratio top5 eq 最简规则 / analyst tilt OFF / 20d;科学门=净盈+熊市≥0+机械MDD披露,DSR 披露不作门;前向 kill-switch 预注册)。**② Step1 确认性科学门回测(1cb0cda,全窗 125 reb/univ 1818)= ✅ science_gate_pass=True = DS 线首个 PASS**:部署 sleeve_buf40_5 **net +1,500,889 / MDD 19.58%〔≤20% 上界,vs CSI300 46%〕/ 熊市累计 +0.196 / turnover 0.01〔极稳,9 fills=红利低波慢腿〕**;**且胜同宇宙随机 placebo paired-t +2.54〔三 regime 全胜〕**=dv_ratio 选择真有边(不同于反转/分析师输随机;但 vs sizematched +1.13=部分 size)。**caveat**:DSR 0.228≪0.95〔披露,全候选最高但样本内认证仍不可达 AP-0.5〕+ 股灾切片非全正〔2018 −15.3%,远轻于反转 −40% 但非零〕+ dv_ratio=红利因子 memo 警拥挤〔承重归风险性质非该 alpha〕+ sleeve 宇宙=D1 gates only〔D1 持有书超集,诚实披露〕。结果 doc `defensive-sleeve-science-gate-results-2026-07-04.md`;账本 append ds.defensive_sleeve(2420→2421)。code-review high 前置门:spec 2 修 + science_gate 4 修(超集诚实/删死 neut byte-identical/gate 列检查/isfinite)。suite 811→828。**⏭️ 后续 = SLV-1 前向存活验证(owner-gated)**。push 不在授权内(4aa845a/1cb0cda/docs 本地)。",
       },
       {
-        id: "SLV-1", phase: "防御 sleeve 产品化(排名层双证否后收敛)", status: "blocked", priority: "P0",
+        id: "SLV-1", phase: "防御 sleeve 产品化(排名层双证否后收敛)", status: "doing", priority: "P0",
         title: "sleeve Step2 预注册前向存活验证 + go-live",
         summary: "SLV-0 科学门 PASS(sleeve_buf40_5 net +1.5M/MDD 19.58%/熊市 +0.196/胜随机 +2.54t)→ 送预注册前向:git 冻结 spec(c1d058c3)+ kill-switch 存活式(非显著性)+ 登记前向起点 → 月度 shadow 存活认证 → P0-6 45 日 go-live。承重=风险性质,认证=前向存活(不做 t 检验;AP-0.5 样本内不可认证不变)。",
         scope: "scripts/factor_research/(前向 runner,round4_forward_test 模板改造为存活式 kill-switch)+ backend 运行期(owner 重启后)+ docs/research/",
@@ -1157,9 +1167,9 @@ grep -rnE "@router\.(post|put|patch|delete)" backend/api/                       
         acceptance: "前向 runner:kill-switch 预注册 mdd>0.25 / bear_cum<−0.05 / 连6期跑输 naive eq_5 基线 / <8 期 ACCRUING 不裁决;存活认证非显著性;go-live=P0-6 45 日 shadow bit-exact + owner 人工 pin。绝不触 sealed test;永禁真实下单。",
         tests: "前向 runner 单测(不触 sealed test);P0-6 验收协议。",
         sources: "defensive-sleeve-spec-and-forward-validation-plan-2026-07-04.md §3;defensive-sleeve-spec.py FORWARD_KILL_SWITCH;round4_forward_test.py(模板)",
-        commit: "",
-        session_date: "",
-        notes: "blocked_by: **owner-gated**(前向窗口累积 test_end 2026-06-12 后新增数据 ~2026-08 verdict-ready + owner 摄取增量 + owner 重启 + look-once/存活认证授权)。**Fable 5 可先建前向 runner(研究侧,不碰摄取/激活)**:仿 round4_forward_test.py 改为存活式(读 FORWARD_KILL_SWITCH 阈值,月度 rebalance sleeve on 前向数据,任一 kill-switch breach 即停+上报;收益监控披露非 t 检验)。¥1万 执行可行性资本做真 shadow;alpha 研究资本 ¥100万 证。analyst tilt 仍 OFF(启用需重冻+重验前向)。",
+        commit: "0e5ce0d(runner+注册)+ 33bc816(飞书推送+每日 pipeline)",
+        session_date: "2026-07-12",
+        notes: "🚀 **doing(owner 2026-07-12 开门:『争取明天开盘之前试运营』= 摄取+前向启动+飞书推送授权;Fable 5 执行)**。已落地:① 增量摄取 20260619..20260710(60 快照 failed=0);② 前向 runner `defensive_sleeve_forward.py`(存活式 kill-switch,注册 fail-closed 漂移守卫,财报期 clamp 披露);③ 预注册冻结(spec c1d058c3 / forward_start 20260615 / baseline sleeve_eq_5);④ 首读 status=ACCRUING 0/8 期无 breach,MDD 3.70%(eq_5 9.28%,buffer 生效),下一 rebalance 20260713;⑤ 明日建议 dv-top5(宇宙 463)+ 实况复核非 ST 未停牌;⑥ `render_sleeve_advisory` + `push_sleeve_advisory.py` display-only 飞书;⑦ 每日 pipeline `sleeve_trial_daily.sh`(cron 需 owner 自装)。详 `docs/research/defensive-sleeve-forward-trial-ops-2026-07-12.md`。仍欠:8 完整期存活认证(~2027-02)+ P0-6 45日 shadow + owner pin 才 go-live。analyst tilt 仍 OFF。",
       },
       {
         id: "MAE-0", phase: "多 Agent 预期驱动买卖点(owner 新方向,交 Fable 5)", status: "blocked", priority: "P1",
