@@ -1,0 +1,14 @@
+{
+  "product": "defensive_sleeve_v1",
+  "spec_hash": "c1d058c36ac0ae0f693078187dbc6df8eaaa4a8bcb3700c9c32caaff5d2543c1",
+  "test_end": "20260612",
+  "forward_start": "20260615",
+  "baseline": "sleeve_eq_5",
+  "kill_switch": {
+    "mdd_kill": 0.25,
+    "bear_cum_kill": -0.05,
+    "baseline_underperf_periods": 6,
+    "min_forward_periods": 8
+  },
+  "registered_on_utc": "2026-07-12T11:51:17Z"
+}
