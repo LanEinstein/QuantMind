@@ -7,11 +7,18 @@ from typing import Any
 import httpx
 
 from scripts.yeren_corpus.asr import FunASRTranscriber, normalize_result
-from scripts.yeren_corpus.douyin import DouyinClient, normalize_aweme
+from scripts.yeren_corpus.douyin import (
+    DouyinClient,
+    VideoUnavailableError,
+    normalize_aweme,
+)
+from scripts.yeren_corpus.models import Transcript
 from scripts.yeren_corpus.pipeline import (
+    CorpusPaths,
+    CorpusPipeline,
     append_new_metadata,
-    completed_ids,
     metadata_ids_in_chronological_order,
+    resolved_ids,
 )
 
 
@@ -108,10 +115,12 @@ def test_metadata_and_ledger_are_append_only_by_aweme_id(tmp_path: Path) -> None
         json.dumps({"aweme_id": "failed", "status": "failed"})
         + "\n"
         + json.dumps({"aweme_id": "done", "status": "done"})
+        + "\n"
+        + json.dumps({"aweme_id": "gone", "status": "unavailable"})
         + "\n",
         encoding="utf-8",
     )
-    assert completed_ids(ledger_path) == {"done"}
+    assert resolved_ids(ledger_path) == {"done", "gone"}
 
 
 def test_pending_metadata_includes_items_missing_from_current_catalog(
@@ -130,6 +139,40 @@ def test_pending_metadata_includes_items_missing_from_current_catalog(
     )
 
     assert metadata_ids_in_chronological_order(metadata_path) == ["older", "newer"]
+
+
+def test_pipeline_records_missing_historical_video_as_unavailable(
+    tmp_path: Path,
+) -> None:
+    class MissingVideoClient:
+        def fetch_catalog(self) -> list[object]:
+            return []
+
+        def fetch_detail(self, aweme_id: str) -> object:
+            raise VideoUnavailableError(f"作品 {aweme_id} 已删除")
+
+    class UnusedTranscriber:
+        def transcribe(self, audio_path: Path) -> Transcript:
+            raise AssertionError(f"unexpected transcription: {audio_path}")
+
+    paths = CorpusPaths(tmp_path)
+    paths.create()
+    paths.metadata.write_text(
+        json.dumps({"aweme_id": "gone", "create_time": 1}) + "\n",
+        encoding="utf-8",
+    )
+
+    success, failed = CorpusPipeline(
+        client=MissingVideoClient(),  # type: ignore[arg-type]
+        transcriber=UnusedTranscriber(),
+        paths=paths,
+    ).run()
+
+    assert (success, failed) == (0, 0)
+    assert resolved_ids(paths.ledger) == {"gone"}
+    assert json.loads(paths.ledger.read_text(encoding="utf-8"))["status"] == (
+        "unavailable"
+    )
 
 
 def test_download_restarts_once_after_truncated_response(

@@ -28,6 +28,10 @@ USER_AGENT = (
 CHINA_TZ = timezone(timedelta(hours=8))
 
 
+class VideoUnavailableError(RuntimeError):
+    """The API resolved an ID but no longer exposes its video record."""
+
+
 def _load_signer(signer_root: Path) -> type[Any]:
     """Load the maintained upstream signer without vendoring its GPL source."""
     path = signer_root / "crawlers/douyin/web/abogus.py"
@@ -207,7 +211,9 @@ class DouyinClient:
             DOUYIN_DETAIL_API,
             {**_common_params(), "aweme_id": aweme_id},
         )
-        if payload.get("status_code") != 0 or not payload.get("aweme_detail"):
+        if payload.get("status_code") == 0 and not payload.get("aweme_detail"):
+            raise VideoUnavailableError(f"作品 {aweme_id} 已删除、隐藏或当前不可见")
+        if payload.get("status_code") != 0:
             status_code = payload.get("status_code")
             raise RuntimeError(f"抖音作品详情失败: status_code={status_code}")
         return normalize_aweme(payload["aweme_detail"])

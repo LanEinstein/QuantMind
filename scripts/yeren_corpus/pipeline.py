@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from scripts.yeren_corpus.asr import extract_audio
-from scripts.yeren_corpus.douyin import DouyinClient, utc_now
+from scripts.yeren_corpus.douyin import DouyinClient, VideoUnavailableError, utc_now
 from scripts.yeren_corpus.models import Transcript, VideoItem
 
 LOGGER = logging.getLogger(__name__)
@@ -49,11 +49,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in source if line.strip()]
 
 
-def completed_ids(path: Path) -> set[str]:
+def resolved_ids(path: Path) -> set[str]:
     return {
         str(entry["aweme_id"])
         for entry in _read_jsonl(path)
-        if entry.get("status") == "done"
+        if entry.get("status") in {"done", "unavailable"}
     }
 
 
@@ -134,7 +134,7 @@ class CorpusPipeline:
         self.paths.create()
         catalog = self.client.fetch_catalog()
         append_new_metadata(self.paths.metadata, catalog)
-        done = completed_ids(self.paths.ledger)
+        done = resolved_ids(self.paths.ledger)
         pending = [
             aweme_id
             for aweme_id in metadata_ids_in_chronological_order(self.paths.metadata)
@@ -159,6 +159,17 @@ class CorpusPipeline:
                     success,
                     failed,
                     eta_seconds / 60,
+                )
+            except VideoUnavailableError as error:
+                LOGGER.warning("作品 %s 当前不可用，记录终态后继续", aweme_id)
+                _append_jsonl(
+                    self.paths.ledger,
+                    {
+                        "aweme_id": aweme_id,
+                        "status": "unavailable",
+                        "error": str(error),
+                        "processed_at": utc_now(),
+                    },
                 )
             except Exception as error:
                 failed += 1
