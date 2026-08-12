@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+import httpx
 
 from scripts.yeren_corpus.asr import normalize_result
-from scripts.yeren_corpus.douyin import normalize_aweme
+from scripts.yeren_corpus.douyin import DouyinClient, normalize_aweme
 from scripts.yeren_corpus.pipeline import append_new_metadata, completed_ids
 
 
@@ -89,3 +92,46 @@ def test_metadata_and_ledger_are_append_only_by_aweme_id(tmp_path: Path) -> None
         encoding="utf-8",
     )
     assert completed_ids(ledger_path) == {"done"}
+
+
+def test_download_restarts_once_after_truncated_response(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    class FakeResponse:
+        headers = {"content-type": "video/mp4"}
+
+        def __init__(self, fails: bool) -> None:
+            self.fails = fails
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_bytes(self, *, chunk_size: int) -> Any:
+            del chunk_size
+            yield b"partial" if self.fails else b"complete"
+            if self.fails:
+                raise httpx.RemoteProtocolError("truncated response")
+
+    class FakeHttpClient:
+        calls = 0
+
+        def stream(self, method: str, url: str) -> FakeResponse:
+            del method, url
+            self.calls += 1
+            return FakeResponse(fails=self.calls == 1)
+
+    client = object.__new__(DouyinClient)
+    client.client = FakeHttpClient()
+    monkeypatch.setattr("scripts.yeren_corpus.douyin.time.sleep", lambda _: None)
+    destination = tmp_path / "video.mp4"
+
+    client.download(normalize_aweme(_raw_aweme()), destination)
+
+    assert destination.read_bytes() == b"complete"
+    assert client.client.calls == 2

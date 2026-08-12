@@ -240,15 +240,23 @@ class DouyinClient:
         """Stream one video so the temporary file never shares disk with the next."""
         if not item.download_url:
             raise RuntimeError(f"作品 {item.metadata.aweme_id} 没有可下载的视频地址")
-        with self.client.stream("GET", item.download_url) as response:
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            if "text/html" in content_type:
-                aweme_id = item.metadata.aweme_id
-                raise RuntimeError(f"作品 {aweme_id} 下载返回了网页而非视频")
-            with destination.open("wb") as output:
-                for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                    output.write(chunk)
+        for attempt in range(2):
+            try:
+                with self.client.stream("GET", item.download_url) as response:
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "")
+                    if "text/html" in content_type:
+                        aweme_id = item.metadata.aweme_id
+                        raise RuntimeError(f"作品 {aweme_id} 下载返回了网页而非视频")
+                    with destination.open("wb") as output:
+                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                            output.write(chunk)
+                return
+            except httpx.TransportError:
+                if attempt:
+                    raise
+                LOGGER.warning("视频下载中断，等待 2 秒后从头重试一次")
+                time.sleep(2)
 
 
 def utc_now() -> str:
