@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from scripts.yeren_corpus.asr import normalize_result
+from scripts.yeren_corpus.asr import FunASRTranscriber, normalize_result
 from scripts.yeren_corpus.douyin import DouyinClient, normalize_aweme
 from scripts.yeren_corpus.pipeline import append_new_metadata, completed_ids
 
@@ -73,6 +73,22 @@ def test_normalize_result_preserves_sentence_offsets() -> None:
         {"start_ms": 120, "end_ms": 980, "text": "先试错，"},
         {"start_ms": 1_020, "end_ms": 1_880, "text": "再加仓。"},
     ]
+
+
+def test_transcriber_records_empty_speech_without_text(tmp_path: Path) -> None:
+    class EmptySpeechModel:
+        def generate(self, **_: object) -> list[object]:
+            return []
+
+    transcriber = object.__new__(FunASRTranscriber)
+    transcriber.model = EmptySpeechModel()
+    transcriber.model_version = "paraformer-test"
+
+    transcript = transcriber.transcribe(tmp_path / "silent.wav")
+
+    assert transcript.text == ""
+    assert transcript.sentences == ()
+    assert transcript.asr_model == "paraformer-test"
 
 
 def test_metadata_and_ledger_are_append_only_by_aweme_id(tmp_path: Path) -> None:

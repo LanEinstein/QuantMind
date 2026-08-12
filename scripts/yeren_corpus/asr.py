@@ -100,5 +100,5 @@ class FunASRTranscriber:
             sentence_timestamp=True,
         )
         if not result:
-            raise RuntimeError("FunASR 没有返回转写结果")
+            return normalize_result({}, self.model_version)
         return normalize_result(result[0], self.model_version)
