@@ -8,7 +8,11 @@ import httpx
 
 from scripts.yeren_corpus.asr import FunASRTranscriber, normalize_result
 from scripts.yeren_corpus.douyin import DouyinClient, normalize_aweme
-from scripts.yeren_corpus.pipeline import append_new_metadata, completed_ids
+from scripts.yeren_corpus.pipeline import (
+    append_new_metadata,
+    completed_ids,
+    metadata_ids_in_chronological_order,
+)
 
 
 def _raw_aweme() -> dict[str, object]:
@@ -108,6 +112,24 @@ def test_metadata_and_ledger_are_append_only_by_aweme_id(tmp_path: Path) -> None
         encoding="utf-8",
     )
     assert completed_ids(ledger_path) == {"done"}
+
+
+def test_pending_metadata_includes_items_missing_from_current_catalog(
+    tmp_path: Path,
+) -> None:
+    metadata_path = tmp_path / "metadata.jsonl"
+    metadata_path.write_text(
+        "\n".join(
+            (
+                json.dumps({"aweme_id": "newer", "create_time": 2}),
+                json.dumps({"aweme_id": "older", "create_time": 1}),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert metadata_ids_in_chronological_order(metadata_path) == ["older", "newer"]
 
 
 def test_download_restarts_once_after_truncated_response(

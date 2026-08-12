@@ -57,6 +57,14 @@ def completed_ids(path: Path) -> set[str]:
     }
 
 
+def metadata_ids_in_chronological_order(path: Path) -> list[str]:
+    records = sorted(
+        (entry for entry in _read_jsonl(path) if entry.get("aweme_id")),
+        key=lambda entry: int(entry.get("create_time") or 0),
+    )
+    return list(dict.fromkeys(str(entry["aweme_id"]) for entry in records))
+
+
 def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as output:
         output.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
@@ -86,14 +94,14 @@ class CorpusPipeline:
         self.transcriber = transcriber
         self.paths = paths
 
-    def _recover_finished_transcript(self, item: VideoItem) -> bool:
-        transcript_path = self.paths.transcripts / f"{item.metadata.aweme_id}.json"
+    def _recover_finished_transcript(self, aweme_id: str) -> bool:
+        transcript_path = self.paths.transcripts / f"{aweme_id}.json"
         if not transcript_path.exists():
             return False
         _append_jsonl(
             self.paths.ledger,
             {
-                "aweme_id": item.metadata.aweme_id,
+                "aweme_id": aweme_id,
                 "status": "done",
                 "processed_at": utc_now(),
                 "recovered_existing_transcript": True,
@@ -101,8 +109,7 @@ class CorpusPipeline:
         )
         return True
 
-    def _process_one(self, item: VideoItem) -> None:
-        aweme_id = item.metadata.aweme_id
+    def _process_one(self, aweme_id: str) -> None:
         item = self.client.fetch_detail(aweme_id)
         with tempfile.TemporaryDirectory(prefix=f"yeren-{aweme_id}-") as raw_temp:
             temp = Path(raw_temp)
@@ -128,17 +135,20 @@ class CorpusPipeline:
         catalog = self.client.fetch_catalog()
         append_new_metadata(self.paths.metadata, catalog)
         done = completed_ids(self.paths.ledger)
-        pending = [item for item in catalog if item.metadata.aweme_id not in done]
+        pending = [
+            aweme_id
+            for aweme_id in metadata_ids_in_chronological_order(self.paths.metadata)
+            if aweme_id not in done
+        ]
         if limit is not None:
             pending = pending[:limit]
         success = 0
         failed = 0
         started = time.monotonic()
-        for index, item in enumerate(pending, start=1):
-            aweme_id = item.metadata.aweme_id
+        for index, aweme_id in enumerate(pending, start=1):
             try:
-                if not self._recover_finished_transcript(item):
-                    self._process_one(item)
+                if not self._recover_finished_transcript(aweme_id):
+                    self._process_one(aweme_id)
                 success += 1
                 elapsed = time.monotonic() - started
                 eta_seconds = elapsed / index * (len(pending) - index)
