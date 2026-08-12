@@ -107,3 +107,6 @@ data/knowledge_graph/
 data/marketdata_pit/
 data/pit_dryrun/
 data/factor_research/
+
+# M1 corpus runtime data: metadata, transcripts, ledger, and temporary files.
+data/yeren_corpus/
