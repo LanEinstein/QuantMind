@@ -134,11 +134,11 @@ class CorpusPipeline:
         self.paths.create()
         catalog = self.client.fetch_catalog()
         append_new_metadata(self.paths.metadata, catalog)
-        done = resolved_ids(self.paths.ledger)
+        resolved = resolved_ids(self.paths.ledger)
         pending = [
             aweme_id
             for aweme_id in metadata_ids_in_chronological_order(self.paths.metadata)
-            if aweme_id not in done
+            if aweme_id not in resolved
         ]
         if limit is not None:
             pending = pending[:limit]
