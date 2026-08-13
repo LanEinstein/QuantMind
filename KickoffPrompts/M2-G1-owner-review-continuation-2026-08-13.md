@@ -10,15 +10,15 @@
 >
 > 上游接手文档：`KickoffPrompts/M2-phase-B-pilot-continuation-2026-08-13.md`
 >
-> 当前阶段：M2 阶段 B pilot 已完成；已达到提交 owner 判断 G1 的状态；**尚未通过 G1**
+> 当前阶段：M2 阶段 B pilot 已完成；**G1 已由 owner 于 2026-08-13 明确通过**
+>
+> 后续入口：`KickoffPrompts/M2-phase-C-full-analysis-continuation-2026-08-13.md`
 
 ## 0. 接手后直接做什么
 
 不要重做阶段 A 的 30 GB PIT 资产审计，也不要重做已经完成的九条 pilot 和江波龙黄金案例。接手后的第一任务是根据 owner 的明确回复处理 G1：
 
-1. 如果 owner 尚未判断，先展示 `docs/research/yeren-system/g1-pilot-review-2026-08-13.md`，请 owner 判断证据粒度和七个功能维度是否足够；不要自行宣布通过。
-2. 如果 owner 明确通过 G1，先追加门禁结果和恢复记录，再进入全量逐视频分析；仍不得创建生产战法、冻结 Base v1 或开始回测优化。
-3. 如果 owner 要求补证，只补其指出的证据粒度或功能缺口，不重开无边界的全量搜索，也不为让表格“完整”而伪造闭环。
+owner 已给出“预期—反馈偏差”方向、要求重查 8 月 2 日券商事件，并明确回复“G1通过，可以进入全量分析”。这些结果均已落档。本文件不再作为下一上下文的执行入口；阶段 C 从上方“后续入口”接手，不重做 pilot、G1 或既有数据审计。
 
 G1 只决定是否允许从 pilot 进入全量语料研究。全量研究完成、规则基础规范形成并通过后续 G2 以前，不实现 `backend/playbook/yeren/` 的确定性执行器。
 
@@ -83,7 +83,7 @@ test -f data/yeren_research/cases/pilot-position-add-boundary-2025-09-to-2026-06
 find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 ```
 
-预期 observation 数为 11。最新 worklog 记录的 `work_unit` 是 `M2-B-pilot-and-g1-review`，状态为 `ready_for_owner_review`，`resume_from` 为 `owner-g1-decision`。
+预期 observation 工件数为 12，对应 11 个唯一视频；`7669063381873462208-v1.1.json` 是 8 月 2 日券商案例的当前修订版，旧版按 append-only 保留。owner 已通过 G1；最新门禁记录的 `work_unit` 是 `M2-G1-owner-gate-passed`，状态为 `completed`，`resume_from=M2-C-batch-001`。阶段 C 以新接手文档为准。
 
 ## 4. 阶段 A 与阶段 B 已完成范围
 
@@ -92,14 +92,14 @@ find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 阶段 A 已完成语料、PIT、新闻和研究 schema 审计：
 
 - corpus 元数据 1,088 条，转写文件 1,087 份；一条终态不可得；
-- PIT 共 23 个 endpoint，日线最晚到 2026-07-10，多数涨跌停/停牌类 endpoint 最晚到 2026-06-18；
+- PIT 共 23 个 endpoint、24,290 条索引记录；2026-08-13 增量更新后，A 股 `daily`、`adj_factor`、`daily_basic` 及大部分 QGR/事件端点已到 2026-08-13，`fund_daily`、`cyq_perf`、`stk_factor_pro` 因上游当日空帧保持在 2026-08-12；
 - 本地新闻 91,317 条，但最早仅到 2026-05-29，且当前抓取器不是严格历史 `as_of` 新闻库；
 - 两条空文本视频已做定向音画复核，没有伪造转写；
 - observation、hypothesis revision 和 decision/outcome evidence bundle 的冻结 Pydantic schema 已落地。
 
 机器清单继续使用：
 
-- `data/yeren_research/inventory/assets-2026-08-13-v1.1.json`；
+- `data/yeren_research/inventory/assets-2026-08-13-v1.3.json`（`v1.1`、`v1.2` 按 append-only 保留）；
 - `data/yeren_research/inventory/news-2026-08-13.json`；
 - `data/yeren_research/events/benchmark-events-2026-08-13.jsonl`。
 
@@ -117,7 +117,7 @@ find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 | `7602233626348496192` / 2026-02-02 | 上午十点清仓、退潮、不信消息、轻仓试错 | 清仓后等待情绪拐点再轻仓试错；“轻仓”是有依据的 ASR 修订，比例未知 |
 | `7626700051746734178` / 2026-04-09 | 流动性与消息、PCB/存储业绩落地离场 | 指数承接先看资金筹码；公司/板块层仍可由财报和产业传导改变动作 |
 | `7647445389893913039` / 2026-06-04 | 状态输入、主线、龙头、赚钱效应、超预期加仓 | 已形成第一版多输入 ontology，但缺阈值、权重和优先级，不能硬写状态机 |
-| `7669063381873462208` / 2026-08-02 | 首周五成上限、消息、竞价、前后排退出 | 五成是阶段规则；券商原事件和下一可执行时刻均未复原 |
+| `7669063381873462208` / 2026-08-02 | 首周五成上限、消息、竞价、前后排退出 | 五成是阶段规则；券商事件族已高置信复原，博主所指精确子集仍未知 |
 
 对应 observation 文件名均为 `data/yeren_research/observations/<aweme_id>.json`。
 
@@ -128,7 +128,7 @@ find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 - `7658346105893142863`：2026-07-04 公司级财报解释；
 - `7660119917865709391`：2026-07-08 高位科技风险、修复离场和禁止补仓。
 
-因此当前 observation 总数是 11，不是九条。
+因此当前仍是 11 个唯一视频；8 月 2 日案例有一份追加修订，机器工件总数是 12。
 
 ## 5. 江波龙财报黄金案例
 
@@ -230,22 +230,24 @@ find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 - 必须显式区分同票加仓、策略子仓和组合推仓；
 - 后续反馈使证据失效时撤回新增暴露。
 
-仍未解决：同一证券已有浮盈后，能否因新的超预期证据继续加仓。也不能排除 2025 年 9 月至 2026 年 6 月之间的系统演化。不得为了状态机完整而删除这个未知。
+owner 已明确目标系统的处理方向：在动作前基于交易内核和真实可见的场内外信息冻结预期，再按指定窗口的真实反馈区分超预期、符合预期和不及预期。浮盈只是状态，不是触发器；同票新增暴露要由反馈相对预期的偏差讨论，并预设证据失效后的撤回。
+
+该方向见 `docs/research/yeren-system/expectation-semantics-owner-direction-2026-08-13.md`。它是 owner 对目标系统的设计约束，不是博主原话。语料层仍未解决博主是否允许同一证券已有浮盈后因新超预期证据继续加仓，也不能排除 2025 年 9 月至 2026 年 6 月之间的系统演化。
 
 ## 7. 2026-08-02 券商事件
 
-现有基准事件 `claim-broker-negative-2026-08-02` 及追加复核 `claim-broker-negative-2026-08-02-recheck-2026-08-13` 都位于：
+原基准事件及两次追加修订都位于：
 
 `data/yeren_research/events/benchmark-events-2026-08-13.jsonl`
 
-已知：
+owner 要求根据博主措辞联网重查后，事件族已经高置信复原：
 
-- 视频声称周末券商利空主要影响券商，并点名若干涉事主体；
-- 本地 `news_articles` 在 2026-07-31 至 8 月 2 日没有可靠券商/证券匹配；
-- 官方/监管、证券业协会和可靠财经媒体的一次定向检索仍未找到唯一对应事件；
-- PIT 交易日历只到 2026-07-10，无法从当前档案确定下一交易日。
+- 证监会于 2026-07-31 17:27—18:18 集中公开六份决定书：国元、国融、甬兴被责令改正，广发、世纪、红塔被出具警示函；
+- 湘财股份和国盛证券于 8 月 1 日分别公告湘财证券、国盛证券因账户实名制等问题被立案；
+- 事件公开时点在周五收盘后至周末，最早 A 股动作时刻为 8 月 3 日 09:30；
+- 完整机器记录为 `data/yeren_research/events/broker-regulatory-actions-2026-07-31.json`，当前 observation 为 `data/yeren_research/observations/7669063381873462208-v1.1.json`。
 
-结论：保持不可复原 benchmark，停止反复扩搜，不以相似事件替代，不绑定任何券商或证券，不构建可执行退出规则。
+结论：原 benchmark 从“事件未知”修订为“事件族高置信、博主精确指代子集未知”。视频没有名单，不能断言“涉事的几家”指八家全体、六家监管措施对象、两家立案对象还是其中上市券商；也不能推定博主持仓或成交。
 
 ## 8. Hypothesis 台账现状
 
@@ -283,7 +285,7 @@ find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 
 - `H-MICROSTRUCTURE-RELAY-001`：量化退出/游资接力；缺龙虎榜和订单流，尚不可确认；
 - `H-ETF-INDEX-EXPRESSION-001`：个股选择或雷区风险高时用 ETF 表达方向；
-- `H-NEWS-DIRECT-HARM-EXIT-001`：被原始事件直接点名的持仓优先处理；首例因事件未解析而不能执行化。
+- `H-NEWS-DIRECT-HARM-EXIT-001`：被原始事件直接点名的持仓优先处理；事件族已解析，但视频所指精确证券子集仍不足以执行化。
 
 全量分析中必须继续追加支持、反证、例外和替代解释；不能只收集支持材料。
 
@@ -295,16 +297,13 @@ find data/yeren_research/observations -maxdepth 1 -type f | wc -l
 |---|---|---|---|
 | 进攻 | 雅江、6 月 4 日 ontology | 模式确认、主线/龙头、超预期候选输入 | 单票/组合推仓和比例 |
 | 防守 | 混沌/退潮、2 月清仓、8 月上限 | 停止新增风险、清仓、拐点试错、阶段上限 | 状态阈值与具体比例 |
-| 消息 | 4 月 9 日、8 月 2 日 | 指数承接与公司直接伤害分层 | 券商原事件与主体 |
+| 消息 | 4 月 9 日、8 月 2 日 | 指数承接与公司直接伤害分层；事件签发、公开与下一交易时刻分离 | 博主所指券商精确子集 |
 | 财报 | 10 月 29 日、江波龙 | 公告/PIT/解释/动作分层，预期兑现和质量审查 | 囤货价差因果、正式半年报 |
 | 持仓 | 9 月 20 日、6 月多账户链 | 个股失效退出、市场错杀持有、账户/策略分层 | 真实总账户暴露 |
-| 加仓/禁止加仓 | 9 月禁令、11 月临时加仓 | 下跌补仓禁令，新证据触发与失效撤回 | 同票浮盈后的加仓边界 |
+| 加仓/禁止加仓 | 9 月禁令、11 月临时加仓 | 下跌补仓禁令；owner 要求动作前预期与真实反馈偏差；新证据触发与失效撤回 | 博主是否有同票浮盈加仓的可核验链 |
 | 离场 | 雅江、业绩兑现、江波龙、8 月分层退出 | 次日纠错、原因型退出、修复离场、前后排分层 | 竞价/开盘/盘中阈值 |
 
-owner 需要判断的只有两点：
-
-1. 现有证据粒度和七个维度是否足够进入全量逐视频分析；
-2. 是否接受同票浮盈加仓和 8 月 2 日券商事件继续保持明确未知，而不要求在 G1 前伪造闭环。
+两项具体边界均已得到 owner 反馈并完成处理。现在 owner 只需明确判断：现有证据粒度和七个维度是否足够进入全量逐视频分析，即明确回复“G1 通过/可以进入全量分析”或指出仍需补证的具体缺口。
 
 ## 10. 已修复的两个实现问题
 
@@ -354,7 +353,7 @@ git diff --check
 - Ruff：通过；
 - Mypy：8 个源文件无问题；
 - Pytest：20 passed；
-- 11 份 observation 通过 `VideoObservation` 校验；
+- 12 份 observation 工件（11 个唯一视频）通过 `VideoObservation` 校验；
 - 20 条 hypothesis revision 通过 `HypothesisRevision` 校验；
 - 14 个现存 decision/outcome bundle 通过 `EvidenceBundle` 结构校验；
 - case、event 和 worklog JSON/JSONL 语法通过。
@@ -399,7 +398,7 @@ print(
 PY
 ```
 
-预期输出：`observations=11 hypotheses=20 bundles=14`。
+预期输出：`observations=12 hypotheses=20 bundles=14`。
 
 ## 13. owner 通过 G1 后的下一阶段
 
@@ -431,10 +430,10 @@ PY
 
 这些未知不是当前任务失败，也不应被下一 agent 擅自填平：
 
-- 同一证券已有浮盈后能否因新超预期证据加仓；
+- 博主是否允许同一证券已有浮盈后因新超预期证据加仓；目标系统语义已由 owner 定义；
 - `755201` 与 `764744` 中“退/推仓位”的原音方向；
 - 2025-11-04 竞价加仓的证券、账户、前置盈亏和盘面信号；
-- 2026-08-02 券商原事件、点名主体和下一可执行交易日；
+- 2026-08-02 事件族和下一交易日已复原；博主所指的精确券商子集仍未知；
 - 混沌、退潮、赚钱效应、主线和情绪拐点的阈值与优先级；
 - “推仓位”作用于单票、策略子仓还是组合总暴露；
 - 雅江案例中的量化/游资身份；
@@ -470,6 +469,7 @@ PY
 Tracked 文档与代码：
 
 - `docs/research/yeren-system/g1-pilot-review-2026-08-13.md`；
+- `docs/research/yeren-system/expectation-semantics-owner-direction-2026-08-13.md`；
 - `docs/research/yeren-system/casebook.md`；
 - `docs/research/yeren-system/data-and-source-coverage.md`；
 - `docs/research/yeren-system/research-methodology.md`；
@@ -486,4 +486,4 @@ Tracked 文档与代码：
 - `data/yeren_research/hypotheses.jsonl`；
 - `data/yeren_research/worklog.jsonl`。
 
-当前最重要的人工入口是 G1 审查面；当前最重要的机器恢复入口是 worklog 的 `M2-B-pilot-and-g1-review` 记录。二者状态都表示“等待 owner 判断”，不是“G1 已通过”。
+G1 已通过。本文件至此完成历史交接职责；阶段 C 使用 `KickoffPrompts/M2-phase-C-full-analysis-continuation-2026-08-13.md`，机器恢复入口使用 worklog 的 `M2-G1-owner-gate-passed` 记录。

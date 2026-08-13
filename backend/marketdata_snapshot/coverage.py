@@ -10,8 +10,9 @@ universes it is computed from.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from pathlib import Path
+from typing import Any
 
 import structlog
 from filelock import FileLock
@@ -108,23 +109,43 @@ class CoverageStore:
         for row in load_rows(self._path):
             yield (row["endpoint"], row["session_end"])
 
+    @staticmethod
+    def _from_row(row: dict[str, Any]) -> CoverageManifest:
+        """Rebuild tuple fields that strict Pydantic will not coerce from JSON."""
+        return CoverageManifest(
+            schema_version=row["schema_version"],
+            granularity=row["granularity"],
+            endpoint=row["endpoint"],
+            params=row["params"],
+            session_start=row["session_start"],
+            session_end=row["session_end"],
+            requested_universe=tuple(row["requested_universe"]),
+            delivered_universe=tuple(row["delivered_universe"]),
+        )
+
+    def get_many(
+        self, keys: Collection[tuple[str, str]]
+    ) -> dict[tuple[str, str], CoverageManifest]:
+        """Return the latest manifests for requested keys after one file scan.
+
+        The production coverage log is large enough that calling :meth:`get`
+        once per report period makes an incremental ingest repeatedly parse the
+        same file. Retain only requested keys while preserving latest-row wins.
+        """
+        wanted = set(keys)
+        latest: dict[tuple[str, str], CoverageManifest] = {}
+        for row in load_rows(self._path):
+            key = (row["endpoint"], row["session_end"])
+            if key in wanted:
+                latest[key] = self._from_row(row)
+        return latest
+
     def get(self, *, endpoint: str, session_end: str) -> CoverageManifest | None:
         """Latest manifest for (endpoint, session_end), or None."""
         latest: CoverageManifest | None = None
         for row in load_rows(self._path):
             if row["endpoint"] == endpoint and row["session_end"] == session_end:
-                # Rebuild with native tuples — strict mode won't coerce
-                # the JSON lists back into tuple fields.
-                latest = CoverageManifest(
-                    schema_version=row["schema_version"],
-                    granularity=row["granularity"],
-                    endpoint=row["endpoint"],
-                    params=row["params"],
-                    session_start=row["session_start"],
-                    session_end=row["session_end"],
-                    requested_universe=tuple(row["requested_universe"]),
-                    delivered_universe=tuple(row["delivered_universe"]),
-                )
+                latest = self._from_row(row)
         return latest
 
 

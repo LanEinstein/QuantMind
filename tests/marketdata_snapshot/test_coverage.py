@@ -91,6 +91,20 @@ class TestCoverageStore:
         store = CoverageStore(root=tmp_path)
         assert store.get(endpoint="daily", session_end="20990101") is None
 
+    def test_get_many_returns_latest_requested_rows(self, tmp_path: Path) -> None:
+        store = CoverageStore(root=tmp_path)
+        key = ("daily", "20260522")
+        store.put(_manifest(("a", "b"), ("a",)))
+        store.put(
+            _manifest(("c",), ("c",), endpoint="stk_limit", session_end="20260523")
+        )
+        corrected = _manifest(("a", "b"), ("a", "b"))
+        store.put(corrected)
+
+        loaded = store.get_many({key, ("daily", "20990101")})
+
+        assert loaded == {key: corrected}
+
     def test_iter_keys_yields_all_stored_keys(self, tmp_path: Path) -> None:
         store = CoverageStore(root=tmp_path)
         store.put(

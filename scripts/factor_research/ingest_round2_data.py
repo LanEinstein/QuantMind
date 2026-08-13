@@ -666,25 +666,29 @@ def build_fina_coverage_manifests(
 # --- orchestrator ------------------------------------------------------------
 
 
-def _put_coverage_idempotent(
-    coverage_store: CoverageStore, manifest: CoverageManifest
+def _put_coverage_manifests_idempotent(
+    coverage_store: CoverageStore, manifests: Sequence[CoverageManifest]
 ) -> None:
-    """Append a coverage manifest only if absent or content-changed (codex P2-1).
+    """Append manifests only when absent or content-changed (codex P2-1).
 
     The endpoint snapshots are idempotent but ``CoverageStore`` is append-only,
     so an unconditional re-put would grow a duplicate row every resume re-run.
-    Skip only when a *byte-identical* manifest already exists for
-    ``(endpoint, session_end)`` — compared via the full ``model_dump`` so a
-    corrected ``params`` / ``granularity`` (same universes) still appends a fix.
+    Read all requested keys in one pass; the production coverage log is too
+    large to rescan once per report period. Skip only when a *byte-identical*
+    manifest already exists for ``(endpoint, session_end)`` — compared via the
+    full ``model_dump`` so corrected content still appends a fix.
     """
-    existing = coverage_store.get(
-        endpoint=manifest.endpoint, session_end=manifest.session_end
-    )
-    if existing is not None and existing.model_dump(mode="json") == manifest.model_dump(
-        mode="json"
-    ):
-        return
-    coverage_store.put(manifest)
+    keys = {(manifest.endpoint, manifest.session_end) for manifest in manifests}
+    existing = coverage_store.get_many(keys)
+    for manifest in manifests:
+        key = (manifest.endpoint, manifest.session_end)
+        previous = existing.get(key)
+        if previous is not None and previous.model_dump(
+            mode="json"
+        ) == manifest.model_dump(mode="json"):
+            continue
+        coverage_store.put(manifest)
+        existing[key] = manifest
 
 
 def _build_coverage(
@@ -724,8 +728,7 @@ def _build_coverage(
                 error=str(exc),
             )
         ], ()
-    for manifest in manifests:
-        _put_coverage_idempotent(coverage_store, manifest)
+    _put_coverage_manifests_idempotent(coverage_store, manifests)
     return [], tuple(manifests)
 
 
@@ -938,8 +941,7 @@ def _build_statement_coverage(
                 error=str(exc),
             )
         ], ()
-    for manifest in manifests:
-        _put_coverage_idempotent(coverage_store, manifest)
+    _put_coverage_manifests_idempotent(coverage_store, manifests)
     return [], tuple(manifests)
 
 
