@@ -24,6 +24,11 @@ FINANCIAL_FIELDS = ("roe", "grossprofit_margin", "netprofit_yoy", "or_yoy")
 def _date_text(value: object) -> str:
     if value is None:
         return ""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return ""
+        if value.is_integer():
+            return str(int(value))
     text = str(value).strip()
     return "" if text in {"", "nan", "NaT", "None"} else text
 

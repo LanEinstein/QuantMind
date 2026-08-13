@@ -73,3 +73,29 @@ def test_financial_records_exclude_same_day_and_keep_snapshot_provenance(
     assert records[0].information_available_at == datetime.fromisoformat(
         "2024-05-06T09:30:00+08:00"
     )
+
+
+def test_financial_records_accept_numeric_announcement_dates(tmp_path: Path) -> None:
+    store = SnapshotStore(tmp_path)
+    header = (
+        b"ts_code,ann_date,end_date,update_flag,roe,grossprofit_margin,"
+        b"netprofit_yoy,or_yoy\n"
+    )
+    _put(
+        store,
+        "20260331",
+        header
+        + b"301308.SZ,20260428,20260331,1,38.5,55.5,2644,132\n"
+        + b"000001.SZ,,20260331,1,10,20,30,40\n",
+    )
+    _put_daily(store, "20260429")
+
+    records = read_financial_records(
+        pit_root=tmp_path,
+        codes=("301308.SZ",),
+        decision_cutoff=datetime.fromisoformat("2026-07-04T10:58:00+08:00"),
+    )
+
+    assert len(records) == 1
+    assert records[0].data["ann_date"] == "20260428"
+    assert records[0].data["end_date"] == "20260331"

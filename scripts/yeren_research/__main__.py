@@ -75,7 +75,7 @@ def _parser() -> argparse.ArgumentParser:
     bundle.add_argument("--decision-cutoff", type=datetime.fromisoformat, required=True)
     bundle.add_argument("--start-date", required=True)
     bundle.add_argument("--end-date", required=True)
-    bundle.add_argument("--endpoint", action="append", default=["daily"])
+    bundle.add_argument("--endpoint", action="append")
     bundle.add_argument("--code", action="append", default=[])
     bundle.add_argument("--pit-root", type=Path, default=DEFAULT_PIT_ROOT)
     bundle.add_argument("--research-root", type=Path, default=DEFAULT_RESEARCH_ROOT)
@@ -151,7 +151,7 @@ def main() -> None:
             pit_root=args.pit_root,
             start_date=args.start_date,
             end_date=args.end_date,
-            endpoints=args.endpoint,
+            endpoints=tuple(args.endpoint or ("daily",)),
             codes=args.code,
         )
         write_new_json(
