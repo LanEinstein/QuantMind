@@ -325,3 +325,94 @@ class EvidenceBundle(FrozenModel):
                     f"decision-time record in outcome bundle: {record.record_id}"
                 )
         return self
+
+
+class PredictionDirection(StrEnum):
+    """The direction the author claimed, frozen at extraction."""
+
+    UP = "up"
+    DOWN = "down"
+    FLAT = "flat"
+    OTHER = "other"
+
+
+class SettlementKind(StrEnum):
+    """How a prediction is settled against observable data."""
+
+    BREADTH = "breadth"  # advance vs decline counts
+    MEDIAN = "median"  # median pct_chg sign
+    BREADTH_MEDIAN = "breadth_median"  # both breadth and median
+    VOLUME_DELTA = "volume_delta"  # total amount vs previous trade date
+    EVENT_FACT = "event_fact"  # official reading, verified manually
+    SECURITY_CLOSE = "security_close"  # single security close direction
+    NOT_SETTLEABLE = "not_settleable"  # no frozen observable (theme etc.)
+
+
+class PredictionVerdict(StrEnum):
+    UNSETTLED = "unsettled"
+    HIT = "hit"
+    MISS = "miss"
+    TIE = "tie"
+    NOT_SETTLEABLE = "not_settleable"
+    BEYOND_COVERAGE = "beyond_coverage"
+
+
+class MarketSettlement(FrozenModel):
+    """Observed market values for the prediction's evaluation date."""
+
+    trade_date: str
+    advance: int | None = None
+    decline: int | None = None
+    unchanged: int | None = None
+    row_count: int | None = None
+    median_pct: float | None = None
+    amount_thousand_yuan: float | None = None
+    prev_amount_thousand_yuan: float | None = None
+    prev_trade_date: str | None = None
+    note: str | None = None
+
+
+class PredictionRecord(FrozenModel):
+    """One falsifiable author claim, frozen with its window and settlement.
+
+    The record is written once and settled by producing a new copy; the
+    registry file is append-only.
+    """
+
+    schema_version: Literal[1] = 1
+    prediction_id: str
+    aweme_id: str
+    published_at: datetime  # decision cutoff: claims only predict later days
+    recorded_at: datetime
+    source_statement_ids: tuple[str, ...]
+    source_interpretation_ids: tuple[str, ...] = ()
+    claim_text: str  # exact raw text joined from transcript evidence
+    object_kind: Literal["market", "theme", "security", "event", "index"]
+    object_spec: str
+    direction: PredictionDirection
+    settle_kind: SettlementKind
+    window_start: str  # YYYYMMDD
+    window_end: str  # YYYYMMDD
+    branch_trigger: str | None = None  # frozen trigger for conditional claims
+    settlement: MarketSettlement | None = None
+    verdict: PredictionVerdict = PredictionVerdict.UNSETTLED
+    verdict_rationale: str | None = None
+
+    @model_validator(mode="after")
+    def windows_and_times(self) -> PredictionRecord:
+        for value in (self.window_start, self.window_end):
+            if len(value) != 8 or not value.isdigit():
+                raise ValueError("prediction window dates must be YYYYMMDD strings")
+            try:
+                datetime.strptime(value, "%Y%m%d")
+            except ValueError:
+                raise ValueError(
+                    "prediction window dates must be valid calendar dates"
+                ) from None
+        if self.window_end < self.window_start:
+            raise ValueError("window end precedes start")
+        if self.recorded_at.tzinfo is None or self.published_at.tzinfo is None:
+            raise ValueError("prediction times must include a timezone")
+        if self.recorded_at < self.published_at:
+            raise ValueError("prediction cannot be recorded before its video")
+        return self
