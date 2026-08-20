@@ -42,3 +42,13 @@ observation 目录里共 **1135 个文件 / 1111 个唯一 aweme_id**，差额�
 
 1. `scripts/yeren_research/evidence_quote.py` 对旧版文件会抛 `evidence raw_text does not match transcript sentences`——这是**正确行为**，说明该文件已被更高版本取代，应改用高版本文件，而不是放宽校验。
 2. 统计类脚本（obs 计数、覆盖率）若直接数文件数会得到 1135 而非 1111。既有账本里的「obs 1112／唯一 1088」正是同一现象，不是漏处理。
+
+## 六、补充：transcript 的 `text` 与 `sentences` 并不等价
+
+codex review 过程中顺带核出的事实：1110 个 transcript 里 **857 个**的 `text` 字段与 `sentences` 拼接结果不一致（断句与标点位置不同，个别有词面差异）。
+
+因此引用纪律再加一条：
+
+> **原话一律由 `sentences[start:end+1]` 拼接生成，不得取 `text` 字段。** `scripts/yeren_research/evidence_quote.py` 就是按这条实现的，它同时校验 `raw_text` 与拼接结果一致。
+
+附带说明旧版 raw_text 的来源：它既不在当前 `sentences` 里，也不在当前 `text` 字段里，说明它早于当前 transcript 版本；ledger 每条作品只有一行记录，无法据此还原当时发生了什么。这不影响结论——**取最高版本 observation 文件即可**。
