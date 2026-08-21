@@ -39,6 +39,17 @@ class PricedSeries:
 
         return self.closes * self.adj
 
+    @property
+    def adjusted_opens(self) -> np.ndarray:
+        """Back-adjusted opens, same convention as ``adjusted_closes``.
+
+        Used to price realised P&L once a fill is confirmed reachable at the
+        raw open; the raw open only decides *whether* an order fills against
+        the raw limit price, never what a held position is actually worth.
+        """
+
+        return self.opens * self.adj
+
 
 def _read_daily(store: SnapshotStore, trade_date: str) -> pd.DataFrame | None:
     snapshot = store.latest(vendor=VENDOR, endpoint="daily", trade_date=trade_date)
