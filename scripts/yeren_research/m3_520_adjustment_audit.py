@@ -120,7 +120,7 @@ def audit_convention_and_events(
         "alignment_tolerance": ALIGNMENT_TOLERANCE,
         "misaligned_bars": misaligned_bars,
         "misaligned_securities": len(misaligned),
-        "misaligned_security_sample": sorted(misaligned)[:10],
+        "misaligned_security_codes": sorted(misaligned),
         "factor_jump_ratio_percentiles": {
             str(q): _percentile(np.concatenate(jumps), q) if jumps else None
             for q in (1, 25, 50, 75, 99)
