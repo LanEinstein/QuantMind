@@ -434,6 +434,84 @@ def test_full_cross_alone_still_triggers_the_exit_when_early_exit_signal_is_fals
     assert counts["exit_no_fill_fact"] == 0
 
 
+def test_signal_close_basis_reprices_fills_at_the_decision_bar_close():
+    # Same fixture as test_ordinary_trade...: entry signal at index 1, early
+    # exit at index 5. Under the frozen next-open basis the fills are
+    # adjusted open[2]=22 and adjusted open[6]=24. The sensitivity basis
+    # must reprice the SAME decisions at closes[1]*2=20 and closes[5]*2=18,
+    # keeping status and cohort untouched.
+    dates = list(range(1, 9))
+    series = _series(
+        "000001.SZ",
+        dates,
+        opens=[10, 10, 11, 11, 11, 11, 12, 12],
+        closes=[10, 10, 10, 10, 10, 9, 9, 9],
+        adj=[2, 2, 2, 2, 2, 2, 2, 2],
+    )
+    features = _features(
+        8,
+        entry_at=(1,),
+        ma_short=[np.nan, 9, 9, 9, 11, 9, 9, 9],
+        ma_mid=[np.nan, 10, 10, 10, 10, 10, 10, 10],
+        early_exit_at=(5,),
+    )
+    calendar_index = {date: date for date in dates}
+    limits = {
+        ("000001.SZ", 3): {"up_limit": 99999.999, "down_limit": 0.01},
+        ("000001.SZ", 7): {"up_limit": 99999.999, "down_limit": 0.01},
+    }
+
+    trades, _counts = simulate_trades_e(
+        series,
+        features,
+        entry_signal=features.entry_signal,
+        start_date=1,
+        end_date=8,
+        limits=limits,
+        calendar_index=calendar_index,
+        costs=CostModel(
+            slippage_rate=0.0,
+            commission_rate=0.0,
+            stamp_duty_rate=0.0,
+            transfer_fee_rate=0.0,
+        ),
+        execution_basis="signal_close",
+    )
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.status == "closed"
+    assert trade.cohort == "primary"
+    assert trade.entry_price == 20.0  # adjusted close of the decision bar
+    assert trade.exit_price == 18.0  # adjusted close of the exit-signal bar
+    assert np.isclose(trade.gross_return_pct, (18.0 / 20.0 - 1.0) * 100.0)
+
+
+def test_signal_close_basis_leaves_every_gating_decision_untouched():
+    # An up-limit-voided entry stays voided under the sensitivity basis:
+    # repricing happens after all gating, never instead of it.
+    dates = list(range(1, 5))
+    series = _series("000001.SZ", dates, opens=[10, 11, 11, 11], closes=[10] * 4)
+    features = _features(4, entry_at=(0,), ma_short=[np.nan] * 4, ma_mid=[np.nan] * 4)
+    calendar_index = {date: date for date in dates}
+    limits = {("000001.SZ", 2): {"up_limit": 11.0, "down_limit": 9.0}}
+
+    trades, counts = simulate_trades_e(
+        series,
+        features,
+        entry_signal=features.entry_signal,
+        start_date=1,
+        end_date=4,
+        limits=limits,
+        calendar_index=calendar_index,
+        costs=CostModel(),
+        execution_basis="signal_close",
+    )
+
+    assert trades == ()
+    assert counts["entry_void_up_limit"] == 1
+
+
 def test_touched_dates_with_buffer_is_empty_when_the_only_entry_is_st_flagged():
     from scripts.yeren_research.m3_520 import RuleSpec
     from scripts.yeren_research.m3_520_candidate_e import _touched_dates_with_buffer

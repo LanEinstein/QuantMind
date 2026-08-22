@@ -351,6 +351,7 @@ def simulate_trades_e(
     limits: dict[tuple[str, int], dict[str, object]],
     calendar_index: dict[int, int],
     costs: CostModel,
+    execution_basis: Literal["next_open", "signal_close"] = "next_open",
 ) -> tuple[tuple[TradeE, ...], dict[str, int]]:
     """Replay 520 with raw-price fillability gating adjusted-price P&L.
 
@@ -362,6 +363,14 @@ def simulate_trades_e(
     not a change to which bar closes the trade, so the mechanical trigger
     fires exactly as it always would and is only reclassified after the
     fact.
+
+    `execution_basis="signal_close"` reprices the very same decisions at the
+    signal bar's adjusted close instead of the next bar's adjusted open;
+    every gating decision, index, status, and cohort stays byte-identical.
+    This exists solely for the disclosure-only sensitivity run locked in
+    `m3-520-exec-timing-sensitivity-preregistration-2026-08-22.md`: it
+    embeds look-ahead (the signal forms AT that close) and must never be
+    used as an executable convention.
     """
 
     counts = {
@@ -493,6 +502,18 @@ def simulate_trades_e(
             mae = _mae_pct(
                 series.adjusted_closes, entry_index, held_last_index, entry_price
             )
+            if execution_basis == "signal_close":
+                # Sensitivity revaluation: same decisions, priced at the
+                # decision bar's close. Gating above already ran on the
+                # next-open rules and is deliberately left untouched.
+                entry_price = float(series.adjusted_closes[signal_index])
+                if status == "closed":
+                    exit_price = float(series.adjusted_closes[exit_signal_index])
+                gross = (exit_price / entry_price - 1.0) * 100.0
+                net = costs.net_return_pct(entry_price, exit_price)
+                mae = _mae_pct(
+                    series.adjusted_closes, entry_index, held_last_index, entry_price
+                )
             if status == "open_at_window_end":
                 cohort = "unresolved"
             else:
@@ -584,6 +605,9 @@ def evaluate_window(
     end_date: int,
     placebo_reps: int,
     seed: int,
+    execution_basis: Literal["next_open", "signal_close"] = "next_open",
+    run_placebo: bool = True,
+    include_trades: bool = False,
 ) -> dict[str, object]:
     # Constraint prefetch refined to a fixed point: an entry the previous
     # pass thought was mid-trade may really have been up-limit-voided,
@@ -637,6 +661,7 @@ def evaluate_window(
             limits=limits,
             calendar_index=calendar_index,
             costs=costs,
+            execution_basis=execution_basis,
         )
         all_trades.extend(trades)
         void_up_limit_total += counts["entry_void_up_limit"]
@@ -653,52 +678,59 @@ def evaluate_window(
         1 for t in all_trades if t.entry_delay_days > 5 or t.exit_delay_days > 5
     )
 
-    placebo_trades = tuple(
-        Trade(
-            code=t.code,
-            entry_signal_date=t.entry_signal_date,
-            entry_date=t.entry_date,
-            exit_signal_date=t.exit_signal_date,
-            exit_date=t.exit_date,
-            entry_price=t.entry_price,
-            exit_price=t.exit_price,
-            return_pct=t.gross_return_pct,
-            mae_pct=t.mae_pct,
-            entry_index=t.entry_index,
-            exit_index=t.exit_index,
-            status="closed",
+    if run_placebo:
+        placebo_trades = tuple(
+            Trade(
+                code=t.code,
+                entry_signal_date=t.entry_signal_date,
+                entry_date=t.entry_date,
+                exit_signal_date=t.exit_signal_date,
+                exit_date=t.exit_date,
+                entry_price=t.entry_price,
+                exit_price=t.exit_price,
+                return_pct=t.gross_return_pct,
+                mae_pct=t.mae_pct,
+                entry_index=t.entry_index,
+                exit_index=t.exit_index,
+                status="closed",
+            )
+            for t in primary
         )
-        for t in primary
-    )
-    placebo = matched_horizon_placebo(
-        placebo_trades,
-        _placebo_series_by_code(universe),
-        start_date=start_date,
-        end_date=end_date,
-        reps=placebo_reps,
-        seed=seed,
-    )
+        placebo = matched_horizon_placebo(
+            placebo_trades,
+            _placebo_series_by_code(universe),
+            start_date=start_date,
+            end_date=end_date,
+            reps=placebo_reps,
+            seed=seed,
+        )
 
-    primary_stats = _cohort_stats(primary)
-    criteria = {
-        "mean_net_return_positive": (
-            primary_stats["mean_net_return_pct"] is not None
-            and primary_stats["mean_net_return_pct"] > 0
-        ),
-        "placebo_upper_tail_p_le_0_05": (
-            placebo["upper_tail_p_value"] is not None
-            and placebo["upper_tail_p_value"] <= 0.05
-        ),
-    }
-    criteria["pass"] = (
-        criteria["mean_net_return_positive"]
-        and criteria["placebo_upper_tail_p_le_0_05"]
-    )
+        primary_stats = _cohort_stats(primary)
+        criteria = {
+            "mean_net_return_positive": (
+                primary_stats["mean_net_return_pct"] is not None
+                and primary_stats["mean_net_return_pct"] > 0
+            ),
+            "placebo_upper_tail_p_le_0_05": (
+                placebo["upper_tail_p_value"] is not None
+                and placebo["upper_tail_p_value"] <= 0.05
+            ),
+        }
+        criteria["pass"] = (
+            criteria["mean_net_return_positive"]
+            and criteria["placebo_upper_tail_p_le_0_05"]
+        )
+    else:
+        # The sensitivity driver compares two repricings of the same trades;
+        # a next-open-based placebo would be a cross-basis comparison with
+        # no meaning, and significance was already settled by candidate E.
+        placebo = None
+        criteria = None
 
-    return {
+    result = {
         "start_date": start_date,
         "end_date": end_date,
-        "primary_cohort_s8_c": primary_stats,
+        "primary_cohort_s8_c": _cohort_stats(primary),
         "disclosure_cohort_s8_a": _cohort_stats(disclosure),
         "flagged_unverified_fill": {"trades": len(flagged)},
         "open_at_window_end": {
@@ -720,6 +752,9 @@ def evaluate_window(
         "placebo": placebo,
         "judgment_criteria": criteria,
     }
+    if include_trades:
+        result["primary_trades"] = tuple(primary)
+    return result
 
 
 PREREGISTERED_START_DATE = "20150105"
@@ -728,6 +763,13 @@ PREREGISTERED_END_DATE = "20260819"
 PREREGISTERED_STOP_DAYS = 3
 PREREGISTERED_PLACEBO_REPS = 200
 PREREGISTERED_SEED = 52020260820
+# Frozen preregistration §4 values; the owner-actual-rate rerun passes its
+# own per `m3-520-fee-rerun-preregistration-2026-08-22.md`.
+PREREGISTERED_COMMISSION_RATE = 0.00025
+PREREGISTERED_MIN_COMMISSION = 5.0
+FEE_RERUN_PREREGISTRATION = (
+    "docs/research/yeren-system/m3-520-fee-rerun-preregistration-2026-08-22.md"
+)
 
 
 def run_candidate_e(
@@ -739,6 +781,8 @@ def run_candidate_e(
     stop_days: int = PREREGISTERED_STOP_DAYS,
     placebo_reps: int = PREREGISTERED_PLACEBO_REPS,
     seed: int = PREREGISTERED_SEED,
+    commission_rate: float = PREREGISTERED_COMMISSION_RATE,
+    min_commission: float = PREREGISTERED_MIN_COMMISSION,
 ) -> dict[str, object]:
     """Run the walk-forward.
 
@@ -764,6 +808,8 @@ def run_candidate_e(
         and stop_days == PREREGISTERED_STOP_DAYS
         and placebo_reps == PREREGISTERED_PLACEBO_REPS
         and seed == PREREGISTERED_SEED
+        and commission_rate == PREREGISTERED_COMMISSION_RATE
+        and min_commission == PREREGISTERED_MIN_COMMISSION
     )
     calendar_index = {int(day): position for position, day in enumerate(calendar)}
     series, coverage = load_priced_panel(
@@ -771,7 +817,9 @@ def run_candidate_e(
     )
     universe, universe_report = build_universe(series)
     spec = RuleSpec(stop_days=stop_days)
-    costs = CostModel()
+    costs = CostModel(
+        commission_rate=commission_rate, min_commission=min_commission
+    )
     st_timeline = load_st_timeline(pit_root)
 
     oos_start = next(day for day in calendar if day > split_date)
@@ -798,6 +846,16 @@ def run_candidate_e(
         "study": "m3-520-candidate-e-walkforward",
         "preregistration": (
             "docs/research/yeren-system/m3-520-preregistration-2026-08-21.md"
+            if is_frozen_run
+            else FEE_RERUN_PREREGISTRATION
+        ),
+        "cost_variant": (
+            "frozen-preregistration-2026-08-21"
+            if (
+                commission_rate == PREREGISTERED_COMMISSION_RATE
+                and min_commission == PREREGISTERED_MIN_COMMISSION
+            )
+            else "owner-actual-rate-fee-rerun-2026-08-22"
         ),
         "preregistered_parameters_used": is_frozen_run,
         "stop_days": stop_days,
@@ -838,6 +896,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-days", type=int, default=PREREGISTERED_STOP_DAYS)
     parser.add_argument("--placebo-reps", type=int, default=PREREGISTERED_PLACEBO_REPS)
     parser.add_argument("--seed", type=int, default=PREREGISTERED_SEED)
+    parser.add_argument(
+        "--commission-rate",
+        type=float,
+        default=PREREGISTERED_COMMISSION_RATE,
+        help=(
+            "Per-side commission rate. Default is the frozen preregistration "
+            "value; the owner-actual-rate rerun passes 0.00015 per "
+            "m3-520-fee-rerun-preregistration-2026-08-22.md."
+        ),
+    )
+    parser.add_argument(
+        "--min-commission",
+        type=float,
+        default=PREREGISTERED_MIN_COMMISSION,
+        help="Per-order commission floor in CNY (owner confirmed: 5.0).",
+    )
     return parser
 
 
@@ -851,6 +925,8 @@ def main(argv: list[str] | None = None) -> int:
         stop_days=args.stop_days,
         placebo_reps=args.placebo_reps,
         seed=args.seed,
+        commission_rate=args.commission_rate,
+        min_commission=args.min_commission,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
