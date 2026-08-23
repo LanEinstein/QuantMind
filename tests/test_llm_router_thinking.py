@@ -317,6 +317,9 @@ class TestNormalizeKwargsNonKimi:
 
 
 _PROD_THINKING_TABLE: dict[str, tuple[str, int, str]] = {
+    # MI-1 (2026-08-23): free-text execution-report extraction — JSON only,
+    # cheap flash tier, thinking off.
+    "execution_reconciler": ("disabled", 0, "none"),
     "news_crawler": ("disabled", 0, "none"),
     "sentiment_analyst": ("disabled", 0, "none"),
     "data_cleaner": ("disabled", 0, "none"),

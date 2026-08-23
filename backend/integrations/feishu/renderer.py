@@ -57,6 +57,16 @@ from backend.models.instruction import (
 from backend.models.manual_trade import ExternalExecutionEvent, ManualTradeReason
 from backend.models.position_thesis import ThesisHealth
 
+# MI-1 free-text reconciliation — fixed labels for the clarification body
+# (field KEYS come from code, the label text is a renderer constant).
+_RECONCILE_FIELD_LABEL: dict[str, str] = {
+    "code": "标的代码/名称",
+    "side": "买卖方向",
+    "volume": "成交数量",
+    "price": "成交价格",
+    "amount": "金额",
+}
+
 _MANUAL_REASON_LABEL: dict[ManualTradeReason, str] = {
     ManualTradeReason.USER_TAKE_PROFIT: "止盈",
     ManualTradeReason.USER_STOP_LOSS: "止损",
@@ -333,6 +343,7 @@ class MessageRenderer:
         bear_cum_kill: float,
         baseline_underperf_periods: int,
         status_changed_from: str | None = None,
+        reminder: bool = False,
         pilot: bool = False,
     ) -> str:
         """Render the SLV-1 defensive-sleeve forward TARGET BOOK (display-only).
@@ -365,6 +376,15 @@ class MessageRenderer:
                     )
                 ]
                 if status_changed_from is not None
+                else []
+            ),
+            *(
+                [
+                    "提醒: 上次调仓建议尚未收到执行回报(默认未成交),"
+                    "以下为按最新收盘重算的目标书。若已操作或决定不跟随,"
+                    "请回一句告诉我。"
+                ]
+                if reminder
                 else []
             ),
             (
@@ -925,6 +945,89 @@ class MessageRenderer:
             lines.append(f"账本序号: {broker_event_sequence}")
         lines.append("(此为用户自主操作记录,不计入系统能力评估;以模拟账本为准)")
         return "\n".join(lines)
+
+    # -- MI-1 free-text reconciliation replies (deterministic) ---------
+
+    def render_reconcile_clarification(
+        self,
+        *,
+        missing_fields: Sequence[str] = (),
+        raw_text_excerpt: str | None = None,
+    ) -> str:
+        """One-shot clarification for the MI-1 free-text reconciliation.
+
+        ``missing_fields`` are FIELD KEYS mapped to fixed Chinese labels
+        here (never LLM text); an unknown key is a fail-closed ValueError.
+        Empty ``missing_fields`` renders the generic "did not understand"
+        body. Only the owner's own excerpt is interpolated (single-lined +
+        truncated + order-token-redacted, P0-2 §2.6).
+        """
+        labels = []
+        for field in missing_fields:
+            if field not in _RECONCILE_FIELD_LABEL:
+                raise ValueError(f"unknown reconcile field key {field!r}")
+            labels.append(_RECONCILE_FIELD_LABEL[field])
+        lines = ["【QuantMind 对账追问】"]
+        if labels:
+            lines.append(
+                "这笔操作我还缺: " + "、".join(labels) + "。"
+                "请补一句,例如「买了 002271 五千股,成交 12.30」。"
+            )
+        else:
+            lines.append(
+                "这条我没读懂。请再说一遍,带上标的、方向、数量和成交价;"
+                "没操作就回「没买」或「不跟」。"
+            )
+        if raw_text_excerpt:
+            safe = _redact_order_tokens(
+                _truncate(_single_line(raw_text_excerpt), 80)
+            )
+            lines.append(f"原文节选: {safe}")
+        return "\n".join(lines)
+
+    def render_reconcile_drift(
+        self, *, code: str, reported_volume: int, held_volume: int
+    ) -> str:
+        """Reported SELL exceeds the mirrored holding — ask before booking."""
+        return "\n".join(
+            [
+                "【QuantMind 对账追问】",
+                (
+                    f"你报的卖出 {_single_line(code)} {int(reported_volume)} 股"
+                    f"超过镜像账本记录的持仓 {int(held_volume)} 股。"
+                ),
+                "若真实持仓确实更多,请回一句实际持有多少股,我先修正账本再入账;"
+                "若数量报错了,请重报这笔成交。",
+            ]
+        )
+
+    def render_reconcile_outcome(self, *, kind: str) -> str:
+        """Ack an explicit non-fill outcome (``unfilled`` / ``no_action``)."""
+        if kind == "unfilled":
+            body = (
+                "已记录: 本次建议未成交。今晚重算后若目标书仍有差异,"
+                "会再次推送提醒。"
+            )
+        elif kind == "no_action":
+            body = "已记录: 本次建议不跟随。此建议不再重复提醒。"
+        else:
+            raise ValueError(f"unknown reconcile outcome kind {kind!r}")
+        return "\n".join(["【QuantMind 已记录】", body])
+
+    def render_z_record_ack(
+        self, *, type_label: str, code: str, name: str, amount: float
+    ) -> str:
+        """Ack one Z-line (institutional-rent) ledger record."""
+        who = " ".join(x for x in (_single_line(code), _single_line(name)) if x)
+        return "\n".join(
+            [
+                "【QuantMind 已记录-Z线】",
+                f"类型: {_single_line(type_label)}",
+                *([f"标的: {who}"] if who else []),
+                f"金额: {_format_money(amount)} CNY",
+                "已计入制度红利(Z 线)账本。",
+            ]
+        )
 
     # -- Reconciliation request (F-005 surface) ------------------------
 

@@ -228,6 +228,68 @@ def test_decide_delivered_killed_notice_not_repeated() -> None:
     assert d.event is None
 
 
+def test_decide_delivered_rebalance_sets_awaiting_report() -> None:
+    status = _status_payload()
+    state = _delivered_state(status)
+    status["advisory"]["asof_trade_date"] = "20260714"
+    status["advisory"]["holdings"][0]["ts_code"] = "000858.SZ"
+    d = decide(status, state)
+    assert d.event == "rebalance"
+    assert d.state_after_send["awaiting_report"] == {
+        "hash": content_hash(status),
+        "delivered_asof": "20260714",
+    }
+
+
+def test_decide_awaiting_report_reminds_next_close() -> None:
+    # No owner report by the next trading close → re-render + re-push.
+    status = _status_payload()
+    status["advisory"]["asof_trade_date"] = "20260714"
+    status["advisory"]["holdings"][0]["ts_code"] = "000858.SZ"
+    delivered = decide(status, _delivered_state(_status_payload())).state_after_send
+    same_day = decide(status, delivered)
+    assert same_day.event is None  # delivered today — no reminder yet
+    status["advisory"]["asof_trade_date"] = "20260715"
+    d = decide(status, delivered)
+    assert d.event == "rebalance_reminder"
+    # A delivered reminder re-arms for the day after.
+    assert d.state_after_send["awaiting_report"]["delivered_asof"] == "20260715"
+
+
+def test_decide_cleared_awaiting_stays_silent() -> None:
+    # The reconciliation loop clears awaiting_report after a booked fill /
+    # explicit no-action — the reminder must then stop.
+    status = _status_payload()
+    status["advisory"]["asof_trade_date"] = "20260714"
+    status["advisory"]["holdings"][0]["ts_code"] = "000858.SZ"
+    delivered = decide(status, _delivered_state(_status_payload())).state_after_send
+    cleared = {k: v for k, v in delivered.items() if k != "awaiting_report"}
+    status["advisory"]["asof_trade_date"] = "20260715"
+    assert decide(status, cleared).event is None
+
+
+def test_clear_awaiting_report_roundtrip(tmp_path: Path) -> None:
+    from backend.portfolio.sleeve_push_state import clear_awaiting_report
+
+    p = tmp_path / "state.json"
+    save_push_state(
+        p,
+        {
+            "last_sent_status": "ACCRUING",
+            "awaiting_report": {"hash": "h", "delivered_asof": "20260714"},
+        },
+    )
+    assert clear_awaiting_report(p)
+    assert "awaiting_report" not in load_push_state(p)
+    assert load_push_state(p)["last_sent_status"] == "ACCRUING"
+    assert not clear_awaiting_report(p)  # idempotent
+
+
+def test_render_text_reminder_line() -> None:
+    text = render_text(_status_payload(), reminder=True)
+    assert "尚未收到执行回报" in text
+
+
 def test_push_state_roundtrip_and_corruption(tmp_path: Path) -> None:
     p = tmp_path / "state.json"
     assert load_push_state(p) == {}

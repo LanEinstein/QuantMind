@@ -18,6 +18,13 @@ Push semantics (MI-1 redesign — change-triggered, silent by default):
   hash) differs from the last delivered book → push. Anchoring on the
   schedule-rebalance pointer (not the as-of date) self-heals a missed
   rebalance-day run: the next run still sees the un-advised rebalance;
+* **execution reminder**: a delivered rebalance advisory sets an
+  ``awaiting_report`` flag; if the owner has not reported by the NEXT
+  trading close (the reconciliation loop clears the flag on a booked fill
+  or an explicit no-action), the advisory is re-rendered from the latest
+  close and re-pushed — the plan's "no report → assume unfilled, recompute
+  and re-push". Codex-flagged: without this explicit state the pointer
+  advance would silently swallow the retry;
 * **anything else**: the pipeline runs, the status JSON is written, and NO
   message is sent. A rebalance whose book is unchanged silently advances
   the pointer (dedupe state only, not a notice — safe to persist unsent).
@@ -55,6 +62,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from backend.portfolio.sleeve_push_state import (
+    AWAITING_KEY,
+    load_push_state,
+    save_push_state,
+)
 
 DEFAULT_STATUS = "data/factor_research/defensive_sleeve_forward_status.json"
 DEFAULT_PUSH_STATE = "data/factor_research/sleeve_push_state.json"
@@ -121,22 +134,6 @@ def content_hash(status: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def load_push_state(path: Path) -> dict[str, Any]:
-    """Last-delivered push state; empty dict = never pushed (will announce)."""
-    if not path.exists():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}  # unreadable state → behaves as first run (dedupe only)
-    return loaded if isinstance(loaded, dict) else {}
-
-
-def save_push_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
 @dataclass(frozen=True)
 class PushDecision:
     """What this run should do, and the state each outcome persists."""
@@ -158,12 +155,18 @@ def decide(status: dict[str, Any], state: dict[str, Any]) -> PushDecision:
     last_advised = str(state.get("last_advised_rebalance", ""))
     rebalance_pending = latest_due > last_advised
     book_changed = book_hash != state.get("last_sent_hash")
+    awaiting = state.get(AWAITING_KEY)
+    awaiting_stale = isinstance(awaiting, dict) and asof > str(
+        awaiting.get("delivered_asof", "")
+    )
 
     last_status = state.get("last_sent_status")
     if current_status != last_status:
         event = "status_change"
     elif rebalance_pending and book_changed:
         event = "rebalance"
+    elif awaiting_stale:
+        event = "rebalance_reminder"
     else:
         event = None
 
@@ -173,6 +176,19 @@ def decide(status: dict[str, Any], state: dict[str, Any]) -> PushDecision:
         "last_advised_rebalance": max(latest_due, last_advised),
         "asof_trade_date": asof,
     }
+    # A delivered advisory awaits the owner's execution report; the
+    # reconciliation loop clears the flag, tomorrow's cron reminds until
+    # then. A status change rides along only when a rebalance is also due.
+    if event in ("rebalance", "rebalance_reminder") or (
+        event == "status_change" and rebalance_pending and book_changed
+    ):
+        state_after_send[AWAITING_KEY] = {
+            "hash": book_hash,
+            "delivered_asof": asof,
+        }
+    elif isinstance(awaiting, dict):
+        state_after_send[AWAITING_KEY] = awaiting
+
     state_after_silent = dict(state)
     if event is None and rebalance_pending:
         # Book identical at this rebalance → nothing to say, but the pointer
@@ -192,6 +208,7 @@ def render_text(
     status: dict[str, Any],
     *,
     status_changed_from: str | None = None,
+    reminder: bool = False,
     pilot: bool = False,
 ) -> str:
     """Compose the digest via the renderer (§2.6 — the only legal composer)."""
@@ -212,6 +229,7 @@ def render_text(
         bear_cum_kill=float(kill["bear_cum_kill"]),
         baseline_underperf_periods=int(kill["baseline_underperf_periods"]),
         status_changed_from=status_changed_from,
+        reminder=reminder,
         pilot=pilot,
     )
 
@@ -255,6 +273,7 @@ def main() -> int:
     decision = decide(status, state)
     asof = str(status["advisory"]["asof_trade_date"])
 
+    reminder = decision.event == "rebalance_reminder"
     if args.dry_run:
         print(f"decision: event={decision.event or 'silent'} asof={asof}")
         if decision.event or args.force:
@@ -263,6 +282,7 @@ def main() -> int:
                 render_text(
                     status,
                     status_changed_from=decision.status_changed_from,
+                    reminder=reminder,
                     pilot=args.pilot,
                 )
             )
@@ -281,7 +301,10 @@ def main() -> int:
         print(f"missing credentials: {', '.join(missing)} — nothing sent")
         return 2
     text = render_text(
-        status, status_changed_from=decision.status_changed_from, pilot=args.pilot
+        status,
+        status_changed_from=decision.status_changed_from,
+        reminder=reminder,
+        pilot=args.pilot,
     )
     chat_id = os.environ[args.chat_env].strip()
     book_prefix = content_hash(status)[:8]
