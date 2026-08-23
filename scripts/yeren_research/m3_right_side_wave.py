@@ -120,6 +120,29 @@ def _concentration(trades: list[WaveTrade]) -> dict[str, object]:
     without_top = np.asarray(
         [t.net_return_pct for t in trades if t.code != top_code], dtype=float
     )
+    # Trade COUNTS alone cannot tell whether one year carries the window's
+    # mean: a year holding most of the trades can still be the drag. The
+    # per-year mean is what the preregistration's "single-year contribution
+    # concentration" disclosure actually needs.
+    per_year: dict[str, dict[str, object]] = {}
+    for year in sorted(by_year):
+        year_net = np.asarray(
+            [t.net_return_pct for t in trades if t.entry_date // 10_000 == year],
+            dtype=float,
+        )
+        per_year[str(year)] = {
+            "trades": int(len(year_net)),
+            "mean_net_return_pct": float(year_net.mean()),
+            "share_of_total_net_sum_pct": (
+                100.0 * float(year_net.sum()) / float(net.sum())
+                if net.sum() != 0
+                else None
+            ),
+        }
+    without_top_year = np.asarray(
+        [t.net_return_pct for t in trades if t.entry_date // 10_000 != top_year],
+        dtype=float,
+    )
     return {
         "securities_with_trades": len(by_code),
         "top_security": top_code,
@@ -129,7 +152,10 @@ def _concentration(trades: list[WaveTrade]) -> dict[str, object]:
         ),
         "top_year": int(top_year),
         "top_year_trade_share_pct": 100.0 * top_year_count / len(trades),
-        "trades_by_year": {str(year): count for year, count in sorted(by_year.items())},
+        "mean_net_excluding_top_year_pct": (
+            float(without_top_year.mean()) if len(without_top_year) else None
+        ),
+        "by_year": per_year,
         "mean_net_all_pct": float(net.mean()) if len(net) else None,
     }
 
@@ -154,6 +180,13 @@ def _closed_stats(trades: list[WaveTrade]) -> dict[str, object]:
         "mae_worst_pct": float(mae.min()) if len(mae) else None,
         "holding_bars_median": _percentile(holding, 50),
         "holding_bars_p90": _percentile(holding, 90),
+        "holding_bars_max": float(holding.max()) if len(holding) else None,
+        # Whether the rule is even CAPABLE of the author's self-described
+        # multi-month hold is a tail question, not a median question; roughly
+        # three months of trading days is 60 bars.
+        "holding_bars_ge_60_share_pct": (
+            float((holding >= 60).mean() * 100.0) if len(holding) else None
+        ),
         "mae_drawdown_definition": (
             "single-trade close-only maximum adverse excursion; "
             "not a portfolio drawdown"
@@ -218,9 +251,19 @@ def evaluate_window(
     closed = [t for t in all_trades if t.status == "closed"]
     open_end = [t for t in all_trades if t.status == "open_at_window_end"]
     no_fill = [t for t in all_trades if t.status == "no_fill_fact"]
-    unverified = [
-        t for t in closed if t.entry_limit_row_missing or t.exit_limit_row_missing
-    ]
+    unverified = {
+        "entry_limit_row_missing_trades": sum(
+            1 for t in all_trades if t.entry_limit_row_missing
+        ),
+        "exit_limit_row_missing_trades": sum(
+            1 for t in all_trades if t.exit_limit_row_missing
+        ),
+        "closed_trades_with_either": sum(
+            1
+            for t in closed
+            if t.entry_limit_row_missing or t.exit_limit_row_missing
+        ),
+    }
 
     placebo = matched_horizon_placebo(
         tuple(
@@ -281,7 +324,7 @@ def evaluate_window(
             ),
         },
         "no_fill_fact": {"trades": len(no_fill)},
-        "unverified_fill_flagged_trades": len(unverified),
+        "unverified_fill_disclosure": unverified,
         "signals_excluded": dict(totals),
         "fill_delays": {
             "entries_delayed_beyond_next_open": sum(

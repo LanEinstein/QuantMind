@@ -170,15 +170,20 @@ def test_activation_outside_the_entry_window_produces_no_entry():
 
 
 def test_one_activation_yields_at_most_one_entry():
+    # A six-bar entry window keeps the spent activation inside the second
+    # setup's window, so this isolates the ledger rather than the window: on
+    # bar 8 the activation at bar 2 is still in range and must still be spent.
+    spec = WaveSpec(
+        short_window=2, mid_window=3, long_window=4, lookback_bars=5,
+        entry_window_bars=6,
+    )
     dates = _dates(12)
     series = _series("600000.SH", dates, opens=[10] * 12, closes=[9] * 12)
-    # Two consecutive setup bars share one activation; the position opened by
-    # the first exits immediately, and the second must not reuse it.
     features = _features(
-        12, activation_at=[2], structure_at=[3, 6], pullback_at=[3, 6], exit_at=[4]
+        12, activation_at=[2], structure_at=[3, 8], pullback_at=[3, 8], exit_at=[5]
     )
 
-    trades, _ = _replay(series, features)
+    trades, _ = _replay(series, features, spec=spec)
 
     assert [t.entry_signal_date for t in trades] == [int(dates[3])]
 
@@ -267,11 +272,12 @@ def test_a_position_with_no_exit_signal_is_marked_open_at_window_end():
     assert trades[0].exit_price == 12.0
 
 
-def test_t_plus_one_holds_at_least_one_bar_between_buy_and_sell():
+def test_an_exit_signal_on_the_fill_bar_itself_is_ignored():
+    # Preregistration section 6: the earliest exit signal sits on a bar AFTER
+    # the entry day. A signal on the fill bar (index 4) must not close the
+    # trade, so with no later signal the position runs to the window end.
     dates = _dates(9)
     series = _series("600000.SH", dates, opens=[10] * 9, closes=[9] * 9)
-    # Exit fires on the very bar the entry filled on; the sale still cannot
-    # happen before the following open.
     features = _features(
         9, activation_at=[2], structure_at=[3], pullback_at=[3], exit_at=[4]
     )
@@ -279,8 +285,21 @@ def test_t_plus_one_holds_at_least_one_bar_between_buy_and_sell():
     trades, _ = _replay(series, features)
 
     assert trades[0].entry_date == int(dates[4])
-    assert trades[0].exit_date == int(dates[5])
-    assert trades[0].holding_bars == 1
+    assert trades[0].status == "open_at_window_end"
+
+
+def test_the_earliest_possible_exit_leaves_two_bars_between_buy_and_sell():
+    dates = _dates(9)
+    series = _series("600000.SH", dates, opens=[10] * 9, closes=[9] * 9)
+    features = _features(
+        9, activation_at=[2], structure_at=[3], pullback_at=[3], exit_at=[5]
+    )
+
+    trades, _ = _replay(series, features)
+
+    assert trades[0].entry_date == int(dates[4])
+    assert trades[0].exit_date == int(dates[6])
+    assert trades[0].holding_bars == 2
 
 
 # --- pricing, fees, window bounds -------------------------------------------
@@ -324,6 +343,39 @@ def test_fees_and_the_commission_floor_push_the_net_below_the_gross():
 
     assert np.isclose(trades[0].gross_return_pct, 0.0)
     assert trades[0].net_return_pct < -1.0  # ¥5 floor on a ¥1,000 lot dominates
+
+
+def test_the_commission_floor_sees_the_raw_lot_notional_not_the_adjusted_one():
+    # Same real trade, two adjustment scales. Back-adjusted prices are 10x
+    # larger in the second series, which would push the fictitious one-lot
+    # notional from 1,000 to 10,000 and stop the CNY 5 floor from biting.
+    dates = _dates(9)
+    features = _features(
+        9, activation_at=[2], structure_at=[3], pullback_at=[3], exit_at=[5]
+    )
+    costs = CostModel(commission_rate=0.00015, min_commission=5.0)
+
+    def net(adj_value):
+        series = _series(
+            "600000.SH", dates, opens=[10] * 9, closes=[9] * 9,
+            adj=[adj_value] * 9,
+        )
+        trades, _ = simulate_wave_trades(
+            series,
+            features,
+            spec=SMALL,
+            st_mask=np.zeros(9, dtype=bool),
+            up_limits=np.full(9, np.nan),
+            down_limits=np.full(9, np.nan),
+            start_date=int(dates[0]),
+            end_date=int(dates[-1]),
+            calendar_index={int(day): i for i, day in enumerate(dates)},
+            costs=costs,
+        )
+        return trades[0].net_return_pct
+
+    assert np.isclose(net(1.0), net(10.0))
+    assert net(1.0) < -1.0  # the floor really is biting on a 1,000 CNY lot
 
 
 def test_window_truncation_does_not_change_a_fully_contained_trade():

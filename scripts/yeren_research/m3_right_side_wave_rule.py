@@ -302,7 +302,12 @@ def simulate_wave_trades(
             continue
         entry_limit_row_missing = not np.isfinite(up_limits[entry_index])
 
-        position = int(np.searchsorted(exit_indices, entry_index, side="left"))
+        # Preregistration section 6 puts the earliest exit signal on a bar
+        # AFTER the entry day, so the fill bar's own close cannot close the
+        # trade; searching from entry_index + 1 is what the frozen text says.
+        position = int(
+            np.searchsorted(exit_indices, entry_index + 1, side="left")
+        )
         exit_signal_index = (
             int(exit_indices[position])
             if position < len(exit_indices) and exit_indices[position] <= last_index
@@ -341,7 +346,15 @@ def simulate_wave_trades(
             gross = net = mae = float("nan")
         else:
             gross = (exit_price / entry_price - 1.0) * 100.0
-            net = costs.net_return_pct(entry_price, exit_price)
+            # Back-adjusted prices carry an arbitrary scale (close x adj), so
+            # feeding them straight to the cost model would evaluate the CNY 5
+            # floor against a fictitious notional. Dividing both legs by the
+            # ENTRY bar's factor restores real money: the entry leg becomes the
+            # raw entry price, and the exit leg becomes what the originally
+            # bought lot is really worth after any corporate action in between.
+            # The ratio, hence the gross return, is untouched.
+            scale = float(series.adj[entry_index])
+            net = costs.net_return_pct(entry_price / scale, exit_price / scale)
             # A closed trade is sold at exit_index_out's open, so that bar's
             # close belongs to a period the position no longer existed in.
             held_last = exit_index_out - 1 if status == "closed" else exit_index_out
