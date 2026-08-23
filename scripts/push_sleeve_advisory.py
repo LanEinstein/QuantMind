@@ -71,6 +71,7 @@ from backend.portfolio.sleeve_push_state import (
 
 DEFAULT_STATUS = "data/factor_research/defensive_sleeve_forward_status.json"
 DEFAULT_PUSH_STATE = "data/factor_research/sleeve_push_state.json"
+DEFAULT_ADVISORY_HISTORY = "data/factor_research/sleeve_advisory_history.jsonl"
 # Legacy per-as-of marker (pre-MI-1). Kept only because push_ipo_reminder
 # reuses already_sent/mark_sent; the sleeve path no longer writes it.
 DEFAULT_SENT_MARKER = "data/factor_research/sleeve_advisory_sent.json"
@@ -234,6 +235,35 @@ def render_text(
     )
 
 
+def append_advisory_history(
+    path: Path, status: dict[str, Any], *, event: str, delivered_at: str
+) -> None:
+    """Snapshot the DELIVERED advisory (research-side reference prices).
+
+    The status JSON is overwritten daily, so the monthly mirror-vs-research
+    execution-drift disclosure (plan §5⑤) needs the book AS DELIVERED —
+    closes included — persisted at push time.
+    """
+    advisory = status["advisory"]
+    row = {
+        "asof": str(advisory["asof_trade_date"]),
+        "delivered_at": delivered_at,
+        "event": event,
+        "holdings": [
+            {
+                "ts_code": str(h.get("ts_code", "")),
+                "close": h.get("close"),
+                "target_weight_pct": h.get("target_weight_pct"),
+            }
+            for h in advisory["holdings"]
+        ],
+        "cash_weight_pct": float(advisory["cash_weight_pct"]),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 async def send(text: str, *, chat_id: str, dedupe_key: str) -> bool:
     """Send through the self-built app OpenAPI; returns the API acceptance."""
     from backend.integrations.feishu.client import FeishuClient
@@ -314,12 +344,16 @@ def main() -> int:
     if ok:
         from datetime import UTC, datetime
 
+        sent_at = datetime.now(UTC).isoformat()
         save_push_state(
             state_path,
-            {
-                **decision.state_after_send,
-                "sent_at": datetime.now(UTC).isoformat(),
-            },
+            {**decision.state_after_send, "sent_at": sent_at},
+        )
+        append_advisory_history(
+            Path(DEFAULT_ADVISORY_HISTORY),
+            status,
+            event=decision.event or "forced",
+            delivered_at=sent_at,
         )
         print(f"sleeve advisory sent (event {decision.event or 'forced'}, asof {asof})")
         return 0
