@@ -6,6 +6,26 @@ written by ``scripts.factor_research.defensive_sleeve_forward``) and sends the
 CURRENT target book as a **display-only** plain-text digest through the
 self-built app OpenAPI (never the banned custom-bot webhook).
 
+Push semantics (MI-1 redesign — change-triggered, silent by default):
+
+* **status change** (any day): the forward status (ACCRUING / SURVIVING /
+  KILLED) differs from the last DELIVERED one → push with an explicit
+  transition line. The state file is only updated after a successful send,
+  so a failed send can never swallow a one-time KILLED notice (the
+  ``mark_notice_delivered`` lesson from MZ-1);
+* **rebalance with a diff**: a schedule rebalance date not yet advised has
+  passed AND the target book (holdings code+weight / cash / canonical JSON
+  hash) differs from the last delivered book → push. Anchoring on the
+  schedule-rebalance pointer (not the as-of date) self-heals a missed
+  rebalance-day run: the next run still sees the un-advised rebalance;
+* **anything else**: the pipeline runs, the status JSON is written, and NO
+  message is sent. A rebalance whose book is unchanged silently advances
+  the pointer (dedupe state only, not a notice — safe to persist unsent).
+
+The advisory book is recomputed by the runner at every as-of close (raw
+dv-top5, no buffer), so its hash drifts on non-rebalance days; that drift is
+deliberately NOT a push trigger — the owner only acts on rebalance days.
+
 Red lines honored by construction:
 
 * the text is composed by :meth:`MessageRenderer.render_sleeve_advisory`
@@ -15,31 +35,31 @@ Red lines honored by construction:
   human gate;
 * zero LLM anywhere in this path (deterministic research output only);
 * credentials come from the environment (never persisted / logged); a missing
-  credential is a fail-closed exit, never a partial send;
-* idempotent per (advisory, as-of date): a LOCAL sent-marker file skips any
-  as-of date already pushed (``--force`` overrides), because Feishu's ``uuid``
-  dedupe only spans a 1-hour server-side window — on a holiday the runner's
-  as-of date does not advance and a marker-less rerun would re-send yesterday's
-  book as if fresh (codex finding).
+  credential is a fail-closed exit, never a partial send.
 
 Usage::
 
-    python scripts/push_sleeve_advisory.py --dry-run     # print text, no network
-    python scripts/push_sleeve_advisory.py               # send to decision chat
-    python scripts/push_sleeve_advisory.py --chat-env FEISHU_ALERT_CHAT_ID
+    python scripts/push_sleeve_advisory.py --dry-run     # print decision + text
+    python scripts/push_sleeve_advisory.py               # send iff a push event
+    python scripts/push_sleeve_advisory.py --force       # send regardless
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 DEFAULT_STATUS = "data/factor_research/defensive_sleeve_forward_status.json"
+DEFAULT_PUSH_STATE = "data/factor_research/sleeve_push_state.json"
+# Legacy per-as-of marker (pre-MI-1). Kept only because push_ipo_reminder
+# reuses already_sent/mark_sent; the sleeve path no longer writes it.
 DEFAULT_SENT_MARKER = "data/factor_research/sleeve_advisory_sent.json"
 _REQUIRED_CREDS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
 
@@ -63,7 +83,7 @@ def mark_sent(marker_path: Path, asof: str, *, sent_at: str) -> None:
             sent = json.loads(marker_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             sent = {}
-    sent[asof] = sent_at
+    sent = {**sent, asof: sent_at}
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(json.dumps(sent, indent=2), encoding="utf-8")
 
@@ -83,7 +103,97 @@ def load_status(path: Path) -> dict[str, Any]:
     return raw
 
 
-def render_text(status: dict[str, Any], *, pilot: bool = False) -> str:
+def content_hash(status: dict[str, Any]) -> str:
+    """Canonical hash of what the owner would ACT on: book + cash.
+
+    Only ``ts_code``/``target_weight_pct``/``cash_weight_pct`` enter the hash —
+    daily-drifting display fields (close, dv_ratio, as-of date) must not.
+    """
+    advisory = status["advisory"]
+    canonical = {
+        "holdings": sorted(
+            [str(h["ts_code"]), float(h["target_weight_pct"])]
+            for h in advisory["holdings"]
+        ),
+        "cash_weight_pct": float(advisory["cash_weight_pct"]),
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def load_push_state(path: Path) -> dict[str, Any]:
+    """Last-delivered push state; empty dict = never pushed (will announce)."""
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}  # unreadable state → behaves as first run (dedupe only)
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def save_push_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class PushDecision:
+    """What this run should do, and the state each outcome persists."""
+
+    event: str | None  # "status_change" | "rebalance" | None (silent)
+    status_changed_from: str | None  # rendered transition line, if any
+    state_after_send: dict[str, Any]  # persisted ONLY after a delivered send
+    state_after_silent: dict[str, Any]  # dedupe pointer advance; safe unsent
+
+
+def decide(status: dict[str, Any], state: dict[str, Any]) -> PushDecision:
+    """Change-triggered push decision (see module docstring for semantics)."""
+    current_status = str(status["status"])
+    book_hash = content_hash(status)
+    asof = str(status["advisory"]["asof_trade_date"])
+    schedule = [str(d) for d in status["forward"]["schedule_rebalances"]]
+    due = [d for d in schedule if d <= asof]
+    latest_due = due[-1] if due else ""
+    last_advised = str(state.get("last_advised_rebalance", ""))
+    rebalance_pending = latest_due > last_advised
+    book_changed = book_hash != state.get("last_sent_hash")
+
+    last_status = state.get("last_sent_status")
+    if current_status != last_status:
+        event = "status_change"
+    elif rebalance_pending and book_changed:
+        event = "rebalance"
+    else:
+        event = None
+
+    state_after_send = {
+        "last_sent_status": current_status,
+        "last_sent_hash": book_hash,
+        "last_advised_rebalance": max(latest_due, last_advised),
+        "asof_trade_date": asof,
+    }
+    state_after_silent = dict(state)
+    if event is None and rebalance_pending:
+        # Book identical at this rebalance → nothing to say, but the pointer
+        # must advance or later non-rebalance hash drift would fake a push.
+        state_after_silent = {**state, "last_advised_rebalance": latest_due}
+    return PushDecision(
+        event=event,
+        status_changed_from=(
+            str(last_status) if event == "status_change" and last_status else None
+        ),
+        state_after_send=state_after_send,
+        state_after_silent=state_after_silent,
+    )
+
+
+def render_text(
+    status: dict[str, Any],
+    *,
+    status_changed_from: str | None = None,
+    pilot: bool = False,
+) -> str:
     """Compose the digest via the renderer (§2.6 — the only legal composer)."""
     from backend.integrations.feishu.renderer import MessageRenderer
 
@@ -101,6 +211,7 @@ def render_text(status: dict[str, Any], *, pilot: bool = False) -> str:
         mdd_kill=float(kill["mdd_kill"]),
         bear_cum_kill=float(kill["bear_cum_kill"]),
         baseline_underperf_periods=int(kill["baseline_underperf_periods"]),
+        status_changed_from=status_changed_from,
         pilot=pilot,
     )
 
@@ -125,41 +236,72 @@ def main() -> int:
         help="env var holding the target open_chat_id (display-only digest)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="print the text; send nothing"
+        "--dry-run",
+        action="store_true",
+        help="print the decision and text; persist and send nothing",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="send even if this as-of date was already pushed",
+        help="send even when no push event fired (rehearsal/manual resend)",
     )
-    parser.add_argument("--sent-marker", default=DEFAULT_SENT_MARKER)
+    parser.add_argument("--push-state", default=DEFAULT_PUSH_STATE)
     parser.add_argument("--pilot", action="store_true")
     args = parser.parse_args()
 
     status = load_status(Path(args.status))
-    text = render_text(status, pilot=args.pilot)
+    state_path = Path(args.push_state)
+    state = load_push_state(state_path)
+    decision = decide(status, state)
+    asof = str(status["advisory"]["asof_trade_date"])
+
     if args.dry_run:
-        print(text)
+        print(f"decision: event={decision.event or 'silent'} asof={asof}")
+        if decision.event or args.force:
+            print("--")
+            print(
+                render_text(
+                    status,
+                    status_changed_from=decision.status_changed_from,
+                    pilot=args.pilot,
+                )
+            )
         return 0
 
-    asof = str(status["advisory"]["asof_trade_date"])
-    marker = Path(args.sent_marker)
-    if not args.force and already_sent(marker, asof):
-        print(f"advisory for asof {asof} already pushed — skipping (--force to resend)")
+    if decision.event is None and not args.force:
+        if decision.state_after_silent != state:
+            save_push_state(state_path, decision.state_after_silent)
+            print(f"rebalance {asof}: book unchanged — pointer advanced, silent")
+        else:
+            print(f"no push event (asof {asof}) — silent")
         return 0
 
     missing = [c for c in (*_REQUIRED_CREDS, args.chat_env) if not os.environ.get(c)]
     if missing:
         print(f"missing credentials: {', '.join(missing)} — nothing sent")
         return 2
+    text = render_text(
+        status, status_changed_from=decision.status_changed_from, pilot=args.pilot
+    )
     chat_id = os.environ[args.chat_env].strip()
-    ok = asyncio.run(send(text, chat_id=chat_id, dedupe_key=f"sleeve-advisory-{asof}"))
+    book_prefix = content_hash(status)[:8]
+    ok = asyncio.run(
+        send(text, chat_id=chat_id, dedupe_key=f"sleeve-{asof}-{book_prefix}")
+    )
     if ok:
         from datetime import UTC, datetime
 
-        mark_sent(marker, asof, sent_at=datetime.now(UTC).isoformat())
-        print(f"sleeve advisory sent (asof {asof})")
+        save_push_state(
+            state_path,
+            {
+                **decision.state_after_send,
+                "sent_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        print(f"sleeve advisory sent (event {decision.event or 'forced'}, asof {asof})")
         return 0
+    # State untouched → the event (incl. a one-time KILLED notice) retries
+    # on the next run instead of being swallowed by a failed send.
     print("Feishu API rejected the message — see backend logs")
     return 1
 

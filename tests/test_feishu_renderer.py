@@ -924,6 +924,17 @@ class TestSleeveAdvisory:
     def test_pilot_banner(self) -> None:
         assert "试点" in self._render(pilot=True)
 
+    def test_guardrail_line_always_present(self) -> None:
+        # MD-1 P-B NO_ADOPT → discipline rides on every advisory push.
+        text = self._render()
+        assert "不补仓亏损股" in text
+        assert "不在无浮盈时做T" in text
+
+    def test_status_transition_line(self) -> None:
+        text = self._render(status="KILLED", status_changed_from="ACCRUING")
+        assert "前向状态变化: ACCRUING → KILLED" in text
+        assert self._render().count("前向状态变化") == 0  # absent by default
+
 
 class TestIpoReminder:
     """MZ-1 — display-only IPO/CB subscription reminder."""

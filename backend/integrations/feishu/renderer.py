@@ -332,6 +332,7 @@ class MessageRenderer:
         mdd_kill: float,
         bear_cum_kill: float,
         baseline_underperf_periods: int,
+        status_changed_from: str | None = None,
         pilot: bool = False,
     ) -> str:
         """Render the SLV-1 defensive-sleeve forward TARGET BOOK (display-only).
@@ -356,6 +357,16 @@ class MessageRenderer:
             *self._pilot_prefix(pilot),
             "【QuantMind 防御Sleeve目标持仓 / 试运营】",
             "本条为前向试运营的展示性研究建议,仅供参考,非交易指令,无需回复。",
+            *(
+                [
+                    (
+                        f"⚠️ 前向状态变化: {_single_line(status_changed_from)}"
+                        f" → {_single_line(status)},请查看后人工处理。"
+                    )
+                ]
+                if status_changed_from is not None
+                else []
+            ),
             (
                 f"前向状态: {_single_line(status)} "
                 f"(第 {int(complete_periods)}/{int(min_forward_periods)} 期起裁决)"
@@ -391,6 +402,9 @@ class MessageRenderer:
             f"熊市累计<{float(bear_cum_kill) * 100:.0f}% / "
             f"连续{int(baseline_underperf_periods)}期落后基线"
         )
+        # Behavioral guardrail (MD-1 P-B NO_ADOPT → discipline text, not a
+        # mechanical stop; see docs/research/pb-stop-ablation-results-2026-08-23.md).
+        lines.append("纪律: 不补仓亏损股;不在无浮盈时做T;反常下跌先报我再动手。")
         return "\n".join(lines)
 
     def render_ipo_reminder(
