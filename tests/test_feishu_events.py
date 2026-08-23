@@ -105,6 +105,42 @@ class TestInMemoryDedupe:
         assert await dedupe.claim("ev_a") is True
 
     @pytest.mark.asyncio
+    async def test_file_dedupe_survives_restart(self, tmp_path) -> None:
+        # MI-1 / codex P1: the operational reconcile listener must keep
+        # recognising redelivered events across a process restart.
+        from backend.integrations.feishu.dedupe import FileEventDedupe
+
+        path = tmp_path / "dedupe.json"
+        first = FileEventDedupe(path)
+        assert await first.claim("ev_a") is True
+        assert await first.claim("ev_a") is False
+        reborn = FileEventDedupe(path)  # simulated restart
+        assert await reborn.claim("ev_a") is False
+        assert await reborn.claim("ev_b") is True
+
+    @pytest.mark.asyncio
+    async def test_file_dedupe_ttl_prunes(self, tmp_path) -> None:
+        import json as _json
+
+        from backend.integrations.feishu.dedupe import FileEventDedupe
+
+        path = tmp_path / "dedupe.json"
+        dedupe = FileEventDedupe(path, ttl_seconds=60)
+        await dedupe.claim("ev_old")
+        entries = _json.loads(path.read_text(encoding="utf-8"))
+        entries["ev_old"] = 0.0  # long past the TTL window
+        path.write_text(_json.dumps(entries), encoding="utf-8")
+        assert await dedupe.claim("ev_old") is True
+
+    @pytest.mark.asyncio
+    async def test_file_dedupe_corrupt_file_fails_open(self, tmp_path) -> None:
+        from backend.integrations.feishu.dedupe import FileEventDedupe
+
+        path = tmp_path / "dedupe.json"
+        path.write_text("{not json", encoding="utf-8")
+        assert await FileEventDedupe(path).claim("ev_a") is True
+
+    @pytest.mark.asyncio
     async def test_empty_event_id_raises(self) -> None:
         dedupe = InMemoryEventDedupe()
         with pytest.raises(ValueError, match="event_id"):

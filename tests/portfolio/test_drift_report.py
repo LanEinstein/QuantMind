@@ -89,6 +89,33 @@ def test_monthly_drift_buy_above_close_is_positive(tmp_path: Path) -> None:
     assert r["drift_yuan"] == 500.0  # 0.10 × 5000 — real execution worse
 
 
+def test_reference_close_uses_exit_price_for_exited_name(
+    tmp_path: Path,
+) -> None:
+    # codex P1: a name dropped at a rebalance must be referenced at the
+    # EXIT delivery's close, not the weeks-old close from when it was held.
+    history_rows = [
+        {
+            "asof": "20260821",
+            "holdings": [{"ts_code": "002271.SZ", "close": 11.14}],
+            "exits": [],
+        },
+        {
+            "asof": "20260910",
+            "holdings": [{"ts_code": "000858.SZ", "close": 71.19}],
+            "exits": [{"ts_code": "002271.SZ", "close": 12.50}],
+        },
+    ]
+    assert reference_close(
+        history_rows, code="002271", fill_date="20260911"
+    ) == 12.50
+    # An exit whose PIT lookup failed stays honest: uncovered, not stale.
+    history_rows[1]["exits"] = [{"ts_code": "002271.SZ", "close": None}]
+    assert reference_close(
+        history_rows, code="002271", fill_date="20260911"
+    ) is None
+
+
 def test_monthly_drift_uncovered_fill_disclosed(tmp_path: Path) -> None:
     history = tmp_path / "empty.jsonl"
     mirror = tmp_path / "mirror.jsonl"

@@ -134,21 +134,14 @@ def append_fill(
 ) -> dict[str, Any] | None:
     """Book one owner-reported fill; returns the row, or None if duplicate.
 
-    The event is validated against the CURRENT replayed book first, so an
-    impossible SELL raises :class:`MirrorDriftError` before anything is
-    written (the caller clarifies with the owner instead).
+    The PROSPECTIVE ledger (existing rows + this one) is replayed in
+    effective-time order before anything is written, so an impossible SELL
+    — including one back-filled BEFORE an already-recorded buy (codex P1)
+    — raises :class:`MirrorDriftError` and the caller clarifies with the
+    owner instead of persisting a row that would break every later replay.
     """
     if event.external_trade_id in recorded_fill_ids(path):
         return None
-    book = load_book(path)
-    if not event.side_is_buy:
-        held = book.position_for(event.code)
-        if held is None or held.volume < event.volume:
-            have = held.volume if held else 0
-            raise MirrorDriftError(
-                f"SELL {event.volume} of {event.code} exceeds mirrored "
-                f"holding {have} — clarify with the owner before booking"
-            )
     economics = fill_economics(event)
     row = {
         "kind": "fill",
@@ -164,6 +157,7 @@ def append_fill(
         **economics,
         "recorded_at": recorded_at,
     }
+    _replay([*_read_rows(path), row])  # raises MirrorDriftError on drift
     _append_row(path, row)
     return row
 
@@ -186,9 +180,20 @@ def append_cash(
 
 
 def append_adjust(
-    path: Path, *, code: str, volume_delta: int, note: str, recorded_at: str
+    path: Path,
+    *,
+    code: str,
+    volume_delta: int,
+    note: str,
+    recorded_at: str,
+    effective_at: str | None = None,
 ) -> dict[str, Any]:
-    """Owner-confirmed position correction (drift repair, no cash effect)."""
+    """Owner-confirmed position correction (drift repair, no cash effect).
+
+    ``effective_at`` places the correction in replay time — the caller
+    backdates it to the day's midnight so a subsequently RE-reported
+    intraday sell (the drift-repair flow) replays after the correction.
+    """
     if volume_delta == 0:
         raise ValueError("adjust volume_delta must be non-zero")
     row = {
@@ -198,19 +203,29 @@ def append_adjust(
         "volume_delta": int(volume_delta),
         "note": note,
         "recorded_at": recorded_at,
+        **({"effective_at": effective_at} if effective_at else {}),
     }
+    _replay([*_read_rows(path), row])  # raises MirrorDriftError on drift
     _append_row(path, row)
     return row
 
 
 def _effective_at(row: Mapping[str, Any]) -> datetime:
-    raw = str(row.get("executed_at") or row.get("recorded_at"))
+    raw = str(
+        row.get("executed_at")
+        or row.get("effective_at")
+        or row.get("recorded_at")
+    )
     return datetime.fromisoformat(raw)
 
 
 def load_book(path: Path) -> MirrorBook:
     """Replay the ledger into the current R-line book (fail-closed on drift)."""
-    rows = _read_rows(path)
+    return _replay(_read_rows(path))
+
+
+def _replay(rows: list[dict[str, Any]]) -> MirrorBook:
+    """Replay rows in effective-time order (fail-closed on drift)."""
     ordered = sorted(
         enumerate(rows), key=lambda item: (_effective_at(item[1]), item[0])
     )

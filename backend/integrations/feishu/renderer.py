@@ -1014,6 +1014,31 @@ class MessageRenderer:
             raise ValueError(f"unknown reconcile outcome kind {kind!r}")
         return "\n".join(["【QuantMind 已记录】", body])
 
+    def render_reconcile_adjust_ack(
+        self, *, code: str, old_volume: int, new_volume: int
+    ) -> str:
+        """Ack an owner-confirmed position correction (drift repair)."""
+        if old_volume == new_volume:
+            return "\n".join(
+                [
+                    "【QuantMind 已记录】",
+                    (
+                        f"镜像持仓与你所述一致({_single_line(code)} "
+                        f"{int(new_volume)} 股),未做修正。"
+                    ),
+                ]
+            )
+        return "\n".join(
+            [
+                "【QuantMind 已记录-持仓修正】",
+                (
+                    f"已按你的确认修正镜像持仓: {_single_line(code)} "
+                    f"{int(old_volume)} 股 → {int(new_volume)} 股。"
+                ),
+                "如需继续入账之前未成功的那笔成交,请再报一次。",
+            ]
+        )
+
     def render_z_record_ack(
         self, *, type_label: str, code: str, name: str, amount: float
     ) -> str:

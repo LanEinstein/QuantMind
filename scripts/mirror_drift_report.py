@@ -45,11 +45,17 @@ def load_history(path: Path) -> list[dict[str, Any]]:
 def reference_close(
     history: list[dict[str, Any]], *, code: str, fill_date: str
 ) -> float | None:
-    """The advisory close for ``code`` from the latest delivery ≤ fill date."""
+    """The advisory close for ``code`` from the latest delivery ≤ fill date.
+
+    ``exits`` (codes dropped at a rebalance, priced at the exit as-of —
+    codex P1) are checked alongside holdings, so a sell of an exited name
+    is compared against the exit rebalance's close, never a stale price
+    from when the name was still held.
+    """
     for row in reversed(history):
         if str(row.get("asof", "")) > fill_date:
             continue
-        for h in row.get("holdings", ()):
+        for h in (*row.get("holdings", ()), *row.get("exits", ())):
             if str(h.get("ts_code", "")).startswith(code):
                 close = h.get("close")
                 return float(close) if close is not None else None

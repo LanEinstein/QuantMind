@@ -252,6 +252,82 @@ async def test_oversell_returns_drift_clarification(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_adjust_position_repairs_then_sell_books(tmp_path: Path) -> None:
+    # codex P1: the drift clarification promises a repair workflow — the
+    # owner states the actual holding, the mirror corrects, and the
+    # re-reported sell then books.
+    paths = _paths(tmp_path)
+    append_fill(
+        paths["ledger_path"],
+        ExternalExecutionEvent(
+            external_trade_id="UT-20260824-093000-002271-BUY-001",
+            code="002271",
+            side=ManualTradeSide.BUY,
+            volume=100,
+            price=10.0,
+            executed_at=RECEIVED.replace(hour=9, minute=30),
+            reason=ManualTradeReason.USER_OTHER,
+        ),
+        recorded_at=RECEIVED.isoformat(),
+    )
+    adjust = await handle_owner_text(
+        "002271我实际持有300股",
+        received_at=RECEIVED,
+        complete_fn=_fake_llm(
+            {
+                "outcome": "adjust_position",
+                "code": "002271",
+                "volume": 300,
+                "volume_unit": "shares",
+            }
+        ),
+        **paths,
+    )
+    assert adjust.booked
+    assert "100 股 → 300 股" in adjust.reply_text
+    sell = await handle_owner_text(
+        "上午卖了002271两百股 10.5",
+        received_at=RECEIVED,
+        complete_fn=_fake_llm(
+            {
+                "outcome": "filled",
+                "code": "002271",
+                "side": "SELL",
+                "volume": 200,
+                "volume_unit": "shares",
+                "price": 10.5,
+                "executed_time": "10:00",
+            }
+        ),
+        **paths,
+    )
+    assert sell.booked
+    assert load_book(paths["ledger_path"]).position_for("002271").volume == 100
+
+
+@pytest.mark.asyncio
+async def test_adjust_position_consistent_is_noop(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    result = await handle_owner_text(
+        "002271没有持仓",
+        received_at=RECEIVED,
+        complete_fn=_fake_llm(
+            {
+                "outcome": "adjust_position",
+                "code": "002271",
+                "volume": 0,
+                "volume_unit": "shares",
+            }
+        ),
+        **paths,
+    )
+    # Zero is a legitimate holding declaration; the mirror is already
+    # empty, so no correction row is written and the ack says consistent.
+    assert not result.booked
+    assert "一致" in result.reply_text
+
+
+@pytest.mark.asyncio
 async def test_z_record_books_to_z_ledger(tmp_path: Path) -> None:
     result, paths = await _run(
         tmp_path,

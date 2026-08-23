@@ -42,6 +42,7 @@ from backend.models.manual_trade import (
 )
 from backend.portfolio.mirror_ledger import (
     MirrorDriftError,
+    append_adjust,
     append_fill,
     load_book,
     recorded_fill_ids,
@@ -65,7 +66,14 @@ class ReconcileExtraction(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    outcome: Literal["filled", "unfilled", "no_action", "z_record", "unclear"]
+    outcome: Literal[
+        "filled",
+        "unfilled",
+        "no_action",
+        "adjust_position",
+        "z_record",
+        "unclear",
+    ]
     code: str | None = None
     name: str | None = None
     side: Literal["BUY", "SELL"] | None = None
@@ -117,7 +125,9 @@ def build_extraction_prompt(
         "1. 一条消息只抽一笔;多笔或与交易无关 → outcome=unclear。\n"
         "2. 买入/卖出成交 → filled;明说没成交/没买到 → unfilled;"
         "明说不跟/不操作本次建议 → no_action;打新中签/中签卖出/"
-        "转债/现金理财收益 → z_record(amount=盈亏或中签金额)。\n"
+        "转债/现金理财收益 → z_record(amount=盈亏或中签金额);"
+        "owner 声明某标的的实际总持股数量(纠正账本,非一笔成交)→ "
+        "adjust_position(volume=实际总持股)。\n"
         "3. 「手」是 lots(1手=100股),「股」是 shares;不确定单位时"
         "留空 volume_unit,不要猜。数字只搬运,绝不换算或凑整。\n"
         "4. 只有下方上下文或原文能确定代码时才填 code;猜不出就留空。\n"
@@ -165,10 +175,18 @@ def missing_fill_fields(extraction: ReconcileExtraction) -> list[str]:
     return missing
 
 
-def _normalized_volume(extraction: ReconcileExtraction) -> int | None:
-    """Shares as a positive int; lots ×100; non-integral/unknown → None."""
-    if extraction.volume is None or extraction.volume <= 0:
+def _normalized_volume(
+    extraction: ReconcileExtraction, *, allow_zero: bool = False
+) -> int | None:
+    """Shares as a positive int; lots ×100; non-integral/unknown → None.
+
+    ``allow_zero`` is for adjust_position — "cleared the position" is a
+    legitimate holding declaration; a fill volume must stay positive.
+    """
+    if extraction.volume is None or extraction.volume < 0:
         return None
+    if extraction.volume == 0:
+        return 0 if allow_zero else None
     if extraction.volume != int(extraction.volume):
         return None
     shares = int(extraction.volume)
@@ -253,8 +271,71 @@ async def handle_owner_text(
         )
     if extraction.outcome == "z_record":
         return _book_z_record(extraction, z_ledger_path, renderer, text)
+    if extraction.outcome == "adjust_position":
+        return _book_adjustment(
+            extraction, text, received_at, ledger_path, renderer
+        )
     return _book_fill(
         extraction, text, received_at, ledger_path, push_state_path, renderer
+    )
+
+
+def _book_adjustment(
+    extraction: ReconcileExtraction,
+    raw_text: str,
+    received_at: datetime,
+    ledger_path: Path,
+    renderer: MessageRenderer,
+) -> ReconcileResult:
+    """Owner states the ACTUAL total holding → correct the mirror (codex P1:
+    the drift clarification promised this workflow; here it is reachable)."""
+    missing: list[str] = []
+    if not (extraction.code and extraction.code.isdigit()
+            and len(extraction.code) == 6):
+        missing.append("code")
+    actual = _normalized_volume(extraction, allow_zero=True)
+    if actual is None:
+        missing.append("volume")
+    if missing:
+        return ReconcileResult(
+            reply_text=renderer.render_reconcile_clarification(
+                missing_fields=missing, raw_text_excerpt=raw_text
+            ),
+            booked=False,
+        )
+    code = str(extraction.code)
+    held = load_book(ledger_path).position_for(code)
+    old_volume = held.volume if held else 0
+    if actual != old_volume:
+        try:
+            append_adjust(
+                ledger_path,
+                code=code,
+                volume_delta=int(actual) - old_volume,
+                note=(
+                    f"owner-confirmed holding: {extraction.note}"[:256]
+                ).rstrip(": "),
+                recorded_at=received_at.isoformat(),
+                # Backdated to midnight so a re-reported intraday sell (the
+                # drift-repair flow) replays AFTER this correction.
+                effective_at=received_at.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).isoformat(),
+            )
+        except MirrorDriftError:
+            # A downward correction below what today's booked fills already
+            # sold cannot replay — clarify instead of crashing the loop.
+            return ReconcileResult(
+                reply_text=renderer.render_reconcile_clarification(
+                    raw_text_excerpt=raw_text
+                ),
+                booked=False,
+            )
+    return ReconcileResult(
+        reply_text=renderer.render_reconcile_adjust_ack(
+            code=code, old_volume=old_volume, new_volume=int(actual)
+        ),
+        booked=actual != old_volume,
     )
 
 

@@ -167,6 +167,47 @@ def test_replay_orders_by_executed_at_not_append_order(tmp_path: Path) -> None:
     assert load_book(path).position_for("002271").volume == 50
 
 
+def test_backfilled_sell_before_recorded_buy_rejected(tmp_path: Path) -> None:
+    # codex P1: 100 held in the morning, 100 more bought at 14:00 (already
+    # recorded) — a back-filled 10:00 sale of 150 must NOT append (it would
+    # break every later replay), even though the CURRENT holding is 200.
+    path = tmp_path / "ledger.jsonl"
+    append_fill(path, _event(volume=100, price=10.0, hhmmss="093000"),
+                recorded_at=_NOW)
+    append_fill(path, _event(seq="002", volume=100, price=10.2,
+                             hhmmss="140000"), recorded_at=_NOW)
+    with pytest.raises(MirrorDriftError):
+        append_fill(
+            path,
+            _event(seq="003", side=ManualTradeSide.SELL, volume=150,
+                   price=10.1, hhmmss="100000"),
+            recorded_at=_NOW,
+        )
+    assert load_book(path).position_for("002271").volume == 200  # untouched
+
+
+def test_adjust_effective_at_orders_before_intraday_fills(
+    tmp_path: Path,
+) -> None:
+    # Drift-repair flow: sell rejected → owner confirms the real holding →
+    # the re-reported MORNING sell must replay AFTER the correction.
+    path = tmp_path / "ledger.jsonl"
+    append_fill(path, _event(volume=100, price=10.0, hhmmss="093000"),
+                recorded_at=_NOW)
+    append_adjust(
+        path, code="002271", volume_delta=100,
+        note="owner-confirmed holding", recorded_at=_NOW,
+        effective_at="2026-08-24T00:00:00+08:00",
+    )
+    append_fill(
+        path,
+        _event(seq="002", side=ManualTradeSide.SELL, volume=150, price=10.1,
+               hhmmss="100000"),
+        recorded_at=_NOW,
+    )
+    assert load_book(path).position_for("002271").volume == 50
+
+
 def test_adjust_repairs_drift(tmp_path: Path) -> None:
     path = tmp_path / "ledger.jsonl"
     append_fill(path, _event(volume=100, price=10.0), recorded_at=_NOW)

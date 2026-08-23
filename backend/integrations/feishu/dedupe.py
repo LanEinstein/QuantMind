@@ -20,8 +20,10 @@ swap them without branching.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Protocol
 
 
@@ -131,8 +133,53 @@ class InMemoryEventDedupe:
             return True
 
 
+class FileEventDedupe:
+    """File-backed dedupe for single-process operational listeners (MI-1).
+
+    Survives a process restart — the in-memory deduper forgets claimed
+    event/message ids on restart, so a Feishu redelivery after a crash
+    would re-book a financial ledger row (codex P1). Wall-clock timestamps
+    (not monotonic) because entries must stay comparable across restarts;
+    expired entries are pruned on each claim.
+    """
+
+    def __init__(self, path: Path | str, *, ttl_seconds: int = 7 * 86_400) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        self._path = Path(path)
+        self._ttl = ttl_seconds
+        self._lock = asyncio.Lock()
+
+    def _load(self) -> dict[str, float]:
+        if not self._path.exists():
+            return {}
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}  # unreadable → fail-open like the peers (dedupe only)
+        return {str(k): float(v) for k, v in raw.items()} if isinstance(
+            raw, dict
+        ) else {}
+
+    async def claim(self, event_id: str) -> bool:
+        if not event_id:
+            raise ValueError("event_id must not be empty")
+        now = time.time()
+        async with self._lock:
+            entries = self._load()
+            cutoff = now - self._ttl
+            entries = {k: ts for k, ts in entries.items() if ts >= cutoff}
+            if event_id in entries:
+                return False
+            entries[event_id] = now
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(entries), encoding="utf-8")
+            return True
+
+
 __all__ = [
     "EventDedupe",
+    "FileEventDedupe",
     "InMemoryEventDedupe",
     "RedisEventDedupe",
 ]

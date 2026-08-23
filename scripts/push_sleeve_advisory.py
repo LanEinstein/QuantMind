@@ -161,9 +161,15 @@ def decide(status: dict[str, Any], state: dict[str, Any]) -> PushDecision:
         awaiting.get("delivered_asof", "")
     )
 
+    killed = current_status == "KILLED"
     last_status = state.get("last_sent_status")
     if current_status != last_status:
         event = "status_change"
+    elif killed:
+        # A killed sleeve must never resume action-bearing pushes (codex
+        # P1): after the one-time transition notice, no rebalance and no
+        # execution reminder — the owner stops manually.
+        event = None
     elif rebalance_pending and book_changed:
         event = "rebalance"
     elif awaiting_stale:
@@ -180,21 +186,32 @@ def decide(status: dict[str, Any], state: dict[str, Any]) -> PushDecision:
     # A delivered advisory awaits the owner's execution report; the
     # reconciliation loop clears the flag, tomorrow's cron reminds until
     # then. A status change rides along only when a rebalance is also due.
-    if event in ("rebalance", "rebalance_reminder") or (
-        event == "status_change" and rebalance_pending and book_changed
+    # A KILLED delivery clears any pending reminder instead of arming one.
+    if not killed and (
+        event in ("rebalance", "rebalance_reminder")
+        or (event == "status_change" and rebalance_pending and book_changed)
     ):
         state_after_send[AWAITING_KEY] = {
             "hash": book_hash,
             "delivered_asof": asof,
         }
-    elif isinstance(awaiting, dict):
+    elif isinstance(awaiting, dict) and not killed:
         state_after_send[AWAITING_KEY] = awaiting
 
     state_after_silent = dict(state)
+    if killed and AWAITING_KEY in state_after_silent:
+        # Belt for the delivered-KILLED steady state: kill any leftover
+        # reminder flag even on silent runs.
+        state_after_silent = {
+            k: v for k, v in state_after_silent.items() if k != AWAITING_KEY
+        }
     if event is None and rebalance_pending:
         # Book identical at this rebalance → nothing to say, but the pointer
         # must advance or later non-rebalance hash drift would fake a push.
-        state_after_silent = {**state, "last_advised_rebalance": latest_due}
+        state_after_silent = {
+            **state_after_silent,
+            "last_advised_rebalance": latest_due,
+        }
     return PushDecision(
         event=event,
         status_changed_from=(
@@ -235,6 +252,35 @@ def render_text(
     )
 
 
+def _pit_closes(asof: str, codes: list[str]) -> dict[str, float | None]:
+    """As-of closes for exited codes from the PIT daily snapshot (read-only).
+
+    A lookup failure yields ``None`` (the drift report then counts the sell
+    as uncovered — honest fallback, never a stale price).
+    """
+    if not codes:
+        return {}
+    try:
+        import io
+
+        import pandas as pd
+
+        from backend.marketdata_snapshot.store import SnapshotStore
+
+        snap = SnapshotStore("data/marketdata_pit").latest(
+            vendor="tushare", endpoint="daily", trade_date=asof
+        )
+        frame = pd.read_csv(
+            io.BytesIO(snap.raw_payload), usecols=["ts_code", "close"]
+        )
+        found = dict(
+            zip(frame["ts_code"].astype(str), frame["close"].astype(float))
+        )
+        return {c: found.get(c) for c in codes}
+    except Exception:  # noqa: BLE001 — disclosure aid only, never blocks a push
+        return {c: None for c in codes}
+
+
 def append_advisory_history(
     path: Path, status: dict[str, Any], *, event: str, delivered_at: str
 ) -> None:
@@ -242,11 +288,28 @@ def append_advisory_history(
 
     The status JSON is overwritten daily, so the monthly mirror-vs-research
     execution-drift disclosure (plan §5⑤) needs the book AS DELIVERED —
-    closes included — persisted at push time.
+    closes included — persisted at push time. Codes present in the PREVIOUS
+    delivery but dropped from this one are recorded under ``exits`` with
+    their as-of close (codex P1: an exit sell must be compared against the
+    exit rebalance's close, not a weeks-old advisory price).
     """
     advisory = status["advisory"]
+    asof = str(advisory["asof_trade_date"])
+    current_codes = {str(h.get("ts_code", "")) for h in advisory["holdings"]}
+    previous = load_advisory_history(path)
+    prev_codes: set[str] = set()
+    if previous:
+        prev_codes = {
+            str(h.get("ts_code", ""))
+            for h in previous[-1].get("holdings", ())
+        }
+    # Recorded ONCE, at the delivery that drops the code: the research-side
+    # sell assumption IS the exit rebalance's close, even if the owner
+    # executes days later.
+    exited = sorted(prev_codes - current_codes - {""})
+    exit_closes = _pit_closes(asof, exited)
     row = {
-        "asof": str(advisory["asof_trade_date"]),
+        "asof": asof,
         "delivered_at": delivered_at,
         "event": event,
         "holdings": [
@@ -257,11 +320,24 @@ def append_advisory_history(
             }
             for h in advisory["holdings"]
         ],
+        "exits": [
+            {"ts_code": code, "close": exit_closes.get(code)} for code in exited
+        ],
         "cash_weight_pct": float(advisory["cash_weight_pct"]),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def load_advisory_history(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 async def send(text: str, *, chat_id: str, dedupe_key: str) -> bool:

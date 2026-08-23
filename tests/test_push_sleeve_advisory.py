@@ -268,6 +268,67 @@ def test_decide_cleared_awaiting_stays_silent() -> None:
     assert decide(status, cleared).event is None
 
 
+def test_decide_killed_suppresses_rebalance_and_reminder() -> None:
+    # codex P1: after the delivered KILLED notice, a killed sleeve must
+    # never resume action-bearing pushes — no reminder, no new rebalance.
+    status = _status_payload()
+    status["status"] = "KILLED"
+    delivered_killed = decide(status, _delivered_state(_status_payload()))
+    assert delivered_killed.event == "status_change"
+    assert "awaiting_report" not in delivered_killed.state_after_send
+    after = delivered_killed.state_after_send
+    # A pending reminder from before the kill must not fire...
+    stale = {
+        **after,
+        "awaiting_report": {"hash": "old", "delivered_asof": "20260709"},
+    }
+    status["advisory"]["asof_trade_date"] = "20260711"
+    d = decide(status, stale)
+    assert d.event is None
+    assert "awaiting_report" not in d.state_after_silent  # ...and is purged
+    # ...and a later scheduled rebalance with a changed book stays silent.
+    status["advisory"]["asof_trade_date"] = "20260714"
+    status["advisory"]["holdings"][0]["ts_code"] = "000858.SZ"
+    assert decide(status, after).event is None
+
+
+def test_advisory_history_records_exits_once(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from scripts.push_sleeve_advisory import (
+        append_advisory_history,
+        load_advisory_history,
+    )
+
+    history = tmp_path / "history.jsonl"
+    first = _status_payload()
+    with patch(
+        "scripts.push_sleeve_advisory._pit_closes",
+        side_effect=lambda asof, codes: {c: 9.99 for c in codes},
+    ):
+        append_advisory_history(
+            history, first, event="rebalance", delivered_at="t0"
+        )
+        second = _status_payload()
+        second["advisory"]["asof_trade_date"] = "20260714"
+        second["advisory"]["holdings"][0]["ts_code"] = "000858.SZ"
+        append_advisory_history(
+            history, second, event="rebalance", delivered_at="t1"
+        )
+        third = _status_payload()
+        third["advisory"]["asof_trade_date"] = "20260715"
+        third["advisory"]["holdings"][0]["ts_code"] = "000858.SZ"
+        append_advisory_history(
+            history, third, event="rebalance_reminder", delivered_at="t2"
+        )
+    rows = load_advisory_history(history)
+    assert rows[0]["exits"] == []
+    # 002271.SZ dropped at the 20260714 delivery → exit close recorded there,
+    assert rows[1]["exits"] == [{"ts_code": "002271.SZ", "close": 9.99}]
+    # ...and ONCE only (the research sell assumption is the exit-day close).
+    assert rows[2]["exits"] == []
+
+
 def test_clear_awaiting_report_roundtrip(tmp_path: Path) -> None:
     from backend.portfolio.sleeve_push_state import clear_awaiting_report
 

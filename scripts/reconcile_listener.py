@@ -33,7 +33,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from backend.integrations.feishu.client import FeishuClient
-from backend.integrations.feishu.dedupe import InMemoryEventDedupe
+from backend.integrations.feishu.dedupe import FileEventDedupe
 from backend.integrations.feishu.events import FeishuEventReceiver, ReceivedMessage
 from backend.integrations.feishu.inbound_gate import InboundGate, InboundVerdict
 from backend.llm.router import LLMRouter
@@ -122,7 +122,9 @@ async def main() -> int:
         app_secret=os.environ["FEISHU_APP_SECRET"],
         verify_token=os.environ["FEISHU_VERIFY_TOKEN"],
         encrypt_key=os.environ["FEISHU_ENCRYPT_KEY"],
-        dedupe=InMemoryEventDedupe(),
+        # File-backed: a restart must keep recognising redelivered events,
+        # or a crash + Feishu redelivery double-books a ledger row (codex P1).
+        dedupe=FileEventDedupe("data/portfolio/reconcile_dedupe.json"),
         handler=handler,
     )
 
