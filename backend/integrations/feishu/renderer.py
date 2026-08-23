@@ -393,6 +393,85 @@ class MessageRenderer:
         )
         return "\n".join(lines)
 
+    def render_ipo_reminder(
+        self,
+        *,
+        date: str,
+        stocks: Sequence[Mapping[str, object]],
+        cbs: Sequence[Mapping[str, object]],
+        stock_broken: int,
+        stock_evaluated: int,
+        cb_broken: int,
+        cb_evaluated: int,
+        kill_threshold: int,
+        stock_killed: bool,
+        cb_killed: bool,
+        pilot: bool = False,
+    ) -> str:
+        """Render the MZ-1 IPO/CB subscription reminder (display-only).
+
+        Like :meth:`render_sleeve_advisory` it is NOT an instruction: no
+        ``QM-`` id, no execution verb the inbound parser recognizes — the
+        owner subscribes manually in the broker app. Stock entries are
+        duck-typed mappings (``name`` / ``sub_code`` / ``board`` / ``price``,
+        price ``None`` = not yet published); CB entries carry ``onl_name`` /
+        ``onl_code``. A killed section suppresses its listing and shows the
+        stop notice instead (institutional-rent protocol §3). Rendering with
+        nothing to say (no entries and no killed section) is a fail-closed
+        :class:`ValueError` — the caller only pushes when there is content.
+        """
+        if not stocks and not cbs and not (stock_killed or cb_killed):
+            raise ValueError("render_ipo_reminder requires content")
+        lines = [
+            *self._pilot_prefix(pilot),
+            f"【QuantMind 打新提醒|{_single_line(date)}】",
+            "本条为展示性提醒,仅供参考,非交易指令,无需回复。",
+        ]
+        if stock_killed:
+            lines.append(
+                f"⚠️ 新股打新提醒已按协议停发(近{int(stock_evaluated)}只上市新股"
+                f"破发 {int(stock_broken)} 只 ≥ 阈值 {int(kill_threshold)});"
+                "恢复需 owner 决定。"
+            )
+        elif stocks:
+            lines.append(f"今日可申购新股 {len(stocks)} 只:")
+            for s in stocks:
+                name = _truncate(_single_line(str(s.get("name", ""))), 24)
+                sub = _single_line(str(s.get("sub_code", "")))
+                board = _single_line(str(s.get("board", "")))
+                price = s.get("price")
+                price_txt = (
+                    f"{float(price):.2f} 元"
+                    if isinstance(price, int | float)
+                    else "未公布"
+                )
+                lines.append(
+                    f"· {name} · 申购代码 {sub} · {board} · 发行价 {price_txt}"
+                )
+        if cb_killed:
+            lines.append(
+                f"⚠️ 转债打新提醒已按协议停发(近{int(cb_evaluated)}只上市转债"
+                f"破发 {int(cb_broken)} 只 ≥ 阈值 {int(kill_threshold)});"
+                "恢复需 owner 决定。"
+            )
+        elif cbs:
+            lines.append(f"今日可申购转债 {len(cbs)} 只:")
+            for c in cbs:
+                name = _truncate(_single_line(str(c.get("onl_name", ""))), 24)
+                code = _single_line(str(c.get("onl_code", "")))
+                lines.append(f"· {name} · 申购代码 {code} · 信用申购,顶格")
+        if stocks or cbs:
+            lines.append(
+                "纪律(协议 2026-08-23):顶格申购;中签即上市首日收盘前卖出,不择时。"
+            )
+        if not (stock_killed and cb_killed):
+            lines.append(
+                f"破发监控:近{int(stock_evaluated)}只新股破发 {int(stock_broken)} 只 / "
+                f"近{int(cb_evaluated)}只转债破发 {int(cb_broken)} 只"
+                f"(任一 ≥{int(kill_threshold)} 自动停发该类提醒)"
+            )
+        return "\n".join(lines)
+
     # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------
 
     def render_buy_signal(

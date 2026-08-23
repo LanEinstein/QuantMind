@@ -923,3 +923,67 @@ class TestSleeveAdvisory:
 
     def test_pilot_banner(self) -> None:
         assert "试点" in self._render(pilot=True)
+
+
+class TestIpoReminder:
+    """MZ-1 — display-only IPO/CB subscription reminder."""
+
+    @staticmethod
+    def _render(**overrides) -> str:
+        kwargs = dict(
+            date="20260824",
+            stocks=[
+                {"ts_code": "301699.SZ", "sub_code": "301699", "name": "洛轴股份",
+                 "board": "创业板", "price": None},
+                {"ts_code": "603448.SH", "sub_code": "732448", "name": "天博智能",
+                 "board": "沪主板", "price": 12.34},
+            ],
+            cbs=[
+                {"ts_code": "123284.SZ", "onl_code": "371628", "onl_name": "强达发债"}
+            ],
+            stock_broken=0,
+            stock_evaluated=20,
+            cb_broken=1,
+            cb_evaluated=20,
+            kill_threshold=4,
+            stock_killed=False,
+            cb_killed=False,
+        )
+        kwargs.update(overrides)
+        return MessageRenderer().render_ipo_reminder(**kwargs)
+
+    def test_lists_stocks_and_cbs_with_discipline_line(self) -> None:
+        text = self._render()
+        assert "洛轴股份" in text and "申购代码 301699" in text
+        assert "发行价 未公布" in text
+        assert "发行价 12.34 元" in text
+        assert "强达发债" in text and "申购代码 371628" in text
+        assert "上市首日收盘前卖出" in text
+        assert "近20只新股破发 0 只" in text
+
+    def test_killed_stock_section_shows_notice_not_listing(self) -> None:
+        text = self._render(stock_killed=True, stock_broken=5)
+        assert "停发" in text and "恢复需 owner 决定" in text
+        assert "洛轴股份" not in text
+        assert "强达发债" in text  # CB section unaffected
+
+    def test_nothing_to_say_fails_closed(self) -> None:
+        with pytest.raises(ValueError):
+            self._render(stocks=[], cbs=[])
+
+    def test_carries_no_instruction_id(self) -> None:
+        text = self._render()
+        assert "QM-" not in text
+        assert "非交易指令" in text
+
+    def test_is_not_parseable_as_execution_report(self) -> None:
+        with pytest.raises(ExecutionReportParseError) as exc:
+            parse_execution_report(
+                self._render(),
+                channel=ExecutionReportChannel.FEISHU,
+                received_at=datetime(2026, 8, 24, 8, 30, tzinfo=_SH),
+            )
+        assert exc.value.reason == "no_pattern_match"
+
+    def test_pilot_banner(self) -> None:
+        assert "试点" in self._render(pilot=True)
