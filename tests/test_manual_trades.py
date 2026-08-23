@@ -208,9 +208,23 @@ class TestExternalExecutionEvent:
                 reason=ManualTradeReason.USER_OTHER,
             )
 
-    def test_volume_must_be_whole_lot(self) -> None:
+    def test_buy_volume_must_be_whole_lot(self) -> None:
         with pytest.raises(ValueError, match="lot"):
             _buy_event(volume=150)
+
+    def test_sell_volume_may_be_odd_lot(self) -> None:
+        # MI-1: real accounts hold odd lots; the mirror books the owner's
+        # ACTUAL execution, so an odd-lot SELL is valid.
+        event = ExternalExecutionEvent(
+            external_trade_id="UT-20260612-100500-600519-SELL-001",
+            code="600519",
+            side=ManualTradeSide.SELL,
+            volume=150,
+            price=10.0,
+            executed_at=dt.datetime(2026, 6, 12, 10, 5, tzinfo=SHANGHAI),
+            reason=ManualTradeReason.USER_OTHER,
+        )
+        assert event.volume == 150
 
     def test_extra_field_forbidden(self) -> None:
         with pytest.raises(ValueError):

@@ -1,19 +1,18 @@
-"""Z-line ledger — the institutional-rent P&L line (MZ-1, protocol §5).
+"""Z-line ledger CLI — the institutional-rent P&L line (MZ-1, protocol §5).
 
 Append-only JSONL at ``data/institutional_rent/z_ledger.jsonl``. Its one
 job is making the rent contribution (and its decay) visible as a separate
-line in the mock book. Until the MI-1 reconciliation loop lands, records
-are appended by hand via the CLI when the owner reports a win/sell in
-Feishu::
+line in the mock book. Records are appended via this CLI (or the MI-1
+reconciliation loop) when the owner reports a win/sell in Feishu::
 
     python -m scripts.institutional_rent.z_ledger add \
         --type ipo_sell --code 301689.SZ --name 电科思仪 --amount 21850 \
         --note "首日收盘卖出"
     python -m scripts.institutional_rent.z_ledger summary
 
-``amount`` semantics per type: ``ipo_win``/``cb_win`` = allotment cost
-paid (informational, NOT P&L); ``ipo_sell``/``cb_sell``/``cash_yield`` =
-realized net P&L in CNY. ``summary`` sums only the realized types.
+The pure IO lives in :mod:`backend.portfolio.z_ledger_io` (moved there in
+MI-1 for the read-side line aggregation); this module re-exports it so
+existing imports keep working.
 """
 
 from __future__ import annotations
@@ -21,81 +20,30 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
-DEFAULT_LEDGER = Path("data/institutional_rent/z_ledger.jsonl")
-LEDGER_TYPES = frozenset({"ipo_win", "ipo_sell", "cb_win", "cb_sell", "cash_yield"})
-REALIZED_TYPES = frozenset({"ipo_sell", "cb_sell", "cash_yield"})
+from backend.portfolio.z_ledger_io import (
+    DEFAULT_LEDGER,
+    LEDGER_TYPES,
+    REALIZED_TYPES,
+    LedgerRecord,
+    append_record,
+    load_records,
+    make_record,
+    summarize,
+)
 
-
-@dataclass(frozen=True)
-class LedgerRecord:
-    recorded_at: str
-    type: str
-    code: str
-    name: str
-    amount: float
-    note: str
-
-
-def make_record(
-    *, type: str, code: str, name: str, amount: float, note: str = ""
-) -> LedgerRecord:
-    if type not in LEDGER_TYPES:
-        raise ValueError(
-            f"unknown ledger type {type!r} — one of {sorted(LEDGER_TYPES)}"
-        )
-    if not code and type != "cash_yield":
-        raise ValueError("code is required for win/sell records")
-    return LedgerRecord(
-        recorded_at=datetime.now(UTC).isoformat(),
-        type=type,
-        code=code,
-        name=name,
-        amount=float(amount),
-        note=note,
-    )
-
-
-def append_record(path: Path, record: LedgerRecord) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
-
-
-def load_records(path: Path) -> tuple[LedgerRecord, ...]:
-    if not path.exists():
-        return ()
-    records: list[LedgerRecord] = []
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        raw = json.loads(line)
-        if raw.get("type") not in LEDGER_TYPES:
-            raise ValueError(
-                f"{path}:{line_no}: unknown ledger type {raw.get('type')!r}"
-            )
-        records.append(
-            LedgerRecord(
-                recorded_at=str(raw.get("recorded_at", "")),
-                type=str(raw["type"]),
-                code=str(raw.get("code", "")),
-                name=str(raw.get("name", "")),
-                amount=float(raw.get("amount", 0.0)),
-                note=str(raw.get("note", "")),
-            )
-        )
-    return tuple(records)
-
-
-def summarize(records: tuple[LedgerRecord, ...]) -> dict[str, float | int]:
-    by_type = {t: 0.0 for t in sorted(LEDGER_TYPES)}
-    for r in records:
-        by_type[r.type] += r.amount
-    realized = sum(by_type[t] for t in REALIZED_TYPES)
-    return {**by_type, "records": len(records), "realized_pnl": realized}
+__all__ = [
+    "DEFAULT_LEDGER",
+    "LEDGER_TYPES",
+    "REALIZED_TYPES",
+    "LedgerRecord",
+    "append_record",
+    "load_records",
+    "make_record",
+    "summarize",
+    "main",
+]
 
 
 def main(argv: list[str] | None = None) -> int:
