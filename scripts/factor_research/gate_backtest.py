@@ -22,11 +22,17 @@ from dataclasses import dataclass
 
 from backend.backtest.event_loop import BarSource
 from backend.backtest.friction import FrictionParams
-from backend.backtest.harness import BacktestResult, BacktestSpec, run_backtest
+from backend.backtest.harness import (
+    BacktestResult,
+    BacktestSpec,
+    DecideFn,
+    run_backtest,
+)
 from backend.backtest.strategy import (
     CodeHealth,
     DailySignals,
     StrategyConfig,
+    decide_day,
 )
 from backend.candidate_selector import (
     CandidateSelector,
@@ -226,6 +232,7 @@ def run_gate_backtest(
     friction_params: FrictionParams | None = None,
     harsh_config: HarshFillConfig | None = None,
     frozen_cash_yuan: float = 0.0,
+    decide_fn: DecideFn = decide_day,
 ) -> GateBacktestResult:
     """Replay the gate strategy through the event loop → arena primary metric."""
     spec = BacktestSpec(
@@ -239,6 +246,7 @@ def run_gate_backtest(
         strategy_config=strategy_config,
         friction_params=friction_params or default_friction(),
         harsh_config=harsh_config,
+        decide_fn=decide_fn,
     )
     initial = result.initial_capital_cents
     violations = result.invariant_report.violations

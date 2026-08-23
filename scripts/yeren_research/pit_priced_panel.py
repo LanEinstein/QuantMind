@@ -77,12 +77,15 @@ def _read_factor(store: SnapshotStore, trade_date: str) -> pd.DataFrame | None:
 
 
 def load_priced_panel(
-    pit_root: Path, *, start_date: str, end_date: str
+    pit_root: Path, *, start_date: str, end_date: str, min_rows: int = 30
 ) -> tuple[tuple[PricedSeries, ...], dict[str, object]]:
     """Join daily prices to the factor stored under the same trade date.
 
     The join runs one trade date at a time so a missing factor row is counted
     where it happens instead of vanishing into a whole-panel merge.
+    ``min_rows`` keeps only securities with at least that many joined bars
+    (default 30 — the historical behavior; a caller whose computation needs
+    fewer bars, e.g. a 20-day trailing-return trigger, may lower it).
     """
 
     calendar = load_trade_dates(pit_root)
@@ -111,7 +114,7 @@ def load_priced_panel(
         raise ValueError("no daily snapshots in requested range")
     panel = pd.concat(frames, ignore_index=True)
     del frames
-    series = _split_by_code(panel)
+    series = _split_by_code(panel, min_rows=min_rows)
     coverage = {
         "requested_date_count": len(dates),
         "dates_missing_factor_snapshot": dates_missing_factor,
@@ -128,7 +131,9 @@ def load_priced_panel(
     return series, coverage
 
 
-def _split_by_code(panel: pd.DataFrame) -> tuple[PricedSeries, ...]:
+def _split_by_code(
+    panel: pd.DataFrame, *, min_rows: int = 30
+) -> tuple[PricedSeries, ...]:
     """Turn the joined panel into per-security chronological arrays."""
 
     for column in ("open", "close", "pct_chg", "adj_factor"):
@@ -136,7 +141,7 @@ def _split_by_code(panel: pd.DataFrame) -> tuple[PricedSeries, ...]:
     panel.sort_values(["ts_code", "trade_date"], kind="mergesort", inplace=True)
     out: list[PricedSeries] = []
     for code, group in panel.groupby("ts_code", sort=False, observed=True):
-        if len(group) < 30:
+        if len(group) < min_rows:
             continue
         out.append(
             PricedSeries(
