@@ -186,7 +186,40 @@ sudo systemctl reset-failed quantmind
 sudo systemctl restart quantmind
 ```
 
-## 10. Uninstall
+## 10. quantmind-reconcile — the MI-1 listener unit (2026-08-24)
+
+A separate, lightweight unit for the MI-1 reconcile listener
+(`scripts/reconcile_listener.py`: owner Feishu free text → mirror
+ledger → renderer ack). No mongod/redis/uvicorn — the heavy
+`quantmind.service` backend stays dormant.
+
+Install (two steps — env as the owner, unit as root):
+
+```bash
+bash scripts/install_reconcile_service.sh --write-env     # once, no root
+sudo bash scripts/install_reconcile_service.sh --enable --start
+```
+
+The installer refuses to run without `/home/ps/.quantmind-reconcile.env`
+(9 vars: 6×FEISHU_* + 3 LLM keys, extracted from `~/.bashrc`, chmod
+600) and, on `--start`, first SIGTERMs any manually-started listener so
+two instances never double-reply to the same owner message.
+
+Verify / operate:
+
+```bash
+systemctl status quantmind-reconcile          # active (running)
+journalctl -u quantmind-reconcile -f          # canonical log tail
+sudo systemctl restart quantmind-reconcile    # after a code update
+```
+
+Crash recovery mirrors the backend unit: `Restart=always` + 10s,
+20-restart/5-min crashloop cap, graceful SIGTERM stop. Runs as
+`User=ps` deliberately — the mirror ledger / push state / logs are
+ps-owned files shared with the cron pipeline (a dedicated service user
+would only add chown gymnastics on shared data).
+
+## 11. Uninstall
 
 ```bash
 sudo systemctl stop quantmind
