@@ -222,11 +222,84 @@ def decide(status: dict[str, Any], state: dict[str, Any]) -> PushDecision:
     )
 
 
+def _mirror_context(mirror_path: Path | None = None) -> tuple[Any, float | None]:
+    """Current mirror book + declared capital (equity at cost), if any.
+
+    Fail-open: a broken/unreadable mirror must never block the advisory
+    push — it degrades to "no sizing info" (an empty, undeclared book).
+    """
+    from backend.portfolio.mirror_ledger import (
+        DEFAULT_LEDGER,
+        MirrorBook,
+        load_book,
+    )
+
+    try:
+        book = load_book(mirror_path or DEFAULT_LEDGER)
+    except (ValueError, OSError):
+        book = MirrorBook(
+            positions=(), cash=0.0, opening_declared=False, fill_count=0
+        )
+    if not book.opening_declared:
+        return book, None
+    capital = book.cash + sum(p.volume * p.avg_cost for p in book.positions)
+    return book, capital
+
+
+def augment_holdings(
+    holdings: list[dict[str, Any]], book: Any, capital: float | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Owner-facing sizing: suggested shares + concrete action per holding,
+    plus the clear-out list (mirrored names no longer in the target book).
+
+    Shares = capital × weight ÷ close, floored to a 100-share lot. Without
+    a declared capital only the exits are actionable (they need no base).
+    """
+    target_codes: set[str] = set()
+    augmented: list[dict[str, Any]] = []
+    for h in holdings:
+        code6 = str(h.get("ts_code", ""))[:6]
+        target_codes.add(code6)
+        held_pos = book.position_for(code6)
+        held = held_pos.volume if held_pos else 0
+        entry = dict(h)
+        close = h.get("close")
+        weight = h.get("target_weight_pct")
+        if (
+            capital is not None
+            and isinstance(close, int | float)
+            and float(close) > 0
+            and isinstance(weight, int | float)
+        ):
+            suggest = int(
+                capital * float(weight) / 100.0 / float(close) // 100 * 100
+            )
+            if held == 0:
+                action = "新进"
+            elif suggest > held:
+                action = "加仓"
+            elif suggest < held:
+                action = "减仓"
+            else:
+                action = "维持"
+            entry.update(
+                suggest_shares=suggest, held_shares=held, action=action
+            )
+        augmented.append(entry)
+    exits = [
+        {"ts_code": p.code, "name": "", "held_volume": p.volume}
+        for p in book.positions
+        if p.code not in target_codes
+    ]
+    return augmented, exits
+
+
 def render_text(
     status: dict[str, Any],
     *,
     status_changed_from: str | None = None,
     reminder: bool = False,
+    mirror_path: Path | None = None,
     pilot: bool = False,
 ) -> str:
     """Compose the digest via the renderer (§2.6 — the only legal composer)."""
@@ -234,12 +307,16 @@ def render_text(
 
     advisory = status["advisory"]
     kill = status["kill_switch"]
+    book, capital = _mirror_context(mirror_path)
+    holdings, exits = augment_holdings(
+        list(advisory["holdings"]), book, capital
+    )
     return MessageRenderer().render_sleeve_advisory(
         status=str(status["status"]),
         spec_hash_prefix=str(status["spec_hash"])[:8],
         asof_trade_date=str(advisory["asof_trade_date"]),
         universe_size=int(advisory["universe_size"]),
-        holdings=list(advisory["holdings"]),
+        holdings=holdings,
         cash_weight_pct=float(advisory["cash_weight_pct"]),
         complete_periods=int(status["forward"]["complete_periods"]),
         min_forward_periods=int(kill["min_forward_periods"]),
@@ -248,6 +325,8 @@ def render_text(
         baseline_underperf_periods=int(kill["baseline_underperf_periods"]),
         status_changed_from=status_changed_from,
         reminder=reminder,
+        exits=exits,
+        capital_declared=capital is not None,
         pilot=pilot,
     )
 

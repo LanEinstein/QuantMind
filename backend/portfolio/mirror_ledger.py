@@ -130,7 +130,11 @@ def recorded_fill_ids(path: Path) -> frozenset[str]:
 
 
 def append_fill(
-    path: Path, event: ExternalExecutionEvent, *, recorded_at: str
+    path: Path,
+    event: ExternalExecutionEvent,
+    *,
+    recorded_at: str,
+    effective_at: str | None = None,
 ) -> dict[str, Any] | None:
     """Book one owner-reported fill; returns the row, or None if duplicate.
 
@@ -139,6 +143,11 @@ def append_fill(
     — including one back-filled BEFORE an already-recorded buy (codex P1)
     — raises :class:`MirrorDriftError` and the caller clarifies with the
     owner instead of persisting a row that would break every later replay.
+
+    ``effective_at`` overrides the replay position (``executed_at`` stays
+    on the row for display): the reconciliation loop uses it to book a
+    RE-reported sell whose executed time precedes a drift correction —
+    the final holding covers it, only the intraday ordering does not.
     """
     if event.external_trade_id in recorded_fill_ids(path):
         return None
@@ -156,6 +165,7 @@ def append_fill(
         "note": event.note,
         **economics,
         "recorded_at": recorded_at,
+        **({"effective_at": effective_at} if effective_at else {}),
     }
     _replay([*_read_rows(path), row])  # raises MirrorDriftError on drift
     _append_row(path, row)
@@ -191,8 +201,8 @@ def append_adjust(
     """Owner-confirmed position correction (drift repair, no cash effect).
 
     ``effective_at`` places the correction in replay time — the caller
-    backdates it to the day's midnight so a subsequently RE-reported
-    intraday sell (the drift-repair flow) replays after the correction.
+    passes "now" (a correction states the holding AS OF NOW; placed last
+    in replay it is always replayable: current + delta = actual ≥ 0).
     """
     if volume_delta == 0:
         raise ValueError("adjust volume_delta must be non-zero")
@@ -211,9 +221,11 @@ def append_adjust(
 
 
 def _effective_at(row: Mapping[str, Any]) -> datetime:
+    # An explicit effective_at OVERRIDES executed_at: it is the deliberate
+    # replay position (drift-repair re-reports; owner-stated corrections).
     raw = str(
-        row.get("executed_at")
-        or row.get("effective_at")
+        row.get("effective_at")
+        or row.get("executed_at")
         or row.get("recorded_at")
     )
     return datetime.fromisoformat(raw)

@@ -91,8 +91,8 @@ def test_load_status_missing_section_fails(tmp_path: Path) -> None:
         load_status(p)
 
 
-def test_render_text_goes_through_renderer() -> None:
-    text = render_text(_status_payload())
+def test_render_text_goes_through_renderer(tmp_path: Path) -> None:
+    text = render_text(_status_payload(), mirror_path=tmp_path / "m.jsonl")
     assert "防御Sleeve目标持仓" in text
     assert "002271.SZ" in text
     assert "非交易指令" in text
@@ -101,12 +101,69 @@ def test_render_text_goes_through_renderer() -> None:
     assert "MDD>25%" in text and "连续6期落后基线" in text
     # MD-1 guardrail line rides on every advisory push.
     assert "不补仓亏损股" in text
+    # Owner requirement 2026-08-24: plain-language selection logic always
+    # present; without a declared capital, the sizing hint is shown instead
+    # of share counts.
+    assert "选股逻辑" in text
+    assert "R线本金" in text and "建议持有" not in text
 
 
-def test_render_text_status_transition_line() -> None:
+def test_render_text_with_capital_gives_share_counts(tmp_path: Path) -> None:
+    from backend.portfolio.mirror_ledger import append_cash
+
+    mirror = tmp_path / "m.jsonl"
+    append_cash(mirror, amount=100_000.0, note="opening",
+                recorded_at="2026-08-24T09:00:00+08:00")
+    text = render_text(_status_payload(), mirror_path=mirror)
+    # 100k × 8% / 11.5 = 695.6 → floored to 600 shares, a new entry.
+    assert "建议持有 600 股" in text
+    assert "新进买入 600 股" in text
+    assert "买卖点" in text  # operations present → entry/exit logic footer
+
+
+def test_render_text_exits_listed_for_dropped_mirror_names(
+    tmp_path: Path,
+) -> None:
+    import datetime as dt
+
+    from backend.models.manual_trade import (
+        ExternalExecutionEvent,
+        ManualTradeReason,
+        ManualTradeSide,
+    )
+    from backend.portfolio.mirror_ledger import append_fill
+
+    mirror = tmp_path / "m.jsonl"
+    append_fill(
+        mirror,
+        ExternalExecutionEvent(
+            external_trade_id="UT-20260820-100000-600519-BUY-001",
+            code="600519",
+            side=ManualTradeSide.BUY,
+            volume=200,
+            price=10.0,
+            executed_at=dt.datetime(
+                2026, 8, 20, 10, 0,
+                tzinfo=dt.timezone(dt.timedelta(hours=8)),
+            ),
+            reason=ManualTradeReason.USER_OTHER,
+        ),
+        recorded_at="2026-08-20T10:00:00+08:00",
+    )
+    text = render_text(_status_payload(), mirror_path=mirror)
+    assert "需清仓" in text
+    assert "600519" in text and "现持 200 股 → 全部卖出" in text
+    assert "买卖点" in text
+
+
+def test_render_text_status_transition_line(tmp_path: Path) -> None:
     payload = _status_payload()
     payload["status"] = "KILLED"
-    text = render_text(payload, status_changed_from="ACCRUING")
+    text = render_text(
+        payload,
+        status_changed_from="ACCRUING",
+        mirror_path=tmp_path / "m.jsonl",
+    )
     assert "前向状态变化: ACCRUING → KILLED" in text
 
 
@@ -346,8 +403,10 @@ def test_clear_awaiting_report_roundtrip(tmp_path: Path) -> None:
     assert not clear_awaiting_report(p)  # idempotent
 
 
-def test_render_text_reminder_line() -> None:
-    text = render_text(_status_payload(), reminder=True)
+def test_render_text_reminder_line(tmp_path: Path) -> None:
+    text = render_text(
+        _status_payload(), reminder=True, mirror_path=tmp_path / "m.jsonl"
+    )
     assert "尚未收到执行回报" in text
 
 

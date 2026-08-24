@@ -328,6 +328,70 @@ async def test_adjust_position_consistent_is_noop(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_adjust_zero_clears_same_day_fill(tmp_path: Path) -> None:
+    # Regression (owner drill 2026-08-24): a position bought THIS morning,
+    # then "002271我实际持有0股" — the midnight-backdated correction replayed
+    # 0−100 at 00:00 and degraded to "did not understand". Effective-now
+    # placement must clear it cleanly.
+    paths = _paths(tmp_path)
+    append_fill(
+        paths["ledger_path"],
+        ExternalExecutionEvent(
+            external_trade_id="UT-20260824-094101-002271-BUY-001",
+            code="002271",
+            side=ManualTradeSide.BUY,
+            volume=100,
+            price=11.2,
+            executed_at=RECEIVED.replace(hour=9, minute=41),
+            reason=ManualTradeReason.USER_OTHER,
+        ),
+        recorded_at=RECEIVED.isoformat(),
+    )
+    result = await handle_owner_text(
+        "002271我实际持有0股",
+        received_at=RECEIVED,
+        complete_fn=_fake_llm(
+            {
+                "outcome": "adjust_position",
+                "code": "002271",
+                "volume": 0,
+                "volume_unit": "shares",
+            }
+        ),
+        **paths,
+    )
+    assert result.booked
+    assert "100 股 → 0 股" in result.reply_text
+    assert load_book(paths["ledger_path"]).position_for("002271") is None
+
+
+@pytest.mark.asyncio
+async def test_declare_capital_sets_equity_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    payload = {"outcome": "declare_capital", "amount": 100000}
+    first = await handle_owner_text(
+        "R线本金10万",
+        received_at=RECEIVED,
+        complete_fn=_fake_llm(payload),
+        **paths,
+    )
+    assert first.booked
+    assert "本金申报" in first.reply_text and "100000.00" in first.reply_text
+    book = load_book(paths["ledger_path"])
+    assert book.opening_declared and book.cash == 100000.0
+    again = await handle_owner_text(
+        "R线本金10万",
+        received_at=RECEIVED,
+        complete_fn=_fake_llm(payload),
+        **paths,
+    )
+    assert not again.booked  # equity already matches — no double-count
+    assert "无需调整" in again.reply_text
+
+
+@pytest.mark.asyncio
 async def test_z_record_books_to_z_ledger(tmp_path: Path) -> None:
     result, paths = await _run(
         tmp_path,

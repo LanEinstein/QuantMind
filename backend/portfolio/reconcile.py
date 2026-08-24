@@ -43,6 +43,7 @@ from backend.models.manual_trade import (
 from backend.portfolio.mirror_ledger import (
     MirrorDriftError,
     append_adjust,
+    append_cash,
     append_fill,
     load_book,
     recorded_fill_ids,
@@ -71,6 +72,7 @@ class ReconcileExtraction(BaseModel):
         "unfilled",
         "no_action",
         "adjust_position",
+        "declare_capital",
         "z_record",
         "unclear",
     ]
@@ -126,8 +128,10 @@ def build_extraction_prompt(
         "2. 买入/卖出成交 → filled;明说没成交/没买到 → unfilled;"
         "明说不跟/不操作本次建议 → no_action;打新中签/中签卖出/"
         "转债/现金理财收益 → z_record(amount=盈亏或中签金额);"
-        "owner 声明某标的的实际总持股数量(纠正账本,非一笔成交)→ "
-        "adjust_position(volume=实际总持股)。\n"
+        "owner 声明某标的的实际总持股数量(纠正账本,非一笔成交,"
+        "「清仓了/没有持仓」= volume 0)→ adjust_position(volume=实际总持股);"
+        "owner 申报这条线的本金/总资金(如「R线本金10万」「这条线配5万」)→ "
+        "declare_capital(amount=金额,元)。\n"
         "3. 「手」是 lots(1手=100股),「股」是 shares;不确定单位时"
         "留空 volume_unit,不要猜。数字只搬运,绝不换算或凑整。\n"
         "4. 只有下方上下文或原文能确定代码时才填 code;猜不出就留空。\n"
@@ -275,6 +279,8 @@ async def handle_owner_text(
         return _book_adjustment(
             extraction, text, received_at, ledger_path, renderer
         )
+    if extraction.outcome == "declare_capital":
+        return _book_capital(extraction, text, received_at, ledger_path, renderer)
     return _book_fill(
         extraction, text, received_at, ledger_path, push_state_path, renderer
     )
@@ -307,30 +313,21 @@ def _book_adjustment(
     held = load_book(ledger_path).position_for(code)
     old_volume = held.volume if held else 0
     if actual != old_volume:
-        try:
-            append_adjust(
-                ledger_path,
-                code=code,
-                volume_delta=int(actual) - old_volume,
-                note=(
-                    f"owner-confirmed holding: {extraction.note}"[:256]
-                ).rstrip(": "),
-                recorded_at=received_at.isoformat(),
-                # Backdated to midnight so a re-reported intraday sell (the
-                # drift-repair flow) replays AFTER this correction.
-                effective_at=received_at.replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(),
-            )
-        except MirrorDriftError:
-            # A downward correction below what today's booked fills already
-            # sold cannot replay — clarify instead of crashing the loop.
-            return ReconcileResult(
-                reply_text=renderer.render_reconcile_clarification(
-                    raw_text_excerpt=raw_text
-                ),
-                booked=False,
-            )
+        # Effective NOW: a correction states the holding AS OF NOW, and
+        # placed last in replay it is always replayable (current + delta =
+        # actual ≥ 0). Backdating to midnight broke against same-day booked
+        # fills (owner drill 2026-08-24: clearing a position bought that
+        # morning replayed 0−100 at 00:00 → spurious "did not understand").
+        append_adjust(
+            ledger_path,
+            code=code,
+            volume_delta=int(actual) - old_volume,
+            note=(
+                f"owner-confirmed holding: {extraction.note}"[:256]
+            ).rstrip(": "),
+            recorded_at=received_at.isoformat(),
+            effective_at=received_at.isoformat(),
+        )
     return ReconcileResult(
         reply_text=renderer.render_reconcile_adjust_ack(
             code=code, old_volume=old_volume, new_volume=int(actual)
@@ -382,6 +379,45 @@ def _book_z_record(
             amount=record.amount,
         ),
         booked=True,
+    )
+
+
+def _book_capital(
+    extraction: ReconcileExtraction,
+    raw_text: str,
+    received_at: datetime,
+    ledger_path: Path,
+    renderer: MessageRenderer,
+) -> ReconcileResult:
+    """Owner declares the R-line capital → SET the mirror equity to it.
+
+    Equity = cash + holdings at cost; the delta lands as one cash row, so
+    a re-declaration adjusts instead of double-counting. This is what
+    makes suggested share counts in the advisory possible.
+    """
+    if extraction.amount is None or extraction.amount <= 0:
+        return ReconcileResult(
+            reply_text=renderer.render_reconcile_clarification(
+                missing_fields=["amount"], raw_text_excerpt=raw_text
+            ),
+            booked=False,
+        )
+    target = float(extraction.amount)
+    book = load_book(ledger_path)
+    equity = book.cash + sum(p.volume * p.avg_cost for p in book.positions)
+    delta = round(target - equity, 2)
+    if abs(delta) >= 0.01:
+        append_cash(
+            ledger_path,
+            amount=delta,
+            note=f"owner-declared capital {target:.2f}",
+            recorded_at=received_at.isoformat(),
+        )
+    return ReconcileResult(
+        reply_text=renderer.render_capital_ack(
+            total_capital=target, cash_delta=delta
+        ),
+        booked=abs(delta) >= 0.01,
     )
 
 
@@ -443,14 +479,27 @@ def _book_fill(
         )
     except MirrorDriftError:
         held = load_book(ledger_path).position_for(code)
-        return ReconcileResult(
-            reply_text=renderer.render_reconcile_drift(
-                code=code,
-                reported_volume=event.volume,
-                held_volume=held.volume if held else 0,
-            ),
-            booked=False,
-        )
+        held_volume = held.volume if held else 0
+        if not event.side_is_buy and held_volume >= event.volume:
+            # The FINAL holding covers this sell — only the intraday
+            # ordering does not (a re-reported sell executed before a
+            # drift correction). Book it effective NOW; executed_at stays
+            # on the row for display.
+            row = append_fill(
+                ledger_path,
+                event,
+                recorded_at=received_at.isoformat(),
+                effective_at=received_at.isoformat(),
+            )
+        else:
+            return ReconcileResult(
+                reply_text=renderer.render_reconcile_drift(
+                    code=code,
+                    reported_volume=event.volume,
+                    held_volume=held_volume,
+                ),
+                booked=False,
+            )
     if row is None:  # duplicate external id — cannot happen with minting, but
         return ReconcileResult(  # keep the honest idempotent ack anyway
             reply_text=renderer.render_manual_trade_ack(

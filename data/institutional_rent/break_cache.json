@@ -1,0 +1,186 @@
+{
+  "stocks": {
+    "301655.SZ": {
+      "issue_date": "20260820",
+      "price": 8.5,
+      "first_close": 32.49
+    },
+    "688836.SH": {
+      "issue_date": "20260819",
+      "price": 150.8,
+      "first_close": 845.0
+    },
+    "688826.SH": {
+      "issue_date": "20260818",
+      "price": 186.88,
+      "first_close": 1152.0
+    },
+    "688828.SH": {
+      "issue_date": "20260811",
+      "price": 21.22,
+      "first_close": 110.23
+    },
+    "301717.SZ": {
+      "issue_date": "20260811",
+      "price": 65.99,
+      "first_close": 503.0
+    },
+    "301707.SZ": {
+      "issue_date": "20260807",
+      "price": 23.45,
+      "first_close": 116.52
+    },
+    "603468.SH": {
+      "issue_date": "20260806",
+      "price": 17.46,
+      "first_close": 37.49
+    },
+    "001232.SZ": {
+      "issue_date": "20260804",
+      "price": 84.46,
+      "first_close": 208.01
+    },
+    "301677.SZ": {
+      "issue_date": "20260730",
+      "price": 33.58,
+      "first_close": 82.4
+    },
+    "688825.SH": {
+      "issue_date": "20260727",
+      "price": 8.66,
+      "first_close": 49.0
+    },
+    "688806.SH": {
+      "issue_date": "20260721",
+      "price": 14.46,
+      "first_close": 45.1
+    },
+    "301583.SZ": {
+      "issue_date": "20260710",
+      "price": 22.6,
+      "first_close": 216.7
+    },
+    "001248.SZ": {
+      "issue_date": "20260702",
+      "price": 10.11,
+      "first_close": 23.95
+    },
+    "001399.SZ": {
+      "issue_date": "20260626",
+      "price": 10.12,
+      "first_close": 42.0
+    },
+    "688797.SH": {
+      "issue_date": "20260624",
+      "price": 44.56,
+      "first_close": 585.0
+    },
+    "301669.SZ": {
+      "issue_date": "20260609",
+      "price": 7.08,
+      "first_close": 51.3
+    },
+    "688635.SH": {
+      "issue_date": "20260527",
+      "price": 40.98,
+      "first_close": 659.99
+    },
+    "603435.SH": {
+      "issue_date": "20260522",
+      "price": 15.76,
+      "first_close": 127.68
+    },
+    "001237.SZ": {
+      "issue_date": "20260522",
+      "price": 53.26,
+      "first_close": 111.8
+    },
+    "001365.SZ": {
+      "issue_date": "20260518",
+      "price": 27.19,
+      "first_close": 67.12
+    }
+  },
+  "cbs": {
+    "123280.SZ": {
+      "list_date": "20260819",
+      "first_close": 157.3
+    },
+    "118075.SH": {
+      "list_date": "20260819",
+      "first_close": 157.3
+    },
+    "123279.SZ": {
+      "list_date": "20260818",
+      "first_close": 157.3
+    },
+    "123278.SZ": {
+      "list_date": "20260818",
+      "first_close": 157.3
+    },
+    "113709.SH": {
+      "list_date": "20260817",
+      "first_close": 157.3
+    },
+    "123277.SZ": {
+      "list_date": "20260814",
+      "first_close": 157.3
+    },
+    "127115.SZ": {
+      "list_date": "20260813",
+      "first_close": 157.3
+    },
+    "118074.SH": {
+      "list_date": "20260813",
+      "first_close": 157.3
+    },
+    "110103.SH": {
+      "list_date": "20260813",
+      "first_close": 157.3
+    },
+    "118073.SH": {
+      "list_date": "20260812",
+      "first_close": 157.3
+    },
+    "113708.SH": {
+      "list_date": "20260806",
+      "first_close": 146.723
+    },
+    "110102.SH": {
+      "list_date": "20260805",
+      "first_close": 157.3
+    },
+    "123276.SZ": {
+      "list_date": "20260804",
+      "first_close": 157.3
+    },
+    "113707.SH": {
+      "list_date": "20260731",
+      "first_close": 157.3
+    },
+    "123275.SZ": {
+      "list_date": "20260724",
+      "first_close": 157.3
+    },
+    "111025.SH": {
+      "list_date": "20260721",
+      "first_close": 142.472
+    },
+    "118072.SH": {
+      "list_date": "20260717",
+      "first_close": 148.148
+    },
+    "118071.SH": {
+      "list_date": "20260717",
+      "first_close": 157.3
+    },
+    "110101.SH": {
+      "list_date": "20260716",
+      "first_close": 135.046
+    },
+    "127114.SZ": {
+      "list_date": "20260714",
+      "first_close": 130.0
+    }
+  }
+}

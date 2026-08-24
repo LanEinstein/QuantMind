@@ -57,6 +57,48 @@ from backend.models.instruction import (
 from backend.models.manual_trade import ExternalExecutionEvent, ManualTradeReason
 from backend.models.position_thesis import ThesisHealth
 
+# Sleeve advisory per-holding action labels (owner requirement 2026-08-24:
+# advisories carry suggested share counts and the concrete operation).
+_SLEEVE_ACTIONS = frozenset({"新进", "加仓", "减仓", "维持"})
+
+
+def _sleeve_action_line(h: Mapping[str, object]) -> tuple[str | None, bool]:
+    """The "suggested shares + operation" sub-line for one holding.
+
+    Returns ``(line, is_operation)``; ``(None, False)`` when the caller
+    supplied no share suggestion (e.g. capital not declared). ``action``
+    outside the fixed label set is a fail-closed ValueError — the wire
+    copy never carries computed free text.
+    """
+    suggest = h.get("suggest_shares")
+    if not isinstance(suggest, int | float):
+        return None, False
+    action = h.get("action")
+    if action is not None and str(action) not in _SLEEVE_ACTIONS:
+        raise ValueError(f"unknown sleeve action {action!r}")
+    held_raw = h.get("held_shares")
+    held = int(held_raw) if isinstance(held_raw, int | float) else 0
+    suggest_int = int(suggest)
+    if suggest_int <= 0:
+        return "  ↳ 本金不足一手,该票略过", False
+    delta = abs(suggest_int - held)
+    if action == "新进":
+        op_txt, is_op = f"新进买入 {suggest_int} 股", True
+    elif action == "加仓":
+        op_txt, is_op = f"加仓 {delta} 股", True
+    elif action == "减仓":
+        op_txt, is_op = f"减仓 {delta} 股", True
+    elif action == "维持":
+        op_txt, is_op = "维持不动", False
+    else:
+        op_txt, is_op = "", False
+    tail = f" · 操作: {op_txt}" if op_txt else ""
+    return (
+        f"  ↳ 建议持有 {suggest_int} 股 · 现持 {held} 股{tail}",
+        is_op,
+    )
+
+
 # MI-1 free-text reconciliation — fixed labels for the clarification body
 # (field KEYS come from code, the label text is a renderer constant).
 _RECONCILE_FIELD_LABEL: dict[str, str] = {
@@ -344,6 +386,8 @@ class MessageRenderer:
         baseline_underperf_periods: int,
         status_changed_from: str | None = None,
         reminder: bool = False,
+        exits: Sequence[Mapping[str, object]] = (),
+        capital_declared: bool = True,
         pilot: bool = False,
     ) -> str:
         """Render the SLV-1 defensive-sleeve forward TARGET BOOK (display-only).
@@ -398,6 +442,7 @@ class MessageRenderer:
             ),
             "——",
         ]
+        has_operations = bool(exits)
         for h in holdings:
             code = _single_line(str(h.get("ts_code", "")))
             name = _truncate(_single_line(str(h.get("name", ""))), 24)
@@ -413,7 +458,43 @@ class MessageRenderer:
                 f"· {code} {name} · 目标权重 {w_txt} · "
                 f"股息率 {dv_txt} · 收盘 {close_txt}"
             )
+            action_line, is_operation = _sleeve_action_line(h)
+            if action_line:
+                lines.append(action_line)
+                has_operations = has_operations or is_operation
         lines.append(f"现金 buffer: {float(cash_weight_pct):.0f}%")
+        if exits:
+            lines.append("需清仓(已跌出前5):")
+            for e in exits:
+                e_code = _single_line(str(e.get("ts_code", "")))
+                e_name = _truncate(_single_line(str(e.get("name", ""))), 24)
+                held = e.get("held_volume")
+                held_txt = (
+                    f"{int(held)}" if isinstance(held, int | float) else "?"
+                )
+                lines.append(
+                    f"· {e_code} {e_name} · 现持 {held_txt} 股 → 全部卖出".replace(
+                        "  ", " "
+                    )
+                )
+        if not capital_declared:
+            lines.append(
+                "(要获得具体建议股数,请先在群里@我说一句"
+                "「R线本金X元」申报本金)"
+            )
+        # Plain-language logic footer (owner requirement 2026-08-24): every
+        # advisory explains the selection; operation-bearing ones also
+        # explain the entry/exit rule. Fixed renderer constants, zero LLM.
+        lines.append(
+            "选股逻辑: 在剔除高风险股后的防御池里,选股息率最高的5只各配8%,"
+            "留60%现金打底——用高分红、低波动的票求少亏、吃住分红。"
+        )
+        if has_operations:
+            lines.append(
+                "买卖点: 约每月(20个交易日)调仓一次,盘后出建议、"
+                "次日你在券商App操作;买=股息率新进前5的票,"
+                "卖=跌出前5的票;平时不动,下跌不补仓。"
+            )
         # Thresholds come from the pre-registered FORWARD_KILL_SWITCH via the
         # caller — the governance-bearing message must never hardcode them.
         lines.append(
@@ -1036,6 +1117,30 @@ class MessageRenderer:
                     f"{int(old_volume)} 股 → {int(new_volume)} 股。"
                 ),
                 "如需继续入账之前未成功的那笔成交,请再报一次。",
+            ]
+        )
+
+    def render_capital_ack(
+        self, *, total_capital: float, cash_delta: float
+    ) -> str:
+        """Ack an owner-declared R-line capital (sets the mirror equity)."""
+        if abs(cash_delta) < 0.01:
+            return "\n".join(
+                [
+                    "【QuantMind 已记录】",
+                    (
+                        f"R线本金已是 {_format_money(total_capital)} CNY,"
+                        "无需调整。"
+                    ),
+                ]
+            )
+        sign = "+" if cash_delta > 0 else ""
+        return "\n".join(
+            [
+                "【QuantMind 已记录-本金申报】",
+                f"R线本金: {_format_money(total_capital)} CNY"
+                f"(现金调整 {sign}{_format_money(cash_delta)} CNY)。",
+                "今后的持仓建议将按此本金给出具体股数。",
             ]
         )
 
