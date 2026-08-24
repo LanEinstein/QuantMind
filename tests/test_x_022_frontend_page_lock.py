@@ -21,12 +21,18 @@ from ``NAV_GROUPS``). The file-count constant below counts it.
 Numbers
 ~~~~~~~
 
-* Top-level views: 14 (11 menu pages + Simulation.vue + ExecutionReportEntry.vue
+* Top-level views: 15 (11 menu pages + Simulation.vue + ExecutionReportEntry.vue
   + ReconciliationCenter.vue; the latter two ARE the locked write-input
   pages — they are not in the standard "11 review pages" count but are
-  legitimate menu entries).
+  legitimate menu entries; + AccountLines.vue, see below).
 * ``settings/`` sub-views: 5 (4 settings sub-pages + 1 SettingsLayout).
-* TOTAL: 19 ``.vue`` files.
+* TOTAL: 20 ``.vue`` files.
+
+2026-08-24 (post-MI-1): the P1-5 red lines were voided by the 2026-08-12
+rearchitecture (archived under docs/archive/); the POST-MI1 handoff
+authorizes ONE new lightweight page, ``AccountLines.vue`` (the line-split
+mirror ledger panel). The lock is kept as a drift tripwire and bumped
+14 → 15 for exactly that file.
 
 Bump either constant only with a docs/decisions amendment so the change
 goes through the same gate as any other red-line shift.
@@ -42,7 +48,7 @@ VIEWS_ROOT = Path("frontend/src/views")
 
 # Locked at session #25 (X-022) — matches the working tree as of
 # Phase X-D landing. Bumping either number requires a P1-5 amendment.
-LOCKED_TOP_LEVEL_VUE_FILES = 14
+LOCKED_TOP_LEVEL_VUE_FILES = 15
 LOCKED_SETTINGS_VUE_FILES = 5
 LOCKED_TOTAL_VUE_FILES = LOCKED_TOP_LEVEL_VUE_FILES + LOCKED_SETTINGS_VUE_FILES
 
@@ -147,6 +153,7 @@ def test_known_locked_page_set_present(
         "InstructionPlans.vue",
         # Ledger group
         "Portfolio.vue",
+        "AccountLines.vue",  # post-MI-1 (2026-08-24) line-split ledger panel
         "ExecutionReportEntry.vue",
         "ReconciliationCenter.vue",
         # Review group (core 3)

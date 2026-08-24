@@ -9,8 +9,9 @@ market prices (research-side assumed prices stay in research code).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from backend.portfolio.mirror_ledger import (
     DEFAULT_LEDGER as DEFAULT_MIRROR_LEDGER,
@@ -45,6 +46,20 @@ def build_account_view(
         r_book=load_book(mirror_path),
         z_summary=summarize(load_records(z_path)),
     )
+
+
+def account_view_payload(view: AccountLinesView) -> dict[str, Any]:
+    """The machine shape shared by ``account_view.py --json`` and the API."""
+    return {
+        "r_line": {
+            "positions": [asdict(p) for p in view.r_book.positions],
+            "cash": view.r_book.cash,
+            "opening_declared": view.r_book.opening_declared,
+            "fill_count": view.r_book.fill_count,
+            "cost_value": view.r_cost_value,
+        },
+        "z_line": dict(view.z_summary),
+    }
 
 
 def render_account_lines(view: AccountLinesView) -> str:

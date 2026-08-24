@@ -30,6 +30,15 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/Portfolio.vue'),
     meta: { title: '组合管理' },
   },
+  // Post-MI-1 (2026-08-24): the line-split mirror ledger panel, backed by
+  // the standalone read-only API (scripts/account_api.py) — not the sealed
+  // dual-line runtime that /portfolio still talks to.
+  {
+    path: '/account-lines',
+    name: 'AccountLines',
+    component: () => import('@/views/AccountLines.vue'),
+    meta: { title: '分线账本' },
+  },
   {
     path: '/execution-reports',
     name: 'ExecutionReports',

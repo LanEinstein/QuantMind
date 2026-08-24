@@ -120,6 +120,18 @@ def _append_row(path: Path, row: Mapping[str, Any]) -> None:
         fh.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
 
 
+def recent_rows(path: Path, limit: int) -> tuple[dict[str, Any], ...]:
+    """The last ``limit`` ledger rows in APPEND order, newest first.
+
+    Display-only (the account panel's "recent fills / corrections" list):
+    physical order shows what the owner reported most recently, which is
+    not the replay (``effective_at``) order — a back-filled trade appears
+    here as new even though replay places it earlier.
+    """
+    rows = _read_rows(path)
+    return tuple(reversed(rows[-limit:])) if limit > 0 else ()
+
+
 def recorded_fill_ids(path: Path) -> frozenset[str]:
     """All external_trade_ids already booked (append-time dedupe)."""
     return frozenset(

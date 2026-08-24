@@ -10,6 +10,8 @@
  *
  * G-008 Phase B 收尾 brings 4 follow-on pages into the review group:
  * Agent 辩论, 数据质量, 飞书消息历史, 成本拆解面板.
+ *
+ * Post-MI-1 (2026-08-24) adds 分线账本 (/account-lines) to the ledger group.
  */
 
 export interface NavEntry {
@@ -44,6 +46,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     title: '账本与成交',
     entries: [
       { path: '/portfolio', title: '组合(只读)' },
+      { path: '/account-lines', title: '分线账本(R/Z 镜像)' },
       { path: '/execution-reports', title: '用户回报录入' },
       { path: '/reconciliation-center', title: '对账裁定中心' },
     ],

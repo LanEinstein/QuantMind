@@ -54,10 +54,11 @@ describe('NAV_GROUPS', () => {
     expect(decisions?.entries.map((e) => e.path)).toContain('/instruction-plans')
   })
 
-  it('ledger group includes Portfolio + execution-reports + reconciliation-center', () => {
+  it('ledger group includes Portfolio + account-lines + execution-reports + reconciliation-center', () => {
     const ledger = NAV_GROUPS.find((g) => g.id === 'ledger')
     expect(ledger?.entries.map((e) => e.path)).toEqual([
       '/portfolio',
+      '/account-lines',
       '/execution-reports',
       '/reconciliation-center',
     ])
