@@ -63,6 +63,8 @@ class ChecksumMismatchError(SnapshotStoreError):
 _INDEX_NAME = "index.jsonl"
 _PAYLOAD_DIR = "payloads"
 _LOCK_NAME = "index.lock"
+_SnapshotKey = tuple[str, str, str]
+_IndexSignature = tuple[int, int]
 
 # Fields persisted in the index row (everything except the raw bytes,
 # which live content-addressed under payloads/).
@@ -99,13 +101,19 @@ class SnapshotStore:
         self._root.mkdir(parents=True, exist_ok=True)
         self._payload_dir.mkdir(parents=True, exist_ok=True)
         self._index: dict[str, dict[str, Any]] = {}
-        self._load_index()
+        self._key_index: dict[_SnapshotKey, list[dict[str, Any]]] = {}
+        self._index_signature: _IndexSignature | None = None
+        with self._lock:
+            self._load_index()
 
     # -- index load ----------------------------------------------------
 
     def _load_index(self) -> None:
-        """Read existing index rows into memory (offline, no network)."""
+        """Fully rebuild both in-memory indexes from the append-only JSONL."""
+        self._index = {}
+        self._key_index = {}
         if not self._index_path.exists():
+            self._index_signature = None
             return
         for lineno, line in enumerate(
             self._index_path.read_text(encoding="utf-8").splitlines(), start=1
@@ -120,6 +128,16 @@ class SnapshotStore:
                     f"corrupt index row at {self._index_path}:{lineno}: {exc}"
                 ) from exc
             self._index[row["snapshot_id"]] = row
+            key = (row["vendor"], row["endpoint"], row["trade_date"])
+            self._key_index.setdefault(key, []).append(row)
+        self._index_signature = self._current_index_signature()
+
+    def _current_index_signature(self) -> _IndexSignature | None:
+        """Cheap cache invalidator for rows appended by another process."""
+        if not self._index_path.exists():
+            return None
+        stat = self._index_path.stat()
+        return stat.st_size, stat.st_mtime_ns
 
     # -- paths ---------------------------------------------------------
 
@@ -137,7 +155,8 @@ class SnapshotStore:
         sid = str(snapshot.snapshot_id)
         with self._lock:
             # Re-read under the lock so a concurrent writer's row is seen.
-            self._load_index()
+            if self._current_index_signature() != self._index_signature:
+                self._load_index()
             if sid in self._index:
                 raise SnapshotOverwriteError(
                     f"snapshot_id {sid} already stored — append-only "
@@ -147,13 +166,9 @@ class SnapshotStore:
             # unique: a restatement is a NEW snapshot with a *bigger*
             # version. Without this guard two default-version-1 snapshots
             # for the same key would make versions()/latest() ambiguous.
-            for existing in self._index.values():
-                if (
-                    existing["vendor"] == snapshot.vendor
-                    and existing["endpoint"] == snapshot.endpoint
-                    and existing["trade_date"] == snapshot.trade_date
-                    and existing["version"] == snapshot.version
-                ):
+            key = (snapshot.vendor, snapshot.endpoint, snapshot.trade_date)
+            for existing in self._key_index.get(key, ()):
+                if existing["version"] == snapshot.version:
                     raise SnapshotOverwriteError(
                         f"({snapshot.vendor}, {snapshot.endpoint}, "
                         f"{snapshot.trade_date}, v{snapshot.version}) already "
@@ -170,6 +185,8 @@ class SnapshotStore:
                     + "\n"
                 )
             self._index[sid] = row
+            self._key_index.setdefault(key, []).append(row)
+            self._index_signature = self._current_index_signature()
         log.info(
             "marketdata_snapshot_put",
             snapshot_id=sid,
@@ -214,18 +231,16 @@ class SnapshotStore:
     # -- read ----------------------------------------------------------
 
     def _reload_index(self) -> None:
-        """Reload the append-only index under the lock so a reader sees
-        rows appended by another store instance / process. The index is
-        append-only + snapshot_id-unique, so re-reading is idempotent."""
+        """Reload only when another writer has changed the append-only file."""
         with self._lock:
-            self._index = {}
-            self._load_index()
+            if self._current_index_signature() != self._index_signature:
+                self._load_index()
 
     def get(self, snapshot_id: UUID) -> MarketDataSnapshot:
         """Load + verify a snapshot by id (verify-before-adopt).
 
-        Reloads the index first so a long-lived reader sees snapshots
-        appended by another instance after this one was constructed.
+        Refreshes a changed index so a long-lived reader sees snapshots appended
+        by another instance after this one was constructed.
 
         Raises:
             SnapshotStoreError: unknown id / missing payload file.
@@ -282,15 +297,9 @@ class SnapshotStore:
         self, *, vendor: str, endpoint: str, trade_date: str
     ) -> tuple[MarketDataSnapshot, ...]:
         """All stored versions for a (vendor, endpoint, trade_date),
-        ordered by ``version`` ascending. Reloads the index first."""
+        ordered by ``version`` ascending. Refreshes a changed index first."""
         self._reload_index()
-        matches = [
-            row
-            for row in self._index.values()
-            if row["vendor"] == vendor
-            and row["endpoint"] == endpoint
-            and row["trade_date"] == trade_date
-        ]
+        matches = list(self._key_index.get((vendor, endpoint, trade_date), ()))
         matches.sort(key=lambda r: r["version"])
         return tuple(self._row_to_snapshot(r) for r in matches)
 

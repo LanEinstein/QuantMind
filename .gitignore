@@ -110,3 +110,6 @@ data/factor_research/
 
 # M1 corpus runtime data: metadata, transcripts, ledger, and temporary files.
 data/yeren_corpus/
+
+# M2 evidence-alignment artifacts: append-only observations, bundles, and media clips.
+data/yeren_research/

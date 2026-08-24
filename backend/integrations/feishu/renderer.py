@@ -57,6 +57,58 @@ from backend.models.instruction import (
 from backend.models.manual_trade import ExternalExecutionEvent, ManualTradeReason
 from backend.models.position_thesis import ThesisHealth
 
+# Sleeve advisory per-holding action labels (owner requirement 2026-08-24:
+# advisories carry suggested share counts and the concrete operation).
+_SLEEVE_ACTIONS = frozenset({"新进", "加仓", "减仓", "维持"})
+
+
+def _sleeve_action_line(h: Mapping[str, object]) -> tuple[str | None, bool]:
+    """The "suggested shares + operation" sub-line for one holding.
+
+    Returns ``(line, is_operation)``; ``(None, False)`` when the caller
+    supplied no share suggestion (e.g. capital not declared). ``action``
+    outside the fixed label set is a fail-closed ValueError — the wire
+    copy never carries computed free text.
+    """
+    suggest = h.get("suggest_shares")
+    if not isinstance(suggest, int | float):
+        return None, False
+    action = h.get("action")
+    if action is not None and str(action) not in _SLEEVE_ACTIONS:
+        raise ValueError(f"unknown sleeve action {action!r}")
+    held_raw = h.get("held_shares")
+    held = int(held_raw) if isinstance(held_raw, int | float) else 0
+    suggest_int = int(suggest)
+    if suggest_int <= 0:
+        return "  ↳ 本金不足一手,该票略过", False
+    delta = abs(suggest_int - held)
+    if action == "新进":
+        op_txt, is_op = f"新进买入 {suggest_int} 股", True
+    elif action == "加仓":
+        op_txt, is_op = f"加仓 {delta} 股", True
+    elif action == "减仓":
+        op_txt, is_op = f"减仓 {delta} 股", True
+    elif action == "维持":
+        op_txt, is_op = "维持不动", False
+    else:
+        op_txt, is_op = "", False
+    tail = f" · 操作: {op_txt}" if op_txt else ""
+    return (
+        f"  ↳ 建议持有 {suggest_int} 股 · 现持 {held} 股{tail}",
+        is_op,
+    )
+
+
+# MI-1 free-text reconciliation — fixed labels for the clarification body
+# (field KEYS come from code, the label text is a renderer constant).
+_RECONCILE_FIELD_LABEL: dict[str, str] = {
+    "code": "标的代码/名称",
+    "side": "买卖方向",
+    "volume": "成交数量",
+    "price": "成交价格",
+    "amount": "金额",
+}
+
 _MANUAL_REASON_LABEL: dict[ManualTradeReason, str] = {
     ManualTradeReason.USER_TAKE_PROFIT: "止盈",
     ManualTradeReason.USER_STOP_LOSS: "止损",
@@ -332,6 +384,10 @@ class MessageRenderer:
         mdd_kill: float,
         bear_cum_kill: float,
         baseline_underperf_periods: int,
+        status_changed_from: str | None = None,
+        reminder: bool = False,
+        exits: Sequence[Mapping[str, object]] = (),
+        capital_declared: bool = True,
         pilot: bool = False,
     ) -> str:
         """Render the SLV-1 defensive-sleeve forward TARGET BOOK (display-only).
@@ -356,6 +412,25 @@ class MessageRenderer:
             *self._pilot_prefix(pilot),
             "【QuantMind 防御Sleeve目标持仓 / 试运营】",
             "本条为前向试运营的展示性研究建议,仅供参考,非交易指令,无需回复。",
+            *(
+                [
+                    (
+                        f"⚠️ 前向状态变化: {_single_line(status_changed_from)}"
+                        f" → {_single_line(status)},请查看后人工处理。"
+                    )
+                ]
+                if status_changed_from is not None
+                else []
+            ),
+            *(
+                [
+                    "提醒: 上次调仓建议尚未收到执行回报(默认未成交),"
+                    "以下为按最新收盘重算的目标书。若已操作或决定不跟随,"
+                    "请回一句告诉我。"
+                ]
+                if reminder
+                else []
+            ),
             (
                 f"前向状态: {_single_line(status)} "
                 f"(第 {int(complete_periods)}/{int(min_forward_periods)} 期起裁决)"
@@ -367,6 +442,7 @@ class MessageRenderer:
             ),
             "——",
         ]
+        has_operations = bool(exits)
         for h in holdings:
             code = _single_line(str(h.get("ts_code", "")))
             name = _truncate(_single_line(str(h.get("name", ""))), 24)
@@ -382,7 +458,43 @@ class MessageRenderer:
                 f"· {code} {name} · 目标权重 {w_txt} · "
                 f"股息率 {dv_txt} · 收盘 {close_txt}"
             )
+            action_line, is_operation = _sleeve_action_line(h)
+            if action_line:
+                lines.append(action_line)
+                has_operations = has_operations or is_operation
         lines.append(f"现金 buffer: {float(cash_weight_pct):.0f}%")
+        if exits:
+            lines.append("需清仓(已跌出前5):")
+            for e in exits:
+                e_code = _single_line(str(e.get("ts_code", "")))
+                e_name = _truncate(_single_line(str(e.get("name", ""))), 24)
+                held = e.get("held_volume")
+                held_txt = (
+                    f"{int(held)}" if isinstance(held, int | float) else "?"
+                )
+                lines.append(
+                    f"· {e_code} {e_name} · 现持 {held_txt} 股 → 全部卖出".replace(
+                        "  ", " "
+                    )
+                )
+        if not capital_declared:
+            lines.append(
+                "(要获得具体建议股数,请先在群里@我说一句"
+                "「R线本金X元」申报本金)"
+            )
+        # Plain-language logic footer (owner requirement 2026-08-24): every
+        # advisory explains the selection; operation-bearing ones also
+        # explain the entry/exit rule. Fixed renderer constants, zero LLM.
+        lines.append(
+            "选股逻辑: 在剔除高风险股后的防御池里,选股息率最高的5只各配8%,"
+            "留60%现金打底——用高分红、低波动的票求少亏、吃住分红。"
+        )
+        if has_operations:
+            lines.append(
+                "买卖点: 约每月(20个交易日)调仓一次,盘后出建议、"
+                "次日你在券商App操作;买=股息率新进前5的票,"
+                "卖=跌出前5的票;平时不动,下跌不补仓。"
+            )
         # Thresholds come from the pre-registered FORWARD_KILL_SWITCH via the
         # caller — the governance-bearing message must never hardcode them.
         lines.append(
@@ -391,6 +503,88 @@ class MessageRenderer:
             f"熊市累计<{float(bear_cum_kill) * 100:.0f}% / "
             f"连续{int(baseline_underperf_periods)}期落后基线"
         )
+        # Behavioral guardrail (MD-1 P-B NO_ADOPT → discipline text, not a
+        # mechanical stop; see docs/research/pb-stop-ablation-results-2026-08-23.md).
+        lines.append("纪律: 不补仓亏损股;不在无浮盈时做T;反常下跌先报我再动手。")
+        return "\n".join(lines)
+
+    def render_ipo_reminder(
+        self,
+        *,
+        date: str,
+        stocks: Sequence[Mapping[str, object]],
+        cbs: Sequence[Mapping[str, object]],
+        stock_broken: int,
+        stock_evaluated: int,
+        cb_broken: int,
+        cb_evaluated: int,
+        kill_threshold: int,
+        stock_killed: bool,
+        cb_killed: bool,
+        pilot: bool = False,
+    ) -> str:
+        """Render the MZ-1 IPO/CB subscription reminder (display-only).
+
+        Like :meth:`render_sleeve_advisory` it is NOT an instruction: no
+        ``QM-`` id, no execution verb the inbound parser recognizes — the
+        owner subscribes manually in the broker app. Stock entries are
+        duck-typed mappings (``name`` / ``sub_code`` / ``board`` / ``price``,
+        price ``None`` = not yet published); CB entries carry ``onl_name`` /
+        ``onl_code``. A killed section suppresses its listing and shows the
+        stop notice instead (institutional-rent protocol §3). Rendering with
+        nothing to say (no entries and no killed section) is a fail-closed
+        :class:`ValueError` — the caller only pushes when there is content.
+        """
+        if not stocks and not cbs and not (stock_killed or cb_killed):
+            raise ValueError("render_ipo_reminder requires content")
+        lines = [
+            *self._pilot_prefix(pilot),
+            f"【QuantMind 打新提醒|{_single_line(date)}】",
+            "本条为展示性提醒,仅供参考,非交易指令,无需回复。",
+        ]
+        if stock_killed:
+            lines.append(
+                f"⚠️ 新股打新提醒已按协议停发(近{int(stock_evaluated)}只上市新股"
+                f"破发 {int(stock_broken)} 只 ≥ 阈值 {int(kill_threshold)});"
+                "恢复需 owner 决定。"
+            )
+        elif stocks:
+            lines.append(f"今日可申购新股 {len(stocks)} 只:")
+            for s in stocks:
+                name = _truncate(_single_line(str(s.get("name", ""))), 24)
+                sub = _single_line(str(s.get("sub_code", "")))
+                board = _single_line(str(s.get("board", "")))
+                price = s.get("price")
+                price_txt = (
+                    f"{float(price):.2f} 元"
+                    if isinstance(price, int | float)
+                    else "未公布"
+                )
+                lines.append(
+                    f"· {name} · 申购代码 {sub} · {board} · 发行价 {price_txt}"
+                )
+        if cb_killed:
+            lines.append(
+                f"⚠️ 转债打新提醒已按协议停发(近{int(cb_evaluated)}只上市转债"
+                f"破发 {int(cb_broken)} 只 ≥ 阈值 {int(kill_threshold)});"
+                "恢复需 owner 决定。"
+            )
+        elif cbs:
+            lines.append(f"今日可申购转债 {len(cbs)} 只:")
+            for c in cbs:
+                name = _truncate(_single_line(str(c.get("onl_name", ""))), 24)
+                code = _single_line(str(c.get("onl_code", "")))
+                lines.append(f"· {name} · 申购代码 {code} · 信用申购,顶格")
+        if stocks or cbs:
+            lines.append(
+                "纪律(协议 2026-08-23):顶格申购;中签即上市首日收盘前卖出,不择时。"
+            )
+        if not (stock_killed and cb_killed):
+            lines.append(
+                f"破发监控:近{int(stock_evaluated)}只新股破发 {int(stock_broken)} 只 / "
+                f"近{int(cb_evaluated)}只转债破发 {int(cb_broken)} 只"
+                f"(任一 ≥{int(kill_threshold)} 自动停发该类提醒)"
+            )
         return "\n".join(lines)
 
     # -- BUY-signal templates (M-006 — 4 budget-tier variants) ---------
@@ -832,6 +1026,138 @@ class MessageRenderer:
             lines.append(f"账本序号: {broker_event_sequence}")
         lines.append("(此为用户自主操作记录,不计入系统能力评估;以模拟账本为准)")
         return "\n".join(lines)
+
+    # -- MI-1 free-text reconciliation replies (deterministic) ---------
+
+    def render_reconcile_clarification(
+        self,
+        *,
+        missing_fields: Sequence[str] = (),
+        raw_text_excerpt: str | None = None,
+    ) -> str:
+        """One-shot clarification for the MI-1 free-text reconciliation.
+
+        ``missing_fields`` are FIELD KEYS mapped to fixed Chinese labels
+        here (never LLM text); an unknown key is a fail-closed ValueError.
+        Empty ``missing_fields`` renders the generic "did not understand"
+        body. Only the owner's own excerpt is interpolated (single-lined +
+        truncated + order-token-redacted, P0-2 §2.6).
+        """
+        labels = []
+        for field in missing_fields:
+            if field not in _RECONCILE_FIELD_LABEL:
+                raise ValueError(f"unknown reconcile field key {field!r}")
+            labels.append(_RECONCILE_FIELD_LABEL[field])
+        lines = ["【QuantMind 对账追问】"]
+        if labels:
+            lines.append(
+                "这笔操作我还缺: " + "、".join(labels) + "。"
+                "请补一句,例如「买了 002271 五千股,成交 12.30」。"
+            )
+        else:
+            lines.append(
+                "这条我没读懂。请再说一遍,带上标的、方向、数量和成交价;"
+                "没操作就回「没买」或「不跟」。"
+            )
+        if raw_text_excerpt:
+            safe = _redact_order_tokens(
+                _truncate(_single_line(raw_text_excerpt), 80)
+            )
+            lines.append(f"原文节选: {safe}")
+        return "\n".join(lines)
+
+    def render_reconcile_drift(
+        self, *, code: str, reported_volume: int, held_volume: int
+    ) -> str:
+        """Reported SELL exceeds the mirrored holding — ask before booking."""
+        return "\n".join(
+            [
+                "【QuantMind 对账追问】",
+                (
+                    f"你报的卖出 {_single_line(code)} {int(reported_volume)} 股"
+                    f"超过镜像账本记录的持仓 {int(held_volume)} 股。"
+                ),
+                "若真实持仓确实更多,请回一句实际持有多少股,我先修正账本再入账;"
+                "若数量报错了,请重报这笔成交。",
+            ]
+        )
+
+    def render_reconcile_outcome(self, *, kind: str) -> str:
+        """Ack an explicit non-fill outcome (``unfilled`` / ``no_action``)."""
+        if kind == "unfilled":
+            body = (
+                "已记录: 本次建议未成交。今晚重算后若目标书仍有差异,"
+                "会再次推送提醒。"
+            )
+        elif kind == "no_action":
+            body = "已记录: 本次建议不跟随。此建议不再重复提醒。"
+        else:
+            raise ValueError(f"unknown reconcile outcome kind {kind!r}")
+        return "\n".join(["【QuantMind 已记录】", body])
+
+    def render_reconcile_adjust_ack(
+        self, *, code: str, old_volume: int, new_volume: int
+    ) -> str:
+        """Ack an owner-confirmed position correction (drift repair)."""
+        if old_volume == new_volume:
+            return "\n".join(
+                [
+                    "【QuantMind 已记录】",
+                    (
+                        f"镜像持仓与你所述一致({_single_line(code)} "
+                        f"{int(new_volume)} 股),未做修正。"
+                    ),
+                ]
+            )
+        return "\n".join(
+            [
+                "【QuantMind 已记录-持仓修正】",
+                (
+                    f"已按你的确认修正镜像持仓: {_single_line(code)} "
+                    f"{int(old_volume)} 股 → {int(new_volume)} 股。"
+                ),
+                "如需继续入账之前未成功的那笔成交,请再报一次。",
+            ]
+        )
+
+    def render_capital_ack(
+        self, *, total_capital: float, cash_delta: float
+    ) -> str:
+        """Ack an owner-declared R-line capital (sets the mirror equity)."""
+        if abs(cash_delta) < 0.01:
+            return "\n".join(
+                [
+                    "【QuantMind 已记录】",
+                    (
+                        f"R线本金已是 {_format_money(total_capital)} CNY,"
+                        "无需调整。"
+                    ),
+                ]
+            )
+        sign = "+" if cash_delta > 0 else ""
+        return "\n".join(
+            [
+                "【QuantMind 已记录-本金申报】",
+                f"R线本金: {_format_money(total_capital)} CNY"
+                f"(现金调整 {sign}{_format_money(cash_delta)} CNY)。",
+                "今后的持仓建议将按此本金给出具体股数。",
+            ]
+        )
+
+    def render_z_record_ack(
+        self, *, type_label: str, code: str, name: str, amount: float
+    ) -> str:
+        """Ack one Z-line (institutional-rent) ledger record."""
+        who = " ".join(x for x in (_single_line(code), _single_line(name)) if x)
+        return "\n".join(
+            [
+                "【QuantMind 已记录-Z线】",
+                f"类型: {_single_line(type_label)}",
+                *([f"标的: {who}"] if who else []),
+                f"金额: {_format_money(amount)} CNY",
+                "已计入制度红利(Z 线)账本。",
+            ]
+        )
 
     # -- Reconciliation request (F-005 surface) ------------------------
 

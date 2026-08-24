@@ -38,7 +38,10 @@ EXTERNAL_TRADE_ID_PATTERN = r"^UT-\d{8}-\d{6}-(\d{6})-(BUY|SELL)-\d{3}$"
 _EXTERNAL_TRADE_ID_RE = re.compile(EXTERNAL_TRADE_ID_PATTERN)
 
 LOT_SIZE = 100
-"""A-share board lot — manual volumes must be whole lots (P1-5 §1.2)."""
+"""A-share board lot — manual BUY volumes must be whole lots (P1-5 §1.2).
+SELL may be any positive share count: real accounts legitimately hold odd
+lots (rights issues, corporate actions) and the exchange accepts odd-lot
+sells — the mirror books the owner's ACTUAL execution (MI-1, codex-agreed)."""
 
 
 class ManualTradeSide(StrEnum):
@@ -103,9 +106,9 @@ class ExternalExecutionEvent(BaseModel):
                 f"external_trade_id side {embedded_side!r} != side "
                 f"{self.side.value!r}"
             )
-        if self.volume % LOT_SIZE != 0:
+        if self.side is ManualTradeSide.BUY and self.volume % LOT_SIZE != 0:
             raise ValueError(
-                f"volume {self.volume} must be a whole {LOT_SIZE}-share lot"
+                f"BUY volume {self.volume} must be a whole {LOT_SIZE}-share lot"
             )
         return self
 

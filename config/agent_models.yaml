@@ -36,6 +36,22 @@ defaults:
 #   - keep ∈ {all, last_round, none}: which rounds' reasoning to retain
 #     in subsequent turns of the same conversation (consumed by P5B-T03).
 agents:
+  # MI-1 (2026-08-23): free-text execution-report extraction. The LLM only
+  # produces the structured JSON extraction (backend/portfolio/reconcile.py);
+  # every outbound reply is renderer-composed. Deterministic-ish settings:
+  # temperature 0, cheap flash tier, thinking off.
+  execution_reconciler:
+    name: "对账抽取器"
+    provider: deepseek
+    model: deepseek-v4-flash
+    fallback: { provider: qwen, model: qwen3.6-plus }
+    thinking:
+      type: disabled
+      max_tokens: 0
+      keep: none
+    frequency: "on_message"
+    task: "owner 自由文本成交回报 → 结构化抽取(JSON only)"
+
   # P0-10-amendment-2026-06-11: the crawler/summary tier moves to
   # deepseek-v4-flash (¥1/¥2 per M — the cheap high-throughput tier;
   # v4-pro at ¥3/¥6 is reserved for reasoning-grade work).

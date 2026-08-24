@@ -1,0 +1,62 @@
+[Unit]
+# MI-1 — reconcile listener service (owner Feishu free text → mirror ledger).
+# A deliberately SEPARATE, lightweight unit: no mongod/redis/uvicorn — the
+# old quantmind.service backend stays dormant (the M4 runtime is sealed).
+Description=QuantMind reconcile listener (Feishu free text -> mirror ledger)
+Documentation=file:///home/ps/papers/QuantMind/docs/runbook/systemd-setup.md
+After=network-online.target
+Wants=network-online.target
+
+# Crashloop guard — StartLimit{IntervalSec,Burst} are [Unit]-section
+# directives (systemd ≥230); under [Service] they silently no-op.
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=simple
+
+# Runs as the owner's account: the mirror ledger, push state, and logs are
+# ps-owned files shared with the cron pipeline and interactive sessions —
+# a dedicated service user would need chown gymnastics on shared data for
+# no concrete failure it would prevent (anti-over-defense).
+User=ps
+Group=ps
+
+WorkingDirectory=/home/ps/papers/QuantMind
+
+# Secrets live OUTSIDE the repo (FEISHU_* + LLM keys), extracted from
+# ~/.bashrc by scripts/install_reconcile_service.sh. Never in .env inside
+# the repo (P1-6 §1.1).
+EnvironmentFile=/home/ps/.quantmind-reconcile.env
+Environment=FEISHU_INTERACTIVE_ENABLED=false
+
+ExecStart=/home/ps/anaconda3/envs/zhanglan/bin/python scripts/reconcile_listener.py
+
+Restart=always
+RestartSec=10s
+
+# The listener handles SIGTERM (stops the WS receiver, closes the LLM
+# router); 30s is ample.
+TimeoutStopSec=30s
+KillMode=mixed
+KillSignal=SIGTERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=quantmind-reconcile
+
+# Hardening — unprivileged, read-only system, explicit RW paths for the
+# ledger/state/log surfaces the listener actually writes.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ReadWritePaths=/home/ps/papers/QuantMind/logs
+ReadWritePaths=/home/ps/papers/QuantMind/data
+ReadOnlyPaths=/home/ps/.quantmind-reconcile.env
+
+[Install]
+WantedBy=multi-user.target

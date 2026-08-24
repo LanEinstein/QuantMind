@@ -29,7 +29,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from backend.backtest.event_loop import BacktestClock, BarSource, DayBar
 from backend.backtest.friction import FrictionParams, compute_fill_economics
@@ -51,6 +51,8 @@ from backend.backtest.portfolio import (
     PortfolioError,
 )
 from backend.backtest.strategy import (
+    DailySignals,
+    DayDecision,
     HeldPosition,
     OrderIntent,
     PortfolioView,
@@ -68,6 +70,24 @@ from backend.utils.decision_compare import cents_to_yuan, to_cents
 
 if TYPE_CHECKING:
     from backend.services.acceptance_report import AcceptanceReport
+
+
+class DecideFn(Protocol):
+    """The per-day decision hook ``run_backtest`` drives (default: ``decide_day``).
+
+    An ablation study may wrap :func:`decide_day` (e.g. the MD-1 P-B stop
+    overlay) without touching the shared decision logic; the default keeps
+    every existing caller byte-identical.
+    """
+
+    def __call__(
+        self,
+        *,
+        signals: DailySignals,
+        view: PortfolioView,
+        bars: Mapping[str, DayBar],
+        config: StrategyConfig,
+    ) -> DayDecision: ...
 
 _TRADING_DAYS_PER_MONTH = 21.0
 """Approximate A-share trading days / month — turnover annualisation only."""
@@ -151,6 +171,7 @@ def run_backtest(
     friction_params: FrictionParams,
     harsh_config: HarshFillConfig | None = None,
     golden_vectors: Sequence[DecisionVector] | None = None,
+    decide_fn: DecideFn = decide_day,
 ) -> BacktestResult:
     """Replay the deterministic strategy over the PIT window (pure).
 
@@ -231,7 +252,7 @@ def run_backtest(
             cash_cents=portfolio.cash_cents,
             holdings=holding_positions,
         )
-        decision = decide_day(
+        decision = decide_fn(
             signals=provider.signals_asof(day),
             view=view,
             bars=bars,
@@ -559,6 +580,7 @@ def to_acceptance_report(
 __all__ = [
     "BacktestResult",
     "BacktestSpec",
+    "DecideFn",
     "run_backtest",
     "to_acceptance_report",
 ]

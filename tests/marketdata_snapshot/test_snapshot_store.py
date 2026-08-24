@@ -254,3 +254,23 @@ class TestStaleIndex:
         assert reader.latest(
             vendor="tushare", endpoint="daily", trade_date="20260522"
         ) is not None
+
+    def test_unchanged_index_reuses_in_memory_lookup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = SnapshotStore(root=tmp_path)
+        store.put(_snap())
+        reloads = 0
+        original = store._load_index
+
+        def counted_load() -> None:
+            nonlocal reloads
+            reloads += 1
+            original()
+
+        monkeypatch.setattr(store, "_load_index", counted_load)
+        for _ in range(3):
+            assert store.latest(
+                vendor="tushare", endpoint="daily", trade_date="20260522"
+            ) is not None
+        assert reloads == 0

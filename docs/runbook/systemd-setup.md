@@ -186,7 +186,64 @@ sudo systemctl reset-failed quantmind
 sudo systemctl restart quantmind
 ```
 
-## 10. Uninstall
+## 10. quantmind-reconcile — the MI-1 listener unit (2026-08-24)
+
+A separate, lightweight unit for the MI-1 reconcile listener
+(`scripts/reconcile_listener.py`: owner Feishu free text → mirror
+ledger → renderer ack). No mongod/redis/uvicorn — the heavy
+`quantmind.service` backend stays dormant.
+
+Install (two steps — env as the owner, unit as root):
+
+```bash
+bash scripts/install_reconcile_service.sh --write-env     # once, no root
+sudo bash scripts/install_reconcile_service.sh --enable --start
+```
+
+The installer refuses to run without `/home/ps/.quantmind-reconcile.env`
+(9 vars: 6×FEISHU_* + 3 LLM keys, extracted from `~/.bashrc`, chmod
+600) and, on `--start`, first SIGTERMs any manually-started listener so
+two instances never double-reply to the same owner message.
+
+Verify / operate:
+
+```bash
+systemctl status quantmind-reconcile          # active (running)
+journalctl -u quantmind-reconcile -f          # canonical log tail
+sudo systemctl restart quantmind-reconcile    # after a code update
+```
+
+Crash recovery mirrors the backend unit: `Restart=always` + 10s,
+20-restart/5-min crashloop cap, graceful SIGTERM stop. Runs as
+`User=ps` deliberately — the mirror ledger / push state / logs are
+ps-owned files shared with the cron pipeline (a dedicated service user
+would only add chown gymnastics on shared data).
+
+## 10a. Account-lines panel — the read-only API (2026-08-24)
+
+The frontend's 分线账本 page (`/account-lines`) reads
+`GET /api/portfolio/lines` from a standalone FastAPI file
+(`scripts/account_api.py`). It is NOT `backend.main` (that dual-line
+runtime with Mongo/Redis/schedulers stays dormant) and has no unit yet —
+it is started by hand when the owner wants to look at the panel:
+
+```bash
+cd /home/ps/papers/QuantMind          # ledger paths are repo-relative
+PY=/home/ps/anaconda3/envs/zhanglan/bin
+setsid $PY/python scripts/account_api.py > logs/account_api.log 2>&1 < /dev/null &
+curl -s http://127.0.0.1:8001/api/portfolio/lines | head -c 200   # {"status":"ok",...
+
+cd frontend && npx vite preview        # 127.0.0.1:9276, proxies /api → :8001
+# open http://127.0.0.1:9276/account-lines (SSH tunnel from elsewhere)
+```
+
+Binds `127.0.0.1:8001` (the port the Vite dev/preview proxy already
+targets), one GET, no writes, no auth — loopback + SSH tunnel is the
+boundary. Stop with `pkill -f "[a]ccount_api.py"`. The shell's status
+widgets still call the old `/api/system-status/*` endpoints and log a
+404 in the browser console — harmless while the old backend is dormant.
+
+## 11. Uninstall
 
 ```bash
 sudo systemctl stop quantmind
